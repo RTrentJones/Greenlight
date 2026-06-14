@@ -18,6 +18,20 @@ The monorepo skeleton, manifest schema/loader, package boundaries, and the CI se
 - `pnpm run check-all` — the full suite CI runs. **Use `run`** — `pnpm ci` hits a reserved pnpm builtin.
 - `pnpm greenlight config` — load + validate + print the manifest (CLI via tsx).
 
+## Development loop (deploy → verify → promote)
+
+Changes to a tool or the blog are shipped through the loop — it's the agent's execution
+discipline, run as part of the dev cycle (in Claude Code CLI/IDE/web). The full procedure
+is the [deploy-verify-promote skill](.claude/skills/deploy-verify-promote/SKILL.md):
+branch → make change → deploy preview → `verify` → beta → `verify` → `promote` (gated
+`develop→main` fast-forward) → prod → `verify`. The `verify` gate (same code CI runs) is
+what lets long-running, semi-autonomous changes ship with objective confidence.
+
+Quick reference: `pnpm greenlight verify <name> --env beta|prod` (or `--url <local>` for a
+preview/local server); `pnpm greenlight promote <name>`. URL scheme + modes-by-lane are in
+the skill. Cross-repo (standalone BAMCP etc.), this skill ships as the Greenlight Claude
+Code **plugin** (Phase 7); mechanics ride the `@rtrentjones/greenlight*` npm deps.
+
 ## Specs & background
 
 - **[greenlight-v1.md](greenlight-v1.md) is the executable spec — build from this.** It is the narrowed, buildable slice and includes a phased implementation plan (§15) ordered stop-the-bleeding-first. Treat it as the source of truth; if reality forces a deviation, update it in the same change.

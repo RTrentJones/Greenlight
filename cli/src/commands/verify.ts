@@ -2,10 +2,22 @@ import { type DeployEnv, type Lane, resolveUrl } from '@rtrentjones/greenlight-s
 import { type VerifyReport, type VerifySpec, verify } from '@rtrentjones/greenlight-verify';
 import { loadManifest, resolveEntry } from '../manifest';
 
-/** Minimal default smoke spec by lane. Real specs come from a per-tool verify.config (Phase 9). */
+/** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
 function defaultSpec(lane: Lane): VerifySpec {
-  if (lane === 'mcp') return { mode: 'mcp', expectTools: [] };
-  return { mode: 'api', checks: [{ path: '/', status: 200 }] };
+  switch (lane) {
+    case 'astro':
+      return {
+        mode: 'api',
+        checks: [{ path: '/', status: 200 }],
+        rssValid: true,
+        sitemapValid: true,
+        noBrokenInternalLinks: true,
+      };
+    case 'next':
+      return { mode: 'api', checks: [{ path: '/', status: 200 }] };
+    case 'mcp':
+      return { mode: 'mcp', expectTools: [] };
+  }
 }
 
 function printReport(report: VerifyReport): void {
@@ -16,27 +28,34 @@ function printReport(report: VerifyReport): void {
   console.log(`\n${report.pass ? '✔ PASS' : '✘ FAIL'}`);
 }
 
+function flag(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
 export async function verifyCommand(args: string[]): Promise<void> {
   const name = args[0];
   if (!name || name.startsWith('-')) {
-    throw new Error('usage: greenlight verify <name> --env <beta|prod>');
-  }
-  const envIdx = args.indexOf('--env');
-  const env = (envIdx >= 0 ? args[envIdx + 1] : undefined) as DeployEnv | undefined;
-  if (env !== 'beta' && env !== 'prod') {
-    throw new Error(
-      'verify needs --env beta|prod (preview URLs come from the adapter deploy, not resolvable standalone yet).',
-    );
+    throw new Error('usage: greenlight verify <name> [--env <beta|prod> | --url <url>]');
   }
 
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
-  const url = resolveUrl({
-    domain: config.domain,
-    name: entry.name,
-    env,
-    mcp: entry.lane === 'mcp',
-  });
+
+  // --url points at a local/preview server (skips manifest URL resolution).
+  const override = flag(args, '--url');
+  let url: string;
+  if (override) {
+    url = entry.lane === 'mcp' && !override.endsWith('/mcp') ? `${override}/mcp` : override;
+  } else {
+    const env = flag(args, '--env') as DeployEnv | undefined;
+    if (env !== 'beta' && env !== 'prod') {
+      throw new Error(
+        'verify needs --env beta|prod (or --url <url>). preview URLs come from the adapter deploy.',
+      );
+    }
+    url = resolveUrl({ domain: config.domain, name: entry.name, env, mcp: entry.lane === 'mcp' });
+  }
 
   const report = await verify(url, defaultSpec(entry.lane));
   printReport(report);

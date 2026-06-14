@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "ignore": ["dist/**", "node_modules/**", ".turbo/**", "*.tsbuildinfo"]
+    "ignore": ["dist/**", "node_modules/**", ".turbo/**", ".astro/**", "*.tsbuildinfo"]
   },
   "formatter": {
     "enabled": true,

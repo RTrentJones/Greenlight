@@ -88,8 +88,9 @@ greenlight/
     keepalive/                  # CF Worker Cron heartbeat (§6) — BUILT FIRST
     verify/                     # api | playwright | mcp harness (§7)
     shared/                     # manifest loader + types
-  .agent/
-    CLAUDE.md  subagents/  skills/   # the deploy-verify-promote runbook (§7)
+  CLAUDE.md                     # always-on loop awareness (Claude Code auto-loads this)
+  .claude/skills/
+    deploy-verify-promote/SKILL.md  # the loop skill (§7); cross-repo via plugin (Phase 7)
   greenlight.config.ts
   .github/workflows/            # ci, deploy, promote, supabase-migrate, alert
   turbo.json  pnpm-workspace.yaml
@@ -129,7 +130,7 @@ Verification wired to **promotion**, not just test-writing. CI and the agent cal
   - `mcp` — protocol-level (no UI): `initialize` handshake → `tools/list` returns expected schemas → call one tool, assert result shape → if `auth != none`, assert unauthorized is rejected.
 - **Deterministic URLs.** `url(toolName, env)` is computed, not scraped from deploy logs, so `verify` always knows where to point. Scheme: `beta.<name>.<domain>` (beta), `<name>.<domain>` (prod), per-target alias (preview). MCP connect URL: `<name>.<domain>/mcp`.
 - **The loop:** branch → push → `verify $PREVIEW` → merge to `develop` → `verify $BETA` → `promote` → `verify $PROD`.
-- **`.agent/`** — `CLAUDE.md` runbook records the URL scheme and loop; `subagents/` (planner / generator / healer) as editable markdown; a `deploy-verify-promote` skill. Keep agent autonomy modest in V1 — the value is the shared verify contract + gated promotion, not autonomous self-healing.
+- **Agent context** — the loop is **agent-driven during the dev cycle**: ask for a change and the agent runs deploy-preview → `verify` → (beta → `verify` → `promote` → prod) as part of the work. For **Claude Code** this lives in `.claude/skills/deploy-verify-promote/SKILL.md` (the procedure, auto-discovered) + always-on awareness in root `CLAUDE.md`. *(Note: Claude Code does not read `.agent/` or scan `node_modules` for skills — agent context can't ride the npm channel; its cross-repo distribution is its own channel, see §15.7 / Phase 7.)* Keep agent autonomy modest in V1 — the value is the shared verify contract + gated promotion, not autonomous self-healing.
 
 ## 8. Adopting existing tools
 
@@ -294,6 +295,23 @@ personal repo:    Renovate PR: bump ^1.4.0 → ^1.4.1
 1. **Terraform module** — referenced by Git ref (`?ref=v1.4.1`), not npm. Bump the ref (Renovate can manage it), then `terraform init -upgrade && plan`. Same pull-and-gate shape, different file.
 2. **Lane templates do NOT auto-update.** `greenlight add` *copies* a template into the consumer; from then on it's the consumer's file, and later template improvements don't flow into already-scaffolded tools (only into newly-added ones). Mitigations: push as much template logic as possible behind the CLI/packages so the copied file stays a thin shell (then fixes arrive via version bump after all), and have `greenlight doctor` detect template drift and offer assisted re-materialization. This is the one deliberate exception to automatic propagation.
 
+### 15.7 Agent-context distribution — the third channel
+
+The loop is **agent-driven during the dev cycle**: working in any of these projects, you ask for a change and the agent ships it through deploy-preview → `verify` → (beta → `verify` → `promote` → prod). For that to work in a repo, the agent must *know about* the loop — which is a distinct artifact from the code, and distributes through a **third channel**:
+
+| Layer | Carries | Channel | Auto-updates? |
+|---|---|---|---|
+| loop **mechanics** | `@rtrentjones/greenlight*` + CLI | npm dependency (§15.6) | ✅ `pnpm update` |
+| loop **parameters** | `greenlight.config.ts` (manifest) | per-repo file | n/a (the personal bit) |
+| agent **awareness** | a Skill + `CLAUDE.md` | **plugin / filesystem** | ⚠️ not via npm |
+
+Critically, **Claude Code does not scan `node_modules` for skills** and does not read `.agent/` — agent awareness cannot ride the npm channel. So it gets its own distribution (built in **Phase 7**):
+
+- **Primary — a Claude Code plugin + marketplace.** Greenlight ships a `greenlight` plugin (the `deploy-verify-promote` skill + subagent). Add the marketplace once and install at **user scope** → the skill is available in **every repo you open** — the monorepo *and* standalone BAMCP/HeistMind — with zero per-repo files, versioned and updated centrally (`/plugin marketplace update`).
+- **Fallback — `greenlight agent sync`.** A CLI subcommand that materializes/updates `.claude/skills/deploy-verify-promote/SKILL.md` (+ a `CLAUDE.md` block) into the current repo from the installed package version, for environments not using the plugin system.
+
+Plugin = the *procedure*, manifest = the *parameters*, packages = the *mechanics*. In the monorepo today the skill lives at `.claude/skills/deploy-verify-promote/SKILL.md` with always-on awareness in root `CLAUDE.md`.
+
 ---
 
 ## 16. Implementation plan
@@ -305,7 +323,7 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
 - **Accept:** `pnpm install && pnpm build && pnpm lint` pass; example config loads + type-checks; the seam CI check is green and *fails* when a domain is hardcoded into a framework file.
 
 ### Phase 1 — Verify harness + deploy adapters + the loop (centerpiece)
-- **Deliver:** `@rtrentjones/greenlight-verify` (`api`, `mcp`, light `playwright`); `@rtrentjones/greenlight-adapters` four-hook contract (`build`/`deploy`/`url`/`teardown`) for `workers`/`vercel`/`oci`; deterministic `url(tool, env)`; `.agent/CLAUDE.md` runbook + `deploy-verify-promote` skill.
+- **Deliver:** `@rtrentjones/greenlight-verify` (`api`, `mcp`, light `playwright`); `@rtrentjones/greenlight-adapters` four-hook contract (`build`/`deploy`/`url`/`teardown`) for `workers`/`vercel`/`oci`; deterministic `url(tool, env)`; `.claude/skills/deploy-verify-promote/SKILL.md` + root `CLAUDE.md` loop awareness.
 - **Accept:** the loop runs end-to-end locally against a stub tool (deploy → `verify` → promote); `verify` reports are machine-readable and identical whether run by CI or the agent.
 
 ### Phase 2 — The blog (FIRST loop subject)
@@ -328,9 +346,16 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
 - **Deliver:** `init` (example→personal manifest, token prompts/validation, secrets to provider stores, first deploy — §15.3), `add`, `verify`, `promote`, `adopt` (stub for Phase 7), `doctor` (DNS, drift, manifest↔dir↔workflow consistency, framework-version drift, Vercel cap headroom).
 - **Accept:** a cold clone → `init` → first deploy works from docs alone; `doctor` is all-green on a healthy repo and flags version drift.
 
-### Phase 7 — Package publishing + stand up the personal repo
-- **Deliver:** publish `@rtrentjones/greenlight*` to npm (Changesets, semver) + the source-ref Terraform module; create the **thin personal repo** (§15.5) consuming the published packages; verify the loop runs there.
-- **Accept:** the personal repo depends only on published packages (no framework source); `pnpm update` upgrades the framework cleanly; the blog loop runs from the personal repo.
+### Phase 7 — Package publishing + agent-context distribution + stand up the personal repo
+- **Deliver:**
+  - publish `@rtrentjones/greenlight*` to npm (Changesets, semver) + the source-ref Terraform module;
+  - **agent-context distribution (§15.7):** a Greenlight **Claude Code plugin** (bundling the `deploy-verify-promote` skill + subagent) published via a **marketplace** (this repo as the marketplace source), plus a **`greenlight agent sync`** CLI fallback that materializes `.claude/skills/` + a `CLAUDE.md` block into a consuming repo;
+  - create the **thin personal repo** (§15.5) consuming the published packages, with the plugin installed at user scope;
+  - verify the loop runs there.
+- **Accept:**
+  - the personal repo depends only on published packages (no framework source); `pnpm update` upgrades the mechanics cleanly;
+  - the `deploy-verify-promote` skill is available in the personal repo (and any other repo) via the user-scope plugin — no per-repo copy — and `greenlight agent sync` reproduces it for non-plugin environments;
+  - the blog loop runs from the personal repo.
 
 ### Phase 8 — Keepalive (was Phase 1)
 - **Deliver:** `@rtrentjones/greenlight-keepalive` CF Worker Cron (Supabase query + OCI health ping + `github-issue` alert sink); **OCI → PAYG + billing-alarm runbook**; `doctor` integration (keepalive health, OCI PAYG status, billing alarm presence).

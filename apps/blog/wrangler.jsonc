@@ -1,0 +1,11 @@
+{
+  // Cloudflare Workers Static Assets for the blog. Routes / custom domains are
+  // managed by Terraform (Phase 5), not here — names stay generic (seam rule 15.2.1).
+  "name": "greenlight-blog",
+  "compatibility_date": "2025-06-01",
+  "assets": { "directory": "./dist" },
+  "env": {
+    "beta": { "name": "greenlight-blog-beta" },
+    "prod": { "name": "greenlight-blog" }
+  }
+}
