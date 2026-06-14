@@ -1,5 +1,6 @@
 import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
 import { loadManifest } from '../manifest';
 
@@ -8,9 +9,9 @@ function flag(args: string[], name: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-/** Lane template dir; for mcp it has per-target subdirs (oci|workers). */
+/** Lane template dir (bundled in the CLI package, or the repo in dev); mcp has oci|workers subdirs. */
 function templateDir(lane: string, target: string): string {
-  const base = resolve(process.cwd(), `tools/_template-${lane}`);
+  const base = join(templatesRoot(), `_template-${lane}`);
   return lane === 'mcp' ? join(base, target) : base;
 }
 

@@ -1,14 +1,35 @@
 {
   "name": "@rtrentjones/greenlight",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Greenlight CLI — setup and lifecycle for the harness.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RTrentJones/greenlight.git",
+    "directory": "cli"
+  },
   "type": "module",
   "main": "./src/index.ts",
   "bin": {
     "greenlight": "./src/bin.ts"
   },
+  "files": ["dist", "templates", "assets"],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "bin": {
+      "greenlight": "./dist/bin.js"
+    }
+  },
   "scripts": {
+    "build": "node scripts/copy-assets.mjs && tsup",
     "typecheck": "tsc -p tsconfig.json",
     "dev": "tsx src/bin.ts"
   },

@@ -1,0 +1,11 @@
+{
+  "name": "greenlight",
+  "owner": { "name": "RTrentJones", "url": "https://github.com/RTrentJones" },
+  "plugins": [
+    {
+      "name": "greenlight",
+      "source": "./plugin",
+      "description": "The deploy-verify-promote loop skill for any Greenlight repo (monorepo or standalone tool)."
+    }
+  ]
+}

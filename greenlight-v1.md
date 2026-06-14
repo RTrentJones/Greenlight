@@ -349,6 +349,7 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
 - **Accept:** a cold clone → `init` → first deploy works from docs alone; `doctor` is all-green on a healthy repo and flags version drift.
 
 ### Phase 7 — Package publishing + agent-context distribution + stand up the personal repo
+- **Status: built (validated locally); `npm publish` + live deploy gated on creds.** See [docs/phase-7-plan.md](docs/phase-7-plan.md).
 - **Deliver:**
   - publish `@rtrentjones/greenlight*` to npm (Changesets, semver) + the source-ref Terraform module;
   - **agent-context distribution (§15.7):** a Greenlight **Claude Code plugin** (bundling the `deploy-verify-promote` skill + subagent) published via a **marketplace** (this repo as the marketplace source), plus a **`greenlight agent sync`** CLI fallback that materializes `.claude/skills/` + a `CLAUDE.md` block into a consuming repo;

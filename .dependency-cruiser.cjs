@@ -24,6 +24,8 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
+    // Generated/copied assets, not framework source.
+    exclude: { path: '(^|/)(dist|templates|assets)/' },
     tsConfig: { fileName: 'tsconfig.base.json' },
     tsPreCompilationDeps: true,
   },

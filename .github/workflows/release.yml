@@ -1,0 +1,60 @@
+name: release
+
+# Publish the @rtrentjones/greenlight* packages (Changesets). Creds-guarded: with an
+# NPM_TOKEN secret it publishes; without one it packs tarballs for inspection (dry run),
+# mirroring the deploy/promote guard. Dormant until you set the token + choose a registry.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build:packages
+
+      - name: Check npm token
+        id: tok
+        env:
+          NPM: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM" ]; then echo "have=1" >> "$GITHUB_OUTPUT"; else echo "have=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Configure npm auth
+        if: steps.tok.outputs.have == '1'
+        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+      - name: Publish (Changesets)
+        if: steps.tok.outputs.have == '1'
+        uses: changesets/action@v1
+        with:
+          publish: pnpm changeset publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry pack (no token)
+        if: steps.tok.outputs.have != '1'
+        run: |
+          mkdir -p _packed
+          for p in packages/shared packages/verify packages/adapters packages/loop cli; do
+            ( cd "$p" && pnpm pack --pack-destination "$GITHUB_WORKSPACE/_packed" )
+          done
+          echo "No NPM_TOKEN — packed tarballs for inspection; publish skipped."
+
+      - name: Upload tarballs
+        if: steps.tok.outputs.have != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: packed-tarballs
+          path: _packed/*.tgz

@@ -10,7 +10,9 @@ The monorepo skeleton, manifest schema/loader, package boundaries, and the CI se
 
 - Toolchain pinned in `mise.toml` (Node 24, pnpm 10.12.1): `mise install` to set up, `mise upgrade` to bump. Engines floor `>=22`.
 - `pnpm install` — install workspace deps.
-- `pnpm build` — typecheck all packages via Turbo (no emit in Phase 0 — packages are consumed from source; real bundling lands in Phase 7).
+- `pnpm build` — typecheck all packages via Turbo (dev consumes packages from source; `main`→`src`).
+- `pnpm build:packages` — tsup-emit `dist/` for the 5 publishable packages (publishing path; `publishConfig` swaps the published pointers to `dist`). `pnpm pack` per package to inspect a tarball.
+- `pnpm greenlight agent sync` — materialize the deploy-verify-promote skill + a CLAUDE.md block into a repo (fallback to the Claude Code plugin: `/plugin marketplace add RTrentJones/greenlight`).
 - `pnpm test` — Vitest across the workspace. Single file: `pnpm test packages/shared/src/__tests__/schema.test.ts`. Watch: `pnpm test:watch`.
 - `pnpm lint` / `pnpm lint:fix` — Biome (single quotes for JS/TS, double for JSX).
 - `pnpm check-seam` — fail if personal data (domain/email) leaks into a framework file (rule 15.2.1).

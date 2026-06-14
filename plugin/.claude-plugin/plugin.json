@@ -1,0 +1,7 @@
+{
+  "name": "greenlight",
+  "version": "0.1.0",
+  "description": "Greenlight's deploy-verify-promote loop as a Claude Code skill — ship a tool or the blog through preview -> verify -> beta -> promote -> prod with the shared verify harness. Install once at user scope to get it in every Greenlight repo (the monorepo and standalone tools).",
+  "author": { "name": "RTrentJones" },
+  "homepage": "https://github.com/RTrentJones/greenlight"
+}

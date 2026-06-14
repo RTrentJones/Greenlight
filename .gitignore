@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .turbo/
+# Generated into the CLI package at build time (copy-assets.mjs)
+cli/templates/
+cli/assets/
 .astro/
 .wrangler/
 *.tsbuildinfo

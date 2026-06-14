@@ -1,6 +1,7 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env node
 import { addCommand } from './commands/add';
 import { adoptCommand } from './commands/adopt';
+import { agentCommand } from './commands/agent';
 import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
 import { doctorCommand } from './commands/doctor';
@@ -16,6 +17,7 @@ const HELP = `greenlight <command>
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
   verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
+  agent sync                                    write the loop skill + CLAUDE.md block into this repo
   adopt                                         (Phase 9) onboard an existing tool
   doctor                                        manifest + repo consistency checks
   help                                          show this message
@@ -44,6 +46,8 @@ async function main(): Promise<void> {
       return verifyCommand(args);
     case 'promote':
       return promoteCommand(args);
+    case 'agent':
+      return agentCommand(args);
     case 'adopt':
       return adoptCommand();
     case 'doctor':

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "fixed": [
+    [
+      "@rtrentjones/greenlight",
+      "@rtrentjones/greenlight-shared",
+      "@rtrentjones/greenlight-verify",
+      "@rtrentjones/greenlight-adapters",
+      "@rtrentjones/greenlight-loop"
+    ]
+  ],
+  "linked": [],
+  "ignore": []
+}
