@@ -16,6 +16,7 @@
     "@rtrentjones/greenlight-adapters": "workspace:*",
     "@rtrentjones/greenlight-loop": "workspace:*",
     "@rtrentjones/greenlight-shared": "workspace:*",
-    "@rtrentjones/greenlight-verify": "workspace:*"
+    "@rtrentjones/greenlight-verify": "workspace:*",
+    "jiti": "^2.4.2"
   }
 }

@@ -31,4 +31,5 @@ export async function deployCommand(args: string[]): Promise<void> {
   console.log(`deploy ${name} → ${env}`);
   const { url } = await adapter.deploy(entry.dir, env);
   console.log(`✔ deployed: ${url}`);
+  if (entry.lane === 'mcp') console.log(`  connect: ${url}/mcp`);
 }

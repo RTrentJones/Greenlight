@@ -23,6 +23,8 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
   try {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
+    // Always exercise tools/list so the handshake + list are proven even with no expectTools.
+    checks.push({ name: `tools/list responded (${names.length} tools)`, pass: true });
     for (const t of spec.expectTools) {
       const has = names.includes(t);
       checks.push({

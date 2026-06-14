@@ -1,0 +1,13 @@
+{
+  "name": "@rtrentjones/greenlight-ping-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "build": "echo 'ping-mcp: container build is via Dockerfile (oci lane)'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  }
+}

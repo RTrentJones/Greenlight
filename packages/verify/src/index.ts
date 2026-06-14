@@ -2,6 +2,11 @@ import { verifyApi } from './api';
 import type { VerifyReport, VerifySpec } from './types';
 
 export * from './types';
+
+/** Authoring helper for a per-tool `verify.config.ts` (identity + type inference). */
+export function defineVerify(spec: VerifySpec): VerifySpec {
+  return spec;
+}
 export { verifyApi } from './api';
 export { verifyMcp } from './mcp';
 export { verifyPlaywright } from './playwright';

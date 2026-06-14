@@ -11,10 +11,19 @@ export default defineConfig({
   alerts: { sink: 'github-issue' },
   blog: { lane: 'astro', target: 'workers', data: 'none' },
   tools: [
-    // Add tools with `greenlight add`. Examples (uncomment + adjust):
-    //
-    // A throwaway MCP server on the edge (dev target for the protocol loop):
-    // { name: "throwaway-mcp", lane: "mcp", target: "workers", data: "none", auth: "none", access: "public", envs: ["preview", "beta"] },
+    // Sample MCP server (Node streamable-HTTP, the BAMCP/oci shape) — proves the
+    // protocol loop. Run `pnpm --filter @rtrentjones/greenlight-ping-mcp start` then
+    // `greenlight verify ping-mcp --url http://127.0.0.1:8787/mcp`.
+    {
+      name: 'ping-mcp',
+      lane: 'mcp',
+      target: 'oci',
+      data: 'none',
+      auth: 'none',
+      access: 'public',
+      envs: ['beta', 'prod'],
+    },
+    // More examples (uncomment + adjust):
     //
     // A stateful MCP server on OCI (BAMCP shape):
     // { name: "bamcp", lane: "mcp", target: "oci", data: "none", auth: "none", access: "public", envs: ["beta", "prod"] },

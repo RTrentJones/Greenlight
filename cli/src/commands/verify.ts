@@ -1,6 +1,6 @@
 import { type DeployEnv, type Lane, resolveUrl } from '@rtrentjones/greenlight-shared';
 import { type VerifyReport, type VerifySpec, verify } from '@rtrentjones/greenlight-verify';
-import { loadManifest, resolveEntry } from '../manifest';
+import { loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
 
 /** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
 function defaultSpec(lane: Lane): VerifySpec {
@@ -57,7 +57,9 @@ export async function verifyCommand(args: string[]): Promise<void> {
     url = resolveUrl({ domain: config.domain, name: entry.name, env, mcp: entry.lane === 'mcp' });
   }
 
-  const report = await verify(url, defaultSpec(entry.lane));
+  // Prefer a per-tool verify.config.ts; otherwise a lane default smoke spec.
+  const spec = (await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
+  const report = await verify(url, spec);
   printReport(report);
   process.exit(report.pass ? 0 : 1);
 }
