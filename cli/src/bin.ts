@@ -1,47 +1,39 @@
 #!/usr/bin/env tsx
-import { existsSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
-import { loadConfig } from '@rtrentjones/greenlight-shared';
+import { configCommand } from './commands/config';
+import { promoteCommand } from './commands/promote';
+import { verifyCommand } from './commands/verify';
 
 const HELP = `greenlight <command>
 
-  config    load & validate the manifest, then print it
-  doctor    validate the manifest (full checks arrive in Phase 6)
-  help      show this message
+  config                     load & validate the manifest, then print it
+  verify <name> --env <env>  run the verify harness against the deterministic URL
+  promote [name]             check promote eligibility (develop -> main fast-forward)
+  doctor                     validate the manifest (full checks arrive in Phase 6)
+  help                       show this message
 
-Phase 0 ships manifest loading + validation only. Deploy / verify / promote
-land in later phases (see greenlight-v1.md §16).`;
-
-function findManifest(): string | null {
-  for (const name of ['greenlight.config.ts', 'greenlight.config.example.ts']) {
-    const p = resolve(process.cwd(), name);
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
+Phase 1 ships the verify harness + the loop. Real deploys land per-target in
+later phases (see greenlight-v1.md §16).`;
 
 async function main(): Promise<void> {
-  const cmd = process.argv[2] ?? 'help';
+  const [cmd, ...args] = process.argv.slice(2);
 
-  if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    console.log(HELP);
-    return;
+  switch (cmd) {
+    case undefined:
+    case 'help':
+    case '--help':
+    case '-h':
+      console.log(HELP);
+      return;
+    case 'config':
+    case 'doctor':
+      return configCommand();
+    case 'verify':
+      return verifyCommand(args);
+    case 'promote':
+      return promoteCommand(args);
+    default:
+      throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
   }
-
-  if (cmd === 'config' || cmd === 'doctor') {
-    const manifest = findManifest();
-    if (!manifest) {
-      throw new Error(
-        'No greenlight.config.ts (or greenlight.config.example.ts) found in this directory.',
-      );
-    }
-    const config = await loadConfig(manifest);
-    console.log(`✔ Loaded & validated ${relative(process.cwd(), manifest)}\n`);
-    console.log(JSON.stringify(config, null, 2));
-    return;
-  }
-
-  throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
 }
 
 main().catch((err: unknown) => {

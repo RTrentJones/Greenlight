@@ -13,6 +13,8 @@ mise upgrade      # later: bump within the pinned spec
 
 Make sure mise is activated in your shell (`mise activate bash` in `~/.bashrc`) so versions switch on `cd`. Engines floor is `>=22` if you manage Node another way.
 
+`.node-version` (also `24`) exists alongside `mise.toml` because deploy platforms (Vercel, Cloudflare Workers Builds) read `.node-version`/`engines`, not `mise.toml`. Keep the two in sync.
+
 ## Commands
 
 | Command | What it does |

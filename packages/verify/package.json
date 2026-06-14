@@ -13,6 +13,10 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
     "@rtrentjones/greenlight-shared": "workspace:*"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.49.0"
   }
 }
