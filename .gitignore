@@ -6,6 +6,12 @@ dist/
 *.tsbuildinfo
 coverage/
 
+# Terraform (commit .terraform.lock.hcl; ignore provider binaries + state)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
 # Greenlight local secrets — NEVER commit (see greenlight-v1.md §14)
 .greenlight/
 

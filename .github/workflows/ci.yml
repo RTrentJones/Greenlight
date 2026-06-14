@@ -33,3 +33,31 @@ jobs:
 
       - name: Boundary check (consumer -> framework only)
         run: pnpm check-boundaries
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.6"
+
+      - name: Format
+        run: terraform fmt -check -recursive infra
+
+      - name: Init + validate
+        working-directory: infra/examples/single-tool
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Test (mock providers — no creds, no resources)
+        working-directory: infra/examples/single-tool
+        run: terraform test
+
+      - name: Security scan (advisory)
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infra
+          soft_fail: true
