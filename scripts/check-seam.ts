@@ -23,6 +23,7 @@ const SELF = fileURLToPath(import.meta.url);
 const FRAMEWORK_PATHS = [
   'cli',
   'packages',
+  'apps',
   'infra',
   'scripts',
   'tools',
