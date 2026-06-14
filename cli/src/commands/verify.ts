@@ -3,7 +3,7 @@ import { type VerifyReport, type VerifySpec, verify } from '@rtrentjones/greenli
 import { loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
 
 /** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
-function defaultSpec(lane: Lane): VerifySpec {
+export function defaultSpec(lane: Lane): VerifySpec {
   switch (lane) {
     case 'astro':
       // Generic web smoke. Content sites (blog) add rss/sitemap via a verify.config.ts.
@@ -15,7 +15,7 @@ function defaultSpec(lane: Lane): VerifySpec {
   }
 }
 
-function printReport(report: VerifyReport): void {
+export function printReport(report: VerifyReport): void {
   console.log(`verify ${report.mode} ${report.url}\n`);
   for (const c of report.checks) {
     console.log(`  ${c.pass ? '✔' : '✘'} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);

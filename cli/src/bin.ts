@@ -6,6 +6,7 @@ import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
 import { doctorCommand } from './commands/doctor';
 import { initCommand } from './commands/init';
+import { previewCommand } from './commands/preview';
 import { promoteCommand } from './commands/promote';
 import { secretsCommand } from './commands/secrets';
 import { verifyCommand } from './commands/verify';
@@ -16,6 +17,7 @@ const HELP = `greenlight <command>
   add <name> --lane <l> --target <t> [..]       scaffold a tool from a lane template + manifest entry
   config                                        load & validate the manifest, then print it
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
+  preview <name> [--port <n>]                   build + serve locally + verify (one command)
   verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
   secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
@@ -44,6 +46,8 @@ async function main(): Promise<void> {
       return configCommand();
     case 'deploy':
       return deployCommand(args);
+    case 'preview':
+      return previewCommand(args);
     case 'verify':
       return verifyCommand(args);
     case 'promote':

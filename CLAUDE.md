@@ -30,8 +30,9 @@ branch → make change → deploy preview → `verify` → beta → `verify` →
 `develop→main` fast-forward) → prod → `verify`. The `verify` gate (same code CI runs) is
 what lets long-running, semi-autonomous changes ship with objective confidence.
 
-Quick reference: `pnpm greenlight verify <name> --env beta|prod` (or `--url <local>` for a
-preview/local server); `pnpm greenlight promote <name>`. URL scheme + modes-by-lane are in
+Quick reference: `pnpm greenlight preview <name>` (build + serve locally + verify in one
+command, no readiness race); `pnpm greenlight verify <name> --env beta|prod` (or `--url
+<local>`); `pnpm greenlight promote <name>`. URL scheme + modes-by-lane are in
 the skill. Cross-repo (standalone BAMCP etc.), this skill ships as the Greenlight Claude
 Code **plugin** (Phase 7); mechanics ride the `@rtrentjones/greenlight*` npm deps.
 
