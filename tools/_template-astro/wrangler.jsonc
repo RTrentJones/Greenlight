@@ -1,0 +1,12 @@
+{
+  // Astro static site on Cloudflare Workers Static Assets. `greenlight add` rewrites
+  // package.json name; set the worker name to match your tool. Routes/custom domains
+  // are managed by Terraform (Phase 5) — names stay generic (seam rule 15.2.1).
+  "name": "astro-tool",
+  "compatibility_date": "2025-06-01",
+  "assets": { "directory": "./dist" },
+  "env": {
+    "beta": { "name": "astro-tool-beta" },
+    "prod": { "name": "astro-tool" }
+  }
+}

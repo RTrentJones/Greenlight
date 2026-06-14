@@ -1,4 +1,4 @@
-import { cpSync, existsSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { addTool, serializeConfig } from '../config-io';
 import { loadManifest } from '../manifest';
@@ -45,6 +45,13 @@ export async function addCommand(args: string[]): Promise<void> {
   const src = templateDir(lane, target);
   if (existsSync(src)) {
     cpSync(src, dest, { recursive: true });
+    // Rename the copied package.json so workspace tool names don't collide.
+    const pkgPath = join(dest, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+      pkg.name = name;
+      writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+    }
     console.log(`✔ copied ${src} → tools/${name}`);
   } else {
     console.log(`! no template at ${src} — manifest entry added without scaffolding`);

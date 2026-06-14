@@ -6,13 +6,8 @@ import { loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
 function defaultSpec(lane: Lane): VerifySpec {
   switch (lane) {
     case 'astro':
-      return {
-        mode: 'api',
-        checks: [{ path: '/', status: 200 }],
-        rssValid: true,
-        sitemapValid: true,
-        noBrokenInternalLinks: true,
-      };
+      // Generic web smoke. Content sites (blog) add rss/sitemap via a verify.config.ts.
+      return { mode: 'api', checks: [{ path: '/', status: 200 }], noBrokenInternalLinks: true };
     case 'next':
       return { mode: 'api', checks: [{ path: '/', status: 200 }] };
     case 'mcp':

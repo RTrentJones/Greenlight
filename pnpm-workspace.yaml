@@ -3,3 +3,4 @@ packages:
   - "cli"
   - "apps/*"
   - "tools/*"
+  - "!tools/_template-*"
