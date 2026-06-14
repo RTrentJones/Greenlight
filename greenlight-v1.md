@@ -356,9 +356,9 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
   - create the **thin personal repo** (§15.5) consuming the published packages, with the plugin installed at user scope;
   - verify the loop runs there.
 - **Accept:**
-  - the personal repo depends only on published packages (no framework source); `pnpm update` upgrades the mechanics cleanly;
-  - the `deploy-verify-promote` skill is available in the personal repo (and any other repo) via the user-scope plugin — no per-repo copy — and `greenlight agent sync` reproduces it for non-plugin environments;
-  - the blog loop runs from the personal repo.
+  - *(gated on publish)* the personal repo depends only on published packages; `pnpm update` upgrades the mechanics cleanly. **Current:** bootstrapped from vendored tarballs via `pnpm.overrides` until the first `npm publish`.
+  - `greenlight agent sync` reproduces the skill for non-plugin environments — **verified**. The user-scope **plugin** (no per-repo copy) is authored (valid `plugin.json`/`marketplace.json`) but **not yet verified against a real `/plugin install`** — needs the repo pushed to GitHub, then a one-time install check.
+  - the blog **build + `verify`** run from the personal repo — **verified locally**; the **deploy** leg is gated on Cloudflare creds.
 
 ### Phase 8 — Keepalive (was Phase 1)
 - **Deliver:** `@rtrentjones/greenlight-keepalive` CF Worker Cron (Supabase query + OCI health ping + `github-issue` alert sink); **OCI → PAYG + billing-alarm runbook**; `doctor` integration (keepalive health, OCI PAYG status, billing alarm presence).
