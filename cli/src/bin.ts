@@ -7,6 +7,7 @@ import { deployCommand } from './commands/deploy';
 import { doctorCommand } from './commands/doctor';
 import { initCommand } from './commands/init';
 import { promoteCommand } from './commands/promote';
+import { secretsCommand } from './commands/secrets';
 import { verifyCommand } from './commands/verify';
 
 const HELP = `greenlight <command>
@@ -17,6 +18,7 @@ const HELP = `greenlight <command>
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
   verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
+  secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
   agent sync                                    write the loop skill + CLAUDE.md block into this repo
   adopt                                         (Phase 9) onboard an existing tool
   doctor                                        manifest + repo consistency checks
@@ -46,6 +48,8 @@ async function main(): Promise<void> {
       return verifyCommand(args);
     case 'promote':
       return promoteCommand(args);
+    case 'secrets':
+      return secretsCommand(args);
     case 'agent':
       return agentCommand(args);
     case 'adopt':

@@ -39,6 +39,12 @@ module "tool" {
   envs        = var.envs
 }
 
+module "repo" {
+  source          = "../../modules/repo"
+  repository      = "site"
+  required_checks = ["ci"]
+}
+
 output "prod_url" {
   value = module.tool.prod_url
 }
@@ -50,4 +56,10 @@ output "record_count" {
 }
 output "env_count" {
   value = module.tool.env_count
+}
+output "develop_branch" {
+  value = module.repo.develop_branch
+}
+output "protected_patterns" {
+  value = module.repo.protected_patterns
 }

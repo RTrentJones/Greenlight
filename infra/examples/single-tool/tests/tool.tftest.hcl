@@ -60,3 +60,15 @@ run "single_env" {
     error_message = "envs list should drive the fan-out"
   }
 }
+
+run "repo_branch_and_protection" {
+  command = plan
+  assert {
+    condition     = output.develop_branch == "develop"
+    error_message = "repo module should create the develop branch"
+  }
+  assert {
+    condition     = length(output.protected_patterns) == 2
+    error_message = "repo module should protect main + develop"
+  }
+}

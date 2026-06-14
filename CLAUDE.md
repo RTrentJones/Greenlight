@@ -12,6 +12,7 @@ The monorepo skeleton, manifest schema/loader, package boundaries, and the CI se
 - `pnpm install` — install workspace deps.
 - `pnpm build` — typecheck all packages via Turbo (dev consumes packages from source; `main`→`src`).
 - `pnpm build:packages` — tsup-emit `dist/` for the 5 publishable packages (publishing path; `publishConfig` swaps the published pointers to `dist`). `pnpm pack` per package to inspect a tarball.
+- `pnpm greenlight secrets sync [--repo o/r] [--env <env>]` — push `.greenlight/secrets.env` to GitHub Actions secrets via `gh` (the "init writes to provider stores" piece). Branches/protection/environments are Terraform (`infra/modules/repo`).
 - `pnpm greenlight agent sync` — materialize the deploy-verify-promote skill + a CLAUDE.md block into a repo (fallback to the Claude Code plugin: `/plugin marketplace add RTrentJones/greenlight`).
 - `pnpm test` — Vitest across the workspace. Single file: `pnpm test packages/shared/src/__tests__/schema.test.ts`. Watch: `pnpm test:watch`.
 - `pnpm lint` / `pnpm lint:fix` — Biome (single quotes for JS/TS, double for JSX).
