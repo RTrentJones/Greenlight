@@ -1,0 +1,31 @@
+name: alert
+
+# Reusable alert sink (alerts.sink = github-issue) — opens an issue so GitHub emails
+# you. Zero new vendor. Other workflows call this on failure (greenlight-v1.md §13).
+on:
+  workflow_call:
+    inputs:
+      title:
+        required: true
+        type: string
+      body:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  issues: write
+
+jobs:
+  open-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open a GitHub issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🔴 ${{ inputs.title }}" \
+            --body "${{ inputs.body }}"$'\n\n'"Run: ${RUN_URL}"

@@ -13,6 +13,7 @@
     "dev": "tsx src/bin.ts"
   },
   "dependencies": {
+    "@rtrentjones/greenlight-adapters": "workspace:*",
     "@rtrentjones/greenlight-loop": "workspace:*",
     "@rtrentjones/greenlight-shared": "workspace:*",
     "@rtrentjones/greenlight-verify": "workspace:*"

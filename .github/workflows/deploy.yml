@@ -1,0 +1,63 @@
+name: deploy
+
+# Git-mapped envs (greenlight-v1.md §12): PR -> preview, develop -> beta, main -> prod.
+# Creds-guarded: until CLOUDFLARE_API_TOKEN exists (Phase 5/6) the deploy/verify steps
+# skip cleanly instead of red-failing. The develop-triggered runs begin once that branch
+# exists (Phase 7). Currently deploys the blog; multi-tool fan-out is a later refinement.
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Resolve target env
+        id: env
+        run: |
+          case "${{ github.ref }}" in
+            refs/heads/main) echo "env=prod" >> "$GITHUB_OUTPUT" ;;
+            refs/heads/develop) echo "env=beta" >> "$GITHUB_OUTPUT" ;;
+            *) echo "env=preview" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Check Cloudflare creds
+        id: creds
+        env:
+          CF: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$CF" ]; then echo "have=1" >> "$GITHUB_OUTPUT"; else echo "have=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Deploy + verify
+        if: steps.creds.outputs.have == '1'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          pnpm greenlight deploy blog --env "${{ steps.env.outputs.env }}"
+          pnpm greenlight verify blog --env "${{ steps.env.outputs.env }}"
+
+      - name: Skip notice
+        if: steps.creds.outputs.have != '1'
+        run: echo "No CLOUDFLARE_API_TOKEN secret — deploy/verify skipped (wired in Phase 5/6)."
+
+  alert:
+    needs: deploy
+    if: failure()
+    uses: ./.github/workflows/alert.yml
+    with:
+      title: "deploy failed (${{ github.ref_name }})"

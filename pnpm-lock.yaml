@@ -57,6 +57,9 @@ importers:
 
   cli:
     dependencies:
+      '@rtrentjones/greenlight-adapters':
+        specifier: workspace:*
+        version: link:../packages/adapters
       '@rtrentjones/greenlight-loop':
         specifier: workspace:*
         version: link:../packages/loop

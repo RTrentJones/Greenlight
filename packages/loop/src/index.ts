@@ -1,2 +1,2 @@
 export { runLoop, type LoopInput, type LoopResult } from './loop';
-export { canPromote, type PromoteCheck } from './promote';
+export { canPromote, promote, type PromoteCheck, type PromoteResult } from './promote';
