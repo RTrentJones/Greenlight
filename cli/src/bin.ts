@@ -1,20 +1,26 @@
 #!/usr/bin/env tsx
+import { addCommand } from './commands/add';
+import { adoptCommand } from './commands/adopt';
 import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
+import { doctorCommand } from './commands/doctor';
+import { initCommand } from './commands/init';
 import { promoteCommand } from './commands/promote';
 import { verifyCommand } from './commands/verify';
 
 const HELP = `greenlight <command>
 
-  config                       load & validate the manifest, then print it
-  deploy <name> --env <env>    build + deploy an entry via its target adapter
-  verify <name> --env <env>    run the verify harness against the deterministic URL
-  promote <name> [--perform]   gated develop -> main fast-forward (--push to push)
-  doctor                       validate the manifest (full checks arrive in Phase 6)
-  help                         show this message
+  init --domain <d> [--cf-token ..] [--force]   scaffold greenlight.config.ts + secrets
+  add <name> --lane <l> --target <t> [..]       scaffold a tool from a lane template + manifest entry
+  config                                        load & validate the manifest, then print it
+  deploy <name> --env <env>                     build + deploy an entry via its target adapter
+  verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
+  promote <name> [--perform] [--push]           gated develop -> main fast-forward
+  adopt                                         (Phase 9) onboard an existing tool
+  doctor                                        manifest + repo consistency checks
+  help                                          show this message
 
-Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); they land
-per-target in later phases (see greenlight-v1.md §16).`;
+Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see greenlight-v1.md §16.`;
 
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
@@ -26,8 +32,11 @@ async function main(): Promise<void> {
     case '-h':
       console.log(HELP);
       return;
+    case 'init':
+      return initCommand(args);
+    case 'add':
+      return addCommand(args);
     case 'config':
-    case 'doctor':
       return configCommand();
     case 'deploy':
       return deployCommand(args);
@@ -35,6 +44,10 @@ async function main(): Promise<void> {
       return verifyCommand(args);
     case 'promote':
       return promoteCommand(args);
+    case 'adopt':
+      return adoptCommand();
+    case 'doctor':
+      return doctorCommand();
     default:
       throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
   }

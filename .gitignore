@@ -9,6 +9,9 @@ coverage/
 # Greenlight local secrets — NEVER commit (see greenlight-v1.md §14)
 .greenlight/
 
+# A real manifest is personal (the framework repo ships only the .example). Cloners commit theirs.
+greenlight.config.ts
+
 # OS / editor
 .DS_Store
 *.log

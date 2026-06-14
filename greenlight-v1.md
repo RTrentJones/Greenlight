@@ -261,6 +261,8 @@ personal-repo/                      # consumes the framework; owns only config +
 
 **Bootstrapping order:** until the packages are first published, the personal repo can consume the framework via `pnpm`'s workspace/`file:` link or a Git dependency at a pinned commit — the dependency *direction* (personal → framework) is identical, so nothing about the model changes when packages go live.
 
+**Separate repo, NOT a branch of this one.** A tempting shortcut is to keep the personal wrapper on `main` and strip it on a "clean" branch for others to clone. Don't: it breaks the seam (real domain in framework files → seam-check fails / leaks), git history still contains the stripped data, and the wrapper would consume the framework via workspace instead of *published versions* — losing the no-merge-hell update channel (§15.6). It's also unnecessary: this repo is kept generic by design (the example config, blog, and ping-mcp are all generic samples), so `main` **is** the clonable baseline already — just mark the repo a GitHub *template*. The wrapper is a distinct repo that depends on the packages.
+
 ### 15.6 How updates propagate (the no-merge-hell mechanism)
 
 **You never merge framework code. You bump a version (usually via an automated PR), and because your workflows call the CLI at *runtime*, the next `pnpm install` in CI runs the new code.** Updates are *pulled* through a gated PR, never *pushed*. This works only if the two hard rules (§15.2) hold: all behavior lives in the packages, and consumer workflows are dumb shells that only call `pnpm greenlight <cmd>`.

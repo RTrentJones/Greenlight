@@ -1,0 +1,68 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { GreenlightConfig } from '@rtrentjones/greenlight-shared';
+import { loadManifest } from '../manifest';
+
+export interface DoctorCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'fail' | 'skip';
+  detail?: string;
+}
+
+function dirCheck(label: string, dir: string): DoctorCheck {
+  return existsSync(dir)
+    ? { name: `${label}: directory`, status: 'ok' }
+    : { name: `${label}: directory`, status: 'fail', detail: `missing ${dir}` };
+}
+
+/** Pure consistency checks (no network). Cred-dependent checks are reported as skipped. */
+export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[] {
+  const checks: DoctorCheck[] = [dirCheck('blog', join(root, 'apps/blog'))];
+
+  for (const t of config.tools) {
+    const dir = join(root, 'tools', t.name);
+    checks.push(dirCheck(t.name, dir));
+    if (t.lane === 'mcp') {
+      const vc = join(dir, 'verify.config.ts');
+      checks.push({
+        name: `${t.name}: verify.config.ts`,
+        status: existsSync(vc) ? 'ok' : 'warn',
+        detail: existsSync(vc) ? undefined : 'missing — verify will use the lane default',
+      });
+    }
+  }
+
+  // Cred / infra-dependent — wired in later phases.
+  for (const name of [
+    'DNS propagation',
+    'terraform drift',
+    'Vercel cap headroom',
+    'keepalive health',
+    'OCI PAYG status',
+    'framework version drift',
+  ]) {
+    checks.push({ name, status: 'skip', detail: 'needs provider creds / packages (Phase 5/7/8)' });
+  }
+  return checks;
+}
+
+const ICON = { ok: '✔', warn: '!', fail: '✘', skip: '·' } as const;
+
+export async function doctorCommand(): Promise<void> {
+  let config: GreenlightConfig;
+  try {
+    ({ config } = await loadManifest());
+    console.log('✔ manifest: loaded & valid\n');
+  } catch (e) {
+    console.error(`✘ manifest: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+
+  const checks = runDoctor(config, process.cwd());
+  for (const c of checks) {
+    console.log(`  ${ICON[c.status]} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
+  }
+  const failed = checks.filter((c) => c.status === 'fail').length;
+  console.log(`\n${failed === 0 ? '✔ no failures' : `✘ ${failed} failure(s)`}`);
+  process.exit(failed === 0 ? 0 : 1);
+}
