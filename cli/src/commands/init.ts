@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { scaffoldConfig } from '../config-io';
+import { syncSecrets } from './secrets';
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -41,17 +42,35 @@ export async function initCommand(args: string[]): Promise<void> {
     const v = flag(args, f);
     if (v) secrets.push(`${key}=${v}`);
   }
+  let pushed = false;
   if (secrets.length > 0) {
     mkdirSync(resolve(cwd, '.greenlight'), { recursive: true });
     writeFileSync(resolve(cwd, '.greenlight/secrets.env'), `${secrets.join('\n')}\n`, {
       mode: 0o600,
     });
     console.log(`✔ wrote .greenlight/secrets.env (${secrets.length} token(s), gitignored)`);
+
+    // One-and-done: also push the tokens to GitHub Actions secrets (best-effort).
+    if (!args.includes('--no-push')) {
+      try {
+        const { repo, count } = syncSecrets({ cwd, repo: flag(args, '--repo') });
+        console.log(`✔ pushed ${count} secret(s) to ${repo} (GitHub Actions)`);
+        pushed = true;
+      } catch (e) {
+        console.log(`! skipped pushing secrets: ${e instanceof Error ? e.message : String(e)}`);
+        console.log('  run `greenlight secrets sync` once `gh` is authenticated.');
+      }
+    }
   }
 
   console.log(`
 Next:
-  greenlight add <name> --lane mcp --target oci   # scaffold a tool
+  greenlight add <name> --lane mcp --target oci   # scaffold a tool${
+    pushed
+      ? ''
+      : '\n  greenlight secrets sync                         # push tokens to GitHub Actions'
+  }
   greenlight doctor                               # check consistency
-  (live token validation, terraform apply, and first deploy land with provider creds — Phase 5+)`);
+  terraform -chdir=infra apply                    # branches/protection/DNS (module "repo"/"tool")
+  greenlight deploy blog --env prod               # first live deploy`);
 }

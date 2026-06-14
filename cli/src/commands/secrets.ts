@@ -40,44 +40,44 @@ function flag(args: string[], name: string): string | undefined {
 
 function detectRepo(cwd: string): string | null {
   try {
-    const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf8' });
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'], // don't leak git's stderr
+    });
     return parseRepo(url);
   } catch {
     return null;
   }
 }
 
-export async function secretsCommand(args: string[]): Promise<void> {
-  if (args[0] !== 'sync') {
-    console.log(
-      'usage: greenlight secrets sync [--repo owner/repo] [--env <env>]   # push .greenlight/secrets.env to GitHub Actions secrets',
-    );
-    process.exit(args[0] ? 1 : 0);
-  }
+export interface SyncOptions {
+  cwd: string;
+  repo?: string;
+  env?: string;
+}
 
-  const cwd = process.cwd();
-  const repo = flag(args, '--repo') ?? detectRepo(cwd);
+/**
+ * Push `.greenlight/secrets.env` to the repo's GitHub Actions secrets. Returns the
+ * resolved repo + count. Throws on hard errors (no repo, no secrets file, gh missing/
+ * unauthenticated). Reused by the standalone command and by `greenlight init`.
+ */
+export function syncSecrets(opts: SyncOptions): { repo: string; count: number } {
+  const repo = opts.repo ?? detectRepo(opts.cwd);
   if (!repo) {
     throw new Error(
       'could not determine the repo — pass --repo owner/repo (no github.com origin remote)',
     );
   }
-  const env = flag(args, '--env');
-
-  const path = resolve(cwd, '.greenlight/secrets.env');
+  const path = resolve(opts.cwd, '.greenlight/secrets.env');
   if (!existsSync(path)) {
     throw new Error('no .greenlight/secrets.env — run `greenlight init` with tokens first');
   }
   const entries = parseSecretsEnv(readFileSync(path, 'utf8'));
-  if (entries.length === 0) {
-    console.log('no secrets to sync');
-    return;
-  }
-
-  const target = env ? `env "${env}"` : 'repo';
+  const target = opts.env ? `env "${opts.env}"` : 'repo';
   for (const { key, value } of entries) {
     const ghArgs = ['secret', 'set', key, '--repo', repo, '--body-file', '-'];
-    if (env) ghArgs.push('--env', env);
+    if (opts.env) ghArgs.push('--env', opts.env);
     try {
       // Value goes over stdin (not argv) so it never appears in the process list.
       execFileSync('gh', ghArgs, { input: value });
@@ -93,7 +93,27 @@ export async function secretsCommand(args: string[]): Promise<void> {
     }
     console.log(`✔ set ${key} → ${repo} ${target}`); // value intentionally not printed
   }
+  return { repo, count: entries.length };
+}
+
+export async function secretsCommand(args: string[]): Promise<void> {
+  if (args[0] !== 'sync') {
+    console.log(
+      'usage: greenlight secrets sync [--repo owner/repo] [--env <env>]   # push .greenlight/secrets.env to GitHub Actions secrets',
+    );
+    process.exit(args[0] ? 1 : 0);
+  }
+
+  const { count } = syncSecrets({
+    cwd: process.cwd(),
+    repo: flag(args, '--repo'),
+    env: flag(args, '--env'),
+  });
+  if (count === 0) {
+    console.log('no secrets to sync');
+    return;
+  }
   console.log(
-    `\n${entries.length} secret(s) synced. (Prefer GitHub OIDC over long-lived tokens where supported.)`,
+    `\n${count} secret(s) synced. (Prefer GitHub OIDC over long-lived tokens where supported.)`,
   );
 }

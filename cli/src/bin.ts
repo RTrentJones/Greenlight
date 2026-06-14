@@ -12,7 +12,7 @@ import { verifyCommand } from './commands/verify';
 
 const HELP = `greenlight <command>
 
-  init --domain <d> [--cf-token ..] [--force]   scaffold greenlight.config.ts + secrets
+  init --domain <d> [--cf-token ..] [--force]   scaffold manifest + secrets, push to GitHub Actions
   add <name> --lane <l> --target <t> [..]       scaffold a tool from a lane template + manifest entry
   config                                        load & validate the manifest, then print it
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
