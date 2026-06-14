@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# Greenlight local secrets — NEVER commit (see greenlight-v1.md §14)
+.greenlight/
+
+# OS / editor
+.DS_Store
+*.log
+
+# Claude Code local (per-user) settings
+.claude/settings.local.json

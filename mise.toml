@@ -1,0 +1,6 @@
+# Pinned toolchain, managed by mise (https://mise.jdx.dev).
+# Setup:  mise install      (installs the versions below)
+# Update: mise upgrade      (bump within the pinned spec)
+[tools]
+node = "24"
+pnpm = "10.12.1"
