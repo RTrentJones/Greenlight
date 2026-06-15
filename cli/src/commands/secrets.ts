@@ -76,10 +76,11 @@ export function syncSecrets(opts: SyncOptions): { repo: string; count: number } 
   const entries = parseSecretsEnv(readFileSync(path, 'utf8'));
   const target = opts.env ? `env "${opts.env}"` : 'repo';
   for (const { key, value } of entries) {
-    const ghArgs = ['secret', 'set', key, '--repo', repo, '--body-file', '-'];
+    // No --body: gh reads the value from stdin (portable across gh versions), so it
+    // never appears in argv / the process list.
+    const ghArgs = ['secret', 'set', key, '--repo', repo];
     if (opts.env) ghArgs.push('--env', opts.env);
     try {
-      // Value goes over stdin (not argv) so it never appears in the process list.
       execFileSync('gh', ghArgs, { input: value });
     } catch (e) {
       const err = e as NodeJS.ErrnoException & { stderr?: Buffer };
