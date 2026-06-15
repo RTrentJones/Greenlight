@@ -20,18 +20,22 @@ function serializeTool(t: ToolConfig): string {
     `access: ${q(t.access)}`,
     `envs: [${t.envs.map(q).join(', ')}]`,
   ];
+  if (t.dir !== undefined) parts.push(`dir: ${q(t.dir)}`);
   if (t.adopted) parts.push('adopted: true');
+  if (t.external) parts.push('external: true');
   return `    { ${parts.join(', ')} },`;
 }
 
 export function serializeConfig(c: GreenlightConfig): string {
   const tools = c.tools.length ? `\n${c.tools.map(serializeTool).join('\n')}\n  ` : '';
+  const blog = c.blog
+    ? `\n  blog: { lane: ${q(c.blog.lane)}, target: ${q(c.blog.target)}, data: ${q(c.blog.data)} },`
+    : '';
   return `import { defineConfig } from '@rtrentjones/greenlight-shared';
 
 export default defineConfig({
   domain: ${q(c.domain)},
-  alerts: { sink: ${q(c.alerts.sink)} },
-  blog: { lane: ${q(c.blog.lane)}, target: ${q(c.blog.target)}, data: ${q(c.blog.data)} },
+  alerts: { sink: ${q(c.alerts.sink)} },${blog}
   tools: [${tools}],
 });
 `;
@@ -55,6 +59,9 @@ export interface NewTool {
   auth?: string;
   access?: string;
   envs?: string[];
+  dir?: string;
+  adopted?: boolean;
+  external?: boolean;
 }
 
 /** Add a tool to the config, validating against the schema (lane × target × data matrix). */
@@ -74,6 +81,9 @@ export function addTool(config: GreenlightConfig, t: NewTool): GreenlightConfig 
         auth: t.auth ?? 'none',
         access: t.access ?? 'public',
         envs: t.envs ?? ['beta', 'prod'],
+        ...(t.dir !== undefined ? { dir: t.dir } : {}),
+        ...(t.adopted ? { adopted: true } : {}),
+        ...(t.external ? { external: true } : {}),
       },
     ],
   };

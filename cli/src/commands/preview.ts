@@ -53,6 +53,9 @@ export async function previewCommand(args: string[]): Promise<void> {
   const portArg = flag(args, '--port');
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
+  if (entry.external) {
+    throw new Error(`"${name}" is external (registry pointer) — preview it from its own repo`);
+  }
   const plan = servePlan(entry.lane, portArg ? Number(portArg) : undefined);
 
   if (plan.build) {

@@ -35,26 +35,36 @@ export interface ResolvedEntry {
   name: string | undefined;
   lane: Lane;
   target: Target;
-  /** Directory the tool lives in, relative to the repo root. */
+  /** Directory the tool builds/deploys from, relative to the repo root. */
   dir: string;
+  /** Code lives in another repo — registry pointer; not built/deployed here. */
+  external: boolean;
 }
 
 /** Resolve a manifest entry by name. `blog` maps to the apex (no subdomain name). */
 export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEntry {
   if (name === 'blog') {
+    if (!config.blog) throw new Error('this manifest has no blog');
     return {
       name: undefined,
       lane: config.blog.lane,
       target: config.blog.target,
       dir: 'apps/blog',
+      external: false,
     };
   }
   const tool = config.tools.find((t) => t.name === name);
   if (!tool) {
-    const known = ['blog', ...config.tools.map((t) => t.name)].join(', ');
+    const known = [...(config.blog ? ['blog'] : []), ...config.tools.map((t) => t.name)].join(', ');
     throw new Error(`no entry "${name}" in manifest (known: ${known})`);
   }
-  return { name: tool.name, lane: tool.lane, target: tool.target, dir: `tools/${tool.name}` };
+  return {
+    name: tool.name,
+    lane: tool.lane,
+    target: tool.target,
+    dir: tool.dir ?? `tools/${tool.name}`,
+    external: tool.external,
+  };
 }
 
 const VERIFY_MODES = new Set(['api', 'mcp', 'playwright']);

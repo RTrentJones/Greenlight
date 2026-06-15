@@ -24,6 +24,9 @@ export async function deployCommand(args: string[]): Promise<void> {
 
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
+  if (entry.external) {
+    throw new Error(`"${name}" is external (registry pointer) — deploy it from its own repo`);
+  }
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });
 
   console.log(`build ${name} (${entry.lane}/${entry.target}) in ${entry.dir}`);

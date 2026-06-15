@@ -19,5 +19,6 @@ export function templatesRoot(): string {
 export function skillAssetDir(): string {
   const packaged = resolve(packageRoot, 'assets', 'skills', 'deploy-verify-promote');
   if (existsSync(packaged)) return packaged;
-  return resolve(process.cwd(), '.claude', 'skills', 'deploy-verify-promote'); // dev
+  // dev: repo root (cwd-independent, so adopt/agent sync work from any directory)
+  return resolve(packageRoot, '..', '.claude', 'skills', 'deploy-verify-promote');
 }

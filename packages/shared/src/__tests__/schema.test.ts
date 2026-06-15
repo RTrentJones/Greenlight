@@ -96,4 +96,31 @@ describe('ConfigSchema', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  it('accepts a blog-less, tool-only manifest (poly-repo consumer)', () => {
+    const { blog: _blog, ...noBlog } = base;
+    const r = ConfigSchema.safeParse({
+      ...noBlog,
+      tools: [
+        { name: 'bamcp', lane: 'mcp', target: 'oci', data: 'none', dir: '.', envs: ['prod'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.blog).toBeUndefined();
+      expect(r.data.tools[0]?.dir).toBe('.');
+      expect(r.data.tools[0]?.external).toBe(false);
+    }
+  });
+
+  it('accepts an external registry entry (code lives in another repo)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [
+        { name: 'bamcp', lane: 'mcp', target: 'oci', data: 'none', external: true, envs: ['prod'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.tools[0]?.external).toBe(true);
+  });
 });

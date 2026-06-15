@@ -41,6 +41,19 @@ describe('serializeConfig', () => {
     expect(loaded.tools[0]?.target).toBe('oci');
     expect(loaded.tools[0]?.auth).toBe('none'); // defaults serialized
   });
+
+  it('round-trips dir + external + a blog-less manifest', async () => {
+    const cfg = addTool(
+      { domain: 'example.dev', alerts: { sink: 'github-issue' as const }, tools: [] },
+      { name: 'bamcp', lane: 'mcp', target: 'oci', dir: '.', adopted: true, external: true },
+    );
+    const p = writeRepoTmp('.vitest-ext.config.ts', serializeConfig(cfg));
+    const loaded = await loadConfig(p);
+    expect(loaded.blog).toBeUndefined();
+    expect(loaded.tools[0]?.dir).toBe('.');
+    expect(loaded.tools[0]?.adopted).toBe(true);
+    expect(loaded.tools[0]?.external).toBe(true);
+  });
 });
 
 describe('addTool', () => {
@@ -71,5 +84,20 @@ describe('runDoctor', () => {
     expect(checks.find((c) => c.name === 'missing: directory')?.status).toBe('fail');
     expect(checks.find((c) => c.name === 'has-vc: verify.config.ts')?.status).toBe('ok');
     expect(checks.find((c) => c.name === 'missing: verify.config.ts')?.status).toBe('warn');
+  });
+
+  it('lists external tools as registry pointers (no dir check) with their prod URL', () => {
+    const cfg = addTool(base, {
+      name: 'bamcp',
+      lane: 'mcp',
+      target: 'oci',
+      envs: ['prod'],
+      external: true,
+    });
+    const checks = runDoctor(cfg, resolve(process.cwd(), '.vitest-nonexistent'));
+    const reg = checks.find((c) => c.name === 'bamcp: external (registry)');
+    expect(reg?.status).toBe('ok');
+    expect(reg?.detail).toBe('https://bamcp.example.dev/mcp');
+    expect(checks.find((c) => c.name === 'bamcp: directory')).toBeUndefined();
   });
 });

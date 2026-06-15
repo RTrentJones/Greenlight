@@ -22,7 +22,7 @@ const HELP = `greenlight <command>
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
   secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
   agent sync                                    write the loop skill + CLAUDE.md block into this repo
-  adopt                                         (Phase 9) onboard an existing tool
+  adopt <name> --repo <path> --lane --target    onboard an existing tool repo as a thin consumer
   doctor                                        manifest + repo consistency checks
   help                                          show this message
 
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     case 'agent':
       return agentCommand(args);
     case 'adopt':
-      return adoptCommand();
+      return adoptCommand(args);
     case 'doctor':
       return doctorCommand();
     default:

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { GreenlightConfig } from '@rtrentjones/greenlight-shared';
+import { type GreenlightConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
 import { loadManifest } from '../manifest';
 
 export interface DoctorCheck {
@@ -17,10 +17,23 @@ function dirCheck(label: string, dir: string): DoctorCheck {
 
 /** Pure consistency checks (no network). Cred-dependent checks are reported as skipped. */
 export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[] {
-  const checks: DoctorCheck[] = [dirCheck('blog', join(root, 'apps/blog'))];
+  const checks: DoctorCheck[] = [];
+  if (config.blog) checks.push(dirCheck('blog', join(root, 'apps/blog')));
 
   for (const t of config.tools) {
-    const dir = join(root, 'tools', t.name);
+    // External tools live in another repo — this manifest is a registry pointer.
+    // We can't check files locally; report the subdomain `verify` should target.
+    if (t.external) {
+      const url = resolveUrl({
+        domain: config.domain,
+        name: t.name,
+        env: 'prod',
+        mcp: t.lane === 'mcp',
+      });
+      checks.push({ name: `${t.name}: external (registry)`, status: 'ok', detail: url });
+      continue;
+    }
+    const dir = join(root, t.dir ?? join('tools', t.name));
     checks.push(dirCheck(t.name, dir));
     if (t.lane === 'mcp') {
       const vc = join(dir, 'verify.config.ts');

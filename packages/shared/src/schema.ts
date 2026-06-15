@@ -43,6 +43,12 @@ export const ToolSchema = z
     access: AccessEnum.default('public'),
     envs: z.array(EnvEnum).nonempty('a tool needs at least one env'),
     adopted: z.boolean().default(false),
+    // Directory the tool builds/deploys from. Defaults to tools/<name>; a standalone
+    // (poly-repo) tool sets '.' (the repo root).
+    dir: z.string().optional(),
+    // The tool's code lives in another repo — this entry is a registry pointer only,
+    // not built/deployed here (greenlight-v1.md §15.5 poly-repo).
+    external: z.boolean().default(false),
   })
   .superRefine((tool, ctx) => {
     const rule = MATRIX[tool.lane];
@@ -87,7 +93,8 @@ export const AlertsSchema = z.object({
 export const ConfigSchema = z.object({
   domain: z.string().min(1, 'domain is required'),
   alerts: AlertsSchema,
-  blog: BlogSchema,
+  // Optional: a tool-only repo (a poly-repo consumer) has no blog.
+  blog: BlogSchema.optional(),
   tools: z.array(ToolSchema).default([]),
 });
 

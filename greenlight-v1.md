@@ -134,13 +134,16 @@ Verification wired to **promotion**, not just test-writing. CI and the agent cal
 
 ## 8. Adopting existing tools
 
-BAMCP and HeistMind already exist and **must not be rewritten.** `greenlight adopt <path|name>`:
-1. Adds the manifest entry with `adopted: true`.
-2. Drops in a **verify spec** (`verify.config.ts`) and the CI wiring — leaves app code untouched.
-3. Wires secrets into provider stores + GitHub environments; registers DNS/Tunnel/Vercel/Supabase resources in Terraform **by reference** (import existing where possible, don't recreate).
-4. Standardizes branches to `main` / `develop` (fixing HeistMind's `develop`/`development` bug as part of onboarding).
+BAMCP and HeistMind already exist in **their own repos** and **must not be rewritten.** Adoption is therefore **poly-repo**: `greenlight adopt <name> --repo <path> --lane <l> --target <t> [...]` turns a separate existing app repo into a **thin Greenlight consumer** (the same shape as the personal site repo, §15), run **from the central registry repo** (the site repo):
+
+1. **Scaffolds the full consumer into `<repo>`**, never clobbering app code: a one-tool `greenlight.config.ts` (`adopted: true`, `dir: "."`, no blog); a **merged** `package.json` (framework deps as `file:vendor/*.tgz` + `pnpm.overrides` + a `greenlight` script, existing app deps/scripts preserved); the bootstrap **vendored tarballs** copied from the registry repo's `vendor/`; `infra/main.tf` (the `module "tool"`/`module "repo"` pinned by ref); namespaced `.github/workflows/greenlight-{deploy,promote}.yml`; a lane-appropriate `verify.config.ts`; the agentic kit; and the toolchain (`mise.toml`/`.node-version`).
+2. **Registers the tool in the central registry** — appends an `external: true` pointer entry to the site repo's manifest so one `greenlight doctor`/`verify` can see and check every subdomain across all the tool repos.
+
+**Cross-repo model (decided):** one Cloudflare zone, owned by the site repo (apex/blog). Each tool repo is a **subdomain tenant** that **self-wires `<name>.<domain>`** at deploy on the shared zone and runs its **own** independent deploy/promote loop. Sync rides three rails: framework code via the pinned `@rtrentjones/greenlight*` packages, URLs via the shared `resolveUrl` (no drift), and the central registry for overview. The manifest gains two fields for this: `dir` (the tool's directory; `"."` for a repo-root tool) and `external` (registry pointer — not built/deployed locally); `blog` is optional (a tool-only repo has none).
 
 The adopt path is the real test of "re-wiring = edit manifest + apply." It is a first-class command, not an afterthought.
+
+> **Built:** the `adopt` command + central registry (the enabler). Still deferred to Phase 9: actually adopting BAMCP/HeistMind (their repos + creds + first deploy), which also needs the `oci`/`vercel` deploy adapters (still stubs), Terraform `import` of existing cloud state, and HeistMind's Supabase migration pipeline + `develop`/`development` branch fix.
 
 ## 9. The blog (greenfield validator)
 

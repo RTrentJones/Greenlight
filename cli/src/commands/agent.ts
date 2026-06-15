@@ -16,9 +16,42 @@ Agentic kit:
 `;
 
 /**
- * \`greenlight agent sync\` — materialize the agentic dev loop kit into the current
- * repo: the deploy-verify-promote skill, a \`.mcp.json\` recommending the loop's MCP
- * servers, and a CLAUDE.md block. The §15.7 fallback for non-plugin environments.
+ * Materialize the agentic dev loop kit into `dir`: the deploy-verify-promote skill,
+ * a merged `.mcp.json` (recommended MCP servers), and a CLAUDE.md loop block. Shared
+ * by `agent sync` (cwd) and `adopt` (the target repo). Never clobbers app files.
+ */
+export function materializeAgentKit(dir: string): void {
+  const src = skillAssetDir();
+  if (!existsSync(src)) throw new Error(`skill asset not found at ${src}`);
+  const dest = resolve(dir, '.claude/skills/deploy-verify-promote');
+  mkdirSync(dest, { recursive: true });
+  cpSync(src, dest, { recursive: true });
+  console.log('✔ .claude/skills/deploy-verify-promote/SKILL.md');
+
+  const mcpPath = resolve(dir, '.mcp.json');
+  const existingMcp = existsSync(mcpPath)
+    ? (JSON.parse(readFileSync(mcpPath, 'utf8')) as McpConfig)
+    : null;
+  writeFileSync(
+    mcpPath,
+    `${JSON.stringify(mergeMcpServers(existingMcp, RECOMMENDED_MCP), null, 2)}\n`,
+  );
+  console.log(`✔ .mcp.json (${Object.keys(RECOMMENDED_MCP).length} recommended MCP server(s))`);
+
+  const claudePath = resolve(dir, 'CLAUDE.md');
+  const marker = 'Greenlight loop (deploy → verify → promote)';
+  const existing = existsSync(claudePath) ? readFileSync(claudePath, 'utf8') : '';
+  if (existing.includes(marker)) {
+    console.log('· CLAUDE.md already has the loop block');
+  } else {
+    writeFileSync(claudePath, existing ? `${existing.trimEnd()}\n\n${CLAUDE_BLOCK}` : CLAUDE_BLOCK);
+    console.log(`✔ CLAUDE.md (${existing ? 'appended' : 'created'})`);
+  }
+}
+
+/**
+ * `greenlight agent sync` — materialize the kit into the current repo (the §15.7
+ * fallback for environments not using the Greenlight Claude Code plugin).
  */
 export async function agentCommand(args: string[]): Promise<void> {
   if (args[0] !== 'sync') {
@@ -27,41 +60,7 @@ export async function agentCommand(args: string[]): Promise<void> {
     );
     process.exit(args[0] ? 1 : 0);
   }
-
-  const cwd = process.cwd();
-
-  // 1) The loop skill.
-  const src = skillAssetDir();
-  if (!existsSync(src)) throw new Error(`skill asset not found at ${src}`);
-  const dest = resolve(cwd, '.claude/skills/deploy-verify-promote');
-  mkdirSync(dest, { recursive: true });
-  cpSync(src, dest, { recursive: true });
-  console.log('✔ wrote .claude/skills/deploy-verify-promote/SKILL.md');
-
-  // 2) Recommended MCP servers (merge, never clobber).
-  const mcpPath = resolve(cwd, '.mcp.json');
-  const existingMcp = existsSync(mcpPath)
-    ? (JSON.parse(readFileSync(mcpPath, 'utf8')) as McpConfig)
-    : null;
-  writeFileSync(
-    mcpPath,
-    `${JSON.stringify(mergeMcpServers(existingMcp, RECOMMENDED_MCP), null, 2)}\n`,
-  );
-  console.log(
-    `✔ wrote .mcp.json (${Object.keys(RECOMMENDED_MCP).length} recommended MCP server(s))`,
-  );
-
-  // 3) CLAUDE.md loop block.
-  const claudePath = resolve(cwd, 'CLAUDE.md');
-  const marker = 'Greenlight loop (deploy → verify → promote)';
-  const existing = existsSync(claudePath) ? readFileSync(claudePath, 'utf8') : '';
-  if (existing.includes(marker)) {
-    console.log('· CLAUDE.md already has the loop block');
-  } else {
-    writeFileSync(claudePath, existing ? `${existing.trimEnd()}\n\n${CLAUDE_BLOCK}` : CLAUDE_BLOCK);
-    console.log(`✔ ${existing ? 'appended loop block to' : 'created'} CLAUDE.md`);
-  }
-
+  materializeAgentKit(process.cwd());
   console.log(
     '\nNote: the Greenlight Claude Code plugin (user scope) is the preferred path; this sync is the fallback.\nRun `/mcp` to authenticate the MCP servers.',
   );
