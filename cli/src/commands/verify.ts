@@ -54,7 +54,16 @@ export async function verifyCommand(args: string[]): Promise<void> {
 
   // Prefer a per-tool verify.config.ts; otherwise a lane default smoke spec.
   const spec = (await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
-  const report = await verify(url, spec);
+
+  // Absorb the first-deploy TLS/DNS window: a remote env waits ~90s for the URL to
+  // become reachable (retry on connection error only); --url (local) waits 0. `--wait <sec>` overrides.
+  const waitFlag = flag(args, '--wait');
+  const reachableTimeoutMs = (waitFlag !== undefined ? Number(waitFlag) : override ? 0 : 90) * 1000;
+  if (reachableTimeoutMs > 0) {
+    console.log(`waiting up to ${reachableTimeoutMs / 1000}s for ${url} to become reachable…`);
+  }
+
+  const report = await verify(url, spec, { reachableTimeoutMs });
   printReport(report);
   process.exit(report.pass ? 0 : 1);
 }
