@@ -1,8 +1,9 @@
 name: promote
 
-# Explicit, gated develop -> main fast-forward (greenlight-v1.md §12). Verify beta
-# (the gate) -> fast-forward via the canPromote guard -> verify prod. Manual only.
-# Activates fully once `develop` exists and Cloudflare creds are set (Phase 6/7).
+# Explicit, gated develop -> main fast-forward (greenlight-v1.md §12): verify beta
+# (the gate) -> fast-forward via the canPromote guard -> deploy + verify prod, all in
+# this job. (A push made with GITHUB_TOKEN does NOT trigger deploy.yml, so promotion
+# owns the prod deploy+verify itself rather than relying on the main-push hook.)
 on:
   workflow_dispatch:
     inputs:
@@ -49,11 +50,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           pnpm greenlight promote "${{ inputs.name }}" --perform --push
 
-      - name: Verify prod
+      - name: Deploy + verify prod
         if: steps.creds.outputs.have == '1'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm greenlight verify "${{ inputs.name }}" --env prod
+        run: |
+          pnpm greenlight deploy "${{ inputs.name }}" --env prod
+          pnpm greenlight verify "${{ inputs.name }}" --env prod
 
   alert:
     needs: promote

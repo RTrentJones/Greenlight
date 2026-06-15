@@ -1,13 +1,13 @@
 name: deploy
 
-# Git-mapped envs (greenlight-v1.md §12): PR -> preview, develop -> beta, main -> prod.
-# Creds-guarded: until CLOUDFLARE_API_TOKEN exists (Phase 5/6) the deploy/verify steps
-# skip cleanly instead of red-failing. The develop-triggered runs begin once that branch
-# exists (Phase 7). Currently deploys the blog; multi-tool fan-out is a later refinement.
+# Git-mapped envs (greenlight-v1.md §12): develop -> beta, main -> prod.
+# Creds-guarded: without CLOUDFLARE_API_TOKEN the deploy/verify steps skip cleanly.
+# (PR -> preview is intentionally not wired — Workers preview URLs aren't deterministic
+# and verify --env preview throws by design; add it via Workers versions when needed.)
+# Currently deploys the blog; multi-tool fan-out is a later refinement.
 on:
   push:
     branches: [develop, main]
-  pull_request:
 
 permissions:
   contents: read
@@ -30,11 +30,11 @@ jobs:
       - name: Resolve target env
         id: env
         run: |
-          case "${{ github.ref }}" in
-            refs/heads/main) echo "env=prod" >> "$GITHUB_OUTPUT" ;;
-            refs/heads/develop) echo "env=beta" >> "$GITHUB_OUTPUT" ;;
-            *) echo "env=preview" >> "$GITHUB_OUTPUT" ;;
-          esac
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "env=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=beta" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check Cloudflare creds
         id: creds
@@ -53,7 +53,7 @@ jobs:
 
       - name: Skip notice
         if: steps.creds.outputs.have != '1'
-        run: echo "No CLOUDFLARE_API_TOKEN secret — deploy/verify skipped (wired in Phase 5/6)."
+        run: echo "No CLOUDFLARE_API_TOKEN secret — deploy/verify skipped."
 
   alert:
     needs: deploy
