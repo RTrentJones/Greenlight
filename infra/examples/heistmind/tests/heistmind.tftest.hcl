@@ -24,10 +24,6 @@ run "vercel_supabase_wiring" {
     error_message = "vercel beta url wrong"
   }
   assert {
-    condition     = output.supabase_project_count == 2
-    error_message = "expected one Supabase project per env (beta + prod)"
-  }
-  assert {
     condition     = output.vercel_env_count == 8
     error_message = "expected 8 env vars (SITE_URL + 3 supabase keys, each x2 targets)"
   }

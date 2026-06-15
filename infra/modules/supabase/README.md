@@ -1,59 +1,58 @@
-# `module "supabase"` — declarative, recreatable Supabase, project-per-env
+# `module "supabase"` — one declarative, recreatable project (schema-per-env)
 
-One `supabase_project` per env (`<name>-beta`, `<name>-prod`), its settings, and its API
-keys — declared in full so the database is **reproducible from code**, not a hand-made
-project nobody can rebuild. This exists because the original breakdown was a Supabase
-project that **silently paused after 7 days idle** and was managed ad-hoc; the fix is
-(1) declarative ownership here, (2) keys flowing straight into Vercel env (no manual
-copy step), and (3) keepalive (`packages/keepalive`) so it can't pause again.
+Owns a **single** Supabase project, its settings, and its API keys — declared in full so
+the database is **reproducible from code** rather than a hand-made project nobody can
+rebuild. This exists because the original breakdown was a Supabase project that **silently
+paused after 7 days idle** and was managed ad-hoc.
+
+**Env model:** one project, **isolation by schema** (a `beta` schema + the prod schema) —
+Supabase branching is paid and the free tier is one project, so project-per-env isn't the
+model. Schemas live in the app repo's `supabase/migrations`; this module owns the project
+and which schemas the API exposes (`api_db_schema`). The fix has three legs: declarative
+ownership here, keys flowing straight into Vercel env (no manual copy), and keepalive
+(`packages/keepalive`) so it can't pause again.
 
 ## Inputs
 
 | var | notes |
 |-----|-------|
-| `name` | project named `<name>-<env>` |
+| `name` | label / keepalive target name |
+| `project_name` | **exact** existing name on import (e.g. `heistmind-db`) — name is replace-forcing |
 | `organization_id` | Supabase org slug |
-| `database_password` | sensitive; `ignore_changes` so a rotation never replaces the DB |
-| `region` | default `us-east-1` |
-| `envs` | default `["beta","prod"]` — one project each |
+| `database_password` | sensitive; set on create, `ignore_changes` on update |
+| `region` | default `us-east-1`; replace-forcing — match the existing project |
 | `instance_size` | default `micro` |
 | `legacy_api_keys_enabled` | default `true` (app uses anon/service_role) |
+| `api_db_schema` | schemas PostgREST exposes; add a `beta` schema here for schema-per-env |
 
 ## Outputs
 
-`project_refs`, `urls`, `anon_keys`, `service_role_keys` (all `env => value` maps; keys
-are sensitive). The wrapper feeds these into `module "vercel"`'s `environment`.
+`project_ref`, `url`, `anon_key`, `service_role_key` (keys sensitive). The wrapper feeds
+these into `module "vercel"`'s `environment_values` for both targets.
 
 ## Schema is NOT in Terraform — it's in the app repo
 
-Terraform owns the **project**; the **schema** is the app repo's `supabase/migrations`
-(+ `seed.sql`). That split is deliberate: Terraform recreates the empty project, the
-migrations rebuild the schema. Never hand-edit tables in the dashboard — add a migration.
+Terraform owns the **project**; the **schemas/tables** are the app repo's
+`supabase/migrations` (+ `seed.sql`). Recreate provisions the empty project; migrations
+rebuild the schema. Never hand-edit in the dashboard — add a migration.
+
+## Import (onboarding — don't recreate live data)
+
+`name`/`region`/`instance_size` are replace-forcing and the resource sets
+`ignore_changes` on them, so import an existing project and `apply` reconciles **settings
+only** — it will never destroy the database:
+
+```
+terraform import 'module.<m>.supabase_project.this' <live-project-ref>
+```
+
+Match `project_name` + `region` to the live project before importing.
 
 ## Recreate runbook (proves "easy to recreate if it dies again")
 
-If a project is lost/corrupt, rebuild it end to end:
-
-1. **Project** — `terraform apply` (creates `<name>-<env>`; `project_refs`/keys populate).
-2. **Schema** — from the app repo, point the Supabase CLI at the new ref and push:
-   ```
-   supabase link --project-ref "$(terraform output -json supabase_project_refs | jq -r .prod)"
-   supabase db push          # replays supabase/migrations
-   psql "$DATABASE_URL" -f supabase/seed.sql   # if seeding
-   ```
-3. **Wiring** — the new keys are already flowing to Vercel via `module "vercel"`
-   (`environment` reads these outputs); `terraform apply` updates them. No manual copy.
-4. **Liveness** — `packages/keepalive` already targets every `data: supabase` registry
-   entry, so the fresh project starts getting pinged immediately.
-5. **Verify** — `greenlight verify <name> --env prod` against the live URL.
-
-## Import (first onboarding — don't recreate live data)
-
-To adopt an existing live project instead of creating one, import it into state first:
-
-```
-terraform import 'module.<m>.supabase_project.this["prod"]' <live-project-ref>
-```
-
-Then `apply` reconciles settings only (the `database_password` change is ignored). Create
-the **beta** project fresh (it has no prior data).
+1. **Project** — `terraform apply` (creates it; `project_ref`/keys populate).
+2. **Schema** — from the app repo: `supabase link --project-ref <new-ref>` → `supabase db
+   push` (replays migrations) → seed if needed.
+3. **Wiring** — keys already flow to Vercel via `module "vercel"`; `apply` updates them.
+4. **Liveness** — `packages/keepalive` targets it immediately.
+5. **Verify** — `greenlight verify <name> --env prod`.

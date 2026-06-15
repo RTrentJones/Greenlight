@@ -1,6 +1,16 @@
 {
   "mcpServers": {
-    "cloudflare": { "type": "http", "url": "https://mcp.cloudflare.com/mcp" },
-    "cloudflare-docs": { "type": "http", "url": "https://docs.mcp.cloudflare.com/mcp" }
+    "cloudflare": {
+      "type": "http",
+      "url": "https://mcp.cloudflare.com/mcp"
+    },
+    "cloudflare-docs": {
+      "type": "http",
+      "url": "https://docs.mcp.cloudflare.com/mcp"
+    },
+    "supabase": {
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp"
+    }
   }
 }

@@ -15,10 +15,10 @@ variable "domain" {
 module "supabase" {
   source            = "../../modules/supabase"
   name              = var.name
+  project_name      = "heistmind-db"
   organization_id   = "test-org"
   database_password = "test-password-123"
   region            = "us-east-1"
-  envs              = ["beta", "prod"]
 }
 
 module "vercel" {
@@ -41,14 +41,15 @@ module "vercel" {
     supa_service_beta = { key = "SUPABASE_SERVICE_ROLE_KEY", target = ["preview"], sensitive = true }
   }
   environment_values = {
-    site_url_prod     = "https://${var.name}.${var.domain}"
-    site_url_beta     = "https://beta.${var.name}.${var.domain}"
-    supa_url_prod     = module.supabase.urls["prod"]
-    supa_anon_prod    = module.supabase.anon_keys["prod"]
-    supa_service_prod = module.supabase.service_role_keys["prod"]
-    supa_url_beta     = module.supabase.urls["beta"]
-    supa_anon_beta    = module.supabase.anon_keys["beta"]
-    supa_service_beta = module.supabase.service_role_keys["beta"]
+    site_url_prod = "https://${var.name}.${var.domain}"
+    site_url_beta = "https://beta.${var.name}.${var.domain}"
+    # One project shared by both envs (schema-per-env happens in the app).
+    supa_url_prod     = module.supabase.url
+    supa_anon_prod    = module.supabase.anon_key
+    supa_service_prod = module.supabase.service_role_key
+    supa_url_beta     = module.supabase.url
+    supa_anon_beta    = module.supabase.anon_key
+    supa_service_beta = module.supabase.service_role_key
   }
 }
 
@@ -69,9 +70,6 @@ output "prod_url" {
 }
 output "beta_url" {
   value = module.vercel.beta_url
-}
-output "supabase_project_count" {
-  value = module.supabase.project_count
 }
 output "vercel_env_count" {
   value = module.vercel.env_count
