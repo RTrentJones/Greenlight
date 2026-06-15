@@ -25,15 +25,16 @@ export interface AdapterContext {
 
 export interface Adapter {
   readonly target: Target;
-  build(toolDir: string): Promise<BuildResult>;
+  /** Build is env-aware so the adapter can inject env-correct config (e.g. SITE_URL). */
+  build(toolDir: string, env: DeployEnv): Promise<BuildResult>;
   deploy(toolDir: string, env: DeployEnv): Promise<DeployResult>;
   /** Deterministic for beta/prod; throws for `preview` (get it from `deploy()`). */
   url(env: DeployEnv): string;
   teardown(env: DeployEnv): Promise<void>;
 }
 
-function run(cmd: string, args: string[], cwd: string): void {
-  execFileSync(cmd, args, { cwd, stdio: 'inherit' });
+function run(cmd: string, args: string[], cwd: string, extraEnv?: Record<string, string>): void {
+  execFileSync(cmd, args, { cwd, stdio: 'inherit', env: { ...process.env, ...extraEnv } });
 }
 
 /** Cloudflare Workers (Static Assets + room for a future dynamic Worker). */
@@ -41,8 +42,16 @@ function workersAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
   return {
     target: 'workers',
-    async build(toolDir) {
-      run('pnpm', ['run', 'build'], toolDir);
+    async build(toolDir, env) {
+      // Inject the env-correct site URL so sitemap/RSS/canonicals match (beta vs prod).
+      // preview URLs aren't deterministic (resolveUrl throws) — let the tool's default stand.
+      let siteEnv: Record<string, string> | undefined;
+      try {
+        siteEnv = { SITE_URL: url(env) };
+      } catch {
+        siteEnv = undefined;
+      }
+      run('pnpm', ['run', 'build'], toolDir, siteEnv);
       return { artifactDir: join(toolDir, 'dist') };
     },
     async deploy(toolDir, env) {

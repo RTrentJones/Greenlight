@@ -22,7 +22,7 @@ export interface LoopResult {
 }
 
 export async function runLoop(input: LoopInput): Promise<LoopResult> {
-  await input.adapter.build(input.toolDir);
+  await input.adapter.build(input.toolDir, input.env);
   const { url } = await input.adapter.deploy(input.toolDir, input.env);
   const verifyUrl = url + (input.connectPath ?? '');
   const report = await verify(verifyUrl, input.spec);

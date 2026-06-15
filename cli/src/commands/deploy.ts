@@ -27,7 +27,7 @@ export async function deployCommand(args: string[]): Promise<void> {
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });
 
   console.log(`build ${name} (${entry.lane}/${entry.target}) in ${entry.dir}`);
-  await adapter.build(entry.dir);
+  await adapter.build(entry.dir, env);
   console.log(`deploy ${name} → ${env}`);
   const { url } = await adapter.deploy(entry.dir, env);
   console.log(`✔ deployed: ${url}`);
