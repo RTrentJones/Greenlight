@@ -314,6 +314,8 @@ Critically, **Claude Code does not scan `node_modules` for skills** and does not
 
 Plugin = the *procedure*, manifest = the *parameters*, packages = the *mechanics*. In the monorepo today the skill lives at `.claude/skills/deploy-verify-promote/SKILL.md` with always-on awareness in root `CLAUDE.md`.
 
+**The agentic dev loop kit ([docs/agentic-loop.md](docs/agentic-loop.md)).** Agent awareness is more than the one loop skill — for the loop to be a closed, self-correcting cycle the agent also needs the *patterns* to write correct code and the *telemetry* to debug it. So this channel distributes a curated **kit**: the `deploy-verify-promote` skill, recommended **MCP servers** (`.mcp.json` — Cloudflare aggregate + docs, for verification/observability), and recommended **best-practice skills** (Cloudflare's `wrangler`/`workers-best-practices`/`agents-sdk`/…). The plugin ships the skill + the `.mcp.json`; `greenlight agent sync` materializes both into any repo (merging `.mcp.json`, never clobbering); the best-practice skills are a one-time `cloudflare/skills` plugin install. Net: guidance (skills) → objective signal (`verify`) → debug (MCP) → gated promote.
+
 ---
 
 ## 16. Implementation plan
