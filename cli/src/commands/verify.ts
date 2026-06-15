@@ -1,6 +1,6 @@
 import { type DeployEnv, type Lane, resolveUrl } from '@rtrentjones/greenlight-shared';
 import { type VerifyReport, type VerifySpec, verify } from '@rtrentjones/greenlight-verify';
-import { loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
+import { loadExternalVerifySpec, loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
 
 /** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
 export function defaultSpec(lane: Lane): VerifySpec {
@@ -52,8 +52,12 @@ export async function verifyCommand(args: string[]): Promise<void> {
     url = resolveUrl({ domain: config.domain, name: entry.name, env, mcp: entry.lane === 'mcp' });
   }
 
-  // Prefer a per-tool verify.config.ts; otherwise a lane default smoke spec.
-  const spec = (await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
+  // Prefer a per-tool verify spec; otherwise a lane default smoke spec. An external
+  // (registry) tool's spec lives in the wrapper at verify/<name>.config.ts; a local
+  // tool's at <dir>/verify.config.ts.
+  const spec =
+    (entry.external ? await loadExternalVerifySpec(name) : await loadVerifySpec(entry.dir)) ??
+    defaultSpec(entry.lane);
 
   // Absorb the first-deploy TLS/DNS window: a remote env waits ~90s for the URL to
   // become reachable (retry on connection error only); --url (local) waits 0. `--wait <sec>` overrides.

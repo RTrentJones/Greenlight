@@ -1,0 +1,12 @@
+{
+  // Greenlight keepalive Worker. Deployed from the wrapper repo. The targets + alert
+  // sink are provided at deploy time — `KEEPALIVE_TARGETS` / `ALERT_GITHUB_REPO` as vars
+  // and `GITHUB_TOKEN` as a secret (`wrangler secret put GITHUB_TOKEN`). Never commit them.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "greenlight-keepalive",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  // Every 3 days at 06:00 UTC — comfortably inside Supabase's 7-day idle window.
+  "triggers": { "crons": ["0 6 */3 * *"] },
+  "observability": { "enabled": true }
+}

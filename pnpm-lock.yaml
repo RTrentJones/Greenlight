@@ -85,6 +85,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/keepalive: {}
+
   packages/loop:
     dependencies:
       '@rtrentjones/greenlight-adapters':

@@ -12,9 +12,10 @@ locals {
 
   # Where the subdomain points. Real value is set by the wrapper; this keeps plan/test valid.
   cname = (
-    var.cname_target != ""
-    ? var.cname_target
-    : (var.target == "oci" ? "tunnel.${var.domain}" : "${coalesce(var.name, "blog")}.workers.dev")
+    var.cname_target != "" ? var.cname_target :
+    var.target == "oci" ? "tunnel.${var.domain}" :
+    var.target == "vercel" ? "cname.vercel-dns.com" :
+    "${coalesce(var.name, "blog")}.workers.dev"
   )
 }
 

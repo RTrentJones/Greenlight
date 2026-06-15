@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { type McpConfig, RECOMMENDED_MCP, mergeMcpServers } from '../agent-kit';
+import { type McpConfig, type ToolKitInfo, mergeMcpServers, recommendedMcp } from '../agent-kit';
 import { skillAssetDir } from '../asset-paths';
 
 const CLAUDE_BLOCK = `## Greenlight loop (deploy → verify → promote)
@@ -10,17 +10,19 @@ branch → change → deploy preview → \`greenlight verify\` → beta → veri
 
 Agentic kit:
 - Skill: \`.claude/skills/deploy-verify-promote/SKILL.md\` (the loop).
-- MCP servers: \`.mcp.json\` recommends Cloudflare's — run \`/mcp\` to authenticate.
+- MCP servers: \`.mcp.json\` recommends the relevant providers — run \`/mcp\` to authenticate.
+    Vercel is OAuth; Supabase needs \`SUPABASE_ACCESS_TOKEN\` (+ \`SUPABASE_PROJECT_REF\`) in your env.
 - Best-practice skills (one-time, user scope):
     \`claude plugin marketplace add cloudflare/skills && claude plugin install cloudflare@cloudflare\`
 `;
 
 /**
  * Materialize the agentic dev loop kit into `dir`: the deploy-verify-promote skill,
- * a merged `.mcp.json` (recommended MCP servers), and a CLAUDE.md loop block. Shared
- * by `agent sync` (cwd) and `adopt` (the target repo). Never clobbers app files.
+ * a merged `.mcp.json` (recommended MCP servers, tailored to the tool's target/data),
+ * and a CLAUDE.md loop block. Shared by `agent sync` (cwd) and `adopt` (the target
+ * repo). Never clobbers app files.
  */
-export function materializeAgentKit(dir: string): void {
+export function materializeAgentKit(dir: string, tool?: ToolKitInfo): void {
   const src = skillAssetDir();
   if (!existsSync(src)) throw new Error(`skill asset not found at ${src}`);
   const dest = resolve(dir, '.claude/skills/deploy-verify-promote');
@@ -32,11 +34,9 @@ export function materializeAgentKit(dir: string): void {
   const existingMcp = existsSync(mcpPath)
     ? (JSON.parse(readFileSync(mcpPath, 'utf8')) as McpConfig)
     : null;
-  writeFileSync(
-    mcpPath,
-    `${JSON.stringify(mergeMcpServers(existingMcp, RECOMMENDED_MCP), null, 2)}\n`,
-  );
-  console.log(`✔ .mcp.json (${Object.keys(RECOMMENDED_MCP).length} recommended MCP server(s))`);
+  const servers = recommendedMcp(tool);
+  writeFileSync(mcpPath, `${JSON.stringify(mergeMcpServers(existingMcp, servers), null, 2)}\n`);
+  console.log(`✔ .mcp.json (${Object.keys(servers).length} recommended MCP server(s))`);
 
   const claudePath = resolve(dir, 'CLAUDE.md');
   const marker = 'Greenlight loop (deploy → verify → promote)';

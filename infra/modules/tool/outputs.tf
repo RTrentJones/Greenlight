@@ -19,3 +19,8 @@ output "env_count" {
 output "record_ids" {
   value = { for e, r in cloudflare_dns_record.tool : e => r.id }
 }
+
+output "cname_target" {
+  value       = local.cname
+  description = "Where the subdomain CNAME points (oci=tunnel, vercel=cname.vercel-dns.com, else *.workers.dev)."
+}

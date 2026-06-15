@@ -69,15 +69,27 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
 
 const VERIFY_MODES = new Set(['api', 'mcp', 'playwright']);
 
-/** Load a per-tool `verify.config.ts` if present (default export = a VerifySpec). */
-export async function loadVerifySpec(dir: string): Promise<VerifySpec | null> {
-  const path = resolve(process.cwd(), dir, 'verify.config.ts');
+/** Load a verify spec from a specific file (default export = a VerifySpec), or null
+ * if it doesn't exist. */
+export async function loadVerifySpecAt(relPath: string): Promise<VerifySpec | null> {
+  const path = resolve(process.cwd(), relPath);
   if (!existsSync(path)) return null;
   const jiti = createJiti(import.meta.url);
   const mod = (await jiti.import(path)) as Record<string, unknown>;
   const spec = ('default' in mod ? mod.default : mod) as { mode?: unknown };
   if (typeof spec?.mode !== 'string' || !VERIFY_MODES.has(spec.mode)) {
-    throw new Error(`${dir}/verify.config.ts must export a spec with mode api|mcp|playwright`);
+    throw new Error(`${relPath} must export a spec with mode api|mcp|playwright`);
   }
   return spec as VerifySpec;
+}
+
+/** Load a local tool's `<dir>/verify.config.ts` if present. */
+export function loadVerifySpec(dir: string): Promise<VerifySpec | null> {
+  return loadVerifySpecAt(`${dir}/verify.config.ts`);
+}
+
+/** Load an external (registry) tool's spec, which lives in the wrapper at
+ * `verify/<name>.config.ts` (the tool's code is in another repo). */
+export function loadExternalVerifySpec(name: string): Promise<VerifySpec | null> {
+  return loadVerifySpecAt(`verify/${name}.config.ts`);
 }

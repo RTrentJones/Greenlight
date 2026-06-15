@@ -312,8 +312,8 @@ export async function adoptCommand(args: string[]): Promise<void> {
   );
   // 6) verify spec
   writeIfAbsent(join(repo, 'verify.config.ts'), starterVerifyConfig(lane), 'verify.config.ts');
-  // 7) agent kit
-  materializeAgentKit(repo);
+  // 7) agent kit (MCP tailored to the tool's target/data)
+  materializeAgentKit(repo, { target, data });
   // 8) toolchain
   writeIfAbsent(join(repo, 'mise.toml'), MISE_TOML, 'mise.toml');
   writeIfAbsent(join(repo, '.node-version'), '24\n', '.node-version');

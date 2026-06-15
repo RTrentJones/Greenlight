@@ -143,7 +143,7 @@ BAMCP and HeistMind already exist in **their own repos** and **must not be rewri
 
 The adopt path is the real test of "re-wiring = edit manifest + apply." It is a first-class command, not an afterthought.
 
-> **Built:** the `adopt` command + central registry (the enabler). Still deferred to Phase 9: actually adopting BAMCP/HeistMind (their repos + creds + first deploy), which also needs the `oci`/`vercel` deploy adapters (still stubs), Terraform `import` of existing cloud state, and HeistMind's Supabase migration pipeline + `develop`/`development` branch fix.
+> **Built:** the `adopt` command + central registry (the enabler). And — for **HeistMind** (next/vercel/supabase) — the wrapper-side pieces it's onboarded with: `infra/modules/vercel` + `infra/modules/supabase` (Terraform; Vercel via git-integration, Supabase **dual-env** project-per-env, recreatable — see §13), `packages/keepalive` (the CF Worker cron that fixes the 7-day pause), provider MCP in the kit (Vercel + Supabase, by target/data), and external-tool verify (`verify/<name>.config.ts` in the wrapper). HeistMind keeps its code/toolchain (minimal footprint); deploys ride Vercel's git integration, so **no `vercel` deploy adapter** is needed. Still gated on creds: `terraform import` of the live Supabase/Vercel resources + `apply`, deploying the keepalive worker, and retiring HeistMind's now-duplicated `infra/terraform` + `keep-alive.yml`. BAMCP (oci) is still a separate follow-up (needs the oci adapter).
 
 ## 9. The blog (greenfield validator)
 
@@ -192,7 +192,8 @@ Three environments, git-mapped. Branches standardized to **`main` / `develop`**.
 
 ## 13. Data & environment model
 
-- **Supabase (HeistMind only).** Branching is paid, so per-env isolation = **project-per-env**. Free tier caps at **2 projects** = beta + prod — exactly enough for one Supabase tool. Adding a *second* Supabase tool breaks free isolation; that's a V2 problem.
+- **Supabase (HeistMind only).** Branching is paid, so per-env isolation = **project-per-env** (the **dual-env** model: a `beta` + a `prod` project). Free tier caps at **2 projects** = beta + prod — exactly enough for one Supabase tool. Adding a *second* Supabase tool breaks free isolation; that's a V2 problem.
+- **Declarative + recreatable (the root-cause fix).** The original breakdown was a Supabase project that **silently paused after 7 days idle** and was managed ad-hoc. It is now owned by `infra/modules/supabase` in the **wrapper** (centralized, declarative): the project is fully declared (recreatable from `terraform apply`), the schema is the app repo's `supabase/migrations` (replayed on recreate), and the keys flow straight into Vercel env vars (no manual copy). See the module's README for the recreate runbook. Liveness is `packages/keepalive` — a CF Worker cron (immune to GitHub's inactivity auto-disable) that pings every `data: supabase` project inside the 7-day window and alerts via `alerts.sink`.
 - **Migration pipeline** (lift from HeistMind): name/syntax validation, local-Supabase spin-up, schema-deploy verification, dangerous-SQL scan gate, pre-deploy backup, rollback job, type-gen-and-commit.
 - **Blog:** D1/KV only if needed (§9).
 
@@ -368,10 +369,13 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
 ### Phase 8 — Keepalive (was Phase 1)
 - **Deliver:** `@rtrentjones/greenlight-keepalive` CF Worker Cron (Supabase query + OCI health ping + `github-issue` alert sink); **OCI → PAYG + billing-alarm runbook**; `doctor` integration (keepalive health, OCI PAYG status, billing alarm presence).
 - **Accept:** a forced failure opens a GitHub issue; once tools are migrated, Supabase survives a 7-day window and OCI is PAYG.
+- **Built (pulled forward for HeistMind):** `packages/keepalive` — the CF Worker cron pinging every `data: supabase` project + `github-issue` alert; unit-tested. OCI health-ping + PAYG runbook + `doctor` integration remain (BAMCP/oci, Phase 9b).
 
 ### Phase 9 — Migrate BAMCP + HeistMind (adopt)
 - **Deliver:** `greenlight adopt` for both: manifest entries, `verify.config.ts` specs, CI wiring, branch standardization (fix HeistMind's `develop`/`development`), secrets into provider stores, Terraform import-by-reference, Supabase migration pipeline for HeistMind. Bring both **back to life on the harness**.
 - **Accept:** both build + deploy + verify through the harness **without app-code changes**; HeistMind's branch bug is gone; redeploying either is `edit manifest → apply`.
+- **HeistMind (9a) — wrapper-side built, apply gated on creds:** the model is **Vercel git-integration + wrapper-owned Terraform**, not the generic adopt (HeistMind is a monorepo with its own toolchain — see §8). Built: `infra/modules/{vercel,supabase}`, `packages/keepalive`, provider MCP in the kit, external-tool verify. Remaining (creds): connect Supabase/Vercel MCP → `terraform import` the live resources → `apply` (creates the beta project, domains, env vars) → deploy keepalive → register HeistMind in the wrapper + verify gate → retire HeistMind's duplicate `infra/terraform` + `keep-alive.yml`. Branch: keep `development` (Vercel preview tracks it); no forced rename.
+- **BAMCP (9b):** still needs the `oci` deploy adapter (Tunnel + Docker) — separate.
 
 ### Phase 10 — Docs (dogfood)
 - **Deliver:** README quickstart; per-lane READMEs; the adopt guide; the clone-vs-personal model (§15); host docs as the blog.
