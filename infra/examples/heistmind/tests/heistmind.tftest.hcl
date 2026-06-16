@@ -35,4 +35,12 @@ run "vercel_supabase_wiring" {
     condition     = output.dns_record_count == 2
     error_message = "expected one DNS record per env"
   }
+  assert {
+    condition     = output.keepalive_script == "greenlight-keepalive"
+    error_message = "keepalive worker script name wrong"
+  }
+  assert {
+    condition     = output.keepalive_cron == "0 6 */3 * *"
+    error_message = "keepalive cron schedule wrong"
+  }
 }

@@ -6,6 +6,9 @@
   "name": "greenlight-keepalive",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
+  // Cron-only worker — no public HTTP route needed (the fetch handler is for local
+  // `wrangler dev` testing). workers_dev:false avoids requiring a workers.dev subdomain.
+  "workers_dev": false,
   // Every 3 days at 06:00 UTC — comfortably inside Supabase's 7-day idle window.
   "triggers": { "crons": ["0 6 */3 * *"] },
   "observability": { "enabled": true }

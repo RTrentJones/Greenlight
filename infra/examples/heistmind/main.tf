@@ -65,8 +65,22 @@ module "dns" {
   envs        = ["beta", "prod"]
 }
 
+module "keepalive" {
+  source            = "../../modules/keepalive"
+  account_id        = "0000000000000000000000000000test"
+  content           = "export default { async scheduled() {} }"
+  targets_json      = jsonencode([{ name = var.name, env = "prod", url = "https://ref.supabase.co", anonKey = "anon" }])
+  alert_github_repo = "example/site"
+}
+
 output "prod_url" {
   value = module.vercel.prod_url
+}
+output "keepalive_script" {
+  value = module.keepalive.script_name
+}
+output "keepalive_cron" {
+  value = module.keepalive.cron
 }
 output "beta_url" {
   value = module.vercel.beta_url
