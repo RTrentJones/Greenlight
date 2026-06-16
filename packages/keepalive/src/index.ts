@@ -1,26 +1,35 @@
 /**
  * Greenlight keepalive — a Cloudflare Worker Cron Trigger that keeps `data: supabase`
  * projects from hitting Supabase's 7-day idle pause (the failure that took HeistMind
- * down), and alerts via the `github-issue` sink if a project stops responding.
+ * down) and health-checks `target: oci` services, alerting via the `github-issue` sink
+ * if anything stops responding.
  *
  * A Worker cron (not a GitHub Actions schedule) is used deliberately: it's immune to
  * GitHub's "disable scheduled workflows after 60 days of repo inactivity" rule
  * (greenlight-v1.md §6). The pure functions below are unit-tested; the Worker's
  * `scheduled`/`fetch` handlers are thin wrappers over them.
+ *
+ * Note: keepalive does NOT prevent OCI Always-Free idle-reclaim — that needs the tenancy
+ * on Pay-As-You-Go (docs/oci-payg-runbook.md). For OCI it only health-checks + alerts.
  */
 
-export interface SupabaseTarget {
+export interface KeepaliveTarget {
   /** Tool name, e.g. "heistmind". */
   name: string;
   /** Env label, e.g. "beta" | "prod". */
   env: string;
-  /** Project API URL, e.g. https://<ref>.supabase.co. */
+  /** Base URL — Supabase project API (https://<ref>.supabase.co) or an OCI service. */
   url: string;
-  /** anon (publishable) key — enough to make an authenticated REST request. */
-  anonKey: string;
-  /** Probe path; defaults to the PostgREST root, which counts as project activity. */
+  /** 'supabase' = authed REST ping that resets the 7-day pause; 'oci' = plain health GET. Default 'supabase'. */
+  kind?: 'supabase' | 'oci';
+  /** anon (publishable) key for the Supabase REST request. Omit for `oci`. */
+  anonKey?: string;
+  /** Probe path; defaults to `/rest/v1/` (supabase) or `/` (oci). */
   probePath?: string;
 }
+
+/** @deprecated use KeepaliveTarget. */
+export type SupabaseTarget = KeepaliveTarget;
 
 export interface KeepaliveResult {
   /** `name:env`. */
@@ -39,19 +48,23 @@ export interface AlertSink {
 
 type FetchFn = typeof fetch;
 
-/** Ping one Supabase project. A 2xx means alive; anything else (or a thrown
- * network error / a paused project returning 5xx) is a failure. */
+/** Ping one target. For supabase, an authed REST request that counts as activity (resets
+ * the 7-day pause); for oci, a plain health GET. A 2xx means alive; anything else (or a
+ * thrown network error / a paused project returning 5xx) is a failure. */
 export async function pingTarget(
-  t: SupabaseTarget,
+  t: KeepaliveTarget,
   fetchFn: FetchFn = fetch,
 ): Promise<KeepaliveResult> {
   const target = `${t.name}:${t.env}`;
-  const url = `${t.url.replace(/\/+$/, '')}${t.probePath ?? '/rest/v1/'}`;
+  const kind = t.kind ?? 'supabase';
+  const path = t.probePath ?? (kind === 'oci' ? '/' : '/rest/v1/');
+  const url = `${t.url.replace(/\/+$/, '')}${path}`;
+  // Supabase needs the key to authenticate the REST ping; OCI health is unauthenticated.
+  const headers = t.anonKey
+    ? { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` }
+    : undefined;
   try {
-    const res = await fetchFn(url, {
-      headers: { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(10_000) });
     return { target, ok: res.ok, status: res.status };
   } catch (e) {
     return { target, ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -60,7 +73,7 @@ export async function pingTarget(
 
 /** Ping every target concurrently. */
 export async function runKeepalive(
-  targets: SupabaseTarget[],
+  targets: KeepaliveTarget[],
   fetchFn: FetchFn = fetch,
 ): Promise<KeepaliveResult[]> {
   return Promise.all(targets.map((t) => pingTarget(t, fetchFn)));
@@ -75,7 +88,7 @@ export async function alertGithubIssue(
 ): Promise<boolean> {
   if (failures.length === 0 || !sink.githubRepo || !sink.githubToken) return false;
   const body = [
-    'Greenlight keepalive detected unreachable Supabase project(s):',
+    'Greenlight keepalive detected unreachable target(s):',
     '',
     ...failures.map((f) => `- \`${f.target}\` — ${f.status ?? f.error ?? 'unknown'}`),
   ].join('\n');
@@ -88,7 +101,7 @@ export async function alertGithubIssue(
       'User-Agent': 'greenlight-keepalive',
     },
     body: JSON.stringify({
-      title: `keepalive: ${failures.length} Supabase target(s) failing`,
+      title: `keepalive: ${failures.length} target(s) failing`,
       body,
       labels: ['keepalive'],
     }),
@@ -97,18 +110,18 @@ export async function alertGithubIssue(
 }
 
 /** Parse the `KEEPALIVE_TARGETS` var (a JSON array). Bad/empty input → []. */
-export function parseTargets(raw: string | undefined): SupabaseTarget[] {
+export function parseTargets(raw: string | undefined): KeepaliveTarget[] {
   if (!raw) return [];
   try {
     const v: unknown = JSON.parse(raw);
-    return Array.isArray(v) ? (v as SupabaseTarget[]) : [];
+    return Array.isArray(v) ? (v as KeepaliveTarget[]) : [];
   } catch {
     return [];
   }
 }
 
 export interface Env {
-  /** JSON array of SupabaseTarget — set by the wrapper at deploy (wrangler var). */
+  /** JSON array of KeepaliveTarget — set by the wrapper at deploy (wrangler var). */
   KEEPALIVE_TARGETS?: string;
   /** github-issue sink repo (owner/repo). */
   ALERT_GITHUB_REPO?: string;

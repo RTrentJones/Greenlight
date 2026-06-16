@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   type KeepaliveResult,
-  type SupabaseTarget,
+  type KeepaliveTarget,
   alertGithubIssue,
   parseTargets,
   pingTarget,
   runKeepalive,
 } from '../index';
 
-const target: SupabaseTarget = {
+const target: KeepaliveTarget = {
   name: 'heistmind',
   env: 'prod',
   url: 'https://abc.supabase.co',
@@ -61,6 +61,17 @@ describe('pingTarget', () => {
     );
     expect(calls[0]?.url).toBe('https://abc.supabase.co/rest/v1/games?limit=1');
   });
+
+  it('oci kind does a plain health GET (no auth header, default path /)', async () => {
+    const { fn, calls } = capturingFetch(200);
+    const r = await pingTarget(
+      { name: 'bamcp', env: 'prod', url: 'https://bamcp.example.dev', kind: 'oci' },
+      fn,
+    );
+    expect(r.ok).toBe(true);
+    expect(calls[0]?.url).toBe('https://bamcp.example.dev/');
+    expect(calls[0]?.init.headers).toBeUndefined();
+  });
 });
 
 describe('runKeepalive', () => {
@@ -99,7 +110,7 @@ describe('alertGithubIssue', () => {
     expect(calls[0]?.init.method).toBe('POST');
     expect(headersOf(calls[0]?.init).Authorization).toBe('Bearer tok');
     const payload = JSON.parse((calls[0]?.init.body as string) ?? '{}');
-    expect(payload.title).toContain('1 Supabase target(s) failing');
+    expect(payload.title).toContain('1 target(s) failing');
     expect(payload.body).toContain('heistmind:prod');
   });
 });

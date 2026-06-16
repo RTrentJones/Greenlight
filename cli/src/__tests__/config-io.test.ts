@@ -100,4 +100,31 @@ describe('runDoctor', () => {
     expect(reg?.detail).toBe('https://bamcp.example.dev/mcp');
     expect(checks.find((c) => c.name === 'bamcp: directory')).toBeUndefined();
   });
+
+  it('reports keepalive coverage for data:supabase and target:oci tools', () => {
+    let cfg = addTool(base, {
+      name: 'hm',
+      lane: 'next',
+      target: 'vercel',
+      data: 'supabase',
+      envs: ['prod'],
+      external: true,
+    });
+    cfg = addTool(cfg, {
+      name: 'bamcp',
+      lane: 'mcp',
+      target: 'oci',
+      envs: ['prod'],
+      external: true,
+    });
+    const cov = runDoctor(cfg, process.cwd()).find((c) => c.name === 'keepalive coverage');
+    expect(cov?.status).toBe('ok');
+    expect(cov?.detail).toContain('hm (supabase)');
+    expect(cov?.detail).toContain('bamcp (oci)');
+  });
+
+  it('skips keepalive coverage when no tool needs it', () => {
+    const cov = runDoctor(base, process.cwd()).find((c) => c.name === 'keepalive coverage');
+    expect(cov?.status).toBe('skip');
+  });
 });
