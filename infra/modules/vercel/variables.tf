@@ -1,28 +1,16 @@
+variable "project_id" {
+  type        = string
+  description = "Existing Vercel project id (prj_...). The project is created/linked to git in the Vercel dashboard; this module configures its domains + env vars."
+}
+
 variable "name" {
   type        = string
-  description = "Tool name (subdomain). Project deploys at <name>.<domain> / beta.<name>.<domain>."
+  description = "Tool name (subdomain). Project serves <name>.<domain> / beta.<name>.<domain>."
 }
 
 variable "domain" {
   type        = string
   description = "Apex domain, e.g. example.dev."
-}
-
-variable "github_repo" {
-  type        = string
-  description = "owner/repo the project deploys from (Vercel git integration)."
-}
-
-variable "framework" {
-  type        = string
-  default     = "nextjs"
-  description = "Vercel framework preset."
-}
-
-variable "production_branch" {
-  type        = string
-  default     = "main"
-  description = "Branch that deploys to production."
 }
 
 variable "beta_branch" {
@@ -31,32 +19,8 @@ variable "beta_branch" {
   description = "Branch whose deployments the beta domain tracks (HeistMind uses 'development')."
 }
 
-variable "root_directory" {
-  type        = string
-  default     = null
-  description = "Source root (null = repo root; auto-detected if omitted)."
-}
-
-variable "build_command" {
-  type    = string
-  default = null
-}
-
-variable "install_command" {
-  type    = string
-  default = null
-}
-
-variable "output_directory" {
-  type    = string
-  default = null
-}
-
-# Project env vars, split so `for_each` can run (a sensitive map can't drive for_each):
-# `environment` is non-sensitive metadata keyed by a unique id; `environment_values`
-# holds the (sensitive) value under the same id. The same env-var `key` can appear under
-# different ids when it needs distinct values per target (prod vs preview). `sensitive`
-# is required by the provider for preview/production-targeted vars.
+# Env var metadata (non-sensitive, drives for_each), keyed by a unique id. The same
+# env-var `key` can appear under different ids for distinct values per target.
 variable "environment" {
   type = map(object({
     key       = string

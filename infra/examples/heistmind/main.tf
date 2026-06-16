@@ -22,12 +22,11 @@ module "supabase" {
 }
 
 module "vercel" {
-  source         = "../../modules/vercel"
-  name           = var.name
-  domain         = var.domain
-  github_repo    = "example/heistmind"
-  beta_branch    = "development"
-  root_directory = "apps/web"
+  source      = "../../modules/vercel"
+  project_id  = "prj_example"
+  name        = var.name
+  domain      = var.domain
+  beta_branch = "development"
 
   # Supabase creds flow straight from the supabase module into Vercel env (no manual copy).
   environment = {

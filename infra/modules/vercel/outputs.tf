@@ -1,6 +1,5 @@
 output "project_id" {
-  value       = vercel_project.this.id
-  description = "Vercel project id (use for `terraform import` of an existing project)."
+  value = var.project_id
 }
 
 output "prod_url" {
