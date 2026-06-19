@@ -28,7 +28,9 @@ resource "cloudflare_dns_record" "tool" {
   type    = "CNAME"
   content = local.cname
   ttl     = 1
-  proxied = true
+  # Vercel needs DNS-only (grey cloud) to verify the domain + serve TLS itself; Workers/OCI
+  # are served through the Cloudflare proxy (orange cloud).
+  proxied = var.target != "vercel"
 }
 
 # A GitHub deployment environment per env (gates beta/prod; secrets attach here).

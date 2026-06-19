@@ -67,7 +67,6 @@ module "dns" {
 module "keepalive" {
   source            = "../../modules/keepalive"
   account_id        = "0000000000000000000000000000test"
-  content           = "export default { async scheduled() {} }"
   targets_json      = jsonencode([{ name = var.name, env = "prod", url = "https://ref.supabase.co", anonKey = "anon" }])
   alert_github_repo = "example/site"
 }

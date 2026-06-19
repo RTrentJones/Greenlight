@@ -44,6 +44,12 @@ describe('pingTarget', () => {
     expect(r.status).toBe(503);
   });
 
+  it('treats a 401 as alive (the project responded = pause reset)', async () => {
+    const r = await pingTarget(target, capturingFetch(401).fn);
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe(401);
+  });
+
   it('is not ok (captures error) when fetch throws', async () => {
     const f = vi.fn(async () => {
       throw new Error('network down');

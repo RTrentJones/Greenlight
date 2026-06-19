@@ -11,7 +11,8 @@ variable "script_name" {
 
 variable "content" {
   type        = string
-  description = "Bundled Worker module JS (the contents of packages/keepalive/dist/index.js)."
+  default     = ""
+  description = "Bundled Worker module JS. Defaults to the module's committed worker.js (so the module is self-contained for git-sourced/CI use); override to supply a freshly built bundle."
 }
 
 variable "compatibility_date" {

@@ -12,7 +12,7 @@
   "main": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "build": "tsup",
+    "build": "tsup && cp dist/index.js ../../infra/modules/keepalive/worker.js",
     "dev": "wrangler dev"
   }
 }

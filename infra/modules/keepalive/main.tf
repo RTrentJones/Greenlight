@@ -19,14 +19,13 @@ locals {
 resource "cloudflare_workers_script" "keepalive" {
   account_id         = var.account_id
   script_name        = var.script_name
-  content            = var.content
+  content            = var.content != "" ? var.content : file("${path.module}/worker.js")
   main_module        = "worker.js"
   compatibility_date = var.compatibility_date
   bindings           = local.bindings
-
-  observability = {
-    enabled = true
-  }
+  # NOTE: `observability` is intentionally omitted — the cloudflare v5 provider currently
+  # mis-reads its `traces` struct (propagation_policy) and errors on refresh. Worker logs
+  # are still available via `wrangler tail`.
 }
 
 resource "cloudflare_workers_cron_trigger" "keepalive" {

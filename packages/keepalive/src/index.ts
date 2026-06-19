@@ -65,7 +65,9 @@ export async function pingTarget(
     : undefined;
   try {
     const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(10_000) });
-    return { target, ok: res.ok, status: res.status };
+    // Any HTTP response means the project is awake (the request reset the idle timer) — even
+    // a 401 from the PostgREST root. Only a 5xx (paused/broken) or a thrown error is "down".
+    return { target, ok: res.status > 0 && res.status < 500, status: res.status };
   } catch (e) {
     return { target, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
