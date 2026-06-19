@@ -199,7 +199,7 @@ Three environments, git-mapped. Branches standardized to **`main` / `develop`**.
 
 ## 14. Security
 
-- Tokens validated, stored only in provider stores + a local gitignored file; never committed/echoed. Prefer GitHub OIDC → cloud.
+- Tokens validated, stored only in provider stores + a local gitignored file; never committed/echoed. Prefer GitHub OIDC → cloud. Getting provider tokens (Cloudflare/Supabase/Vercel) with least-privilege scopes: [docs/provider-tokens.md](docs/provider-tokens.md).
 - All `beta.*` and any `private` tool behind Cloudflare Access.
 - MCP tools that mutate/expose private data default to `bearer`/`oauth`, never `none`. BAMCP is public read-only → `none` is acceptable.
 - Dangerous-SQL scan gate on migrations; dependency-audit step in CI (warn).
