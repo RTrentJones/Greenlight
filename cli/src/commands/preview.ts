@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Lane } from '@rtrentjones/greenlight-shared';
-import { verify } from '@rtrentjones/greenlight-verify';
+import { allPass, verifyAll } from '@rtrentjones/greenlight-verify';
 import { loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
 import { defaultSpec, printReport } from './verify';
 
@@ -81,10 +82,12 @@ export async function previewCommand(args: string[]): Promise<void> {
         `server did not start on :${plan.port} (check the tool's ${plan.script} script)`,
       );
     }
-    const spec = (await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
-    const report = await verify(base + plan.path, spec);
-    printReport(report);
-    pass = report.pass;
+    const loaded = (await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
+    const specs = Array.isArray(loaded) ? loaded : [loaded];
+    const toolDir = resolve(process.cwd(), entry.dir ?? '.');
+    const reports = await verifyAll(base + plan.path, specs, { toolDir });
+    for (const report of reports) printReport(report);
+    pass = allPass(reports);
   } finally {
     if (child.pid) {
       try {

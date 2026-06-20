@@ -1,7 +1,7 @@
 {
   "name": "@rtrentjones/greenlight-verify",
   "version": "0.1.0",
-  "description": "Greenlight verify harness (api | playwright | mcp).",
+  "description": "Greenlight verify harness (api | mcp | playwright | test | agent-web).",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -35,6 +35,7 @@
     "@rtrentjones/greenlight-shared": "workspace:*"
   },
   "optionalDependencies": {
-    "playwright": "^1.49.0"
+    "playwright": "^1.49.0",
+    "@anthropic-ai/sdk": "^0.69.0"
   }
 }

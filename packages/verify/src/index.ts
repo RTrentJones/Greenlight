@@ -11,12 +11,16 @@ export function defineVerify(spec: VerifySpec): VerifySpec {
 export { verifyApi } from './api';
 export { verifyMcp } from './mcp';
 export { verifyPlaywright } from './playwright';
+export { verifyTest } from './test';
+export { verifyAgentWeb } from './agent-web';
 
 export interface VerifyOptions {
   /** Poll for the URL to become reachable before checking — absorbs the first-deploy
    * TLS/DNS provisioning window. Retries ONLY on a connection error; a real HTTP
    * response (any status) means reachable. 0 = don't wait. */
   reachableTimeoutMs?: number;
+  /** Working dir for local modes (`test`): the tool dir the CLI resolves. Default cwd. */
+  toolDir?: string;
 }
 
 /**
@@ -61,5 +65,38 @@ export async function verify(
       const { verifyPlaywright } = await import('./playwright');
       return verifyPlaywright(baseUrl, spec);
     }
+    case 'test': {
+      const { verifyTest } = await import('./test');
+      return verifyTest(spec, opts?.toolDir ?? process.cwd());
+    }
+    case 'agent-web': {
+      const { verifyAgentWeb } = await import('./agent-web');
+      return verifyAgentWeb(baseUrl, spec);
+    }
   }
+}
+
+/**
+ * Run a list of specs against the same URL (a `verify.config.ts` may export an array to
+ * combine modes — e.g. `[test, api, agent-web]`). Returns one report per spec; aggregate
+ * pass = every spec passed. The reachable wait runs once, before the first spec.
+ */
+export async function verifyAll(
+  baseUrl: string,
+  specs: VerifySpec[],
+  opts?: VerifyOptions,
+): Promise<VerifyReport[]> {
+  const reports: VerifyReport[] = [];
+  let waited = false;
+  for (const spec of specs) {
+    const perSpec = waited ? { ...opts, reachableTimeoutMs: 0 } : opts;
+    reports.push(await verify(baseUrl, spec, perSpec));
+    waited = true;
+  }
+  return reports;
+}
+
+/** True when every report in the list passed (the gate decision for an array of specs). */
+export function allPass(reports: VerifyReport[]): boolean {
+  return reports.length > 0 && reports.every((r) => r.pass);
 }

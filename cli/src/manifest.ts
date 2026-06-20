@@ -67,29 +67,36 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
   };
 }
 
-const VERIFY_MODES = new Set(['api', 'mcp', 'playwright']);
+const VERIFY_MODES = new Set(['api', 'mcp', 'playwright', 'test']);
 
-/** Load a verify spec from a specific file (default export = a VerifySpec), or null
- * if it doesn't exist. */
-export async function loadVerifySpecAt(relPath: string): Promise<VerifySpec | null> {
-  const path = resolve(process.cwd(), relPath);
-  if (!existsSync(path)) return null;
-  const jiti = createJiti(import.meta.url);
-  const mod = (await jiti.import(path)) as Record<string, unknown>;
-  const spec = ('default' in mod ? mod.default : mod) as { mode?: unknown };
+function asSpec(relPath: string, spec: { mode?: unknown }): VerifySpec {
   if (typeof spec?.mode !== 'string' || !VERIFY_MODES.has(spec.mode)) {
-    throw new Error(`${relPath} must export a spec with mode api|mcp|playwright`);
+    throw new Error(
+      `${relPath} must export a spec (or array of specs) with mode ${[...VERIFY_MODES].join('|')}`,
+    );
   }
   return spec as VerifySpec;
 }
 
+/** Load a verify spec — or an ARRAY of specs (to combine modes, e.g. `[test, api]`) — from
+ * a specific file (default export), or null if it doesn't exist. */
+export async function loadVerifySpecAt(relPath: string): Promise<VerifySpec | VerifySpec[] | null> {
+  const path = resolve(process.cwd(), relPath);
+  if (!existsSync(path)) return null;
+  const jiti = createJiti(import.meta.url);
+  const mod = (await jiti.import(path)) as Record<string, unknown>;
+  const def = 'default' in mod ? mod.default : mod;
+  if (Array.isArray(def)) return def.map((s) => asSpec(relPath, s as { mode?: unknown }));
+  return asSpec(relPath, def as { mode?: unknown });
+}
+
 /** Load a local tool's `<dir>/verify.config.ts` if present. */
-export function loadVerifySpec(dir: string): Promise<VerifySpec | null> {
+export function loadVerifySpec(dir: string): Promise<VerifySpec | VerifySpec[] | null> {
   return loadVerifySpecAt(`${dir}/verify.config.ts`);
 }
 
 /** Load an external (registry) tool's spec, which lives in the wrapper at
  * `verify/<name>.config.ts` (the tool's code is in another repo). */
-export function loadExternalVerifySpec(name: string): Promise<VerifySpec | null> {
+export function loadExternalVerifySpec(name: string): Promise<VerifySpec | VerifySpec[] | null> {
   return loadVerifySpecAt(`verify/${name}.config.ts`);
 }
