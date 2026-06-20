@@ -1,6 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { parseRepo, parseSecretsEnv, setGitHubSecret } from '../commands/secrets';
+import {
+  listGitHubSecrets,
+  parseRepo,
+  parseSecretsEnv,
+  setGitHubSecret,
+} from '../commands/secrets';
 
 vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
 
@@ -66,6 +71,38 @@ describe('setGitHubSecret', () => {
       {
         input: 'v',
       },
+    );
+  });
+});
+
+describe('listGitHubSecrets', () => {
+  it('parses `gh secret list --json name` into a name set (so gather can flag overrides)', () => {
+    const gh = vi.mocked(execFileSync);
+    gh.mockClear();
+    gh.mockReturnValueOnce(
+      JSON.stringify([{ name: 'TF_VAR_OCI_REGION' }, { name: 'GREENLIGHT_STATUS_TOKEN' }]),
+    );
+    const set = listGitHubSecrets('o/r', undefined);
+    expect(gh).toHaveBeenCalledWith(
+      'gh',
+      ['secret', 'list', '--repo', 'o/r', '--json', 'name'],
+      expect.objectContaining({ encoding: 'utf8' }),
+    );
+    expect(set?.has('TF_VAR_OCI_REGION')).toBe(true);
+    expect(set?.has('NOPE')).toBe(false);
+  });
+
+  it('scopes to an env and returns null when gh fails (advisory only, never blocks)', () => {
+    const gh = vi.mocked(execFileSync);
+    gh.mockClear();
+    gh.mockImplementationOnce(() => {
+      throw new Error('gh: not authenticated');
+    });
+    expect(listGitHubSecrets('o/r', 'prod')).toBeNull();
+    expect(gh).toHaveBeenCalledWith(
+      'gh',
+      ['secret', 'list', '--repo', 'o/r', '--json', 'name', '--env', 'prod'],
+      expect.anything(),
     );
   });
 });

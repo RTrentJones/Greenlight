@@ -120,6 +120,24 @@ function hiddenPrompter(): { ask: (query: string) => Promise<string>; close: () 
   };
 }
 
+/** Names of secrets already set on the repo (or env) — so `gather` can flag overrides before
+ * prompting. Best-effort: returns `null` if `gh` can't list (missing/unauth/no access) so the
+ * caller can distinguish "couldn't read" from "repo has no secrets". Never blocks the gather. */
+export function listGitHubSecrets(repo: string, env: string | undefined): Set<string> | null {
+  const ghArgs = ['secret', 'list', '--repo', repo, '--json', 'name'];
+  if (env) ghArgs.push('--env', env);
+  try {
+    const out = execFileSync('gh', ghArgs, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'], // don't leak gh's stderr into the guided flow
+    });
+    const parsed = JSON.parse(out) as Array<{ name: string }>;
+    return new Set(parsed.map((s) => s.name));
+  } catch {
+    return null;
+  }
+}
+
 /** Push one secret straight to GitHub Actions via `gh` — value on STDIN, never argv/file/log. */
 export function setGitHubSecret(
   repo: string,
@@ -152,9 +170,15 @@ async function gatherSecrets(name: string, repo: string, env: string | undefined
   const entry = resolveEntry(config, name);
   const packs = packsForTool({ target: entry.target, data: entry.data });
   const dest = env ? `env "${env}" of ${repo}` : repo;
+  const existing = listGitHubSecrets(repo, env); // flag which paste would override
   console.log(`Gathering secrets for "${name}" → GitHub ${dest}`);
   console.log(
-    'Paste each value (hidden); Enter to skip. Values go straight to GitHub — never to disk.\n',
+    'Paste each value (hidden); Enter to skip. Values go straight to GitHub — never to disk.',
+  );
+  console.log(
+    `[already set] = a value exists (paste to override, Enter to keep) · [not set] = new.${
+      existing ? '' : ' (could not read existing secrets — annotations omitted)'
+    }\n`,
   );
 
   const prompt = hiddenPrompter();
@@ -170,9 +194,10 @@ async function gatherSecrets(name: string, repo: string, env: string | undefined
         }
         if (tok.scopes?.length) console.log(`   scopes: ${tok.scopes.join(', ')}`);
         if (tok.setupUrl) console.log(`   link: ${tok.setupUrl}`);
-        const value = await prompt.ask(`   ${key} — ${tok.label}\n   value: `);
+        const state = existing ? (existing.has(key) ? '  [already set]' : '  [not set]') : '';
+        const value = await prompt.ask(`   ${key} — ${tok.label}${state}\n   value: `);
         if (!value) {
-          console.log('   · skipped');
+          console.log(existing?.has(key) ? '   · kept existing' : '   · skipped');
           continue;
         }
         if (tok.verify) {
@@ -188,7 +213,8 @@ async function gatherSecrets(name: string, repo: string, env: string | undefined
           console.log('   ✔ verified');
         }
         setGitHubSecret(repo, env, key, value);
-        console.log(`   ✔ pushed ${key} → ${repo}`); // name only — never the value
+        const verb = existing?.has(key) ? 'overrode' : 'pushed';
+        console.log(`   ✔ ${verb} ${key} → ${repo}`); // name only — never the value
         pushed++;
       }
     }
