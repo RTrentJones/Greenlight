@@ -17,6 +17,8 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # To gate publishes behind a GitHub Environment (approval), add `environment: <name>` here
+    # AND set the SAME name in npm's trusted-publisher config (they must match, or both omit it).
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2 # Node 24 (>= 22.14) + pnpm per mise.toml
