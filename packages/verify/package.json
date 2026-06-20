@@ -1,7 +1,7 @@
 {
   "name": "@rtrentjones/greenlight-verify",
   "version": "0.1.0",
-  "description": "Greenlight verify harness (api | mcp | playwright | test | agent-web).",
+  "description": "Greenlight verify harness (api | mcp | playwright | test | agent-web | eval).",
   "license": "MIT",
   "repository": {
     "type": "git",

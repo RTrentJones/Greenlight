@@ -4,7 +4,7 @@
  * every mode returns the same `VerifyReport` shape.
  */
 
-export type VerifyMode = 'api' | 'mcp' | 'playwright' | 'test' | 'agent-web';
+export type VerifyMode = 'api' | 'mcp' | 'playwright' | 'test' | 'agent-web' | 'eval';
 
 export interface VerifyCheck {
   name: string;
@@ -107,7 +107,41 @@ export interface AgentWebSpec {
   headed?: boolean;
 }
 
-export type VerifySpec = ApiSpec | McpSpec | PlaywrightSpec | TestSpec | AgentWebSpec;
+/** eval mode — scored quality assertions over an MCP tool's output (greenlight-v1.md §6,
+ * beyond protocol-shape `mcp`). Each case calls a tool and an LLM judge scores the result
+ * against a rubric. STRETCH/thin cut: spec + judge interface are stable; the default LLM
+ * judge needs ANTHROPIC_API_KEY + @anthropic-ai/sdk (optional, lazy). */
+export interface EvalCase {
+  name: string;
+  /** MCP tool to call on the server at the verify URL. */
+  tool: string;
+  args?: Record<string, unknown>;
+  /** Natural-language rubric the judge scores the tool's result against. */
+  rubric: string;
+  /** Minimum score [1-5] to pass (default 4). */
+  minScore?: number;
+}
+
+export interface EvalSpec {
+  mode: 'eval';
+  cases: EvalCase[];
+  /** Judge model id (default `claude-sonnet-4-6`). */
+  model?: string;
+}
+
+/** The judge contract — swap the default LLM judge for a deterministic one in tests/CI. */
+export interface JudgeInput {
+  rubric: string;
+  result: string;
+}
+export interface JudgeResult {
+  score: number; // 1–5
+  pass: boolean;
+  reason?: string;
+}
+export type Judge = (input: JudgeInput) => Promise<JudgeResult>;
+
+export type VerifySpec = ApiSpec | McpSpec | PlaywrightSpec | TestSpec | AgentWebSpec | EvalSpec;
 
 export function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

@@ -13,6 +13,7 @@ export { verifyMcp } from './mcp';
 export { verifyPlaywright } from './playwright';
 export { verifyTest } from './test';
 export { verifyAgentWeb } from './agent-web';
+export { verifyEval, llmJudge } from './eval';
 
 export interface VerifyOptions {
   /** Poll for the URL to become reachable before checking — absorbs the first-deploy
@@ -72,6 +73,10 @@ export async function verify(
     case 'agent-web': {
       const { verifyAgentWeb } = await import('./agent-web');
       return verifyAgentWeb(baseUrl, spec);
+    }
+    case 'eval': {
+      const { verifyEval } = await import('./eval');
+      return verifyEval(baseUrl, spec);
     }
   }
 }

@@ -67,7 +67,7 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
   };
 }
 
-const VERIFY_MODES = new Set(['api', 'mcp', 'playwright', 'test']);
+const VERIFY_MODES = new Set(['api', 'mcp', 'playwright', 'test', 'agent-web', 'eval']);
 
 function asSpec(relPath: string, spec: { mode?: unknown }): VerifySpec {
   if (typeof spec?.mode !== 'string' || !VERIFY_MODES.has(spec.mode)) {
