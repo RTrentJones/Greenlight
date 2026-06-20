@@ -86,7 +86,7 @@ greenlight/
     _template-{astro,next,mcp}/ # only the three V1 lanes
   packages/
     keepalive/                  # CF Worker Cron heartbeat (§6) — BUILT FIRST
-    verify/                     # api | playwright | mcp harness (§7)
+    verify/                     # api | mcp | playwright | test | agent-web | eval harness (§7)
     shared/                     # manifest loader + types
   CLAUDE.md                     # always-on loop awareness (Claude Code auto-loads this)
   .claude/skills/
@@ -124,10 +124,13 @@ The eventual pain. Each idle-pause trap and its handling:
 
 Verification wired to **promotion**, not just test-writing. CI and the agent call the **same** harness.
 
-- **`packages/verify`** — `verify(baseUrl, spec) -> {pass, report}`, modes by lane:
+- **`packages/verify`** — `verify(baseUrl, spec) -> {pass, report}`, modes by lane. A `verify.config.ts` may export a single spec **or an array** to combine modes (`verifyAll`/`allPass`); the gate passes when all do.
   - `api` — routes return expected status; for the blog: RSS/sitemap valid, no broken internal links; for HeistMind: auth + CRUD.
   - `playwright` — accessibility-tree render check. *Light* for the blog (a post renders); fuller for HeistMind (sign-in + create).
   - `mcp` — protocol-level (no UI): `initialize` handshake → `tools/list` returns expected schemas → call one tool, assert result shape → if `auth != none`, assert unauthorized is rejected.
+  - `test` — run the tool's own unit/integration command in its dir and gate on the exit code (classic tests in the same gate CI + the agent use).
+  - `agent-web` — an LLM drives the live UI via Playwright to accomplish a task, then assertions confirm the outcome (the HeistMind case). Optional `playwright` + `@anthropic-ai/sdk` + `ANTHROPIC_API_KEY`; a missing dep/key fails the check, never throws.
+  - `eval` (stretch) — call an MCP tool and an injectable judge scores the result against a rubric (default `llmJudge`; deterministic in tests).
 - **Deterministic URLs.** `url(toolName, env)` is computed, not scraped from deploy logs, so `verify` always knows where to point. Scheme: `beta.<name>.<domain>` (beta), `<name>.<domain>` (prod), per-target alias (preview). MCP connect URL: `<name>.<domain>/mcp`.
 - **The loop:** branch → push → `verify $PREVIEW` → merge to `develop` → `verify $BETA` → `promote` → `verify $PROD`.
 - **Agent context** — the loop is **agent-driven during the dev cycle**: ask for a change and the agent runs deploy-preview → `verify` → (beta → `verify` → `promote` → prod) as part of the work. For **Claude Code** this lives in `.claude/skills/deploy-verify-promote/SKILL.md` (the procedure, auto-discovered) + always-on awareness in root `CLAUDE.md`. *(Note: Claude Code does not read `.agent/` or scan `node_modules` for skills — agent context can't ride the npm channel; its cross-repo distribution is its own channel, see §15.7 / Phase 7.)* Keep agent autonomy modest in V1 — the value is the shared verify contract + gated promotion, not autonomous self-healing.
@@ -234,7 +237,7 @@ The baseline ships `greenlight.config.example.ts` (generic domain, zero tools, o
 The framework is published to npm under the **`@rtrentjones/greenlight*`** scope; consumers depend on it and update with `pnpm update` — **no merging of framework code, ever.**
 
 - `@rtrentjones/greenlight` — the CLI (`bin: greenlight`).
-- `@rtrentjones/greenlight-verify` — the `api | playwright | mcp` harness.
+- `@rtrentjones/greenlight-verify` — the `api | mcp | playwright | test | agent-web | eval` harness.
 - `@rtrentjones/greenlight-adapters` — the four-hook deploy adapters (`workers | vercel | oci`).
 - `@rtrentjones/greenlight-shared` — manifest schema, `defineConfig`, types, loader.
 - `@rtrentjones/greenlight-keepalive` — the CF Worker cron (later phase).
