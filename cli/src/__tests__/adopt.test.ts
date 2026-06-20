@@ -70,9 +70,18 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     rmSync(tool, { recursive: true, force: true });
   });
 
-  it('scaffolds the consumer into the tool repo and registers it (external) in the wrapper', async () => {
+  it('--standalone scaffolds the consumer into the tool repo and registers it (external)', async () => {
     process.chdir(wrapper);
-    await adoptCommand(['demo-mcp', '--repo', tool, '--lane', 'mcp', '--target', 'oci']);
+    await adoptCommand([
+      'demo-mcp',
+      '--repo',
+      tool,
+      '--lane',
+      'mcp',
+      '--target',
+      'oci',
+      '--standalone',
+    ]);
     process.chdir(repoRoot);
 
     // --- tool repo: full consumer, app code untouched ---
@@ -107,5 +116,41 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     const regText = readFileSync(join(wrapper, 'greenlight.config.ts'), 'utf8');
     expect(regText).toMatch(/name: 'demo-mcp'.*external: true/);
     expect(regText).toContain('blog:');
+  });
+
+  it('default (wrapper-centric) edits infra in the wrapper + pushes the kit into the tool submodule', async () => {
+    // Pre-create tools/<name> so the command skips `git submodule add` (no real git needed).
+    const sub = join(wrapper, 'tools', 'demo-mcp');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'package.json'), JSON.stringify({ name: 'demo-mcp', private: true }));
+    writeFileSync(join(sub, 'server.ts'), 'export const app = 1;\n');
+
+    process.chdir(wrapper);
+    await adoptCommand(['demo-mcp', '--repo', tool, '--lane', 'mcp', '--target', 'oci']);
+    process.chdir(repoRoot);
+
+    // --- wrapper owns the infra + verify spec ---
+    const regText = readFileSync(join(wrapper, 'greenlight.config.ts'), 'utf8');
+    expect(regText).toMatch(/name: 'demo-mcp'[\s\S]*external: true/);
+    expect(regText).toMatch(/dir: 'tools\/demo-mcp'/);
+    expect(readFileSync(join(wrapper, 'infra/demo-mcp.tf'), 'utf8')).toContain(
+      'module "demo-mcp_dns"',
+    );
+    expect(readFileSync(join(wrapper, 'verify/demo-mcp.config.ts'), 'utf8')).toContain(
+      "mode: 'mcp'",
+    );
+
+    // --- the kit was pushed INTO the tool submodule (travels with it) ---
+    expect(existsSync(join(sub, '.claude/skills/deploy-verify-promote/SKILL.md'))).toBe(true);
+    expect(existsSync(join(sub, '.claude/skills/provider-oci/SKILL.md'))).toBe(true);
+    expect(existsSync(join(sub, '.mcp.json'))).toBe(true);
+    expect(existsSync(join(sub, 'CLAUDE.md'))).toBe(true);
+    const subPkg = JSON.parse(readFileSync(join(sub, 'package.json'), 'utf8'));
+    expect(subPkg.scripts.greenlight).toContain('npx @rtrentjones/greenlight');
+    expect(readFileSync(join(sub, 'server.ts'), 'utf8')).toBe('export const app = 1;\n'); // app untouched
+
+    // --- the tool submodule does NOT get infra/workflows (those live in the wrapper) ---
+    expect(existsSync(join(sub, 'infra'))).toBe(false);
+    expect(existsSync(join(sub, '.github/workflows'))).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync
 import { join, resolve } from 'node:path';
 import { type NewTool, addTool, serializeConfig } from '../config-io';
 import { loadManifest, resolveEntry } from '../manifest';
+import { emitToolTf, providersForTool } from '../tf-emit';
 import { MODULE_REF } from '../version';
 import { materializeAgentKit } from './agent';
 import { parseRepo } from './secrets';
@@ -222,18 +223,30 @@ function writeIfAbsent(path: string, contents: string, label: string): void {
 
 // --- the command ---
 
+interface AdoptCtx {
+  name: string;
+  repoArg: string;
+  lane: string;
+  target: string;
+  data: string;
+  auth: string;
+  envs: string[];
+  domain: string;
+  reg: Awaited<ReturnType<typeof loadManifest>>['config'];
+  regPath: string;
+}
+
 export async function adoptCommand(args: string[]): Promise<void> {
   const name = args[0];
   if (!name || name.startsWith('-')) {
     throw new Error(
-      'usage: greenlight adopt --repo <path> <name> --lane <l> --target <t> [--data --auth --envs]\n' +
-        '  (run from your site/registry repo; scaffolds the consumer into <path>)',
+      'usage: greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--standalone]\n' +
+        '  default: wrap <repo> as a tools/<name> submodule + edit infra in this wrapper + push the loop kit into the tool repo.\n' +
+        '  --standalone: scaffold a full self-contained consumer into the tool repo (it owns its whole stack).',
     );
   }
-  const repoPath = flag(args, '--repo');
-  if (!repoPath) throw new Error('adopt needs --repo <path> (the existing tool repo to adopt)');
-  const repo = resolve(process.cwd(), repoPath);
-  if (!existsSync(repo)) throw new Error(`no such repo: ${repo}`);
+  const repoArg = flag(args, '--repo');
+  if (!repoArg) throw new Error('adopt needs --repo <url|path> (the existing tool repo to adopt)');
 
   const lane = flag(args, '--lane');
   const target = flag(args, '--target');
@@ -254,16 +267,112 @@ export async function adoptCommand(args: string[]): Promise<void> {
   }
   const domain = flag(args, '--domain') ?? reg.domain;
 
+  const ctx: AdoptCtx = { name, repoArg, lane, target, data, auth, envs, domain, reg, regPath };
+  if (args.includes('--standalone')) return adoptStandalone(ctx);
+  return adoptWrapper(ctx);
+}
+
+/**
+ * Default (wrapper-centric, the proven HeistMind model): wrap the tool repo as a
+ * `tools/<name>` git submodule, edit ITS infra in this wrapper, and push the Greenlight
+ * loop kit back INTO the tool repo so dev there runs the same loop. The tool keeps its own
+ * history + deploy; the submodule is dev-unification + the wrapper's infra/verify reference.
+ */
+async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
+  const { name, repoArg, lane, target, data, auth, envs, domain, reg, regPath } = ctx;
+  const cwd = process.cwd();
+  const toolRel = `tools/${name}`;
+  const dest = resolve(cwd, toolRel);
+
+  console.log(`adopting "${name}" (${lane}/${target}) as the submodule ${toolRel}\n`);
+
+  // 1) Wrap the repo as a submodule (skip if the dir already exists — re-runs / pre-staged).
+  if (!existsSync(dest)) {
+    try {
+      execFileSync('git', ['submodule', 'add', repoArg, toolRel], { cwd, stdio: 'inherit' });
+      console.log(`✔ git submodule add ${repoArg} ${toolRel}`);
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `git submodule add failed (${detail}). Ensure this wrapper is a git repo and <repo> is reachable.`,
+      );
+    }
+  } else {
+    console.log(`· ${toolRel} exists — skipping submodule add`);
+  }
+
+  // 2) Wrapper manifest: an external pointer with dir = the submodule path.
+  const nextReg = addTool(reg, {
+    name,
+    lane,
+    target,
+    data,
+    auth,
+    envs,
+    dir: toolRel,
+    external: true,
+    adopted: true,
+  });
+  writeFileSync(regPath, serializeConfig(nextReg));
+  console.log(`✔ registered "${name}" (external, dir ${toolRel}) in the wrapper manifest`);
+
+  // 3) Infra + verify spec live in the WRAPPER (the tool repo gets none).
+  const slug =
+    parseRepo(repoArg) ??
+    parseRepo(safeGit(dest, ['remote', 'get-url', 'origin'])) ??
+    `OWNER/${name}`;
+  writeIfAbsent(
+    join(cwd, `infra/${name}.tf`),
+    emitToolTf({ name, domain, lane, target, data, envs, slug, external: true }),
+    `infra/${name}.tf`,
+  );
+  writeIfAbsent(
+    join(cwd, `verify/${name}.config.ts`),
+    starterVerifyConfig(lane),
+    `verify/${name}.config.ts`,
+  );
+  const providers = providersForTool({ target, data });
+  if (
+    existsSync(join(cwd, 'infra/main.tf')) &&
+    providers.some((p) => p !== 'cloudflare' && p !== 'github')
+  ) {
+    console.log(`· ensure infra/main.tf declares provider(s): ${providers.join(', ')}`);
+  }
+
+  // 4) Bidirectional kit INTO the tool repo (committed there → travels with the submodule).
+  materializeAgentKit(dest, { target, data });
+  addGreenlightScript(dest);
+
+  console.log(`
+Next:
+  (in the tool repo) commit the Greenlight kit so it travels with the submodule:
+    cd ${toolRel} && git add .claude .mcp.json CLAUDE.md package.json && git commit -m "chore: greenlight loop kit"
+  (in the wrapper) review infra/${name}.tf, then commit the submodule + infra:
+    git add .gitmodules ${toolRel} infra/${name}.tf verify/${name}.config.ts greenlight.config.ts
+    git commit && git push      # CI (infra.yml) applies. Deploy stays on ${slug}'s own CI.`);
+}
+
+/**
+ * `--standalone`: the self-contained consumer — scaffold the full Greenlight stack
+ * (config + merged package.json + vendored tarballs + infra + namespaced workflows + verify
+ * + kit) INTO the tool repo, for tools that own their whole stack. Registers an external
+ * pointer in the wrapper. (The pre-publish bootstrap; post-publish the deps come from npm.)
+ */
+async function adoptStandalone(ctx: AdoptCtx): Promise<void> {
+  const { name, repoArg, lane, target, data, auth, envs, domain, reg, regPath } = ctx;
+  const repo = resolve(process.cwd(), repoArg);
+  if (!existsSync(repo)) throw new Error(`no such repo: ${repo} (--standalone needs a local path)`);
+
   // Source of the bootstrap tarballs = the registry repo's vendor/.
   const regVendor = resolve(process.cwd(), 'vendor');
   const vendor = vendorDeps(regVendor);
   if (Object.keys(vendor).length === 0) {
     throw new Error(
-      "no vendor/*.tgz in this repo — adopt bootstraps the tool from the registry repo's vendored tarballs (or publish to npm first)",
+      "no vendor/*.tgz in this repo — --standalone bootstraps the tool from the registry repo's vendored tarballs (or publish to npm first)",
     );
   }
 
-  console.log(`adopting "${name}" (${lane}/${target}) into ${repo}\n`);
+  console.log(`adopting "${name}" (${lane}/${target}) into ${repo} (standalone)\n`);
 
   // 1) tool repo greenlight.config.ts (one tool, no blog)
   const toolEntry: NewTool = { name, lane, target, data, auth, envs, dir: '.', adopted: true };
@@ -335,12 +444,25 @@ export async function adoptCommand(args: string[]): Promise<void> {
 
   console.log(`
 Next (in the adopted repo):
-  cd ${repoPath}
+  cd ${repoArg}
   pnpm install
   echo -n "$CLOUDFLARE_API_TOKEN" | gh secret set CLOUDFLARE_API_TOKEN
   git checkout -b develop && git push -u origin develop
   greenlight preview ${name}        # local; or deploy --env beta once creds are set
 Note: deploying ${target} needs the ${target} adapter (workers is built; oci/vercel are follow-ups).`);
+}
+
+/** Add a `greenlight` npm script (runnable via npx post-publish) to the tool's package.json
+ * without an unresolvable devDep. The kit's loop is runnable once the package is on npm. */
+function addGreenlightScript(dir: string): void {
+  const pkgPath = join(dir, 'package.json');
+  const pkg = existsSync(pkgPath)
+    ? (JSON.parse(readFileSync(pkgPath, 'utf8')) as PackageJson)
+    : ({ name: 'tool', private: true } as PackageJson);
+  pkg.scripts = { ...(pkg.scripts ?? {}) };
+  if (!pkg.scripts.greenlight) pkg.scripts.greenlight = 'npx @rtrentjones/greenlight';
+  writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  console.log('✔ package.json (greenlight script — runnable via npx post-publish)');
 }
 
 function safeGit(cwd: string, gitArgs: string[]): string {

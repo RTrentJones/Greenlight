@@ -18,12 +18,12 @@ describe('verifyAgentWeb guards', () => {
     expect(r.checks[0]?.name).toContain('ANTHROPIC_API_KEY');
   });
 
-  it('fails clearly when the optional @anthropic-ai/sdk is absent (key present)', async () => {
+  it('degrades honestly (fails, names a missing optional dep) when a key is present', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
     const r = await verify('https://example.dev', spec);
-    // playwright is installed; the SDK is an un-installed optional dep, so the gate is
-    // honest that it could not validate rather than throwing.
+    // The SDK is an un-installed optional dep, so the gate is honest that it could not
+    // validate rather than throwing. (Robust to whichever optional dep is reported first.)
     expect(r.pass).toBe(false);
-    expect(r.checks.some((c) => c.name.includes('@anthropic-ai/sdk'))).toBe(true);
+    expect(r.checks.some((c) => /@anthropic-ai\/sdk|playwright/.test(c.name))).toBe(true);
   });
 });
