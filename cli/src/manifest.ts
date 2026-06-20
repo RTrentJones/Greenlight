@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  type DataBackend,
   type GreenlightConfig,
   type Lane,
   type Target,
@@ -35,6 +36,7 @@ export interface ResolvedEntry {
   name: string | undefined;
   lane: Lane;
   target: Target;
+  data: DataBackend;
   /** Directory the tool builds/deploys from, relative to the repo root. */
   dir: string;
   /** Code lives in another repo — registry pointer; not built/deployed here. */
@@ -49,6 +51,7 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
       name: undefined,
       lane: config.blog.lane,
       target: config.blog.target,
+      data: config.blog.data,
       dir: 'apps/blog',
       external: false,
     };
@@ -62,6 +65,7 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
     name: tool.name,
     lane: tool.lane,
     target: tool.target,
+    data: tool.data,
     dir: tool.dir ?? `tools/${tool.name}`,
     external: tool.external,
   };

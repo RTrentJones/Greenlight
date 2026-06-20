@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { parseRepo, parseSecretsEnv } from '../commands/secrets';
+import { execFileSync } from 'node:child_process';
+import { describe, expect, it, vi } from 'vitest';
+import { parseRepo, parseSecretsEnv, setGitHubSecret } from '../commands/secrets';
+
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
 
 describe('parseSecretsEnv', () => {
   it('parses KEY=VALUE, skips blanks and comments, splits on the first =', () => {
@@ -35,5 +38,34 @@ describe('parseRepo', () => {
 
   it('returns null for a non-GitHub remote', () => {
     expect(parseRepo('https://gitlab.com/x/y.git')).toBeNull();
+  });
+});
+
+describe('setGitHubSecret', () => {
+  it('passes the value on stdin, never in argv (no leak)', () => {
+    const gh = vi.mocked(execFileSync);
+    gh.mockClear();
+    setGitHubSecret('owner/repo', undefined, 'TF_VAR_OCI_TENANCY_OCID', 'ocid1.secret.value');
+    expect(gh).toHaveBeenCalledWith(
+      'gh',
+      ['secret', 'set', 'TF_VAR_OCI_TENANCY_OCID', '--repo', 'owner/repo'],
+      { input: 'ocid1.secret.value' },
+    );
+    // the secret value must not appear anywhere in the argv
+    const argv = gh.mock.calls[0]?.[1] as string[];
+    expect(argv.join(' ')).not.toContain('ocid1.secret.value');
+  });
+
+  it('targets a GitHub Environment when given', () => {
+    const gh = vi.mocked(execFileSync);
+    gh.mockClear();
+    setGitHubSecret('o/r', 'release', 'K', 'v');
+    expect(gh).toHaveBeenCalledWith(
+      'gh',
+      ['secret', 'set', 'K', '--repo', 'o/r', '--env', 'release'],
+      {
+        input: 'v',
+      },
+    );
   });
 });

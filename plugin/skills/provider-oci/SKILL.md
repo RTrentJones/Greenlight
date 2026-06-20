@@ -1,6 +1,6 @@
 ---
 name: provider-oci
-description: How Oracle Cloud (OCI) works in a Greenlight setup — the `target: oci` runtime for stateful MCP servers (BAMCP) on a free-tier Ampere A1 Container Instance, the provider-agnostic build-via-GitHub→GHCR model, Greenlight-owned compute + tunnel Terraform, the OCI token CLI, deploy = restart, and the Always-Free idle-reclaim trap (PAYG, manual). Use when wiring/debugging an oci-target tool.
+description: How Oracle Cloud (OCI) works in a Greenlight setup — the `target: oci` runtime for stateful MCP servers (BAMCP) on a free-tier Ampere A1 Container Instance, the provider-agnostic build-via-GitHub→GHCR model, Greenlight-owned compute + tunnel Terraform, the OCI token CLI, deploy = restart, and staying on the free tier (no PAYG; recover-on-alert). Use when wiring/debugging an oci-target tool.
 ---
 
 # provider-oci
@@ -46,11 +46,12 @@ The `oci` provider (auth below) is added to `infra/main.tf`.
 --container-instance-id <OCID>` — the instance re-pulls the latest GHCR image. The tool's CI
 builds; an event trigger (the chosen deploy option) fires the restart. The adapter does NOT build.
 
-## The idle-reclaim trap — fixed manually, NOT by code
+## Idle-reclaim — stay free, recover on alert
 
-OCI **Always-Free reclaims idle compute**; pings don't count, only account standing. Convert the
-tenancy to **Pay-As-You-Go** (+ a low billing budget alarm) — a one-time manual change (see
-`docs/oci-payg-runbook.md`). Keepalive only **health-checks** + nags; it cannot stop reclaim.
+OCI Always-Free can reclaim idle compute. We **stay on the free tier** and accept that: the
+instance runs restart-policy ALWAYS, keepalive health-checks it, and if it's ever stopped/reclaimed
+the alert fires and a **re-apply / redeploy** restores it. **PAYG is NOT used** — it's an optional
+last resort (see `docs/oci-payg-runbook.md`) only if reclaim ever becomes a recurring problem.
 
 ## Verify
 The tool is typically an **MCP server**: verify with `mode: mcp`, connect at `<name>.<domain>/mcp`

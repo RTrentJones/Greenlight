@@ -268,7 +268,6 @@ jobs:
  * via \`greenlight deploy\`, then post a commit status back to the tool repo (so push->result
  * feedback returns there even though the deploy ran here). OCI creds live ONLY here. */
 function deployListenerYml(name: string, toolRepo: string): string {
-  const SECRET = `${name.toUpperCase().replace(/-/g, '_')}_OCI_CONTAINER_INSTANCE_OCID`;
   return `name: greenlight-deploy-${name}
 
 # Option B: ${toolRepo} fires repository_dispatch(deploy-${name}) after pushing a new image.
@@ -290,12 +289,13 @@ jobs:
       - run: pip install --quiet oci-cli
       - name: Deploy (restart container instance -> re-pull GHCR image)
         env:
-          OCI_CLI_USER: \${{ secrets.OCI_CLI_USER }}
-          OCI_CLI_TENANCY: \${{ secrets.OCI_CLI_TENANCY }}
-          OCI_CLI_FINGERPRINT: \${{ secrets.OCI_CLI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: \${{ secrets.OCI_CLI_KEY_CONTENT }}
-          OCI_CLI_REGION: \${{ secrets.OCI_CLI_REGION }}
-          OCI_CONTAINER_INSTANCE_OCID: \${{ secrets.${SECRET} }}
+          # The OCI CLI reuses the SAME TF_VAR_OCI_* secrets the apply uses — one secret set.
+          OCI_CLI_TENANCY: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
+          OCI_CLI_USER: \${{ secrets.TF_VAR_OCI_USER_OCID }}
+          OCI_CLI_FINGERPRINT: \${{ secrets.TF_VAR_OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: \${{ secrets.TF_VAR_OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: \${{ secrets.TF_VAR_OCI_REGION }}
+          OCI_CONTAINER_INSTANCE_OCID: \${{ secrets.OCI_CONTAINER_INSTANCE_OCID }}
         run: pnpm exec greenlight deploy ${name} --env prod
       - name: Report status back to ${toolRepo}
         if: \${{ always() && github.event.client_payload.sha != '' }}
@@ -467,8 +467,9 @@ Next:
     git commit && git push      # CI (infra.yml) applies. Tool's CI builds; wrapper deploys.${
       target === 'oci'
         ? `
-  Secrets: in ${slug} set GREENLIGHT_DISPATCH_TOKEN; in this wrapper set the OCI_CLI_* creds +
-  ${name.toUpperCase().replace(/-/g, '_')}_OCI_CONTAINER_INSTANCE_OCID (from the TF output) + GREENLIGHT_STATUS_TOKEN.`
+  Secrets (guided): greenlight secrets gather ${name} --repo <wrapper>   # TF_VAR_OCI_* + GREENLIGHT_STATUS_TOKEN
+                    greenlight secrets gather ${name} --repo ${slug}   # GREENLIGHT_DISPATCH_TOKEN
+  After apply, set OCI_CONTAINER_INSTANCE_OCID (the TF output) in the wrapper.`
         : ''
     }`);
 }

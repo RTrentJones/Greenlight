@@ -1,11 +1,10 @@
-# OCI Always-Free idle-reclaim — the PAYG runbook
+# OCI runbook — Always-Free Container Instance (no PAYG)
 
-**Keepalive does not fix this.** The `packages/keepalive` Worker health-checks `target: oci`
-services and alerts on failure, but it **cannot stop Oracle from reclaiming idle Always-Free
-compute**. OCI reclaims Always-Free VMs that look idle, and **pings don't count** — only
-*account standing* does. The fix is to convert the tenancy to **Pay-As-You-Go (PAYG)** and
-guard it with a **billing budget alarm**. This is a one-time manual change (greenlight-v1.md
-§6/§13); the harness only nags via `doctor`.
+**We stay on the free tier.** BAMCP runs as an OCI **Container Instance** on the Always-Free
+Ampere A1 allotment with restart-policy ALWAYS. The `packages/keepalive` Worker health-checks
+`target: oci` services and alerts on failure; if a free instance is ever stopped/reclaimed, the
+alert fires and a **re-apply / redeploy** brings it back. **PAYG is NOT required** — it's an
+optional last resort (below) only if idle-reclaim ever becomes a recurring problem in practice.
 
 ## Deploy architecture (free-tier: A1 Container Instance + tunnel)
 
@@ -29,29 +28,25 @@ of the old BAMCP pipeline). Split of responsibility:
   option) fires the restart after a build.
 - **Creds (CLI-gathered):** provider auth `TF_VAR_oci_{tenancy_ocid,user_ocid,fingerprint,private_key,region}`
   + placement `TF_VAR_oci_{compartment_id,availability_domain,subnet_id}` + `OCI_CONTAINER_INSTANCE_OCID`
-  (the TF output, for deploy). `greenlight add` gathers them.
+  (the TF output, for deploy). `greenlight secrets gather bamcp` pushes them straight to GitHub.
 
-PAYG (below) is still required so the instance isn't reclaimed.
+Stay free; PAYG is the optional fallback below.
 
-## Why
+## Optional: PAYG (only if free reclaim ever recurs)
 
-- Always-Free idle-reclaim is triggered by Oracle's heuristics, not by inbound traffic, so a
-  keepalive ping is not a reliable defense. BAMCP (mcp on OCI) is the tool this protects.
-- Converting to PAYG **keeps the Always-Free resources free** (you are not charged for
-  Always-Free-eligible shapes) but removes the idle-reclaim behavior — the VM stays up.
-- The risk PAYG introduces is an accidental charge if you exceed Always-Free limits, which the
-  **billing budget alarm** catches.
-
-## Steps (one-time, per tenancy)
+Always-Free idle-reclaim is triggered by Oracle's heuristics; a keepalive ping is not a
+guaranteed defense. We accept that risk on the free tier — keepalive alerts and a redeploy
+restores the instance. **If** reclaim becomes a recurring nuisance, converting the tenancy to
+**Pay-As-You-Go keeps Always-Free shapes free** (you're not charged for eligible shapes) but
+removes the reclaim behavior. Guard it with a billing budget alarm so an accidental paid resource
+can't run up a bill:
 
 1. **Upgrade to PAYG** — OCI Console → your profile → **Tenancy** → *Upgrade to Pay As You Go*.
    Add a payment method. Existing Always-Free resources are unaffected and remain free.
-2. **Create a budget** — Console → **Billing & Cost Management → Budgets → Create Budget**.
-   - Scope: the tenancy (root compartment).
-   - Amount: a low monthly cap (e.g. **$5**) — enough to flag any non-free usage.
-3. **Add an alarm rule** on the budget at **50% / 100%** with an email recipient. This is the
-   backstop against an accidental paid resource.
-4. **(Recommended) Cost alert** — also set a Cost-Analysis threshold alert as a second signal.
+2. **Create a budget** — Console → **Billing & Cost Management → Budgets → Create Budget**
+   (scope the root compartment; a low monthly cap, e.g. **$5**).
+3. **Add an alarm rule** at **50% / 100%** with an email recipient — the backstop against an
+   accidental paid resource.
 
 ## Verify
 

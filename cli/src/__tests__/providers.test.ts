@@ -85,3 +85,17 @@ describe('token verify()', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('setupUrl + gather tokens', () => {
+  it('every pack has a setupUrl link (for `secrets gather`)', () => {
+    for (const p of PACKS) expect(p.setupUrl, `${p.id} setupUrl`).toBeTruthy();
+  });
+
+  it('the oci pack carries the OCI creds + the option-B deploy PATs', () => {
+    const oci = tokensForTool({ target: 'oci', data: 'none' }).map((t) => t.envVar);
+    expect(oci).toContain('TF_VAR_oci_tenancy_ocid');
+    expect(oci).toContain('TF_VAR_oci_subnet_id');
+    expect(oci).toContain('GREENLIGHT_DISPATCH_TOKEN');
+    expect(oci).toContain('GREENLIGHT_STATUS_TOKEN');
+  });
+});

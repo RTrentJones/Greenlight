@@ -39,6 +39,8 @@ export interface TokenSpec {
   scopes?: string[];
   /** Not strictly required up front (e.g. a project ref you don't have yet). */
   optional?: boolean;
+  /** Web page to create THIS token, if different from the pack's `setupUrl` (e.g. a PAT page). */
+  setupUrl?: string;
   /** Fail-fast check: given the token value (+ the other gathered tokens), confirm it
    * authenticates / has scope. Network call; omitted for providers without a cheap check. */
   verify?: (token: string, env: Record<string, string>) => Promise<TokenCheck>;
@@ -55,6 +57,8 @@ export interface ProviderPack {
   tokens: TokenSpec[];
   /** Pointer into the deep guide (docs/provider-tokens.md / terraform-state-r2.md). */
   guide: string;
+  /** Web console where these tokens are created — printed by `greenlight secrets gather`. */
+  setupUrl?: string;
   /** MCP server(s) to add to a repo's `.mcp.json` (consumed by the agent kit). */
   mcp?: Record<string, McpServer>;
   /** Per-provider skill dir under plugin/skills (`provider-<id>`). */
@@ -72,6 +76,7 @@ export const PACKS: ProviderPack[] = [
     always: true, // the zone/DNS provider + Workers (keepalive) for every Greenlight setup
     appliesTo: () => true,
     guide: 'docs/provider-tokens.md — CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Zone DNS:Edit)',
+    setupUrl: 'https://dash.cloudflare.com/profile/api-tokens',
     tokens: [
       {
         envVar: 'CLOUDFLARE_API_TOKEN',
@@ -102,6 +107,7 @@ export const PACKS: ProviderPack[] = [
     name: 'Vercel',
     appliesTo: (t) => t.target === 'vercel',
     guide: 'docs/provider-tokens.md — VERCEL_API_TOKEN (team-scoped)',
+    setupUrl: 'https://vercel.com/account/settings/tokens',
     tokens: [
       {
         envVar: 'VERCEL_API_TOKEN',
@@ -123,6 +129,7 @@ export const PACKS: ProviderPack[] = [
     name: 'Supabase',
     appliesTo: (t) => t.data === 'supabase',
     guide: 'docs/provider-tokens.md — SUPABASE_ACCESS_TOKEN (Management API)',
+    setupUrl: 'https://supabase.com/dashboard/account/tokens',
     tokens: [
       {
         envVar: 'SUPABASE_ACCESS_TOKEN',
@@ -156,6 +163,7 @@ export const PACKS: ProviderPack[] = [
     always: true, // remote state backs every wrapper's infra
     appliesTo: () => true,
     guide: 'docs/terraform-state-r2.md — HCP Terraform free tier (no credit card)',
+    setupUrl: 'https://app.terraform.io/app/settings/tokens',
     tokens: [
       {
         envVar: 'TF_API_TOKEN',
@@ -176,6 +184,7 @@ export const PACKS: ProviderPack[] = [
     always: true, // secrets sync + repo/branch infra
     appliesTo: () => true,
     guide: 'docs/provider-tokens.md — GitHub (gh auth, or a fine-grained PAT)',
+    setupUrl: 'https://github.com/settings/personal-access-tokens/new',
     tokens: [
       {
         envVar: 'GITHUB_TOKEN',
@@ -190,8 +199,8 @@ export const PACKS: ProviderPack[] = [
     id: 'oci',
     name: 'Oracle Cloud (OCI)',
     appliesTo: (t) => t.target === 'oci',
-    guide:
-      'docs/oci-payg-runbook.md — Always-Free A1 Container Instance + tunnel (PAYG to stop reclaim)',
+    guide: 'docs/oci-payg-runbook.md — Always-Free A1 Container Instance + tunnel (no PAYG)',
+    setupUrl: 'https://cloud.oracle.com — Profile → User settings → Tokens and keys → Add API key',
     tokens: [
       // OCI provider auth = API-key request signing (no bearer → no cheap fetch verify). These
       // flow to the `oci` Terraform provider as TF_VAR_oci_* (the wrapper apply uses them).
@@ -221,6 +230,20 @@ export const PACKS: ProviderPack[] = [
         envVar: 'OCI_CONTAINER_INSTANCE_OCID',
         label: 'container instance OCID (TF output) — `greenlight deploy` restarts it',
         optional: true,
+      },
+      // Option-B event-driven deploy (GitHub PATs). dispatch → set on the TOOL repo;
+      // status → set on the WRAPPER repo. Skip the one that doesn't match `--repo`.
+      {
+        envVar: 'GREENLIGHT_DISPATCH_TOKEN',
+        label: 'GitHub PAT, Contents:write on the WRAPPER (TOOL repo fires the deploy dispatch)',
+        optional: true,
+        setupUrl: 'https://github.com/settings/personal-access-tokens/new',
+      },
+      {
+        envVar: 'GREENLIGHT_STATUS_TOKEN',
+        label: 'GitHub PAT, Commits:write on the TOOL (WRAPPER posts deploy status back)',
+        optional: true,
+        setupUrl: 'https://github.com/settings/personal-access-tokens/new',
       },
     ],
     skill: 'provider-oci',
