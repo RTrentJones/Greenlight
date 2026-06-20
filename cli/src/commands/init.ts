@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { scaffoldConfig } from '../config-io';
+import { ensureTokensForTool } from '../tokens';
 import { syncSecrets } from './secrets';
 
 function flag(args: string[], name: string): string | undefined {
@@ -42,24 +43,34 @@ export async function initCommand(args: string[]): Promise<void> {
     const v = flag(args, f);
     if (v) secrets.push(`${key}=${v}`);
   }
-  let pushed = false;
   if (secrets.length > 0) {
     mkdirSync(resolve(cwd, '.greenlight'), { recursive: true });
     writeFileSync(resolve(cwd, '.greenlight/secrets.env'), `${secrets.join('\n')}\n`, {
       mode: 0o600,
     });
     console.log(`✔ wrote .greenlight/secrets.env (${secrets.length} token(s), gitignored)`);
+  }
 
-    // One-and-done: also push the tokens to GitHub Actions secrets (best-effort).
-    if (!args.includes('--no-push')) {
-      try {
-        const { repo, count } = syncSecrets({ cwd, repo: flag(args, '--repo') });
-        console.log(`✔ pushed ${count} secret(s) to ${repo} (GitHub Actions)`);
-        pushed = true;
-      } catch (e) {
-        console.log(`! skipped pushing secrets: ${e instanceof Error ? e.message : String(e)}`);
-        console.log('  run `greenlight secrets sync` once `gh` is authenticated.');
-      }
+  // Interactive: gather + fail-fast verify the always-on provider tokens (Cloudflare / HCP /
+  // GitHub) from the registry. TTY only — CI uses the --*-token flags above. `--no-tokens` skips.
+  if (process.stdin.isTTY && !args.includes('--no-tokens')) {
+    try {
+      await ensureTokensForTool(cwd, {}, { verify: !args.includes('--no-verify') });
+    } catch (e) {
+      console.log(`✖ ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Push whatever's in secrets.env to GitHub Actions secrets (best-effort, one-and-done).
+  let pushed = false;
+  if (existsSync(resolve(cwd, '.greenlight/secrets.env')) && !args.includes('--no-push')) {
+    try {
+      const { repo, count } = syncSecrets({ cwd, repo: flag(args, '--repo') });
+      console.log(`✔ pushed ${count} secret(s) to ${repo} (GitHub Actions)`);
+      pushed = true;
+    } catch (e) {
+      console.log(`! skipped pushing secrets: ${e instanceof Error ? e.message : String(e)}`);
+      console.log('  run `greenlight secrets sync` once `gh` is authenticated.');
     }
   }
 

@@ -3,10 +3,11 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync
 import { join, resolve } from 'node:path';
 import { type NewTool, addTool, serializeConfig } from '../config-io';
 import { loadManifest, resolveEntry } from '../manifest';
+import { MODULE_REF } from '../version';
 import { materializeAgentKit } from './agent';
 import { parseRepo } from './secrets';
 
-const REF = 'v0.1.0'; // framework git ref the generated infra pins (tag when publishing)
+const REF = MODULE_REF; // framework git ref the generated infra pins (centralized in version.ts)
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);

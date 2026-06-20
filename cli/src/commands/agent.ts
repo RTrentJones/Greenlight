@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node
 import { resolve } from 'node:path';
 import { type McpConfig, type ToolKitInfo, mergeMcpServers, recommendedMcp } from '../agent-kit';
 import { skillAssetDir } from '../asset-paths';
+import { packsForTool } from '../providers';
 
 const CLAUDE_BLOCK = `## Greenlight loop (deploy → verify → promote)
 
@@ -29,6 +30,19 @@ export function materializeAgentKit(dir: string, tool?: ToolKitInfo): void {
   mkdirSync(dest, { recursive: true });
   cpSync(src, dest, { recursive: true });
   console.log('✔ .claude/skills/deploy-verify-promote/SKILL.md');
+
+  // Per-provider skills — copy the skill of each provider pack that applies to this tool
+  // (Cloudflare/HCP/GitHub always; Vercel/Supabase/OCI by target/data). Missing skill
+  // assets are skipped (forward-compatible with packs that don't ship one).
+  for (const pack of packsForTool(tool)) {
+    if (!pack.skill) continue;
+    const skillSrc = skillAssetDir(pack.skill);
+    if (!existsSync(skillSrc)) continue;
+    const skillDest = resolve(dir, '.claude/skills', pack.skill);
+    mkdirSync(skillDest, { recursive: true });
+    cpSync(skillSrc, skillDest, { recursive: true });
+    console.log(`✔ .claude/skills/${pack.skill}/SKILL.md`);
+  }
 
   const mcpPath = resolve(dir, '.mcp.json');
   const existingMcp = existsSync(mcpPath)

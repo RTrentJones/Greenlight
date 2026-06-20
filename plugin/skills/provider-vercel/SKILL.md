@@ -1,0 +1,39 @@
+---
+name: provider-vercel
+description: How Vercel works in a Greenlight setup — the default target for the `next` lane, configure-existing-project model (domains + env vars by project_id; deploys ride git integration), team-scoped token, and the Vercel MCP. Use when wiring a next/vercel tool, env vars, domains, or debugging a Vercel deploy.
+---
+
+# provider-vercel
+
+Vercel is the default `target` for the `next` lane. Greenlight does **not** create or deploy
+the project — it **configures an existing** Vercel project (domains + environment variables)
+by `project_id`, and the app's own repo deploys via Vercel's **git integration** (push →
+build). The wrapper owns infra; the tool repo owns deploys.
+
+## Token — `VERCEL_API_TOKEN`
+
+Account → Settings → Tokens. **Scope it to the team** that owns the project. The Terraform
+`vercel` provider also takes `team` (the `team_…` id). Store in `.greenlight/secrets.env`;
+`greenlight add` verifies it against `/v2/user` (HTTP 200) before commit.
+
+## Terraform module — `infra/modules/vercel`
+
+Manages the **existing** project (nothing to import — it configures by id):
+- `domain` → adds `<name>.<domain>` (production) + `beta.<name>.<domain>` (preview/`beta_branch`).
+- `environment` + `environment_values` → env vars per target (`production` / `preview`).
+  Wire Supabase creds straight from the `supabase` module's outputs — no manual copy (that
+  manual copy was the old fragility).
+
+The DNS CNAME is the **cloudflare** `tool` module, unproxied (`proxied = false`) → `cname.vercel-dns.com`.
+
+## MCP
+
+`.mcp.json` wires `vercel` (hosted, OAuth, read-only). Run `/mcp` and authenticate in the
+browser. Use it to read deployments, build logs, runtime logs, projects.
+
+## Gotchas
+- **ENV_CONFLICT** on apply = a var with that key/target already exists on the project. Delete
+  the pre-existing ones (Vercel dashboard or API) then re-apply, or import them.
+- The Greenlight `beta_branch` must match the repo's actual pre-prod branch (HeistMind uses
+  `development`; new tools use `develop`).
+- `next` can also target `workers` (V0/V2) — default is vercel.

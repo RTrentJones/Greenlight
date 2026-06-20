@@ -15,10 +15,11 @@ export function templatesRoot(): string {
   return resolve(process.cwd(), 'tools'); // dev: repo tools/
 }
 
-/** Directory of the deploy-verify-promote skill (SKILL.md). */
-export function skillAssetDir(): string {
-  const packaged = resolve(packageRoot, 'assets', 'skills', 'deploy-verify-promote');
+/** Directory of a bundled skill (default: the deploy-verify-promote loop skill).
+ * Pass a provider skill name (`provider-vercel`, …) for the per-provider skills. */
+export function skillAssetDir(name = 'deploy-verify-promote'): string {
+  const packaged = resolve(packageRoot, 'assets', 'skills', name);
   if (existsSync(packaged)) return packaged;
   // dev: repo root (cwd-independent, so adopt/agent sync work from any directory)
-  return resolve(packageRoot, '..', '.claude', 'skills', 'deploy-verify-promote');
+  return resolve(packageRoot, '..', '.claude', 'skills', name);
 }

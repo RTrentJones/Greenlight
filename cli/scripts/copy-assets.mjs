@@ -18,11 +18,14 @@ for (const entry of readdirSync(join(repoRoot, 'tools'))) {
   }
 }
 
-// 2) Agent skill: .claude/skills/deploy-verify-promote -> cli/assets/skills/deploy-verify-promote
-const skillSrc = join(repoRoot, '.claude', 'skills', 'deploy-verify-promote');
-const skillOut = join(cliDir, 'assets', 'skills', 'deploy-verify-promote');
+// 2) Agent skills: every dir under .claude/skills/ -> cli/assets/skills/ (the loop skill
+// + the per-provider skills the registry materializes).
+const skillsSrc = join(repoRoot, '.claude', 'skills');
+const skillsOut = join(cliDir, 'assets', 'skills');
 rmSync(join(cliDir, 'assets'), { recursive: true, force: true });
-mkdirSync(dirname(skillOut), { recursive: true });
-cpSync(skillSrc, skillOut, { recursive: true });
+mkdirSync(skillsOut, { recursive: true });
+for (const entry of readdirSync(skillsSrc)) {
+  cpSync(join(skillsSrc, entry), join(skillsOut, entry), { recursive: true });
+}
 
 console.log('cli: copied templates + skill assets');
