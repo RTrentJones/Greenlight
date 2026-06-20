@@ -452,15 +452,24 @@ Next (in the adopted repo):
 Note: deploying ${target} needs the ${target} adapter (workers is built; oci/vercel are follow-ups).`);
 }
 
-/** Add a `greenlight` npm script (runnable via npx post-publish) to the tool's package.json
- * without an unresolvable devDep. The kit's loop is runnable once the package is on npm. */
+/** Add a `greenlight` npm script (runnable via npx post-publish) to a Node tool's existing
+ * package.json. For a non-Node tool (no package.json — e.g. a Python MCP server), DON'T
+ * fabricate one; the loop is still runnable via `npx @rtrentjones/greenlight`. */
 function addGreenlightScript(dir: string): void {
   const pkgPath = join(dir, 'package.json');
-  const pkg = existsSync(pkgPath)
-    ? (JSON.parse(readFileSync(pkgPath, 'utf8')) as PackageJson)
-    : ({ name: 'tool', private: true } as PackageJson);
+  if (!existsSync(pkgPath)) {
+    console.log(
+      '· no package.json (non-Node tool) — run the loop via `npx @rtrentjones/greenlight`',
+    );
+    return;
+  }
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as PackageJson;
   pkg.scripts = { ...(pkg.scripts ?? {}) };
-  if (!pkg.scripts.greenlight) pkg.scripts.greenlight = 'npx @rtrentjones/greenlight';
+  if (pkg.scripts.greenlight) {
+    console.log('· package.json already has a greenlight script');
+    return;
+  }
+  pkg.scripts.greenlight = 'npx @rtrentjones/greenlight';
   writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
   console.log('✔ package.json (greenlight script — runnable via npx post-publish)');
 }
