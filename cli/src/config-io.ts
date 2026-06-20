@@ -31,7 +31,7 @@ export function serializeConfig(c: GreenlightConfig): string {
   const blog = c.blog
     ? `\n  blog: { lane: ${q(c.blog.lane)}, target: ${q(c.blog.target)}, data: ${q(c.blog.data)} },`
     : '';
-  return `import { defineConfig } from '@rtrentjones/greenlight-shared';
+  return `import { defineConfig } from '@rtrentjones/greenlight';
 
 export default defineConfig({
   domain: ${q(c.domain)},

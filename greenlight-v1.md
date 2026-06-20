@@ -232,17 +232,17 @@ The differentiation between **"the clonable baseline"** and **"my personal setup
 
 The baseline ships `greenlight.config.example.ts` (generic domain, zero tools, one sample post). `init` copies it to `greenlight.config.ts`, prompts for the cloner's domain + tokens, and writes *their* values into provider stores + the gitignored secrets file. "Trent's setup" and "anyone's setup" are the same framework with a different manifest; `init` is literally the transform between them. Your own real config is just the output of having run `init` once.
 
-### 15.4 Distribution: framework as published packages (the chosen path)
+### 15.4 Distribution: one published package (the chosen path)
 
-The framework is published to npm under the **`@rtrentjones/greenlight*`** scope; consumers depend on it and update with `pnpm update` — **no merging of framework code, ever.**
+The framework is published to npm as a **single package, `@rtrentjones/greenlight`** (the CLI); consumers depend on just it and update with `pnpm update` — **no merging of framework code, ever.** A new wrapper/tool needs exactly one dependency.
 
-- `@rtrentjones/greenlight` — the CLI (`bin: greenlight`).
-- `@rtrentjones/greenlight-verify` — the `api | mcp | playwright | test | agent-web | eval` harness.
-- `@rtrentjones/greenlight-adapters` — the four-hook deploy adapters (`workers | vercel | oci`).
-- `@rtrentjones/greenlight-shared` — manifest schema, `defineConfig`, types, loader.
-- `@rtrentjones/greenlight-keepalive` — the CF Worker cron (later phase).
-- Terraform: the `module "tool"` is published as a **versioned, source-referenced module** (Git tag or a Terraform registry entry), pinned by ref in consumer `infra/`.
+- `@rtrentjones/greenlight` — the CLI (`bin: greenlight`). The framework libs below are **bundled into its `dist`** (tsup `noExternal`) and kept **private** under `packages/*` — the source split + boundary rules stand; only the publish surface is one package. The CLI **re-exports** `defineConfig`/`defineVerify` (+ types) so typed manifest + verify configs both import from `@rtrentjones/greenlight`.
+  - `greenlight-shared` (manifest schema, `defineConfig`, loader), `greenlight-verify` (`api | mcp | playwright | test | agent-web | eval` harness), `greenlight-adapters` (four-hook deploy adapters `workers | vercel | oci`), `greenlight-loop` (deploy→verify→promote) — all bundled in.
+- `greenlight-keepalive` — the CF Worker cron — is **not published**; it ships as a bundled `worker.js` inside the Terraform `keepalive` module.
+- Publishing uses **npm OIDC Trusted Publishing** from CI (`.github/workflows/release.yml`) — no long-lived `NPM_TOKEN`.
+- Terraform: the `module "tool"` (+ `tunnel`, `oci-container-instance`, `supabase`, `vercel`, `repo`, `keepalive`) ship as **versioned, source-referenced modules** (Git tag), pinned by ref in consumer `infra/`. (npm semver and the module Git tag are kept in lockstep, e.g. `0.2.4` / `v0.2.4`.)
 - Lane templates (`_template-*`) ship inside the CLI package and are materialized by `greenlight add` — so updated templates arrive with a CLI bump, not a copy-paste.
+- If a standalone need ever arises (e.g. importing the verify harness outside Greenlight), a private lib can be split back out into its own published package — additive, non-breaking.
 
 **Versioning:** semver; Changesets for release notes; the CLI records the framework version it scaffolded so `doctor` can flag when a consumer is behind.
 

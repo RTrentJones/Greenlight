@@ -18,12 +18,15 @@ describe('verifyAgentWeb guards', () => {
     expect(r.checks[0]?.name).toContain('ANTHROPIC_API_KEY');
   });
 
-  it('degrades honestly (fails, names a missing optional dep) when a key is present', async () => {
+  it('degrades honestly (failing report, never throws) when a key is present', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
     const r = await verify('https://example.dev', spec);
-    // The SDK is an un-installed optional dep, so the gate is honest that it could not
-    // validate rather than throwing. (Robust to whichever optional dep is reported first.)
+    // With a key but no usable browser/SDK, the gate must return a FAILING report rather than
+    // throw. The specific failing check varies by environment (which optional dep / browser is
+    // present), so assert the invariant: agent-web mode, not passing, and every check failed.
+    expect(r.mode).toBe('agent-web');
     expect(r.pass).toBe(false);
-    expect(r.checks.some((c) => /@anthropic-ai\/sdk|playwright/.test(c.name))).toBe(true);
+    expect(r.checks.length).toBeGreaterThan(0);
+    expect(r.checks.every((c) => !c.pass)).toBe(true);
   });
 });

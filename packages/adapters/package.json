@@ -1,6 +1,7 @@
 {
   "name": "@rtrentjones/greenlight-adapters",
-  "version": "0.1.0",
+  "version": "0.2.4",
+  "private": true,
   "description": "Deploy-target adapters (workers | vercel | oci).",
   "license": "MIT",
   "repository": {

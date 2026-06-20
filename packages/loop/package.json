@@ -1,6 +1,7 @@
 {
   "name": "@rtrentjones/greenlight-loop",
-  "version": "0.1.0",
+  "version": "0.2.4",
+  "private": true,
   "description": "The deploy -> verify -> promote loop orchestration + promote guard.",
   "license": "MIT",
   "repository": {

@@ -1,6 +1,6 @@
 {
   "name": "@rtrentjones/greenlight",
-  "version": "0.1.0",
+  "version": "0.2.4",
   "description": "Greenlight CLI — setup and lifecycle for the harness.",
   "license": "MIT",
   "repository": {
@@ -34,10 +34,18 @@
     "dev": "tsx src/bin.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "jiti": "^2.4.2",
+    "zod": "^3.24.1"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.49.0",
+    "@anthropic-ai/sdk": "^0.69.0"
+  },
+  "devDependencies": {
     "@rtrentjones/greenlight-adapters": "workspace:*",
     "@rtrentjones/greenlight-loop": "workspace:*",
     "@rtrentjones/greenlight-shared": "workspace:*",
-    "@rtrentjones/greenlight-verify": "workspace:*",
-    "jiti": "^2.4.2"
+    "@rtrentjones/greenlight-verify": "workspace:*"
   }
 }
