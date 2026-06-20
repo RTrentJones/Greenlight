@@ -1,7 +1,12 @@
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   listGitHubSecrets,
+  ociPrefill,
+  parseOciConfig,
   parseRepo,
   parseSecretsEnv,
   setGitHubSecret,
@@ -72,6 +77,72 @@ describe('setGitHubSecret', () => {
         input: 'v',
       },
     );
+  });
+});
+
+describe('parseOciConfig', () => {
+  it('parses the Add-API-key config preview (lowercased keys, [PROFILE] + comments ignored)', () => {
+    const cfg = parseOciConfig(
+      [
+        '[DEFAULT]',
+        'user=ocid1.user.oc1..aaaa',
+        'fingerprint=12:34:56',
+        'tenancy=ocid1.tenancy.oc1..bbbb',
+        'region=us-ashburn-1',
+        'key_file=/home/me/.oci/key.pem',
+        '# a comment',
+      ].join('\n'),
+    );
+    expect(cfg).toMatchObject({
+      user: 'ocid1.user.oc1..aaaa',
+      fingerprint: '12:34:56',
+      tenancy: 'ocid1.tenancy.oc1..bbbb',
+      region: 'us-ashburn-1',
+      key_file: '/home/me/.oci/key.pem',
+    });
+  });
+
+  it('first profile wins (later duplicate keys ignored)', () => {
+    const cfg = parseOciConfig('[DEFAULT]\nregion=us-ashburn-1\n[OTHER]\nregion=uk-london-1');
+    expect(cfg.region).toBe('us-ashburn-1');
+  });
+});
+
+describe('ociPrefill', () => {
+  it('maps the config + PEM to the 5 OCI auth secrets (private key read from the file)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gl-oci-'));
+    const pem = join(dir, 'key.pem');
+    writeFileSync(pem, '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n');
+    const cfgPath = join(dir, 'config');
+    writeFileSync(
+      cfgPath,
+      `[DEFAULT]\nuser=ocid1.user\nfingerprint=fp\ntenancy=ocid1.tenancy\nregion=us-ashburn-1\nkey_file=${pem}\n`,
+    );
+    const map = ociPrefill(cfgPath);
+    expect(map.get('TF_VAR_OCI_USER_OCID')).toBe('ocid1.user');
+    expect(map.get('TF_VAR_OCI_TENANCY_OCID')).toBe('ocid1.tenancy');
+    expect(map.get('TF_VAR_OCI_FINGERPRINT')).toBe('fp');
+    expect(map.get('TF_VAR_OCI_REGION')).toBe('us-ashburn-1');
+    expect(map.get('TF_VAR_OCI_PRIVATE_KEY')).toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('--oci-key overrides the config key_file path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gl-oci-'));
+    const realPem = join(dir, 'real.pem');
+    writeFileSync(realPem, 'REAL-PEM');
+    const cfgPath = join(dir, 'config');
+    writeFileSync(cfgPath, '[DEFAULT]\nuser=u\nkey_file=/does/not/exist.pem\n');
+    const map = ociPrefill(cfgPath, realPem);
+    expect(map.get('TF_VAR_OCI_PRIVATE_KEY')).toBe('REAL-PEM');
+  });
+
+  it('skips the private key (still prefills the rest) when no PEM is found', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gl-oci-'));
+    const cfgPath = join(dir, 'config');
+    writeFileSync(cfgPath, '[DEFAULT]\ntenancy=ocid1.tenancy\nkey_file=/does/not/exist.pem\n');
+    const map = ociPrefill(cfgPath);
+    expect(map.has('TF_VAR_OCI_PRIVATE_KEY')).toBe(false);
+    expect(map.get('TF_VAR_OCI_TENANCY_OCID')).toBe('ocid1.tenancy');
   });
 });
 

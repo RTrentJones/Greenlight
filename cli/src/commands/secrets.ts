@@ -30,6 +30,51 @@ export function parseSecretsEnv(text: string): SecretEntry[] {
   return out;
 }
 
+/**
+ * Parse an OCI CLI config (the "Configuration file preview" OCI shows after *Add API key*).
+ * INI-ish `key=value` lines under a `[PROFILE]` header; the first profile's values win. Keys
+ * are lowercased; values kept verbatim (paths/OCIDs). We only care about user/fingerprint/
+ * tenancy/region/key_file.
+ */
+export function parseOciConfig(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#') || line.startsWith('[')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim().toLowerCase();
+    if (!(key in out)) out[key] = line.slice(eq + 1).trim(); // first profile wins
+  }
+  return out;
+}
+
+/**
+ * Build a name→value prefill from an OCI config preview (+ its PEM): the 5 auth secrets that
+ * `secrets gather` can set without prompting (incl. the multi-line private key, read from the
+ * file so it never has to be pasted). `keyPath` overrides the config's `key_file` (e.g. when the
+ * .pem was downloaded somewhere else). Throws if the config is unreadable; warns + skips the key
+ * if the PEM can't be found (the rest still prefill).
+ */
+export function ociPrefill(configPath: string, keyPath?: string): Map<string, string> {
+  const cfg = parseOciConfig(readFileSync(configPath, 'utf8'));
+  const map = new Map<string, string>();
+  const set = (k: string, v?: string) => {
+    if (v) map.set(k, v);
+  };
+  set('TF_VAR_OCI_USER_OCID', cfg.user);
+  set('TF_VAR_OCI_FINGERPRINT', cfg.fingerprint);
+  set('TF_VAR_OCI_TENANCY_OCID', cfg.tenancy);
+  set('TF_VAR_OCI_REGION', cfg.region);
+  const pem = keyPath ?? cfg.key_file;
+  if (pem && existsSync(pem)) {
+    map.set('TF_VAR_OCI_PRIVATE_KEY', readFileSync(pem, 'utf8'));
+  } else if (pem) {
+    console.log(`   ! PEM not found at ${pem} — set TF_VAR_OCI_PRIVATE_KEY manually (--oci-key)`);
+  }
+  return map;
+}
+
 /** owner/repo from a GitHub remote URL (https, https.git, scp-style, ssh://). */
 export function parseRepo(remoteUrl: string): string | null {
   const m = remoteUrl.trim().match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?$/);
@@ -165,7 +210,12 @@ export function setGitHubSecret(
  * its scopes, hidden-prompt for the value (no echo), fail-fast `verify()`, then push via `gh`
  * (stdin). Nothing touches disk; no value is echoed or logged. Blank input skips a token.
  */
-async function gatherSecrets(name: string, repo: string, env: string | undefined): Promise<void> {
+async function gatherSecrets(
+  name: string,
+  repo: string,
+  env: string | undefined,
+  prefill?: Map<string, string>,
+): Promise<void> {
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
   const packs = packsForTool({ target: entry.target, data: entry.data });
@@ -178,8 +228,10 @@ async function gatherSecrets(name: string, repo: string, env: string | undefined
   console.log(
     `[already set] = a value exists (paste to override, Enter to keep) · [not set] = new.${
       existing ? '' : ' (could not read existing secrets — annotations omitted)'
-    }\n`,
+    }`,
   );
+  if (prefill?.size) console.log(`Auto-filling ${prefill.size} value(s) from the OCI config.`);
+  console.log('');
 
   const prompt = hiddenPrompter();
   let pushed = 0;
@@ -190,6 +242,14 @@ async function gatherSecrets(name: string, repo: string, env: string | undefined
         const key = tok.envVar.toUpperCase(); // GitHub secret convention (matches infra.yml refs)
         if (key === 'GITHUB_TOKEN') {
           console.log('   · GITHUB_TOKEN — provided automatically by Actions; skipping');
+          continue;
+        }
+        // Auto-fill from a provided source (e.g. the OCI config + PEM) — no prompt, no echo.
+        const pre = prefill?.get(key);
+        if (pre) {
+          setGitHubSecret(repo, env, key, pre);
+          console.log(`   ✔ ${existing?.has(key) ? 'overrode' : 'pushed'} ${key} ← OCI config`);
+          pushed++;
           continue;
         }
         if (tok.scopes?.length) console.log(`   scopes: ${tok.scopes.join(', ')}`);
@@ -234,7 +294,12 @@ export async function secretsCommand(args: string[]): Promise<void> {
     }
     const repo = flag(args, '--repo') ?? detectRepo(process.cwd());
     if (!repo) throw new Error('could not determine the repo — pass --repo owner/repo');
-    await gatherSecrets(name, repo, flag(args, '--env'));
+    const ociConfig = flag(args, '--oci-config');
+    const ociKey = flag(args, '--oci-key');
+    const prefill = ociConfig
+      ? ociPrefill(resolve(process.cwd(), ociConfig), ociKey && resolve(process.cwd(), ociKey))
+      : undefined;
+    await gatherSecrets(name, repo, flag(args, '--env'), prefill);
     return;
   }
 
@@ -242,7 +307,8 @@ export async function secretsCommand(args: string[]): Promise<void> {
     console.log(
       'usage:\n' +
         '  greenlight secrets sync [--repo owner/repo] [--env <env>]            # push .greenlight/secrets.env\n' +
-        '  greenlight secrets gather <name> [--repo owner/repo] [--env <env>]   # guided, link-first, straight to GitHub (no disk/logs)',
+        '  greenlight secrets gather <name> [--repo owner/repo] [--env <env>]   # guided, link-first, straight to GitHub (no disk/logs)\n' +
+        '    [--oci-config <path>] [--oci-key <path>]                           # auto-fill OCI auth from the API-key config preview + .pem',
     );
     process.exit(sub ? 1 : 0);
   }
