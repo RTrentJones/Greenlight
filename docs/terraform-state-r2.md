@@ -1,6 +1,26 @@
-# Terraform remote state on Cloudflare R2
+# Terraform remote state (R2, or HCP Terraform — no credit card)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §11 (config as code) + §17 (locked: state on R2 with lockfile locking). **Goal:** make a wrapper repo's Terraform state shared, durable, and CI-applyable — so `push → terraform apply` works and the state isn't trapped on one machine.
+> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §11 (config as code) + §17 (state on R2). **Goal:** make a wrapper repo's Terraform state shared, durable, and CI-applyable — so `push → terraform apply` works and the state isn't trapped on one machine.
+
+## Choosing a backend
+
+Several backends give free remote state; pick mainly by whether you want a **new** credit
+card on file. The migrate + CI steps are identical across all of them — only the backend
+block (and locking story) differ.
+
+| Backend | New credit card | Locking | Notes |
+|---|---|---|---|
+| **HCP Terraform free** | **No** | ✅ native | Purpose-built (state + lock + history + UI), free to ~500 resources under management. Separate HashiCorp account. **Best no-card option.** |
+| **OCI Object Storage** (S3-compat) | **No** if you already have OCI | ⚠️ may not lock — serialize instead | Reuses your stack; Always-Free ~20 GB. Same `backend "s3"` shape as R2. |
+| **Cloudflare R2** | **Yes** — required to enable R2 (free tier won't charge, see Cost & limits) | ✅ native | All-Cloudflare. |
+| **AWS S3** | **Yes** (new account) | ✅ native | Canonical backend; S3 free tier is 12 months then ~pennies. |
+| Local state (default) | No | n/a | No CI apply, no durability. Fine until infra changes often. |
+
+The `backend "s3"` setup below covers **R2 and OCI** (both S3-compatible — just different
+endpoint + keys). For the no-card paths see **[HCP Terraform](#hcp-terraform-free-tier--no-credit-card)**
+or the **[OCI](#oci-object-storage-s3-compatible)** notes.
+
+## R2 setup
 
 ## Why remote state
 
@@ -116,6 +136,68 @@ If your infra's `github` provider manages resources in **another** repo (e.g. a 
 
 1. **Drop the cross-repo resources** (simplest) — e.g. omit the per-env `github_repository_environment` for `external` tools; they aren't used by host-git-integration deploys.
 2. **Use a PAT** — add a fine-grained PAT (Contents/Administration on both repos) as a secret and set `GITHUB_TOKEN: ${{ secrets.GH_PAT }}` in the job env.
+
+## Cost & limits
+
+For Terraform state, R2 is effectively **free** — state is tiny and applies are infrequent.
+
+R2 **free tier** (per month, no charge under these): **10 GB** stored · **1,000,000** Class A
+ops (writes/lists) · **10,000,000** Class B ops (reads) · **$0 egress, always**. A state
+file is tens-to-hundreds of KB, and each `plan`/`apply` is ~2–3 writes + 1–2 reads (read
+state, write state, lock/unlock). Even ~10,000 applies/month is ~30k ops vs the 1,000,000
+free — and storage rounds to ~0 of 10 GB. Unlike Supabase's idle-pause, R2 has no idle cost.
+
+Guardrails (R2 has no hard auto-cutoff, so use notifications):
+- **Billing notification** — Cloudflare → *Notifications → Create → Billing* → set a low
+  threshold; you'll be emailed long before any real charge.
+- **Scope the R2 token** to the single state bucket (Object Read & Write) — limits blast radius.
+- Keep the bucket **private** (it holds state secrets) — the default.
+
+## HCP Terraform free tier — no credit card
+
+The cleanest path if you'd rather not put a card anywhere: HCP Terraform (Terraform Cloud)
+free tier needs **no credit card**, and gives state + locking + history + a UI, free to ~500
+resources under management. Swap the backend block (instead of `backend "s3"`):
+```hcl
+terraform {
+  cloud {
+    organization = "<your-org>"
+    workspaces { name = "<repo-name>" }
+  }
+}
+```
+`terraform init` prompts to migrate the local state up. The CI workflow is the same minus the
+`AWS_*` R2 env — add `TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}` (a free HCP API
+token) for auth. Trade-off: a separate HashiCorp account rather than staying in your stack.
+
+## OCI Object Storage (S3-compatible)
+
+If you already have OCI (e.g. an `oci` tool), its Object Storage is S3-compatible — **no new
+credit card**, Always-Free ~20 GB. Same `backend "s3"` shape as R2, different endpoint + keys:
+
+1. **Bucket** — OCI Console → Object Storage → Create Bucket (e.g. `greenlight-tfstate`). Note
+   your **namespace** (Object Storage → namespace) and **region** (e.g. `us-ashburn-1`).
+2. **S3-compat keys** — Console → your profile → **Customer Secret Keys** → Generate. This is
+   the S3 Access Key + Secret (set as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`).
+3. **Backend block:**
+   ```hcl
+   terraform {
+     backend "s3" {
+       bucket   = "greenlight-tfstate"
+       key      = "<repo-name>/terraform.tfstate"
+       region   = "<oci-region>"            # e.g. us-ashburn-1
+       endpoints = { s3 = "https://<namespace>.compat.objectstorage.<oci-region>.oraclecloud.com" }
+       skip_credentials_validation = true
+       skip_region_validation      = true
+       skip_requesting_account_id  = true
+       skip_metadata_api_check     = true
+       # NOTE: omit `use_lockfile` — OCI's S3-compat may not honor the conditional writes it
+       # needs. Serialize applies instead (CI `concurrency` group + don't apply from two
+       # places at once). For a solo operator this is safe.
+     }
+   }
+   ```
+4. Migrate + CI are otherwise identical to R2.
 
 ## Security
 
