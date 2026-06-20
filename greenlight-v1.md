@@ -171,7 +171,7 @@ Thin in V1 (two adopted tools + one greenfield). Commands:
 
 `infra/` = root module + reusable `module "tool"` (inputs `{ name, subdomain, lane, target, data, auth, access, envs }`; outputs URLs + resource IDs). Providers (V1): Cloudflare (DNS, Worker routes/custom domains, Tunnel ingress, Worker Cron, D1/KV), GitHub (repo settings, branch protection, environments, secrets), Vercel (HeistMind), Supabase (project-per-env, HeistMind).
 
-- **State:** Cloudflare R2 (S3-compatible) with the S3-native lockfile.
+- **State:** Cloudflare R2 (S3-compatible) with the S3-native lockfile. Setup is reproducible in [docs/terraform-state-r2.md](docs/terraform-state-r2.md) (bucket + R2 S3 token, the `backend "s3"` block, `init -migrate-state`, and the apply-on-push CI workflow).
 - **Pin every provider version hard** — multi-provider Terraform churn (esp. the Cloudflare provider) is the highest-maintenance surface.
 - **Adopt-by-reference:** import existing resources rather than recreating them.
 - **Decision to revisit:** for 5 providers, full Terraform may be heavier than idempotent provider-CLI scripts. V1 keeps Terraform for the declarative "one module block per tool"; flag if the ceremony outweighs the benefit during build.
