@@ -33,9 +33,11 @@ resource "cloudflare_dns_record" "tool" {
   proxied = var.target != "vercel"
 }
 
-# A GitHub deployment environment per env (gates beta/prod; secrets attach here).
+# A GitHub deployment environment per env (gates beta/prod; secrets attach here). Disable
+# for tools whose CI you don't gate via GitHub environments — e.g. an `external` tool whose
+# repo is managed elsewhere (avoids a cross-repo github provider dependency in the wrapper's CI).
 resource "github_repository_environment" "env" {
-  for_each = toset(var.envs)
+  for_each = var.manage_github_environments ? toset(var.envs) : toset([])
 
   repository  = split("/", var.github_repo)[1]
   environment = local.is_blog ? "blog-${each.key}" : "${var.name}-${each.key}"

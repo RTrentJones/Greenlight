@@ -53,3 +53,9 @@ variable "cname_target" {
   default     = ""
   description = "Where the subdomain CNAME points (a *.workers.dev host or a Tunnel host). Set by the wrapper; defaulted for plan/test."
 }
+
+variable "manage_github_environments" {
+  type        = bool
+  default     = true
+  description = "Create a GitHub deployment environment per env. Set false for external tools (repo managed elsewhere) to avoid a cross-repo github dependency."
+}

@@ -36,6 +36,10 @@ run "vercel_supabase_wiring" {
     error_message = "expected one DNS record per env"
   }
   assert {
+    condition     = output.dns_env_count == 0
+    error_message = "external tool should create no github environments (manage_github_environments=false)"
+  }
+  assert {
     condition     = output.keepalive_script == "greenlight-keepalive"
     error_message = "keepalive worker script name wrong"
   }

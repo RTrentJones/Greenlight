@@ -62,6 +62,8 @@ module "dns" {
   target      = "vercel"
   data        = "supabase"
   envs        = ["beta", "prod"]
+  # External tool — its repo is managed elsewhere; no github envs here (CI stays single-repo).
+  manage_github_environments = false
 }
 
 module "keepalive" {
@@ -91,4 +93,7 @@ output "dns_cname_target" {
 }
 output "dns_record_count" {
   value = module.dns.record_count
+}
+output "dns_env_count" {
+  value = module.dns.env_count
 }
