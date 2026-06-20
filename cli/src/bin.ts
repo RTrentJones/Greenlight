@@ -20,6 +20,7 @@ const HELP = `greenlight <command>
   preview <name> [--port <n>]                   build + serve locally + verify (one command)
   verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
+  secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
   secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
   agent sync                                    write the loop skill + CLAUDE.md block into this repo
   adopt <name> --repo <path> --lane --target    onboard an existing tool repo as a thin consumer
