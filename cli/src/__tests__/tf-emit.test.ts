@@ -29,7 +29,7 @@ describe('emitToolTf', () => {
     expect(tf).toMatch(/ref=v\d+\.\d+\.\d+/);
   });
 
-  it('emits only the dns module for an mcp/oci tool (no vercel/supabase)', () => {
+  it('emits a tunnel + dns (wired) for an mcp/oci tool, no vercel/supabase', () => {
     const tf = emitToolTf({
       name: 'bamcp',
       domain: 'example.dev',
@@ -38,9 +38,16 @@ describe('emitToolTf', () => {
       data: 'none',
       envs: ['beta', 'prod'],
     });
+    expect(tf).toContain('module "bamcp_tunnel"');
     expect(tf).toContain('module "bamcp_dns"');
     expect(tf).not.toContain('module "bamcp_vercel"');
     expect(tf).not.toContain('module "bamcp_supabase"');
+    // dns CNAME points at the tunnel; per-env ingress on the convention ports
+    expect(tf).toContain('cname_target = module.bamcp_tunnel.cname_target');
+    expect(tf).toContain('hostname = "bamcp.example.dev", service = "http://localhost:8000"');
+    expect(tf).toContain('hostname = "beta.bamcp.example.dev", service = "http://localhost:8001"');
+    // connector token surfaced (sensitive) for placing on the VM
+    expect(tf).toContain('output "bamcp_tunnel_token"');
     expect(tf).toContain('output "bamcp_prod_url"');
   });
 

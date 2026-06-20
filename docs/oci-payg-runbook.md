@@ -7,6 +7,27 @@ compute**. OCI reclaims Always-Free VMs that look idle, and **pings don't count*
 guard it with a **billing budget alarm**. This is a one-time manual change (greenlight-v1.md
 §6/§13); the harness only nags via `doctor`.
 
+## Deploy architecture (free-tier: A1 VM + Docker + tunnel)
+
+The reusable, Always-Free OCI deploy target is an **Ampere A1 Compute VM** (up to 4 OCPU /
+24 GB free) running Docker — **not OCI Container Instances**, which is a paid managed service
+(the trap that made the old BAMCP pipeline non-free). Greenlight owns the build + ship:
+
+- **Adapter** (`@rtrentjones/greenlight-adapters`, `target: oci`): `greenlight deploy <tool>
+  --env <env>` builds an **ARM64** image (Ampere) → pushes to **GHCR** (free) → `ssh`es to the
+  VM and `docker run`s it as `<tool>-<env>` (`--restart=always`, bound to `127.0.0.1:<port>`).
+  Config via env (synced to CI secrets): `OCI_DEPLOY_HOST` (the VM), `GHCR_OWNER`,
+  `OCI_DEPLOY_USER` (default `ubuntu`), `OCI_APP_PORT` (prod 8000 / beta 8001), `OCI_ENV_FILE`.
+- **Tunnel** (`infra/modules/tunnel`): a Cloudflare Tunnel (cloudflared on the VM) routes
+  `<name>.<domain>` → `http://localhost:<port>` — no public app port. `greenlight add/adopt`
+  emits the module + wires the DNS CNAME; the module's **sensitive token output** goes on the
+  VM (`cloudflared tunnel run --token <token>`).
+- **One-time VM prep:** create the A1 VM (Oracle Linux/Ubuntu) with Docker + a public IP for
+  SSH (port 22; the app port stays private behind the tunnel), drop the per-env `~/<tool>-<env>.env`
+  runtime file, and run cloudflared with the tunnel token. Then deploys are just the adapter.
+
+PAYG (below) is still required so the VM isn't reclaimed.
+
 ## Why
 
 - Always-Free idle-reclaim is triggered by Oracle's heuristics, not by inbound traffic, so a

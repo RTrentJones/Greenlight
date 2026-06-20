@@ -190,14 +190,25 @@ export const PACKS: ProviderPack[] = [
     id: 'oci',
     name: 'Oracle Cloud (OCI)',
     appliesTo: (t) => t.target === 'oci',
-    guide: 'docs/oci-payg-runbook.md — OCI Always-Free → PAYG (avoid idle reclaim)',
+    guide: 'docs/oci-payg-runbook.md — Always-Free A1 VM + Docker + tunnel (PAYG to stop reclaim)',
     tokens: [
       // OCI uses request-signing (API key), not a bearer token — no cheap fetch verify;
-      // setup is a manual runbook. Presence-only here.
+      // PAYG/VM setup is a manual runbook. Presence-only.
       { envVar: 'OCI_CLI_CONFIG', label: 'OCI CLI config / API key (see runbook)', optional: true },
+      // Deploy config (build ARM64 → GHCR → ssh docker run on the A1 VM). Synced to CI.
+      {
+        envVar: 'OCI_DEPLOY_HOST',
+        label: 'Always-Free A1 VM host (IP/DNS) for the SSH deploy',
+        optional: true,
+      },
+      {
+        envVar: 'GHCR_OWNER',
+        label: 'GHCR namespace for the image (defaults to the repo owner)',
+        optional: true,
+      },
     ],
     skill: 'provider-oci',
-    tfModules: ['tool'], // DNS/Tunnel; the oci deploy adapter is separate (out of scope)
+    tfModules: ['tool', 'tunnel'], // DNS + the cloudflared tunnel; deploy = the oci adapter
   },
 ];
 

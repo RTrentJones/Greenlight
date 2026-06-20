@@ -35,10 +35,12 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const slug = opts.slug ?? `OWNER/${name}`;
   const useSupabase = data === 'supabase';
   const useVercel = target === 'vercel';
+  const useOci = target === 'oci';
   const envList = envs.map((e) => `"${e}"`).join(', ');
   const blocks: string[] = [];
 
   const assumes = ['var.cloudflare_zone_id'];
+  if (useOci) assumes.push('var.cloudflare_account_id');
   if (useSupabase) assumes.push('var.supabase_organization_id', 'var.supabase_database_password');
 
   blocks.push(
@@ -109,7 +111,29 @@ variable "${name}_vercel_project_id" {
 }`);
   }
 
-  blocks.push(`# Subdomain DNS — CNAME ${name}/beta.${name} → ${useVercel ? 'cname.vercel-dns.com' : 'the target'}.
+  if (useOci) {
+    // Ports by convention: prod -> 8000, beta -> 8001 (match the deploy's OCI_APP_PORT per env).
+    const routes = envs
+      .map((e) => {
+        const host = e === 'prod' ? `${name}.${domain}` : `beta.${name}.${domain}`;
+        const port = e === 'prod' ? '8000' : '8001';
+        return `    { hostname = "${host}", service = "http://localhost:${port}" },`;
+      })
+      .join('\n');
+    blocks.push(`# Cloudflare Tunnel — reach the Always-Free A1 VM (no public app port) at the subdomain.
+# The token output (sensitive) goes on the VM: \`cloudflared tunnel run --token <token>\`.
+module "${name}_tunnel" {
+  source = "${moduleSource('tunnel', ref)}"
+
+  account_id = var.cloudflare_account_id
+  name       = "${name}-tunnel"
+  ingress = [
+${routes}
+  ]
+}`);
+  }
+
+  blocks.push(`# Subdomain DNS — CNAME ${name}/beta.${name} → ${useVercel ? 'cname.vercel-dns.com' : useOci ? 'the tunnel' : 'the target'}.
 module "${name}_dns" {
   source = "${moduleSource('tool', ref)}"
 
@@ -120,7 +144,7 @@ module "${name}_dns" {
   lane        = "${lane}"
   target      = "${target}"
   data        = "${data}"
-  envs        = [${envList}]${
+  envs        = [${envList}]${useOci ? `\n  cname_target = module.${name}_tunnel.cname_target` : ''}${
     opts.external
       ? '\n  # External repo managed elsewhere; no GitHub envs here so CI stays single-repo.\n  manage_github_environments = false'
       : ''
@@ -133,11 +157,18 @@ module "${name}_dns" {
 #   { name = "${name}", env = "prod", url = module.${name}_supabase.url, anonKey = module.${name}_supabase.anon_key }`);
   }
 
-  blocks.push(
-    useVercel
-      ? `output "${name}_prod_url" { value = module.${name}_vercel.prod_url }
+  const outputs = useVercel
+    ? `output "${name}_prod_url" { value = module.${name}_vercel.prod_url }
 output "${name}_beta_url" { value = module.${name}_vercel.beta_url }`
-      : `output "${name}_prod_url" { value = module.${name}_dns.prod_url }`,
+    : `output "${name}_prod_url" { value = module.${name}_dns.prod_url }`;
+  blocks.push(
+    useOci
+      ? `${outputs}
+output "${name}_tunnel_token" {
+  value     = module.${name}_tunnel.token
+  sensitive = true
+}`
+      : outputs,
   );
 
   return `${hcl(blocks.join('\n\n'))}\n`;
