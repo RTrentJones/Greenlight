@@ -211,6 +211,105 @@ node = "24"
 pnpm = "10.12.1"
 `;
 
+/** Option-B, tool side: a provider-agnostic workflow that builds the container, pushes to GHCR,
+ * then fires a generic `repository_dispatch(deploy-<name>)` to the wrapper. No OCI here. */
+function containerBuildYml(name: string, wrapperRepo: string): string {
+  return `name: greenlight-build
+
+# Provider-agnostic: build the container -> push to GHCR -> notify the wrapper to deploy.
+# The wrapper owns the OCI infra + creds; this repo only needs GREENLIGHT_DISPATCH_TOKEN
+# (a fine-grained PAT with "Contents: write" on ${wrapperRepo}) to fire the dispatch.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve image ref (GHCR namespaces are lowercase)
+        id: img
+        run: echo "ref=ghcr.io/\${GITHUB_REPOSITORY_OWNER,,}/${name}:prod" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: \${{ steps.img.outputs.ref }}
+      - name: Notify wrapper to deploy
+        env:
+          GH_TOKEN: \${{ secrets.GREENLIGHT_DISPATCH_TOKEN }}
+        if: \${{ env.GH_TOKEN != '' }}
+        run: |
+          gh api repos/${wrapperRepo}/dispatches \\
+            -f event_type=deploy-${name} \\
+            -F client_payload[sha]=\${{ github.sha }}
+`;
+}
+
+/** Option-B, wrapper side: on the tool's dispatch, restart the OCI container instance (re-pull)
+ * via \`greenlight deploy\`, then post a commit status back to the tool repo (so push->result
+ * feedback returns there even though the deploy ran here). OCI creds live ONLY here. */
+function deployListenerYml(name: string, toolRepo: string): string {
+  const SECRET = `${name.toUpperCase().replace(/-/g, '_')}_OCI_CONTAINER_INSTANCE_OCID`;
+  return `name: greenlight-deploy-${name}
+
+# Option B: ${toolRepo} fires repository_dispatch(deploy-${name}) after pushing a new image.
+on:
+  repository_dispatch:
+    types: [deploy-${name}]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+      - run: pip install --quiet oci-cli
+      - name: Deploy (restart container instance -> re-pull GHCR image)
+        env:
+          OCI_CLI_USER: \${{ secrets.OCI_CLI_USER }}
+          OCI_CLI_TENANCY: \${{ secrets.OCI_CLI_TENANCY }}
+          OCI_CLI_FINGERPRINT: \${{ secrets.OCI_CLI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: \${{ secrets.OCI_CLI_KEY_CONTENT }}
+          OCI_CLI_REGION: \${{ secrets.OCI_CLI_REGION }}
+          OCI_CONTAINER_INSTANCE_OCID: \${{ secrets.${SECRET} }}
+        run: pnpm exec greenlight deploy ${name} --env prod
+      - name: Report status back to ${toolRepo}
+        if: \${{ always() && github.event.client_payload.sha != '' }}
+        env:
+          GH_TOKEN: \${{ secrets.GREENLIGHT_STATUS_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          gh api repos/${toolRepo}/statuses/\${{ github.event.client_payload.sha }} \\
+            -f state="\${{ job.status == 'success' && 'success' || 'failure' }}" \\
+            -f context="greenlight/deploy-${name}" \\
+            -f description="\${{ job.status }}"
+`;
+}
+
 function writeIfAbsent(path: string, contents: string, label: string): void {
   if (existsSync(path)) {
     console.log(`· ${label} exists — left as-is`);
@@ -343,13 +442,35 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
   materializeAgentKit(dest, { target, data });
   addGreenlightScript(dest);
 
+  // 5) Event-driven deploy (option B) for container-built targets: the tool builds + pushes +
+  // dispatches; the wrapper restarts the instance + reports back. OCI creds stay in the wrapper.
+  if (target === 'oci') {
+    const wrapperSlug = parseRepo(safeGit(cwd, ['remote', 'get-url', 'origin'])) ?? 'OWNER/REPO';
+    writeIfAbsent(
+      join(cwd, `.github/workflows/greenlight-deploy-${name}.yml`),
+      deployListenerYml(name, slug),
+      `.github/workflows/greenlight-deploy-${name}.yml (wrapper deploy listener)`,
+    );
+    writeIfAbsent(
+      join(dest, '.github/workflows/greenlight-build.yml'),
+      containerBuildYml(name, wrapperSlug),
+      `${toolRel}/.github/workflows/greenlight-build.yml (provider-agnostic build → GHCR → dispatch)`,
+    );
+  }
+
   console.log(`
 Next:
-  (in the tool repo) commit the Greenlight kit so it travels with the submodule:
-    cd ${toolRel} && git add .claude .mcp.json CLAUDE.md package.json && git commit -m "chore: greenlight loop kit"
-  (in the wrapper) review infra/${name}.tf, then commit the submodule + infra:
-    git add .gitmodules ${toolRel} infra/${name}.tf verify/${name}.config.ts greenlight.config.ts
-    git commit && git push      # CI (infra.yml) applies. Deploy stays on ${slug}'s own CI.`);
+  (in the tool repo) commit the Greenlight kit + build workflow so they travel with the submodule:
+    cd ${toolRel} && git add .claude .mcp.json CLAUDE.md .github && git commit -m "chore: greenlight loop kit + build"
+  (in the wrapper) review infra/${name}.tf, then commit the submodule + infra + listener:
+    git add .gitmodules ${toolRel} infra/${name}.tf verify/${name}.config.ts greenlight.config.ts .github
+    git commit && git push      # CI (infra.yml) applies. Tool's CI builds; wrapper deploys.${
+      target === 'oci'
+        ? `
+  Secrets: in ${slug} set GREENLIGHT_DISPATCH_TOKEN; in this wrapper set the OCI_CLI_* creds +
+  ${name.toUpperCase().replace(/-/g, '_')}_OCI_CONTAINER_INSTANCE_OCID (from the TF output) + GREENLIGHT_STATUS_TOKEN.`
+        : ''
+    }`);
 }
 
 /**

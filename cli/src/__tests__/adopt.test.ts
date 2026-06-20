@@ -149,8 +149,17 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     expect(subPkg.scripts.greenlight).toContain('npx @rtrentjones/greenlight');
     expect(readFileSync(join(sub, 'server.ts'), 'utf8')).toBe('export const app = 1;\n'); // app untouched
 
-    // --- the tool submodule does NOT get infra/workflows (those live in the wrapper) ---
+    // --- option B: tool gets the provider-agnostic build+dispatch workflow, NOT infra ---
     expect(existsSync(join(sub, 'infra'))).toBe(false);
-    expect(existsSync(join(sub, '.github/workflows'))).toBe(false);
+    const build = readFileSync(join(sub, '.github/workflows/greenlight-build.yml'), 'utf8');
+    expect(build).toContain('event_type=deploy-demo-mcp'); // dispatches to the wrapper
+    expect(build).toContain('ghcr.io'); // builds + pushes the container (no OCI here)
+    // --- the wrapper got the deploy listener (OCI creds + restart live here) ---
+    const listener = readFileSync(
+      join(wrapper, '.github/workflows/greenlight-deploy-demo-mcp.yml'),
+      'utf8',
+    );
+    expect(listener).toContain('types: [deploy-demo-mcp]');
+    expect(listener).toContain('greenlight deploy demo-mcp');
   });
 });
