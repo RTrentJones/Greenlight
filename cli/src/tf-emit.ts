@@ -40,13 +40,20 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const blocks: string[] = [];
 
   const assumes = ['var.cloudflare_zone_id'];
-  if (useOci) assumes.push('var.cloudflare_account_id');
+  if (useOci)
+    assumes.push(
+      'var.cloudflare_account_id',
+      'var.oci_compartment_id',
+      'var.oci_availability_domain',
+      'var.oci_subnet_id',
+    );
   if (useSupabase) assumes.push('var.supabase_organization_id', 'var.supabase_database_password');
+  const ghcrOwner = (slug.split('/')[0] ?? 'owner').toLowerCase(); // GHCR namespaces are lowercase
 
   blocks.push(
     `# ${name} — ${lane}/${target}${useSupabase ? '/supabase' : ''}, emitted by \`greenlight add\`.
 # Review, then commit + push: the wrapper's infra.yml (HCP-backed) runs \`terraform apply\`.
-# Assumes infra/main.tf declares: ${[useVercel && 'vercel', useSupabase && 'supabase'].filter(Boolean).join(' + ') || 'cloudflare + github'} provider(s)
+# Assumes infra/main.tf declares: ${[useVercel && 'vercel', useSupabase && 'supabase', useOci && 'oci'].filter(Boolean).join(' + ') || 'cloudflare + github'} provider(s)
 # and the variables ${assumes.join(', ')}.${
       opts.external
         ? `\n# External tool: app code + deploy live in ${slug}; this manages only its infra here.`
@@ -112,24 +119,38 @@ variable "${name}_vercel_project_id" {
   }
 
   if (useOci) {
-    // Ports by convention: prod -> 8000, beta -> 8001 (match the deploy's OCI_APP_PORT per env).
-    const routes = envs
-      .map((e) => {
-        const host = e === 'prod' ? `${name}.${domain}` : `beta.${name}.${domain}`;
-        const port = e === 'prod' ? '8000' : '8001';
-        return `    { hostname = "${host}", service = "http://localhost:${port}" },`;
-      })
-      .join('\n');
-    blocks.push(`# Cloudflare Tunnel — reach the Always-Free A1 VM (no public app port) at the subdomain.
-# The token output (sensitive) goes on the VM: \`cloudflared tunnel run --token <token>\`.
+    blocks.push(`# OCI Container Instance (Always-Free Ampere A1) running the tool's GHCR image + a cloudflared
+# sidecar; the tunnel routes ${name}.${domain} → the container at localhost:8000. The tool's OWN
+# CI builds + pushes the image (provider-agnostic); deploy = restart the instance (re-pull).
+# beta would be a second instance + tunnel route — mind the free 2-OCPU / 12-GB A1 cap.
 module "${name}_tunnel" {
   source = "${moduleSource('tunnel', ref)}"
 
   account_id = var.cloudflare_account_id
   name       = "${name}-tunnel"
   ingress = [
-${routes}
+    { hostname = "${name}.${domain}", service = "http://localhost:8000" },
   ]
+}
+
+module "${name}_instance" {
+  source = "${moduleSource('oci-container-instance', ref)}"
+
+  name                = "${name}"
+  compartment_id      = var.oci_compartment_id
+  availability_domain = var.oci_availability_domain
+  subnet_id           = var.oci_subnet_id
+  image_url           = var.${name}_image
+  tunnel_token        = module.${name}_tunnel.token
+
+  # Tool runtime env — fill in (e.g. PORT/listen settings, auth). The container must listen on 8000.
+  environment = {}
+}
+
+variable "${name}_image" {
+  type        = string
+  default     = "ghcr.io/${ghcrOwner}/${name}:prod"
+  description = "GHCR image for ${name} (built + pushed by ${slug}'s own CI)."
 }`);
   }
 
@@ -167,6 +188,10 @@ output "${name}_beta_url" { value = module.${name}_vercel.beta_url }`
 output "${name}_tunnel_token" {
   value     = module.${name}_tunnel.token
   sensitive = true
+}
+output "${name}_container_instance_id" {
+  value       = module.${name}_instance.container_instance_id
+  description = "Set as OCI_CONTAINER_INSTANCE_OCID so \`greenlight deploy ${name}\` restarts it."
 }`
       : outputs,
   );
@@ -191,10 +216,20 @@ export function emitWrapperMainTf(opts: {
     req.push('    vercel     = { source = "vercel/vercel", version = "~> 3.0" }');
   if (need.has('supabase'))
     req.push('    supabase   = { source = "supabase/supabase", version = "~> 1.0" }');
+  if (need.has('oci')) req.push('    oci        = { source = "oracle/oci", version = ">= 5.0" }');
 
   const providerBlocks = ['provider "cloudflare" {}', `provider "github" { owner = "${owner}" }`];
   if (need.has('vercel')) providerBlocks.push('provider "vercel" {}');
   if (need.has('supabase')) providerBlocks.push('provider "supabase" {}');
+  if (need.has('oci')) {
+    providerBlocks.push(`provider "oci" {
+  tenancy_ocid = var.oci_tenancy_ocid
+  user_ocid    = var.oci_user_ocid
+  fingerprint  = var.oci_fingerprint
+  private_key  = var.oci_private_key
+  region       = var.oci_region
+}`);
+  }
 
   const vars = ['variable "cloudflare_zone_id" { type = string }'];
   vars.push('variable "cloudflare_account_id" {\n  type    = string\n  default = ""\n}');
@@ -203,6 +238,18 @@ export function emitWrapperMainTf(opts: {
     vars.push(
       'variable "supabase_database_password" {\n  type      = string\n  sensitive = true\n  default   = "import-placeholder" # ignored when importing an existing project\n}',
     );
+  }
+  if (need.has('oci')) {
+    // OCI provider auth (API-key signing) + instance placement — gathered by `greenlight add`,
+    // synced as TF_VAR_oci_*. private_key is the PEM content.
+    vars.push('variable "oci_tenancy_ocid" { type = string }');
+    vars.push('variable "oci_user_ocid" { type = string }');
+    vars.push('variable "oci_fingerprint" { type = string }');
+    vars.push('variable "oci_private_key" {\n  type      = string\n  sensitive = true\n}');
+    vars.push('variable "oci_region" { type = string }');
+    vars.push('variable "oci_compartment_id" { type = string }');
+    vars.push('variable "oci_availability_domain" { type = string }');
+    vars.push('variable "oci_subnet_id" { type = string }');
   }
 
   return `# Wrapper infra (singleton): providers + remote-state backend + shared variables.
@@ -235,5 +282,6 @@ export function providersForTool(tool: { target?: string; data?: string }): stri
   const out = ['cloudflare', 'github'];
   if (ids.has('vercel')) out.push('vercel');
   if (ids.has('supabase')) out.push('supabase');
+  if (ids.has('oci')) out.push('oci');
   return out;
 }

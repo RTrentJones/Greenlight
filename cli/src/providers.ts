@@ -190,25 +190,41 @@ export const PACKS: ProviderPack[] = [
     id: 'oci',
     name: 'Oracle Cloud (OCI)',
     appliesTo: (t) => t.target === 'oci',
-    guide: 'docs/oci-payg-runbook.md — Always-Free A1 VM + Docker + tunnel (PAYG to stop reclaim)',
+    guide:
+      'docs/oci-payg-runbook.md — Always-Free A1 Container Instance + tunnel (PAYG to stop reclaim)',
     tokens: [
-      // OCI uses request-signing (API key), not a bearer token — no cheap fetch verify;
-      // PAYG/VM setup is a manual runbook. Presence-only.
-      { envVar: 'OCI_CLI_CONFIG', label: 'OCI CLI config / API key (see runbook)', optional: true },
-      // Deploy config (build ARM64 → GHCR → ssh docker run on the A1 VM). Synced to CI.
+      // OCI provider auth = API-key request signing (no bearer → no cheap fetch verify). These
+      // flow to the `oci` Terraform provider as TF_VAR_oci_* (the wrapper apply uses them).
+      { envVar: 'TF_VAR_oci_tenancy_ocid', label: 'OCI tenancy OCID', optional: true },
+      { envVar: 'TF_VAR_oci_user_ocid', label: 'OCI user OCID', optional: true },
+      { envVar: 'TF_VAR_oci_fingerprint', label: 'OCI API key fingerprint', optional: true },
       {
-        envVar: 'OCI_DEPLOY_HOST',
-        label: 'Always-Free A1 VM host (IP/DNS) for the SSH deploy',
+        envVar: 'TF_VAR_oci_private_key',
+        label: 'OCI API private key (PEM content)',
+        optional: true,
+      },
+      { envVar: 'TF_VAR_oci_region', label: 'OCI region, e.g. us-ashburn-1', optional: true },
+      // Container Instance placement (your Always-Free compartment / AD / a public subnet).
+      { envVar: 'TF_VAR_oci_compartment_id', label: 'OCI compartment OCID', optional: true },
+      {
+        envVar: 'TF_VAR_oci_availability_domain',
+        label: 'OCI availability domain',
         optional: true,
       },
       {
-        envVar: 'GHCR_OWNER',
-        label: 'GHCR namespace for the image (defaults to the repo owner)',
+        envVar: 'TF_VAR_oci_subnet_id',
+        label: 'OCI subnet OCID (public, for egress)',
+        optional: true,
+      },
+      // Deploy (restart the instance → re-pull). Set from the Terraform output.
+      {
+        envVar: 'OCI_CONTAINER_INSTANCE_OCID',
+        label: 'container instance OCID (TF output) — `greenlight deploy` restarts it',
         optional: true,
       },
     ],
     skill: 'provider-oci',
-    tfModules: ['tool', 'tunnel'], // DNS + the cloudflared tunnel; deploy = the oci adapter
+    tfModules: ['tool', 'tunnel', 'oci-container-instance'], // DNS + tunnel + compute; deploy = restart
   },
 ];
 

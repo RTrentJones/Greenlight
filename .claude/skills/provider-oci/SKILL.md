@@ -1,47 +1,58 @@
 ---
 name: provider-oci
-description: How Oracle Cloud (OCI) works in a Greenlight setup — the `target: oci` runtime for stateful MCP servers (BAMCP) on a free-tier Ampere A1 VM + Docker, the build-ARM64→GHCR→ssh deploy adapter, the Cloudflare Tunnel module, the Always-Free idle-reclaim trap (fixed by PAYG, manual), and keepalive. Use when wiring/debugging an oci-target tool.
+description: How Oracle Cloud (OCI) works in a Greenlight setup — the `target: oci` runtime for stateful MCP servers (BAMCP) on a free-tier Ampere A1 Container Instance, the provider-agnostic build-via-GitHub→GHCR model, Greenlight-owned compute + tunnel Terraform, the OCI token CLI, deploy = restart, and the Always-Free idle-reclaim trap (PAYG, manual). Use when wiring/debugging an oci-target tool.
 ---
 
 # provider-oci
 
 OCI is the `target: oci` runtime for **stateful** services that don't fit serverless — the
-canonical case is **BAMCP** (a stateful MCP server). Greenlight owns the build + ship in a
-reusable, **free-tier** way.
+canonical case is **BAMCP** (a stateful MCP server). The split: **the tool is provider-agnostic
+and just builds a container via GitHub; Greenlight owns the OCI infra** (compute + tunnel + DNS),
+configured in the wrapper.
 
-## Free tier — A1 VM + Docker, NOT Container Instances
+## Free tier — A1 Container Instance + GHCR
 
-The Always-Free path is an **Ampere A1 Compute VM** (up to 4 OCPU / 24 GB free) running
-Docker. **OCI Container Instances is NOT Always-Free** — that's the paid trap to avoid. The
-app binds to `localhost`; a **Cloudflare Tunnel** (cloudflared sidecar/container on the VM)
-exposes `<name>.<domain>` with TLS — no public app port, no load balancer.
+The Always-Free path is an **OCI Container Instance** on **Ampere A1** (the A1 allotment — 2 OCPU
+/ 12 GB as of 2026-06-15 — is shared across VM / Bare-Metal / Container-Instances). No VM to
+provision, no cloud-init, no SSH. The image comes from **GHCR** (free); **OCI's own registry
+(OCIR) is paid** — that was the trap in the old BAMCP pipeline. The container instance runs the
+tool container + a **cloudflared sidecar** (shared netns → localhost), exposed at `<name>.<domain>`.
 
-## Deploy adapter (`@rtrentjones/greenlight-adapters`)
+## Provider-agnostic tool → GHCR
 
-`greenlight deploy <tool> --env <env>` (oci) = build an **ARM64** image (Ampere) → push to
-**GHCR** (free) → `ssh` to the VM and `docker run` it (per-env container `<tool>-<env>`,
-`--restart=always`, bound to `127.0.0.1:<port>`). Env it reads (from secrets, synced to CI):
-- `OCI_DEPLOY_HOST` — the A1 VM (IP/DNS) for SSH.
-- `GHCR_OWNER` — image namespace (defaults to the repo owner).
-- `OCI_DEPLOY_USER` (default `ubuntu`), `OCI_APP_PORT` (default 8000; convention prod=8000, beta=8001),
-  `OCI_ENV_FILE` (default `~/<tool>-<env>.env` on the VM — the runtime env lives there).
+The tool repo (BAMCP) has ONE job: a GitHub Actions workflow that **builds + pushes the container
+to GHCR**. No OCI, no SSH, no deploy logic — portable to any provider's infra.
 
-## Terraform — `infra/modules/tunnel` + `tool`
+## Greenlight OCI infra (Terraform, in the wrapper)
 
-`greenlight add/adopt` emits, per oci tool: a **`tunnel`** module (cloudflared tunnel +
-ingress `<name>.<domain> → http://localhost:8000`, self-generated secret, **sensitive token
-output**) and the **`tool`** DNS module with `cname_target = module.<tool>_tunnel.cname_target`
-(CNAME → `<id>.cfargotunnel.com`). Put the token output on the VM: `cloudflared tunnel run --token <token>`.
+`greenlight add/adopt` emits, per oci tool:
+- **`oci-container-instance`** module — the container instance (tool image from GHCR + cloudflared
+  sidecar with the tunnel token), `CI.Standard.A1.Flex` within the free allotment, restart ALWAYS.
+- **`tunnel`** module — cloudflared tunnel + ingress `<name>.<domain> → http://localhost:8000` + token.
+- **`tool`** DNS module — CNAME → the tunnel.
+The `oci` provider (auth below) is added to `infra/main.tf`.
+
+## OCI token CLI
+
+`greenlight add`/`init` gather the OCI creds into `.greenlight/secrets.env` (+ GH secrets):
+**provider auth** `TF_VAR_oci_tenancy_ocid`, `TF_VAR_oci_user_ocid`, `TF_VAR_oci_fingerprint`,
+`TF_VAR_oci_private_key` (PEM), `TF_VAR_oci_region`; **placement** `TF_VAR_oci_compartment_id`,
+`TF_VAR_oci_availability_domain`, `TF_VAR_oci_subnet_id`; and `OCI_CONTAINER_INSTANCE_OCID`
+(the Terraform output, for deploy). Auth is API-key request signing — no bearer, so no fetch-verify.
+
+## Deploy = restart (re-pull)
+
+`greenlight deploy <tool>` (oci) just runs `oci container-instances container-instance restart
+--container-instance-id <OCID>` — the instance re-pulls the latest GHCR image. The tool's CI
+builds; an event trigger (the chosen deploy option) fires the restart. The adapter does NOT build.
 
 ## The idle-reclaim trap — fixed manually, NOT by code
 
-OCI **Always-Free reclaims idle compute**; pings don't count, only account standing. The fix
-is converting the tenancy to **Pay-As-You-Go** (+ a low billing budget alarm) — a one-time
-manual change (see `docs/oci-payg-runbook.md`). Keepalive only **health-checks** the service
-and nags; it cannot stop reclaim. Never imply otherwise.
+OCI **Always-Free reclaims idle compute**; pings don't count, only account standing. Convert the
+tenancy to **Pay-As-You-Go** (+ a low billing budget alarm) — a one-time manual change (see
+`docs/oci-payg-runbook.md`). Keepalive only **health-checks** + nags; it cannot stop reclaim.
 
-## Auth, verify
-OCI itself uses **API-key request signing** (no bearer token → no cheap `verify()`). The tool
-is typically an **MCP server**: verify with `mode: mcp` (initialize → `tools/list` → call →
-assert auth rejection), connect at `<name>.<domain>/mcp` (streamable HTTP). Keepalive
-health-checks `target: oci` services and alerts via the sink.
+## Verify
+The tool is typically an **MCP server**: verify with `mode: mcp`, connect at `<name>.<domain>/mcp`
+(FastMCP's `streamable_http_app()` serves `/mcp` by default — the convention). If auth gates
+`initialize`, supply a token or use an `api`-mode 401 check. Keepalive health-checks `target: oci`.

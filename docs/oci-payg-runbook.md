@@ -7,26 +7,31 @@ compute**. OCI reclaims Always-Free VMs that look idle, and **pings don't count*
 guard it with a **billing budget alarm**. This is a one-time manual change (greenlight-v1.md
 §6/§13); the harness only nags via `doctor`.
 
-## Deploy architecture (free-tier: A1 VM + Docker + tunnel)
+## Deploy architecture (free-tier: A1 Container Instance + tunnel)
 
-The reusable, Always-Free OCI deploy target is an **Ampere A1 Compute VM** (up to 4 OCPU /
-24 GB free) running Docker — **not OCI Container Instances**, which is a paid managed service
-(the trap that made the old BAMCP pipeline non-free). Greenlight owns the build + ship:
+The Always-Free OCI target is an **OCI Container Instance** on **Ampere A1** — the A1 allotment
+(2 OCPU / 12 GB as of 2026-06-15) is **shared across VM / Bare-Metal / Container-Instances**, so
+container instances are free within it. No VM to provision, no cloud-init, no SSH. The image
+comes from **GHCR** (free); **OCIR — Oracle's own registry — is paid** (that was the non-free part
+of the old BAMCP pipeline). Split of responsibility:
 
-- **Adapter** (`@rtrentjones/greenlight-adapters`, `target: oci`): `greenlight deploy <tool>
-  --env <env>` builds an **ARM64** image (Ampere) → pushes to **GHCR** (free) → `ssh`es to the
-  VM and `docker run`s it as `<tool>-<env>` (`--restart=always`, bound to `127.0.0.1:<port>`).
-  Config via env (synced to CI secrets): `OCI_DEPLOY_HOST` (the VM), `GHCR_OWNER`,
-  `OCI_DEPLOY_USER` (default `ubuntu`), `OCI_APP_PORT` (prod 8000 / beta 8001), `OCI_ENV_FILE`.
-- **Tunnel** (`infra/modules/tunnel`): a Cloudflare Tunnel (cloudflared on the VM) routes
-  `<name>.<domain>` → `http://localhost:<port>` — no public app port. `greenlight add/adopt`
-  emits the module + wires the DNS CNAME; the module's **sensitive token output** goes on the
-  VM (`cloudflared tunnel run --token <token>`).
-- **One-time VM prep:** create the A1 VM (Oracle Linux/Ubuntu) with Docker + a public IP for
-  SSH (port 22; the app port stays private behind the tunnel), drop the per-env `~/<tool>-<env>.env`
-  runtime file, and run cloudflared with the tunnel token. Then deploys are just the adapter.
+- **Tool (provider-agnostic):** the tool repo's GitHub Actions only **builds + pushes the
+  container to GHCR**. No OCI, no deploy logic — portable to any provider.
+- **Greenlight infra (Terraform, in the wrapper):** `greenlight add/adopt` emits
+  - `oci-container-instance` — the container instance: the tool image from GHCR + a **cloudflared
+    sidecar** (shared netns → `localhost:8000`), `CI.Standard.A1.Flex`, restart ALWAYS;
+  - `tunnel` — the Cloudflare Tunnel + ingress `<name>.<domain> → http://localhost:8000` + the
+    connector token (wired into the sidecar);
+  - `tool` — the DNS CNAME → the tunnel.
+- **Deploy = restart (re-pull):** `greenlight deploy <tool>` runs `oci container-instances
+  container-instance restart --container-instance-id <OCID>` — the instance re-pulls the latest
+  image. The adapter does NOT build; the tool's CI does. An event trigger (the chosen deploy
+  option) fires the restart after a build.
+- **Creds (CLI-gathered):** provider auth `TF_VAR_oci_{tenancy_ocid,user_ocid,fingerprint,private_key,region}`
+  + placement `TF_VAR_oci_{compartment_id,availability_domain,subnet_id}` + `OCI_CONTAINER_INSTANCE_OCID`
+  (the TF output, for deploy). `greenlight add` gathers them.
 
-PAYG (below) is still required so the VM isn't reclaimed.
+PAYG (below) is still required so the instance isn't reclaimed.
 
 ## Why
 

@@ -29,7 +29,7 @@ describe('emitToolTf', () => {
     expect(tf).toMatch(/ref=v\d+\.\d+\.\d+/);
   });
 
-  it('emits a tunnel + dns (wired) for an mcp/oci tool, no vercel/supabase', () => {
+  it('emits tunnel + container-instance + dns (wired) for an mcp/oci tool', () => {
     const tf = emitToolTf({
       name: 'bamcp',
       domain: 'example.dev',
@@ -37,17 +37,23 @@ describe('emitToolTf', () => {
       target: 'oci',
       data: 'none',
       envs: ['beta', 'prod'],
+      slug: 'RTrentJones/BAMCP',
     });
     expect(tf).toContain('module "bamcp_tunnel"');
+    expect(tf).toContain('module "bamcp_instance"');
+    expect(tf).toContain('infra/modules/oci-container-instance');
     expect(tf).toContain('module "bamcp_dns"');
     expect(tf).not.toContain('module "bamcp_vercel"');
     expect(tf).not.toContain('module "bamcp_supabase"');
-    // dns CNAME points at the tunnel; per-env ingress on the convention ports
-    expect(tf).toContain('cname_target = module.bamcp_tunnel.cname_target');
+    // tunnel routes prod to the container; dns CNAMEs at the tunnel
     expect(tf).toContain('hostname = "bamcp.example.dev", service = "http://localhost:8000"');
-    expect(tf).toContain('hostname = "beta.bamcp.example.dev", service = "http://localhost:8001"');
-    // connector token surfaced (sensitive) for placing on the VM
+    expect(tf).toContain('cname_target = module.bamcp_tunnel.cname_target');
+    // image comes from the tool's own CI (GHCR, lowercased owner); instance gets the tunnel token
+    expect(tf).toContain('default     = "ghcr.io/rtrentjones/bamcp:prod"');
+    expect(tf).toContain('tunnel_token        = module.bamcp_tunnel.token');
+    // outputs: url + token + the instance OCID (for OCI_CONTAINER_INSTANCE_OCID)
     expect(tf).toContain('output "bamcp_tunnel_token"');
+    expect(tf).toContain('output "bamcp_container_instance_id"');
     expect(tf).toContain('output "bamcp_prod_url"');
   });
 
