@@ -27,3 +27,6 @@ greenlight.config.ts
 
 # Claude Code local (per-user) settings
 .claude/settings.local.json
+
+# packed tarballs (pnpm pack / inspection)
+*.tgz
