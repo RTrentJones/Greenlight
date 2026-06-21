@@ -30,8 +30,9 @@ of the old BAMCP pipeline). Split of responsibility:
   image. The adapter does NOT build; the tool's CI does. An event trigger (the chosen deploy
   option) fires the restart after a build.
 - **Creds (CLI-gathered) — only the API key is manual:** `TF_VAR_oci_{tenancy_ocid,user_ocid,fingerprint,private_key,region}`
-  (+ optional `TF_VAR_oci_compartment_id`, blank → tenancy root) + `OCI_CONTAINER_INSTANCE_OCID`
-  (the TF output, set after the first apply, for deploy). The VCN/subnet/AD are IaC, not secrets.
+  (+ optional `TF_VAR_oci_compartment_id`, blank → tenancy root). The VCN/subnet/AD are IaC, not
+  secrets, and the container instance OCID is **auto-resolved** by the deploy workflow (by display
+  name) — nothing to set after apply.
   `greenlight secrets gather bamcp --repo <o/r> [--oci-config <path>]` pushes them straight to GitHub.
 
 Stay free; PAYG is the optional fallback below.

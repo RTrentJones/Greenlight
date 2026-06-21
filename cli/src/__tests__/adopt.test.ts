@@ -161,5 +161,8 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     );
     expect(listener).toContain('types: [deploy-demo-mcp]');
     expect(listener).toContain('greenlight deploy demo-mcp');
+    // the instance OCID is resolved by display-name at deploy time — not a manually-set secret
+    expect(listener).toContain('--display-name demo-mcp');
+    expect(listener).not.toContain('secrets.OCI_CONTAINER_INSTANCE_OCID');
   });
 });

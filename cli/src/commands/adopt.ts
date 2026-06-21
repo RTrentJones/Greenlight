@@ -287,7 +287,7 @@ jobs:
       - uses: jdx/mise-action@v2
       - run: pnpm install --frozen-lockfile
       - run: pip install --quiet oci-cli
-      - name: Deploy (restart container instance -> re-pull GHCR image)
+      - name: Deploy (resolve instance OCID by name -> restart -> re-pull GHCR image)
         env:
           # The OCI CLI reuses the SAME TF_VAR_OCI_* secrets the apply uses — one secret set.
           OCI_CLI_TENANCY: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
@@ -295,8 +295,21 @@ jobs:
           OCI_CLI_FINGERPRINT: \${{ secrets.TF_VAR_OCI_FINGERPRINT }}
           OCI_CLI_KEY_CONTENT: \${{ secrets.TF_VAR_OCI_PRIVATE_KEY }}
           OCI_CLI_REGION: \${{ secrets.TF_VAR_OCI_REGION }}
-          OCI_CONTAINER_INSTANCE_OCID: \${{ secrets.OCI_CONTAINER_INSTANCE_OCID }}
-        run: pnpm exec greenlight deploy ${name} --env prod
+          OCI_COMPARTMENT_ID: \${{ secrets.TF_VAR_OCI_COMPARTMENT_ID }}
+        run: |
+          # The instance OCID is abstracted from the developer: resolve it from OCI by the
+          # instance's display name (= the tool name, set by the oci-container-instance module).
+          # No manually-fetched/stored OCID secret. Compartment falls back to the tenancy (root).
+          COMPARTMENT="\${OCI_COMPARTMENT_ID:-\$OCI_CLI_TENANCY}"
+          OCID=\$(oci container-instances container-instance list \\
+            --compartment-id "\$COMPARTMENT" --display-name ${name} \\
+            --lifecycle-state ACTIVE --query 'data.items[0].id' --raw-output 2>/dev/null)
+          if [ -z "\$OCID" ] || [ "\$OCID" = "null" ]; then
+            echo "::error::no ACTIVE container instance named '${name}' in compartment \$COMPARTMENT"
+            exit 1
+          fi
+          echo "Resolved ${name} instance: \$OCID"
+          OCI_CONTAINER_INSTANCE_OCID="\$OCID" pnpm exec greenlight deploy ${name} --env prod
       - name: Report status back to ${toolRepo}
         if: \${{ always() && github.event.client_payload.sha != '' }}
         env:
@@ -469,7 +482,7 @@ Next:
         ? `
   Secrets (guided): greenlight secrets gather ${name} --repo <wrapper>   # TF_VAR_OCI_* + GREENLIGHT_STATUS_TOKEN
                     greenlight secrets gather ${name} --repo ${slug}   # GREENLIGHT_DISPATCH_TOKEN
-  After apply, set OCI_CONTAINER_INSTANCE_OCID (the TF output) in the wrapper.`
+  The instance OCID is auto-resolved by the deploy workflow (by display name) — nothing to set.`
         : ''
     }`);
 }
