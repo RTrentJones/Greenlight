@@ -155,6 +155,11 @@ gitignored `.greenlight/secrets.env` — **never committed or echoed**.
   `--oci-config <path>` ingests OCI's API-key config preview + `.pem` to auto-fill the auth values.
 - **`secrets sync`** — push `.greenlight/secrets.env` to GitHub Actions secrets.
 
+For a poly-repo (adopted) tool, tokens **split** across the wrapper and the tool sub-repo: provider
+creds live only in the wrapper; the tool repo holds exactly one PAT (`GREENLIGHT_DISPATCH_TOKEN`).
+The full wrapper↔sub-repo topology + the two option-B PATs are in
+[provider-tokens.md](provider-tokens.md#poly-repo-adopted-tool-tokens--wrapper--sub-repo).
+
 Prefer GitHub **OIDC → cloud** over long-lived Actions secrets. `private` tools and all `beta.*` sit
 behind Cloudflare Access; mutating/private MCP servers default to `bearer`/`oauth`, never `none`.
 

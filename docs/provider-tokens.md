@@ -69,6 +69,51 @@ Verify: `curl -s "https://api.vercel.com/v2/user" -H "Authorization: Bearer $VER
 
 ---
 
+## Poly-repo (adopted tool) tokens — wrapper ↔ sub-repo
+
+When you `greenlight adopt <tool>` an existing repo (the default **wrapper-centric** model), the
+tool lives as a `tools/<tool>` git submodule and the two repos split responsibilities — so the
+**tokens split too**. The rule: **provider credentials live ONLY in the wrapper; the tool sub-repo
+holds exactly one token.** Never put OCI/Cloudflare/cloud creds on the tool repo (it doesn't deploy —
+it only builds a container + pings the wrapper).
+
+| token | lives on | fine-grained scope | purpose |
+|---|---|---|---|
+| `GREENLIGHT_DISPATCH_TOKEN` | **tool sub-repo** | **Contents: write** on the **wrapper** repo | the tool's `greenlight-build` fires `repository_dispatch` → the wrapper deploys |
+| `GREENLIGHT_STATUS_TOKEN` | **wrapper** repo | **Commit statuses: write** on the **tool** repo | the wrapper posts deploy/verify status back to the tool's commit |
+| `TF_VAR_OCI_*`, `CLOUDFLARE_API_TOKEN` (+ Tunnel:Edit), `TF_API_TOKEN`, … | **wrapper** repo | (see above) | the wrapper owns all infra + apply + deploy |
+
+The tool sub-repo's build pushes to GHCR with the **built-in `GITHUB_TOKEN`** (no PAT needed for
+that), so after onboarding it should hold **only `GREENLIGHT_DISPATCH_TOKEN`**. The container
+instance OCID is **not** a token — the deploy workflow resolves it from OCI by display-name.
+
+### Create the two PATs
+
+Both are **fine-grained** PATs at **https://github.com/settings/personal-access-tokens/new** →
+*Resource owner* = your org → *Only select repositories* → the one repo named below → *Repository
+permissions* set the one permission below → Generate.
+
+- **`GREENLIGHT_DISPATCH_TOKEN`** — repo: the **wrapper**; permission: **Contents → Read and write**.
+- **`GREENLIGHT_STATUS_TOKEN`** — repo: the **tool**; permission: **Commit statuses → Read and write**.
+
+### Push them with the guided CLI
+
+`greenlight secrets gather` is link-first, hidden-input, and writes straight to GitHub (no disk, no
+logs). Run it once per repo — it prompts only for the tokens that repo needs:
+
+```sh
+# the wrapper: OCI auth + GREENLIGHT_STATUS_TOKEN (also add Cloudflare Tunnel:Edit to the existing
+# CLOUDFLARE_API_TOKEN for oci tools). --oci-config ingests the OCI API-key config preview + .pem.
+greenlight secrets gather <tool> --repo <owner>/<wrapper> [--oci-config ~/path/config]
+
+# the tool sub-repo: GREENLIGHT_DISPATCH_TOKEN only (skip the rest at the prompts)
+greenlight secrets gather <tool> --repo <owner>/<tool>
+```
+
+`gather` flags each prompt `[already set]` / `[not set]` so you know when a paste would override.
+
+---
+
 ## Where they go: `.greenlight/secrets.env` (gitignored)
 
 ```sh
