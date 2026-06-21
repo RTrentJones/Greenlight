@@ -40,13 +40,7 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const blocks: string[] = [];
 
   const assumes = ['var.cloudflare_zone_id'];
-  if (useOci)
-    assumes.push(
-      'var.cloudflare_account_id',
-      'var.oci_compartment_id',
-      'var.oci_availability_domain',
-      'var.oci_subnet_id',
-    );
+  if (useOci) assumes.push('var.cloudflare_account_id', 'local.oci_compartment_id');
   if (useSupabase) assumes.push('var.supabase_organization_id', 'var.supabase_database_password');
   const ghcrOwner = (slug.split('/')[0] ?? 'owner').toLowerCase(); // GHCR namespaces are lowercase
 
@@ -133,15 +127,23 @@ module "${name}_tunnel" {
   ]
 }
 
+# Network is IaC too — VCN + public subnet (egress only). No hand-clicking in the OCI console.
+module "${name}_network" {
+  source = "${moduleSource('oci-network', ref)}"
+
+  name           = "${name}"
+  compartment_id = local.oci_compartment_id
+}
+
 module "${name}_instance" {
   source = "${moduleSource('oci-container-instance', ref)}"
 
-  name                = "${name}"
-  compartment_id      = var.oci_compartment_id
-  availability_domain = var.oci_availability_domain
-  subnet_id           = var.oci_subnet_id
-  image_url           = var.${name}_image
-  tunnel_token        = module.${name}_tunnel.token
+  name           = "${name}"
+  compartment_id = local.oci_compartment_id
+  subnet_id      = module.${name}_network.subnet_id
+  image_url      = var.${name}_image
+  tunnel_token   = module.${name}_tunnel.token
+  # availability_domain is auto-picked (first AD in the compartment); set it to pin a specific AD.
 
   # Tool runtime env — fill in (e.g. PORT/listen settings, auth). The container must listen on 8000.
   environment = {}
@@ -240,17 +242,27 @@ export function emitWrapperMainTf(opts: {
     );
   }
   if (need.has('oci')) {
-    // OCI provider auth (API-key signing) + instance placement — gathered by `greenlight add`,
-    // synced as TF_VAR_oci_*. private_key is the PEM content.
+    // OCI provider auth (API-key signing) — gathered by `greenlight secrets gather`, synced as
+    // TF_VAR_oci_*. private_key is the PEM content. The VCN/subnet/AD are IaC (oci-network module
+    // + AD data source), so the ONLY manual OCI inputs are these auth values. compartment_id is
+    // optional — blank falls back to the tenancy (root) compartment via the local below.
     vars.push('variable "oci_tenancy_ocid" { type = string }');
     vars.push('variable "oci_user_ocid" { type = string }');
     vars.push('variable "oci_fingerprint" { type = string }');
     vars.push('variable "oci_private_key" {\n  type      = string\n  sensitive = true\n}');
     vars.push('variable "oci_region" { type = string }');
-    vars.push('variable "oci_compartment_id" { type = string }');
-    vars.push('variable "oci_availability_domain" { type = string }');
-    vars.push('variable "oci_subnet_id" { type = string }');
+    vars.push(
+      'variable "oci_compartment_id" {\n  type    = string\n  default = "" # blank → tenancy (root) compartment\n}',
+    );
   }
+
+  // OCI tools share one compartment, defaulted to the tenancy (root) so it isn't a manual input.
+  const localsBlock = need.has('oci')
+    ? `\nlocals {
+  # Compartment for all OCI tools — blank var.oci_compartment_id falls back to the tenancy (root).
+  oci_compartment_id = var.oci_compartment_id != "" ? var.oci_compartment_id : var.oci_tenancy_ocid
+}\n`
+    : '';
 
   return `# Wrapper infra (singleton): providers + remote-state backend + shared variables.
 # \`greenlight add\` appends per-tool module blocks as infra/<name>.tf. Apply is CI/CD's job
@@ -272,7 +284,7 @@ ${req.join('\n')}
 ${providerBlocks.join('\n')}
 
 ${vars.join('\n')}
-`;
+${localsBlock}`;
 }
 
 /** Which `required_providers`/provider blocks a tool needs in main.tf (cloudflare/github

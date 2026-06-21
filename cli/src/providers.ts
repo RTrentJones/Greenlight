@@ -213,16 +213,12 @@ export const PACKS: ProviderPack[] = [
         optional: true,
       },
       { envVar: 'TF_VAR_oci_region', label: 'OCI region, e.g. us-ashburn-1', optional: true },
-      // Container Instance placement (your Always-Free compartment / AD / a public subnet).
-      { envVar: 'TF_VAR_oci_compartment_id', label: 'OCI compartment OCID', optional: true },
+      // Compartment is the ONLY placement input, and it's optional — blank → the tenancy (root)
+      // compartment. The VCN/subnet are created by the oci-network module and the availability
+      // domain is looked up by a data source, so neither is a manual secret anymore.
       {
-        envVar: 'TF_VAR_oci_availability_domain',
-        label: 'OCI availability domain',
-        optional: true,
-      },
-      {
-        envVar: 'TF_VAR_oci_subnet_id',
-        label: 'OCI subnet OCID (public, for egress)',
+        envVar: 'TF_VAR_oci_compartment_id',
+        label: 'OCI compartment OCID (optional — blank uses the tenancy/root compartment)',
         optional: true,
       },
       // Deploy (restart the instance → re-pull). Set from the Terraform output.
@@ -247,7 +243,8 @@ export const PACKS: ProviderPack[] = [
       },
     ],
     skill: 'provider-oci',
-    tfModules: ['tool', 'tunnel', 'oci-container-instance'], // DNS + tunnel + compute; deploy = restart
+    // DNS + tunnel + network (VCN/subnet) + compute; deploy = restart.
+    tfModules: ['tool', 'tunnel', 'oci-network', 'oci-container-instance'],
   },
 ];
 

@@ -17,8 +17,11 @@ of the old BAMCP pipeline). Split of responsibility:
 - **Tool (provider-agnostic):** the tool repo's GitHub Actions only **builds + pushes the
   container to GHCR**. No OCI, no deploy logic — portable to any provider.
 - **Greenlight infra (Terraform, in the wrapper):** `greenlight add/adopt` emits
+  - `oci-network` — a **VCN + public (egress-only) subnet** + internet gateway/route/security list,
+    so the network is IaC (never hand-clicked in the console);
   - `oci-container-instance` — the container instance: the tool image from GHCR + a **cloudflared
-    sidecar** (shared netns → `localhost:8000`), `CI.Standard.A1.Flex`, restart ALWAYS;
+    sidecar** (shared netns → `localhost:8000`), `CI.Standard.A1.Flex`, restart ALWAYS; the
+    **availability domain is auto-looked-up** (`oci_identity_availability_domains` data source);
   - `tunnel` — the Cloudflare Tunnel + ingress `<name>.<domain> → http://localhost:8000` + the
     connector token (wired into the sidecar);
   - `tool` — the DNS CNAME → the tunnel.
@@ -26,9 +29,10 @@ of the old BAMCP pipeline). Split of responsibility:
   container-instance restart --container-instance-id <OCID>` — the instance re-pulls the latest
   image. The adapter does NOT build; the tool's CI does. An event trigger (the chosen deploy
   option) fires the restart after a build.
-- **Creds (CLI-gathered):** provider auth `TF_VAR_oci_{tenancy_ocid,user_ocid,fingerprint,private_key,region}`
-  + placement `TF_VAR_oci_{compartment_id,availability_domain,subnet_id}` + `OCI_CONTAINER_INSTANCE_OCID`
-  (the TF output, for deploy). `greenlight secrets gather bamcp` pushes them straight to GitHub.
+- **Creds (CLI-gathered) — only the API key is manual:** `TF_VAR_oci_{tenancy_ocid,user_ocid,fingerprint,private_key,region}`
+  (+ optional `TF_VAR_oci_compartment_id`, blank → tenancy root) + `OCI_CONTAINER_INSTANCE_OCID`
+  (the TF output, set after the first apply, for deploy). The VCN/subnet/AD are IaC, not secrets.
+  `greenlight secrets gather bamcp --repo <o/r> [--oci-config <path>]` pushes them straight to GitHub.
 
 Stay free; PAYG is the optional fallback below.
 

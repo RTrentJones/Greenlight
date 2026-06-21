@@ -8,9 +8,19 @@
 # Private GHCR image? add `image_pull_secrets { ... }` here (a registry credential). Default
 # assumes a public package.
 
+# Availability domains are a fact of the region, not something you create — look them up
+# instead of making the caller paste one. var.availability_domain overrides when set.
+data "oci_identity_availability_domains" "ads" {
+  compartment_id = var.compartment_id
+}
+
+locals {
+  availability_domain = var.availability_domain != "" ? var.availability_domain : data.oci_identity_availability_domains.ads.availability_domains[0].name
+}
+
 resource "oci_container_instances_container_instance" "this" {
   compartment_id      = var.compartment_id
-  availability_domain = var.availability_domain
+  availability_domain = local.availability_domain
   display_name        = var.name
   shape               = var.shape
 

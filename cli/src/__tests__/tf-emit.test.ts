@@ -45,12 +45,20 @@ describe('emitToolTf', () => {
     expect(tf).toContain('module "bamcp_dns"');
     expect(tf).not.toContain('module "bamcp_vercel"');
     expect(tf).not.toContain('module "bamcp_supabase"');
+    // network is IaC: a VCN/subnet module, wired into the instance; no manual subnet/AD vars
+    expect(tf).toContain('module "bamcp_network"');
+    expect(tf).toContain('infra/modules/oci-network');
+    expect(tf).toContain('subnet_id      = module.bamcp_network.subnet_id');
+    expect(tf).not.toContain('var.oci_subnet_id');
+    expect(tf).not.toContain('var.oci_availability_domain');
+    // compartment comes from the shared local (blank → tenancy root), not a per-tool secret
+    expect(tf).toContain('compartment_id = local.oci_compartment_id');
     // tunnel routes prod to the container; dns CNAMEs at the tunnel
     expect(tf).toContain('hostname = "bamcp.example.dev", service = "http://localhost:8000"');
     expect(tf).toContain('cname_target = module.bamcp_tunnel.cname_target');
     // image comes from the tool's own CI (GHCR, lowercased owner); instance gets the tunnel token
     expect(tf).toContain('default     = "ghcr.io/rtrentjones/bamcp:prod"');
-    expect(tf).toContain('tunnel_token        = module.bamcp_tunnel.token');
+    expect(tf).toContain('tunnel_token   = module.bamcp_tunnel.token');
     // outputs: url + token + the instance OCID (for OCI_CONTAINER_INSTANCE_OCID)
     expect(tf).toContain('output "bamcp_tunnel_token"');
     expect(tf).toContain('output "bamcp_container_instance_id"');
@@ -90,6 +98,19 @@ describe('emitWrapperMainTf', () => {
     const tf = emitWrapperMainTf({ domain: 'x.dev', providers: ['cloudflare', 'github'] });
     expect(tf).not.toContain('vercel/vercel');
     expect(tf).not.toContain('supabase/supabase');
+  });
+
+  it('for oci: auth vars + a compartment local (root default), but no manual subnet/AD vars', () => {
+    const tf = emitWrapperMainTf({ domain: 'x.dev', providers: ['cloudflare', 'github', 'oci'] });
+    expect(tf).toContain('provider "oci"');
+    expect(tf).toContain('variable "oci_tenancy_ocid"');
+    expect(tf).toContain('variable "oci_private_key"');
+    // compartment is optional (blank → root) and the local resolves it
+    expect(tf).toContain('variable "oci_compartment_id"');
+    expect(tf).toContain('oci_compartment_id = var.oci_compartment_id != ""');
+    // subnet/AD are IaC now — not wrapper vars
+    expect(tf).not.toContain('variable "oci_subnet_id"');
+    expect(tf).not.toContain('variable "oci_availability_domain"');
   });
 });
 

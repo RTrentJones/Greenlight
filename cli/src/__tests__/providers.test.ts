@@ -91,11 +91,19 @@ describe('setupUrl + gather tokens', () => {
     for (const p of PACKS) expect(p.setupUrl, `${p.id} setupUrl`).toBeTruthy();
   });
 
-  it('the oci pack carries the OCI creds + the option-B deploy PATs', () => {
+  it('the oci pack carries the auth creds + the option-B deploy PATs', () => {
     const oci = tokensForTool({ target: 'oci', data: 'none' }).map((t) => t.envVar);
     expect(oci).toContain('TF_VAR_oci_tenancy_ocid');
-    expect(oci).toContain('TF_VAR_oci_subnet_id');
+    expect(oci).toContain('TF_VAR_oci_private_key');
     expect(oci).toContain('GREENLIGHT_DISPATCH_TOKEN');
     expect(oci).toContain('GREENLIGHT_STATUS_TOKEN');
+  });
+
+  it('does NOT ask for the subnet/AD — those are IaC (oci-network module + AD data source)', () => {
+    const oci = tokensForTool({ target: 'oci', data: 'none' }).map((t) => t.envVar);
+    expect(oci).not.toContain('TF_VAR_oci_subnet_id');
+    expect(oci).not.toContain('TF_VAR_oci_availability_domain');
+    expect(oci).toContain('TF_VAR_oci_compartment_id'); // optional (blank → tenancy root)
+    expect(tfModulesForTool({ target: 'oci', data: 'none' })).toContain('oci-network');
   });
 });

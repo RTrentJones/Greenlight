@@ -5,12 +5,13 @@ variable "compartment_id" {
 
 variable "availability_domain" {
   type        = string
-  description = "Availability domain for the instance, e.g. \"AbCd:US-ASHBURN-1-AD-1\"."
+  default     = ""
+  description = "Availability domain, e.g. \"AbCd:US-ASHBURN-1-AD-1\". Blank → auto-pick the first AD in the compartment (no need to look it up by hand)."
 }
 
 variable "subnet_id" {
   type        = string
-  description = "Existing subnet OCID for the instance VNIC (a public subnet so it has egress)."
+  description = "Subnet OCID for the instance VNIC (a public subnet so it has egress) — wire the oci-network module's subnet_id output."
 }
 
 variable "name" {
