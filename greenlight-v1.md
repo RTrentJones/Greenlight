@@ -358,7 +358,7 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
 - **Accept:** a cold clone → `init` → first deploy works from docs alone; `doctor` is all-green on a healthy repo and flags version drift.
 
 ### Phase 7 — Package publishing + agent-context distribution + stand up the personal repo
-- **Status: built (validated locally); `npm publish` + live deploy gated on creds.** See [docs/phase-7-plan.md](docs/phase-7-plan.md).
+- **Status: built + published** (`@rtrentjones/greenlight@0.2.5`). See [docs/archive/phase-7-plan.md](docs/archive/phase-7-plan.md) and the current [docs/architecture.md](docs/architecture.md).
 - **Deliver:**
   - publish `@rtrentjones/greenlight*` to npm (Changesets, semver) + the source-ref Terraform module;
   - **agent-context distribution (§15.7):** a Greenlight **Claude Code plugin** (bundling the `deploy-verify-promote` skill + subagent) published via a **marketplace** (this repo as the marketplace source), plus a **`greenlight agent sync`** CLI fallback that materializes `.claude/skills/` + a `CLAUDE.md` block into a consuming repo;
@@ -369,7 +369,7 @@ Ordered **framework + loop first, then make it repeatable, then migrate the real
   - `greenlight agent sync` reproduces the skill for non-plugin environments — **verified**. The user-scope **plugin** (no per-repo copy) is authored (valid `plugin.json`/`marketplace.json`) but **not yet verified against a real `/plugin install`** — needs the repo pushed to GitHub, then a one-time install check.
   - the blog **build + `verify`** run from the personal repo — **verified locally**; the **deploy** leg is gated on Cloudflare creds.
 
-### Phase 8 — Keepalive (was Phase 1) — plan: [docs/phase-8-plan.md](docs/phase-8-plan.md)
+### Phase 8 — Keepalive (was Phase 1) — plan: [docs/archive/phase-8-plan.md](docs/archive/phase-8-plan.md)
 - **Deliver:** `@rtrentjones/greenlight-keepalive` CF Worker Cron (Supabase query + OCI health ping + `github-issue` alert sink); **OCI → PAYG + billing-alarm runbook**; `doctor` integration (keepalive health, OCI PAYG status, billing alarm presence).
 - **Accept:** a forced failure opens a GitHub issue; once tools are migrated, Supabase survives a 7-day window and OCI is PAYG.
 - **Built:** `packages/keepalive` — the CF Worker cron with **both** probes (`data: supabase` authed REST ping that resets the 7-day pause + `target: oci` health GET) and the `github-issue` alert sink; unit-tested. Deployed **as code** via `infra/modules/keepalive` (`cloudflare_workers_script` + `cloudflare_workers_cron_trigger`), configured from the wrapper. `doctor` reports **keepalive coverage** (which tools need it). The **OCI → PAYG + billing-alarm runbook** is [docs/oci-payg-runbook.md](docs/oci-payg-runbook.md). Remaining: the *live* `doctor` checks (keepalive health, OCI PAYG status, billing-alarm presence) need provider creds; and actually deploying it (apply) for HeistMind is gated on a Workers-scoped Cloudflare token.
