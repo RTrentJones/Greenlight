@@ -32,6 +32,7 @@ Workers Builds) read `.node-version`/`engines`, not `mise.toml`. Keep the two in
 | `pnpm check-boundaries` | dependency-cruiser: enforce consumer → framework import direction (seam rule 2) |
 | `pnpm greenlight config` | load + validate + print the manifest (runs the CLI via tsx) |
 | `pnpm run check-all` | the full suite CI runs. **Use `run`** — `pnpm ci` hits a reserved pnpm builtin |
+| `pnpm run infra:test` | Terraform module tests (`infra/examples/*`). **Not in `check-all`** (needs the `terraform` binary); CI runs it in the `ci.yml` infra job. |
 
 CLI surface (run via `pnpm greenlight <cmd>` in dev): `init`, `add`, `adopt`, `secrets gather|sync`,
 `agent sync`, `preview`, `deploy`, `verify`, `promote`, `doctor`, `config`. See

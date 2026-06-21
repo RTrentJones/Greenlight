@@ -29,6 +29,19 @@ speculation. The whole point is to make those stay alive on their own and make (
 Everything hangs off a single spine — **the manifest + the CLI + the agent kit** — exposed as two
 related planes:
 
+```mermaid
+flowchart TD
+    M["greenlight.config.ts<br/>(manifest — single source of truth)"]
+    M --> P1["Plane 1: infra editor<br/>greenlight add/adopt<br/>entry → emitted TF + gathered tokens + kit"]
+    M --> L["the agentic loop<br/>deploy → verify → promote<br/>gated, self-verifying"]
+    M --> P2["Plane 2: validation gate<br/>verify harness<br/>api · mcp · playwright · test · agent-web · eval"]
+    P1 --> CI["CI/CD applies the IaC"]
+    CI --> P2
+    P2 -. objective pass/fail .-> L
+```
+
+<details><summary>same diagram as ASCII (fallback)</summary>
+
 ```
                          greenlight.config.ts  (the manifest — single source of truth)
                                       │
@@ -42,6 +55,8 @@ related planes:
         │                                                          ▲
         └──────────────── CI/CD applies the IaC ───────────────────┘
 ```
+
+</details>
 
 - **Plane 1 — the infra editor.** `greenlight add`/`adopt` is a one-stop declarative IaC editor: one
   manifest entry → emitted Terraform + gathered/verified tokens + a wired agent kit. It edits IaC and
@@ -262,6 +277,8 @@ docs/                       # this doc, development, runbook, provider-tokens, a
 ## Where to go next
 
 - **[getting-started.md](getting-started.md)** — stand up a new wrapper (init → add+gather → push → verify).
+- **[demo.md](demo.md)** — try it cold in ~3 min, no cloud credentials.
+- **[security.md](security.md)** — secrets, trust boundaries, token topology, supply chain.
 - **[greenlight-v1.md](../greenlight-v1.md)** — the executable spec (the *why* + V1 scope + identity).
 - **[development.md](development.md)** — toolchain, commands, build model, how to work in the repo.
 - **[agentic-loop.md](agentic-loop.md)** — the agent kit (skills + MCP + best practices).
