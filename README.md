@@ -1,24 +1,36 @@
 # Greenlight
 
-A clone-and-own baseline that turns a domain plus API tokens into a live personal site and a
-self-verifying agentic deploy loop, with plug-and-play subdomain tools — **web apps or MCP servers**.
-Provider-agnostic and free-tier-first: the blog and each tool target Cloudflare Workers or Vercel,
-with OCI as the origin lane for stateful services. You own the files; nothing is welded to one cloud.
-The CLI **edits** declarative infra-as-code; **CI/CD applies it**.
+Turn a domain plus API tokens into a live personal site and a self-verifying agentic deploy loop,
+with plug-and-play subdomain tools — **web apps or MCP servers**. Provider-agnostic and
+free-tier-first: the blog and each tool target Cloudflare Workers or Vercel, with OCI as the origin
+lane for stateful services.
+
+**You don't fork this repo — you install the CLI.** `greenlight init` scaffolds a thin **wrapper repo
+you own** (your manifest + content) that depends on the published `@rtrentjones/greenlight` package
+and updates via `pnpm update`. The CLI **edits** declarative infra-as-code (Terraform you can read);
+your **CI/CD applies it**. Nothing is welded to one cloud, and there's no PaaS in the middle.
+
+## Quick start
+
+```
+npx -y @rtrentjones/greenlight init --domain you.dev   # scaffold the wrapper + gather base keys
+pnpm greenlight add notes --lane mcp --target oci      # add a tool: emit infra + gather ITS keys
+git push                                               # CI (infra.yml) runs `terraform apply`
+pnpm greenlight verify notes --env prod                # the shared harness proves it
+```
+
+Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**.
 
 ## The loop
 
-Every tool (and the blog) ships through the same gated loop — **deploy → verify → promote**:
+Every tool (and the blog) ships through the same gated loop — **deploy → verify → promote**. The
+`verify` gate is the same code CI **and** the agent run, so changes ship with objective confidence:
 
 ```
-greenlight init --domain you.dev                   # scaffold the manifest + secrets store
-greenlight add notes --lane mcp --target oci       # one entry → emitted Terraform + tokens + kit
-greenlight verify notes --env beta                 # shared harness: api|mcp|playwright|test|agent-web|eval
-greenlight promote notes                            # gated develop -> main fast-forward, after beta verify
+branch → change → preview → verify → develop/beta → verify → promote (gated develop→main) → prod → verify
 ```
 
-The `verify` gate is the same code CI **and** the agent run, so changes ship with objective
-confidence. See **[docs/architecture.md](docs/architecture.md)** for how it all fits together and
+See **[docs/architecture.md](docs/architecture.md)** for how it all fits together and
 [greenlight-v1.md](greenlight-v1.md) for the spec.
 
 ## Two planes over one spine
@@ -31,29 +43,25 @@ The manifest (`greenlight.config.ts`) + the CLI + the agent kit drive two relate
 - **Plane 2 — the validation gate.** One `verify(baseUrl, spec)` harness, six modes, combinable via an
   array — wired to promotion, not just test-writing.
 
-## Consume it
+## How you consume it
 
-This repo is the framework. A personal site is a **thin consumer** that depends on the single
-published package and owns only its manifest + content (see `RTrentJones.dev`):
+This repo is the **framework** (one published npm package + git-tagged Terraform modules + a Claude
+Code plugin). Your site is a **thin wrapper you own** — created by `greenlight init`, depending on
+the package, owning only its manifest + content (the live example is `RTrentJones.dev`). You update
+the mechanics with `pnpm update @rtrentjones/greenlight`; you never merge framework code.
 
-```
-pnpm add @rtrentjones/greenlight     # the CLI (framework libs bundled in)
-```
-
-Terraform modules are git-pinned (`?ref=v0.2.5`, in lockstep with the npm version). The
-deploy-verify-promote skill + per-provider skills are distributed as a Claude Code plugin:
+The deploy-verify-promote + per-provider skills ship as a Claude Code plugin (or `greenlight agent sync`):
 
 ```
 /plugin marketplace add RTrentJones/greenlight
 /plugin install greenlight@greenlight
 ```
 
-Or, without the plugin: `greenlight agent sync`.
-
 ## Status
 
-Framework **built and published** — `@rtrentjones/greenlight@0.2.5` on npm (OIDC trusted publishing)
-+ Terraform modules tagged `v0.2.5`. Both planes, the loop, lane templates, CI/CD, the provider-pack
-registry, and the OCI free-tier path (network-as-IaC: VCN/subnet/AD all Terraform — the only manual
-OCI input is the API key) are in place; `check-all` green. First live tool (BAMCP on free-tier OCI) is
-mid-onboarding. MIT.
+Framework **built, published, and live** — `@rtrentjones/greenlight` on npm (OIDC trusted publishing)
++ Terraform modules tagged in lockstep. Both planes, the loop, lane templates, CI/CD, the
+provider-pack registry, the OCI free-tier path (network-as-IaC), and per-tool secret onboarding are
+in place; `check-all` green. **Two real tools run on it end to end:** BAMCP (`mcp`/`oci`, free A1
+container instance) and HeistMind (`next`/`vercel`/`supabase`), each as a wrapper-centric subrepo
+with a green verify gate. MIT.

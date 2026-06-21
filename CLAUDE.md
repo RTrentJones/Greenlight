@@ -49,7 +49,7 @@ There are no build/lint/test commands yet because nothing is built. As tooling l
 
 ## What Greenlight is
 
-A clone-and-own baseline that turns a domain + API tokens into a live personal site plus a self-verifying AI deploy loop, with plug-and-play subdomain tools that are **either web apps or MCP servers**. It is provider-agnostic and explicitly *not* a hosted PaaS/control plane — it orchestrates existing providers via files the user owns.
+Greenlight turns a domain + API tokens into a live personal site plus a self-verifying AI deploy loop, with plug-and-play subdomain tools that are **either web apps or MCP servers**. It is provider-agnostic and explicitly *not* a hosted PaaS/control plane — it orchestrates existing providers via files the user owns. **Consumers install the CLI, not fork the repo:** `greenlight init` scaffolds a thin wrapper repo (manifest + content) that depends on the published `@rtrentjones/greenlight` package and updates via `pnpm update` — they own the wrapper, never merge framework code. New-wrapper walkthrough: [docs/getting-started.md](docs/getting-started.md).
 
 ## V1 build scope (what to actually build first)
 

@@ -7,12 +7,18 @@
 
 ## What Greenlight is
 
-A **clone-and-own baseline** that turns a domain + API tokens into a live personal site plus a
-self-verifying agentic deploy loop, with plug-and-play subdomain tools that are **either web apps or
-MCP servers**. It is provider-agnostic and explicitly **not** a hosted PaaS or control plane — it
-orchestrates existing free-tier providers through files you own. The CLI **edits** declarative
-infrastructure-as-code; **CI/CD applies it**. Nothing in Greenlight runs `terraform apply` or
-deploys on your behalf.
+Greenlight turns a domain + API tokens into a live personal site plus a self-verifying agentic
+deploy loop, with plug-and-play subdomain tools that are **either web apps or MCP servers**. It is
+provider-agnostic and explicitly **not** a hosted PaaS or control plane — it orchestrates existing
+free-tier providers through files you own.
+
+**The consumer model is install-the-CLI, not fork-the-repo.** Greenlight ships as one published npm
+package (the CLI, libs bundled) + git-tagged Terraform modules + a Claude Code plugin. `greenlight
+init` scaffolds a **thin wrapper repo you own** — your manifest + content — that depends on the
+package and updates via `pnpm update`. You own your wrapper (no lock-in, MIT); you never merge
+framework code. The CLI **edits** declarative infrastructure-as-code; **CI/CD applies it** — nothing
+in Greenlight runs `terraform apply` or deploys on your behalf. (New wrapper? see
+[getting-started.md](getting-started.md).)
 
 It was extracted from two real, already-built tools that kept timing out — **BAMCP** (a stateful MCP
 server on OCI) and **HeistMind** (Next.js + Supabase on Vercel) — so the design is an extraction, not
@@ -255,6 +261,7 @@ docs/                       # this doc, development, runbook, provider-tokens, a
 
 ## Where to go next
 
+- **[getting-started.md](getting-started.md)** — stand up a new wrapper (init → add+gather → push → verify).
 - **[greenlight-v1.md](../greenlight-v1.md)** — the executable spec (the *why* + V1 scope + identity).
 - **[development.md](development.md)** — toolchain, commands, build model, how to work in the repo.
 - **[agentic-loop.md](agentic-loop.md)** — the agent kit (skills + MCP + best practices).

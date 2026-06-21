@@ -12,6 +12,8 @@ These are point-in-time documents kept for provenance. They are **not** the curr
   Code plugin (Phase 7), keepalive (Phase 8), and the two planes — infra editor + validation gate —
   plus poly-repo `adopt` (Phase 9). `phase-9-plan.md` is written as a record (the code landed) and is
   the most useful single snapshot of how the system reached its current shape.
+- **`project_review.md`** — a point-in-time deep review (mid-build). Superseded by
+  [../architecture.md](../architecture.md) for the current state.
 - **`greenlight-design-doc-v0.md`** — the original full, provider-agnostic vision (the north star,
   not the V1 build target). Anything V1 defers (Neon, the `hono` lane, provider-agnostic
   target-switching, standalone eject) lives here.

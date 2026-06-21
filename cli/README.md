@@ -1,24 +1,28 @@
 # @rtrentjones/greenlight
 
 The Greenlight CLI — setup and lifecycle for the [Greenlight](https://github.com/RTrentJones/greenlight)
-harness. Greenlight is a **clone-and-own** baseline that turns a domain + API tokens into a live
-personal site plus a self-verifying agentic deploy loop, with plug-and-play subdomain tools (web apps
-or MCP servers). It is provider-agnostic and free-tier-first, and it **edits declarative
-infrastructure-as-code — your CI/CD applies it**. It is not a hosted PaaS.
+harness. Greenlight turns a domain + API tokens into a live personal site plus a self-verifying
+agentic deploy loop, with plug-and-play subdomain tools (web apps or MCP servers). It is
+provider-agnostic and free-tier-first, and it **edits declarative infrastructure-as-code — your CI/CD
+applies it**. It is not a hosted PaaS.
 
-This is the **single published package**: the CLI, with the framework libraries
-(`shared`/`verify`/`adapters`/`loop`) bundled in. The Terraform modules are distributed as git tags
-(pinned in lockstep with this package's version); the skills ship as a Claude Code plugin.
+**You install this CLI; you don't fork the framework.** `greenlight init` scaffolds a thin **wrapper
+repo you own** (your manifest + content) that depends on this package and updates via
+`pnpm update` — no framework code to merge. This is the **single published package**: the CLI, with
+the framework libraries (`shared`/`verify`/`adapters`/`loop`) bundled in. Terraform modules ship as
+git tags (pinned in lockstep with this version); skills ship as a Claude Code plugin.
 
-## Install
+## Quick start
 
 ```bash
-pnpm add @rtrentjones/greenlight      # or npm i / yarn add
+npx -y @rtrentjones/greenlight init --domain you.dev   # scaffold the wrapper + gather base keys
+pnpm greenlight add notes --lane mcp --target oci      # add a tool: emit infra + gather ITS keys
+git push                                               # CI runs `terraform apply`
+pnpm greenlight verify notes --env prod                # the shared harness proves it
 ```
 
-A personal site is a **thin consumer** that depends on this package and owns only its manifest
-(`greenlight.config.ts`) + content. Update with `pnpm update @rtrentjones/greenlight` — no framework
-code to merge.
+Full walkthrough: [getting-started.md](https://github.com/RTrentJones/greenlight/blob/main/docs/getting-started.md).
+Update the mechanics later with `pnpm update @rtrentjones/greenlight`.
 
 Optional peer features lazy-load and degrade to a failing check if absent (never a crash):
 

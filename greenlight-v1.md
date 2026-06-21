@@ -212,6 +212,11 @@ Three environments, git-mapped. Branches standardized to **`main` / `develop`**.
 
 ## 15. Distribution & the personal-repo model
 
+> **As built:** the consumer path is **`greenlight init`** (scaffold a thin wrapper that depends on
+> the published `@rtrentjones/greenlight` package), not cloning this repo. See
+> [docs/getting-started.md](docs/getting-started.md). The seam/packages reasoning below still holds —
+> init just generates the wrapper instead of you cloning a template.
+
 The differentiation between **"the clonable baseline"** and **"my personal setup"** rests on one seam, one hard rule, and a **packages-based update path** (chosen — no merge-hell).
 
 ### 15.1 The seam — three places personal data may live, nothing else
