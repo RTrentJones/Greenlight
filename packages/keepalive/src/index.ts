@@ -26,6 +26,9 @@ export interface KeepaliveTarget {
   anonKey?: string;
   /** Probe path; defaults to `/rest/v1/` (supabase) or `/` (oci). */
   probePath?: string;
+  /** Opt this (oci) target into AUTO-remediation: on failure, fire a repository_dispatch so the
+   * wrapper re-applies + redeploys it (vs only alerting). See dispatchRemediation. */
+  remediate?: boolean;
 }
 
 /** @deprecated use KeepaliveTarget. */
@@ -34,6 +37,11 @@ export type SupabaseTarget = KeepaliveTarget;
 export interface KeepaliveResult {
   /** `name:env`. */
   target: string;
+  /** The tool name + env, carried through so a sink can build the dispatch event/payload. */
+  name?: string;
+  env?: string;
+  /** Whether this target opted into auto-remediation. */
+  remediate?: boolean;
   ok: boolean;
   status?: number;
   error?: string;
@@ -56,6 +64,7 @@ export async function pingTarget(
   fetchFn: FetchFn = fetch,
 ): Promise<KeepaliveResult> {
   const target = `${t.name}:${t.env}`;
+  const base = { target, name: t.name, env: t.env, remediate: t.remediate };
   const kind = t.kind ?? 'supabase';
   const path = t.probePath ?? (kind === 'oci' ? '/' : '/rest/v1/');
   const url = `${t.url.replace(/\/+$/, '')}${path}`;
@@ -64,12 +73,15 @@ export async function pingTarget(
     ? { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` }
     : undefined;
   try {
+    // INVARIANT (locked by a test): this is a READ-ONLY probe — no `method`/`body`, so it's a plain
+    // GET. The supabase ping must never write/INSERT; resetting the 7-day idle timer only needs a
+    // read. A regression that adds a body/write here would mutate the user's DB on every cron tick.
     const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(10_000) });
     // Any HTTP response means the project is awake (the request reset the idle timer) — even
     // a 401 from the PostgREST root. Only a 5xx (paused/broken) or a thrown error is "down".
-    return { target, ok: res.status > 0 && res.status < 500, status: res.status };
+    return { ...base, ok: res.status > 0 && res.status < 500, status: res.status };
   } catch (e) {
-    return { target, ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ...base, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -111,6 +123,50 @@ export async function alertGithubIssue(
   return res.ok;
 }
 
+export interface RemediateSink {
+  /** owner/repo to fire `repository_dispatch` at (the wrapper that owns the infra + deploy). */
+  dispatchRepo?: string;
+  /** token with `contents: write` on the dispatch repo (the dispatch endpoint requires it — a
+   * superset of the `issues: write` the alert sink needs; one PAT can hold both). */
+  githubToken?: string;
+}
+
+/** Fire a `repository_dispatch` for each failed target that opted into auto-remediation
+ * (`kind:"oci"`, `remediate:true`). The wrapper's `greenlight-remediate-<tool>.yml` listens on
+ * `remediate-<tool>` and re-applies + redeploys + re-verifies. No-op (returns 0) when the sink
+ * isn't configured or nothing is remediable.
+ *
+ * Anti-flap is handled downstream, not here: the remediate workflow shares the deploy job's
+ * `concurrency: deploy-<tool>` group, so dispatches never overlap a deploy or each other, and
+ * re-applying an already-healthy instance is an idempotent no-op (terraform finds no diff). The
+ * alert issue is still opened in parallel for an audit trail. */
+export async function dispatchRemediation(
+  sink: RemediateSink,
+  failures: KeepaliveResult[],
+  fetchFn: FetchFn = fetch,
+): Promise<number> {
+  if (!sink.dispatchRepo || !sink.githubToken) return 0;
+  const remediable = failures.filter((f) => f.remediate && f.name);
+  let fired = 0;
+  for (const f of remediable) {
+    const res = await fetchFn(`https://api.github.com/repos/${sink.dispatchRepo}/dispatches`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${sink.githubToken}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'greenlight-keepalive',
+      },
+      body: JSON.stringify({
+        event_type: `remediate-${f.name}`,
+        client_payload: { tool: f.name, env: f.env, reason: f.status ?? f.error ?? 'unreachable' },
+      }),
+    });
+    if (res.ok) fired++;
+  }
+  return fired;
+}
+
 /** Parse the `KEEPALIVE_TARGETS` var (a JSON array). Bad/empty input → []. */
 export function parseTargets(raw: string | undefined): KeepaliveTarget[] {
   if (!raw) return [];
@@ -127,8 +183,11 @@ export interface Env {
   KEEPALIVE_TARGETS?: string;
   /** github-issue sink repo (owner/repo). */
   ALERT_GITHUB_REPO?: string;
-  /** secret with issues:write. */
+  /** secret with issues:write (+ contents:write if DISPATCH_GITHUB_REPO is set). */
   GITHUB_TOKEN?: string;
+  /** owner/repo to fire `repository_dispatch` at for auto-remediation. Omit to disable self-heal
+   * (alert-only). Usually the wrapper repo itself. */
+  DISPATCH_GITHUB_REPO?: string;
 }
 
 // Minimal Workers runtime shapes (avoids a @cloudflare/workers-types dependency).
@@ -146,10 +205,17 @@ async function sweep(env: Env): Promise<KeepaliveResult[]> {
     const detail = r.status ? ` (${r.status})` : r.error ? ` ${r.error}` : '';
     console.log(`${r.ok ? 'ok  ' : 'FAIL'} ${r.target}${detail}`);
   }
+  const failures = results.filter((r) => !r.ok);
+  // Audit trail (always) + self-heal (for opted-in oci targets). Both no-op when unconfigured.
   await alertGithubIssue(
     { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
-    results.filter((r) => !r.ok),
+    failures,
   );
+  const fired = await dispatchRemediation(
+    { dispatchRepo: env.DISPATCH_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
+    failures,
+  );
+  if (fired > 0) console.log(`dispatched ${fired} remediation(s)`);
   return results;
 }
 

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { type DeployEnv, type Lane, resolveUrl } from '@rtrentjones/greenlight-shared';
 import {
@@ -33,6 +34,50 @@ export function printReport(report: VerifyReport): void {
     console.log(`  ${c.pass ? '✔' : '✘'} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
   }
   console.log(`\n${report.pass ? '✔ PASS' : '✘ FAIL'}`);
+  // Telemetry-into-verify: surface the platform logs under a failed report so the agent/CI sees
+  // the "why" right next to the red gate (no separate dashboard trip).
+  if (!report.pass && report.logs) {
+    console.log(`\n--- recent logs (${report.mode}) ---\n${report.logs}\n--- end logs ---`);
+  }
+}
+
+const LOG_TAIL_LINES = 50;
+
+/** Telemetry-into-verify: for every FAILED report whose spec set `logsOnFailure`, run that shell
+ * command in the tool dir and attach the last ~50 lines to `report.logs`. Best-effort — a missing
+ * CLI, a non-zero exit, or a timeout NEVER fails the verify (mirrors verifyTest's never-throw
+ * contract); it only annotates. Reports are index-aligned with specs (verifyAll preserves order).
+ *
+ * Seam note: a future `adapter.logs(env, lines)` (typed on the Adapter contract, like `teardown`)
+ * can be the fallback when a spec sets no `logsOnFailure`; for now the spec command is the source. */
+export function attachFailureLogs(
+  reports: VerifyReport[],
+  specs: VerifySpec[],
+  toolDir: string,
+): void {
+  reports.forEach((report, i) => {
+    if (report.pass) return;
+    const cmd = specs[i]?.logsOnFailure;
+    if (!cmd) {
+      report.logs = '(no logsOnFailure configured for this spec)';
+      return;
+    }
+    try {
+      const res = spawnSync(cmd, {
+        shell: true,
+        cwd: toolDir,
+        timeout: 30_000,
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trimEnd();
+      const tail = out.split('\n').slice(-LOG_TAIL_LINES).join('\n');
+      report.logs =
+        tail || `(logsOnFailure produced no output${res.error ? `: ${res.error.message}` : ''})`;
+    } catch (e) {
+      report.logs = `(log fetch failed: ${e instanceof Error ? e.message : String(e)})`;
+    }
+  });
 }
 
 function flag(args: string[], name: string): string | undefined {
@@ -56,6 +101,7 @@ export async function verifyCommand(args: string[]): Promise<void> {
       reachableTimeoutMs: waitMs,
       toolDir: process.cwd(),
     });
+    attachFailureLogs(reports, specs, process.cwd());
     for (const report of reports) printReport(report);
     const pass = allPass(reports);
     if (reports.length > 1)
@@ -107,6 +153,7 @@ export async function verifyCommand(args: string[]): Promise<void> {
   // `test` mode runs in the tool's dir; resolve it for the harness.
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
   const reports = await verifyAll(url, specs, { reachableTimeoutMs, toolDir });
+  attachFailureLogs(reports, specs, toolDir);
   for (const report of reports) printReport(report);
   const pass = allPass(reports);
   if (reports.length > 1)

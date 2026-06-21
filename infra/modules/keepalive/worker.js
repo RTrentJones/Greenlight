@@ -1,15 +1,16 @@
 // src/index.ts
 async function pingTarget(t, fetchFn = fetch) {
   const target = `${t.name}:${t.env}`;
+  const base = { target, name: t.name, env: t.env, remediate: t.remediate };
   const kind = t.kind ?? "supabase";
   const path = t.probePath ?? (kind === "oci" ? "/" : "/rest/v1/");
   const url = `${t.url.replace(/\/+$/, "")}${path}`;
   const headers = t.anonKey ? { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` } : void 0;
   try {
     const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(1e4) });
-    return { target, ok: res.status > 0 && res.status < 500, status: res.status };
+    return { ...base, ok: res.status > 0 && res.status < 500, status: res.status };
   } catch (e) {
-    return { target, ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ...base, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 async function runKeepalive(targets, fetchFn = fetch) {
@@ -38,6 +39,28 @@ async function alertGithubIssue(sink, failures, fetchFn = fetch) {
   });
   return res.ok;
 }
+async function dispatchRemediation(sink, failures, fetchFn = fetch) {
+  if (!sink.dispatchRepo || !sink.githubToken) return 0;
+  const remediable = failures.filter((f) => f.remediate && f.name);
+  let fired = 0;
+  for (const f of remediable) {
+    const res = await fetchFn(`https://api.github.com/repos/${sink.dispatchRepo}/dispatches`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sink.githubToken}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "greenlight-keepalive"
+      },
+      body: JSON.stringify({
+        event_type: `remediate-${f.name}`,
+        client_payload: { tool: f.name, env: f.env, reason: f.status ?? f.error ?? "unreachable" }
+      })
+    });
+    if (res.ok) fired++;
+  }
+  return fired;
+}
 function parseTargets(raw) {
   if (!raw) return [];
   try {
@@ -53,10 +76,16 @@ async function sweep(env) {
     const detail = r.status ? ` (${r.status})` : r.error ? ` ${r.error}` : "";
     console.log(`${r.ok ? "ok  " : "FAIL"} ${r.target}${detail}`);
   }
+  const failures = results.filter((r) => !r.ok);
   await alertGithubIssue(
     { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
-    results.filter((r) => !r.ok)
+    failures
   );
+  const fired = await dispatchRemediation(
+    { dispatchRepo: env.DISPATCH_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
+    failures
+  );
+  if (fired > 0) console.log(`dispatched ${fired} remediation(s)`);
   return results;
 }
 var index_default = {
@@ -76,6 +105,7 @@ var index_default = {
 export {
   alertGithubIssue,
   index_default as default,
+  dispatchRemediation,
   parseTargets,
   pingTarget,
   runKeepalive

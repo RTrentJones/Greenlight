@@ -17,6 +17,18 @@ export interface VerifyReport {
   mode: VerifyMode;
   url: string;
   checks: VerifyCheck[];
+  /** Recent platform logs, attached ONLY on a failing report when the spec set `logsOnFailure`
+   * (telemetry-into-verify — gives the agent/CI the "why" without leaving the loop). */
+  logs?: string;
+}
+
+/** Fields every spec shares. */
+export interface VerifySpecBase {
+  /** A shell command that fetches recent platform logs, run ONLY when this spec's report FAILS, and
+   * attached to `VerifyReport.logs` so the agent/CI can self-correct in-loop. General, no provider
+   * coupling — e.g. `oci logging-search …` (oci), `vercel logs <url>` (vercel), `wrangler tail
+   * --once` (workers). Runs in the tool dir, output bounded, best-effort (never fails the verify). */
+  logsOnFailure?: string;
 }
 
 /** api mode — HTTP assertions (greenlight-v1.md §9/§11). */
@@ -33,7 +45,7 @@ export interface ApiCheck {
   requestHeaders?: Record<string, string>;
 }
 
-export interface ApiSpec {
+export interface ApiSpec extends VerifySpecBase {
   mode: 'api';
   checks?: ApiCheck[];
   /** Assert an RSS/Atom feed exists and parses. */
@@ -45,7 +57,7 @@ export interface ApiSpec {
 }
 
 /** mcp mode — protocol-level verification (greenlight-v1.md §6). */
-export interface McpSpec {
+export interface McpSpec extends VerifySpecBase {
   mode: 'mcp';
   /** Tool names that `tools/list` must include. */
   expectTools: string[];
@@ -60,7 +72,7 @@ export interface McpSpec {
 }
 
 /** playwright mode — light render check via the accessibility tree. */
-export interface PlaywrightSpec {
+export interface PlaywrightSpec extends VerifySpecBase {
   mode: 'playwright';
   /** Paths that must load with a non-empty accessibility tree. */
   renders: string[];
@@ -69,7 +81,7 @@ export interface PlaywrightSpec {
 /** test mode — run the tool's own unit/integration command in its dir and gate on the exit
  * code (greenlight-v1.md §11 — classic tests in the same gate CI + the agent use). Unlike
  * the URL modes this runs locally; the deployed URL is ignored (it's still in the report). */
-export interface TestSpec {
+export interface TestSpec extends VerifySpecBase {
   mode: 'test';
   /** Command to run. Default: `pnpm test`. Use e.g. `pnpm test:integ` for integration. */
   command?: string;
@@ -103,7 +115,7 @@ export interface AgentWebScenario {
   asserts?: AgentWebAssert[];
 }
 
-export interface AgentWebSpec {
+export interface AgentWebSpec extends VerifySpecBase {
   mode: 'agent-web';
   scenarios: AgentWebScenario[];
   /** Model id (default `claude-sonnet-4-6`). */
@@ -129,7 +141,7 @@ export interface EvalCase {
   minScore?: number;
 }
 
-export interface EvalSpec {
+export interface EvalSpec extends VerifySpecBase {
   mode: 'eval';
   cases: EvalCase[];
   /** Judge model id (default `claude-sonnet-4-6`). */

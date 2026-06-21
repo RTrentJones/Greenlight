@@ -35,7 +35,13 @@ variable "github_token" {
   type        = string
   default     = ""
   sensitive   = true
-  description = "Token with issues:write for the alert sink. Empty = no secret binding (alerts no-op)."
+  description = "Token with issues:write for the alert sink (+ contents:write if dispatch_github_repo is set, for auto-remediation). Empty = no secret binding (alerts/dispatch no-op)."
+}
+
+variable "dispatch_github_repo" {
+  type        = string
+  default     = ""
+  description = "Auto-remediation: owner/repo to fire repository_dispatch at when an oci target with remediate:true fails (usually the wrapper itself). Empty disables self-heal (alert-only)."
 }
 
 variable "cron" {

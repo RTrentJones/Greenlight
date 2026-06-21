@@ -166,6 +166,22 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     expect(listener).not.toContain('secrets.OCI_CONTAINER_INSTANCE_OCID');
     // the status token is per-tool (shared wrapper) — suffixed by the (upper, _) tool name
     expect(listener).toContain('secrets.GREENLIGHT_STATUS_TOKEN_DEMO_MCP');
+    // deploy + remediate share ONE concurrency group so a self-heal never overlaps a deploy
+    expect(listener).toContain('group: deploy-demo-mcp');
+
+    // --- the wrapper also got the self-heal (remediate) listener ---
+    const remediate = readFileSync(
+      join(wrapper, '.github/workflows/greenlight-remediate-demo-mcp.yml'),
+      'utf8',
+    );
+    expect(remediate).toContain('types: [remediate-demo-mcp]');
+    expect(remediate).toContain('group: deploy-demo-mcp'); // same group as the deploy listener
+    // re-applies the instance (recreate an idle-reclaimed box) before redeploying + verifying
+    expect(remediate).toContain('-target=module.demo-mcp_instance');
+    expect(remediate).toContain('greenlight deploy demo-mcp');
+    expect(remediate).toContain('greenlight verify demo-mcp --env prod');
+    // a failed self-heal escalates
+    expect(remediate).toContain('if: ${{ failure() }}');
   });
 
   it('wrapper-centric vercel: verify runs in the TOOL repo (deployment_status), not the wrapper', async () => {

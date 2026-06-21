@@ -31,6 +31,10 @@ export interface Adapter {
   /** Deterministic for beta/prod; throws for `preview` (get it from `deploy()`). */
   url(env: DeployEnv): string;
   teardown(env: DeployEnv): Promise<void>;
+  /** Fetch the last `lines` of platform logs for this env (telemetry-into-verify fallback when a
+   * spec sets no `logsOnFailure`). Optional + typed-but-unwired for now, like `teardown` — each
+   * target's native log fetch (oci logging-search / vercel logs / wrangler tail) lands later. */
+  logs?(env: DeployEnv, lines: number): Promise<string>;
 }
 
 function run(cmd: string, args: string[], cwd: string, extraEnv?: Record<string, string>): void {

@@ -57,12 +57,27 @@ function vendorDeps(vendorDir: string): Record<string, string> {
   return out;
 }
 
-function starterVerifyConfig(lane: string): string {
+function starterVerifyConfig(lane: string, target?: string): string {
   const spec =
     lane === 'mcp'
-      ? "{ mode: 'mcp', expectTools: [] }"
-      : "{ mode: 'api', checks: [{ path: '/', status: 200 }] }";
-  return `// Greenlight verify spec — edit to assert this tool's real contract.\nexport default ${spec};\n`;
+      ? "mode: 'mcp', expectTools: []"
+      : "mode: 'api', checks: [{ path: '/', status: 200 }]";
+  // Tailor the on-failure log command to the target so the stub is copy-paste ready.
+  const logHint =
+    target === 'oci'
+      ? 'oci logging-search search-logs ...   // the instance/container logs'
+      : target === 'vercel'
+        ? 'vercel logs <deployment-url> --token $VERCEL_API_TOKEN'
+        : 'wrangler tail --once   // workers observability';
+  return `// Greenlight verify spec — edit to assert this tool's real contract.
+export default {
+  ${spec},
+  // Telemetry-into-verify: a shell command run ONLY when this report FAILS; its last ~50 lines
+  // attach to the report so the agent/CI sees the "why" in-loop. Best-effort (never fails the
+  // gate). Uncomment + adjust:
+  // logsOnFailure: '${logHint}',
+};
+`;
 }
 
 function infraTf(
@@ -269,29 +284,12 @@ jobs:
 `;
 }
 
-/** Option-B, wrapper side: on the tool's dispatch, restart the OCI container instance (re-pull)
- * via \`greenlight deploy\`, then post a commit status back to the tool repo (so push->result
- * feedback returns there even though the deploy ran here). OCI creds live ONLY here. */
-function deployListenerYml(name: string, toolRepo: string): string {
-  return `name: greenlight-deploy-${name}
-
-# Option B: ${toolRepo} fires repository_dispatch(deploy-${name}) after pushing a new image.
-on:
-  repository_dispatch:
-    types: [deploy-${name}]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - run: pnpm install --frozen-lockfile
-      - run: pip install --quiet oci-cli
+/** The OCI deploy+verify core, shared by the deploy listener and the self-heal remediation
+ * workflow: install oci-cli, resolve the instance OCID by display-name (abstracted from the dev — no
+ * stored OCID secret), restart it (re-pull the GHCR image), then verify prod so the signal is gated
+ * on the NEW image actually serving. Emitted at the `steps:` indent (6 spaces). */
+function ociDeployAndVerifySteps(name: string): string {
+  return `      - run: pip install --quiet oci-cli
       - name: Deploy (resolve instance OCID by name -> restart -> re-pull GHCR image)
         env:
           # The OCI CLI reuses the SAME TF_VAR_OCI_* secrets the apply uses — one secret set.
@@ -324,7 +322,37 @@ jobs:
         # The deploy "succeeds" only if the NEW image is actually serving. verify has a built-in
         # readiness wait (re-pull + container start). A failure here fails the job → the status
         # posted back is red. oci is verify-gated direct-to-prod (no cheap standing beta on free A1).
-        run: pnpm exec greenlight verify ${name} --env prod
+        run: pnpm exec greenlight verify ${name} --env prod`;
+}
+
+/** Option-B, wrapper side: on the tool's dispatch, restart the OCI container instance (re-pull)
+ * via \`greenlight deploy\`, then post a commit status back to the tool repo (so push->result
+ * feedback returns there even though the deploy ran here). OCI creds live ONLY here. */
+function deployListenerYml(name: string, toolRepo: string): string {
+  return `name: greenlight-deploy-${name}
+
+# Option B: ${toolRepo} fires repository_dispatch(deploy-${name}) after pushing a new image.
+on:
+  repository_dispatch:
+    types: [deploy-${name}]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Share the self-heal workflow's group so a deploy and a remediation never run at the same time.
+concurrency:
+  group: deploy-${name}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+${ociDeployAndVerifySteps(name)}
       - name: Report status back to ${toolRepo}
         if: \${{ always() && github.event.client_payload.sha != '' }}
         env:
@@ -336,6 +364,71 @@ jobs:
             -f state="\${{ job.status == 'success' && 'success' || 'failure' }}" \\
             -f context="greenlight/deploy-${name}" \\
             -f description="\${{ job.status }}"
+`;
+}
+
+/** Self-heal, wrapper side: the keepalive Worker fires repository_dispatch(remediate-${"<name>"})
+ * when the oci target stops responding (see packages/keepalive dispatchRemediation). Re-apply the
+ * instance (recreates an OCI-idle-reclaimed Always-Free box), redeploy (re-pull GHCR), verify prod.
+ * Shares the deploy concurrency group so it never overlaps a deploy/another heal, and re-applying a
+ * healthy instance is an idempotent no-op — anti-flap without extra state. A failed heal escalates. */
+function remediateYml(name: string): string {
+  return `name: greenlight-remediate-${name}
+
+# Auto-heal: the keepalive Worker dispatches remediate-${name} when ${name} (oci) is unreachable.
+on:
+  repository_dispatch:
+    types: [remediate-${name}]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# Same group as greenlight-deploy-${name}: a self-heal never overlaps a deploy or another heal, and
+# re-applying an already-healthy instance is idempotent (no diff) — anti-flap with no extra state.
+concurrency:
+  group: deploy-${name}
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '~1.10'
+          terraform_wrapper: false
+      - name: Re-apply the instance (recreate it if OCI idle-reclaimed the Always-Free box)
+        env:
+          TF_TOKEN_app_terraform_io: \${{ secrets.TF_API_TOKEN }} # HCP state backend auth
+          TF_VAR_oci_tenancy_ocid: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: \${{ secrets.TF_VAR_OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: \${{ secrets.TF_VAR_OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: \${{ secrets.TF_VAR_OCI_PRIVATE_KEY }}
+          TF_VAR_oci_region: \${{ secrets.TF_VAR_OCI_REGION }}
+          TF_VAR_oci_compartment_id: \${{ secrets.TF_VAR_OCI_COMPARTMENT_ID }}
+        run: |
+          if [ -z "$TF_TOKEN_app_terraform_io" ]; then
+            echo "::warning::no TF_API_TOKEN — skipping re-apply; will still attempt a restart below"
+            exit 0
+          fi
+          terraform -chdir=infra init -input=false
+          # -target pulls in the instance's deps (the ${name}_network module) automatically.
+          terraform -chdir=infra apply -input=false -auto-approve -target=module.${name}_instance
+${ociDeployAndVerifySteps(name)}
+      - name: Escalate if the self-heal failed
+        if: \${{ failure() }}
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo \${{ github.repository }} \\
+            --title "remediate-${name}: self-heal FAILED" \\
+            --body "Automatic remediation for ${name} (reason: \${{ github.event.client_payload.reason }}) did not bring prod back. Manual attention needed." \\
+            --label keepalive || true
 `;
 }
 
@@ -391,12 +484,16 @@ function nextVerifyConfig(name: string): string {
 // Unit tests belong in this repo's PR CI; to also gate the deploy on them, add
 // { mode: 'test', command: 'pnpm test' } + a tolerant deps-install step in greenlight-verify.yml.
 const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+// Telemetry-into-verify: on a FAILED report, fetch the Vercel deployment's runtime logs and attach
+// the tail to the report (best-effort, never fails the gate). Needs VERCEL_API_TOKEN in CI.
+const logsOnFailure = 'vercel logs "$DEPLOYMENT_URL" --token "$VERCEL_API_TOKEN" 2>&1 || true';
 const api = bypass
   ? {
       mode: 'api',
       checks: [{ path: '/', status: 200, requestHeaders: { 'x-vercel-protection-bypass': bypass } }],
+      logsOnFailure,
     }
-  : { mode: 'api', checks: [{ path: '/', status: 401 }] };
+  : { mode: 'api', checks: [{ path: '/', status: 401 }], logsOnFailure };
 const agentWeb = process.env.ANTHROPIC_API_KEY
   ? [
       {
@@ -544,7 +641,7 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
   if (target !== 'vercel') {
     writeIfAbsent(
       join(cwd, `verify/${name}.config.ts`),
-      starterVerifyConfig(lane),
+      starterVerifyConfig(lane, target),
       `verify/${name}.config.ts`,
     );
   }
@@ -568,6 +665,13 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
       join(cwd, `.github/workflows/greenlight-deploy-${name}.yml`),
       deployListenerYml(name, slug),
       `.github/workflows/greenlight-deploy-${name}.yml (wrapper deploy listener)`,
+    );
+    // Self-heal listener: the keepalive Worker dispatches remediate-<name> on an outage; this
+    // re-applies + redeploys + verifies (shares the deploy concurrency group). See packages/keepalive.
+    writeIfAbsent(
+      join(cwd, `.github/workflows/greenlight-remediate-${name}.yml`),
+      remediateYml(name),
+      `.github/workflows/greenlight-remediate-${name}.yml (wrapper self-heal listener)`,
     );
     writeIfAbsent(
       join(dest, '.github/workflows/greenlight-build.yml'),

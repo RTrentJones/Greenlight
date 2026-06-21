@@ -3,6 +3,7 @@ import {
   type KeepaliveResult,
   type KeepaliveTarget,
   alertGithubIssue,
+  dispatchRemediation,
   parseTargets,
   pingTarget,
   runKeepalive,
@@ -32,10 +33,25 @@ describe('pingTarget', () => {
   it('is ok on a 2xx and sends the apikey + bearer to the probe path', async () => {
     const { fn, calls } = capturingFetch(200);
     const r = await pingTarget(target, fn);
-    expect(r).toEqual({ target: 'heistmind:prod', ok: true, status: 200 });
+    expect(r).toEqual({
+      target: 'heistmind:prod',
+      name: 'heistmind',
+      env: 'prod',
+      ok: true,
+      status: 200,
+    });
     expect(calls[0]?.url).toBe('https://abc.supabase.co/rest/v1/');
     expect(headersOf(calls[0]?.init).apikey).toBe('anon-key');
     expect(headersOf(calls[0]?.init).Authorization).toBe('Bearer anon-key');
+  });
+
+  it('keeps the supabase probe READ-ONLY — a plain GET, no method/body (invariant)', async () => {
+    const { fn, calls } = capturingFetch(200);
+    await pingTarget(target, fn);
+    // Never write/INSERT: resetting the idle timer needs only a read. A body/method here would
+    // mutate the user's DB on every cron tick.
+    expect(calls[0]?.init.method).toBeUndefined();
+    expect(calls[0]?.init.body).toBeUndefined();
   });
 
   it('is not ok on a 5xx (a paused/broken project)', async () => {
@@ -118,6 +134,51 @@ describe('alertGithubIssue', () => {
     const payload = JSON.parse((calls[0]?.init.body as string) ?? '{}');
     expect(payload.title).toContain('1 target(s) failing');
     expect(payload.body).toContain('heistmind:prod');
+  });
+});
+
+describe('dispatchRemediation', () => {
+  const ociDown: KeepaliveResult = {
+    target: 'bamcp:prod',
+    name: 'bamcp',
+    env: 'prod',
+    remediate: true,
+    ok: false,
+    status: 503,
+  };
+
+  it('no-ops (returns 0) when the dispatch sink is not configured', async () => {
+    const { fn, calls } = capturingFetch();
+    expect(await dispatchRemediation({}, [ociDown], fn)).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not fire for failures that did not opt into remediation', async () => {
+    const { fn, calls } = capturingFetch(201);
+    const notOptedIn: KeepaliveResult = { target: 'x:prod', name: 'x', env: 'prod', ok: false };
+    const fired = await dispatchRemediation(
+      { dispatchRepo: 'o/r', githubToken: 't' },
+      [notOptedIn],
+      fn,
+    );
+    expect(fired).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('fires a repository_dispatch (event_type remediate-<tool>, payload tool/env/reason)', async () => {
+    const { fn, calls } = capturingFetch(201);
+    const fired = await dispatchRemediation(
+      { dispatchRepo: 'o/r', githubToken: 'tok' },
+      [ociDown],
+      fn,
+    );
+    expect(fired).toBe(1);
+    expect(calls[0]?.url).toBe('https://api.github.com/repos/o/r/dispatches');
+    expect(calls[0]?.init.method).toBe('POST');
+    expect(headersOf(calls[0]?.init).Authorization).toBe('Bearer tok');
+    const payload = JSON.parse((calls[0]?.init.body as string) ?? '{}');
+    expect(payload.event_type).toBe('remediate-bamcp');
+    expect(payload.client_payload).toEqual({ tool: 'bamcp', env: 'prod', reason: 503 });
   });
 });
 

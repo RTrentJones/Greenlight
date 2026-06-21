@@ -10,6 +10,9 @@ locals {
       { name = "KEEPALIVE_TARGETS", type = "plain_text", text = var.targets_json },
       { name = "ALERT_GITHUB_REPO", type = "plain_text", text = var.alert_github_repo },
     ],
+    var.dispatch_github_repo != "" ? [
+      { name = "DISPATCH_GITHUB_REPO", type = "plain_text", text = var.dispatch_github_repo },
+    ] : [],
     var.github_token != "" ? [
       { name = "GITHUB_TOKEN", type = "secret_text", text = var.github_token },
     ] : [],
