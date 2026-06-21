@@ -225,11 +225,13 @@ export function emitWrapperMainTf(opts: {
   if (need.has('supabase')) providerBlocks.push('provider "supabase" {}');
   if (need.has('oci')) {
     providerBlocks.push(`provider "oci" {
-  tenancy_ocid = var.oci_tenancy_ocid
-  user_ocid    = var.oci_user_ocid
-  fingerprint  = var.oci_fingerprint
+  # trimspace guards against a trailing newline/space in a pasted secret (a malformed region
+  # makes the identity endpoint hostname fail to resolve — "no such host" — at plan time).
+  tenancy_ocid = trimspace(var.oci_tenancy_ocid)
+  user_ocid    = trimspace(var.oci_user_ocid)
+  fingerprint  = trimspace(var.oci_fingerprint)
   private_key  = var.oci_private_key
-  region       = var.oci_region
+  region       = trimspace(var.oci_region)
 }`);
   }
 
