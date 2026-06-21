@@ -26,6 +26,8 @@ Create one custom token with both scopes:
    - **Account → Workers Scripts → Edit**   (the keepalive worker + cron trigger)
    - **Zone → DNS → Edit**                  (the tool's subdomain CNAMEs)
    - **Account → Account Settings → Read**  (lets tooling resolve the account)
+   - **Account → Cloudflare Tunnel → Edit** (only if a tool uses `target: oci`; without it the
+     cloudflared tunnel fails with **403 Forbidden** on `cfd_tunnel` at apply)
 3. **Account Resources:** Include → your account.
 4. **Zone Resources:** Include → Specific zone → `<your-domain>`.
 5. Create → copy. This is a superset of a DNS-only token, so it can replace an existing one.

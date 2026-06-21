@@ -75,16 +75,19 @@ export const PACKS: ProviderPack[] = [
     name: 'Cloudflare',
     always: true, // the zone/DNS provider + Workers (keepalive) for every Greenlight setup
     appliesTo: () => true,
-    guide: 'docs/provider-tokens.md — CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Zone DNS:Edit)',
+    guide:
+      'docs/provider-tokens.md — CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Zone DNS:Edit + Cloudflare Tunnel:Edit for oci tools)',
     setupUrl: 'https://dash.cloudflare.com/profile/api-tokens',
     tokens: [
       {
         envVar: 'CLOUDFLARE_API_TOKEN',
-        label: 'API token — Workers Scripts:Edit + Zone DNS:Edit',
+        label:
+          'API token — Workers Scripts:Edit + Zone DNS:Edit (+ Cloudflare Tunnel:Edit for oci)',
         scopes: [
           'Account · Workers Scripts · Edit',
           'Zone · DNS · Edit',
           'Account · Account Settings · Read',
+          'Account · Cloudflare Tunnel · Edit (only if a tool uses target: oci)',
         ],
         verify: async (t) => {
           const r = await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify', {
