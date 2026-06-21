@@ -92,6 +92,14 @@ The tool sub-repo's build pushes to GHCR with the **built-in `GITHUB_TOKEN`** (n
 that), so after onboarding it should hold **only `GREENLIGHT_DISPATCH_TOKEN`**. The container
 instance OCID is **not** a token — the deploy workflow resolves it from OCI by display-name.
 
+**Optional — `<TOOL>_VERIFY_TOKEN` (functional/eval verify):** for an OAuth-gated MCP tool, a
+bearer token on the **wrapper** lets the post-deploy `verify` run an *authenticated* check
+(initialize → tools/list / a tool call) — the functional signal beyond the 401 smoke check. The
+`verify.config.ts` reads it from the env and omits the authed spec when it's unset (so the gate
+stays green on the 401 alone). Provision it from the tool's own auth (e.g. OAuth client-credentials
+→ a short-lived/long-lived token) and add it as a wrapper secret; the deploy workflow passes it to
+the verify step.
+
 ### Create the two PATs
 
 Both are **fine-grained** PATs at **https://github.com/settings/personal-access-tokens/new** →
