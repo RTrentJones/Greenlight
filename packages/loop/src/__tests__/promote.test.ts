@@ -88,4 +88,44 @@ describe('promote', () => {
     }).trim();
     expect(mainAfter).toBe(mainBefore); // nothing moved
   });
+
+  it('promotes when develop exists only as a remote-tracking ref (the CI checkout case)', () => {
+    // Build a bare origin with main + develop, then a fresh clone with ONLY main checked out —
+    // exactly what actions/checkout gives the promote workflow (no local `develop`).
+    const origin = mkdtempSync(join(tmpdir(), 'gl-origin-'));
+    const ci = mkdtempSync(join(tmpdir(), 'gl-ci-'));
+    try {
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+      git('remote', 'add', 'origin', origin);
+      git('push', '-q', 'origin', 'main');
+      git('checkout', '-q', '-b', 'develop');
+      git('commit', '-q', '--allow-empty', '-m', 'feature');
+      git('push', '-q', 'origin', 'develop');
+
+      execFileSync('git', ['clone', '-q', '--branch', 'main', origin, ci]);
+      const cgit = (...a: string[]) => execFileSync('git', ['-C', ci, ...a], { stdio: 'ignore' });
+      cgit('config', 'user.email', 't@e.dev');
+      cgit('config', 'user.name', 't');
+      cgit('fetch', '-q', '--no-tags', 'origin', 'main', 'develop'); // as the workflow does
+      // Sanity: no local develop, only origin/develop.
+      expect(() => cgit('rev-parse', '--verify', '--quiet', 'develop')).toThrow();
+
+      expect(canPromote(ci).canPromote).toBe(true); // resolves origin/develop
+      const r = promote(ci, { push: true });
+      expect(r.promoted).toBe(true);
+
+      // Verify through the (non-bare) clone's remote-tracking refs — re-fetch to see the pushed main.
+      cgit('fetch', '-q', 'origin', 'main', 'develop');
+      const developTip = execFileSync('git', ['-C', ci, 'rev-parse', 'origin/develop'], {
+        encoding: 'utf8',
+      }).trim();
+      const originMain = execFileSync('git', ['-C', ci, 'rev-parse', 'origin/main'], {
+        encoding: 'utf8',
+      }).trim();
+      expect(originMain).toBe(developTip); // origin/main fast-forwarded to develop
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(ci, { recursive: true, force: true });
+    }
+  });
 });

@@ -27,19 +27,32 @@ function gitOut(repoDir: string, args: string[]): string {
   return execFileSync('git', args, { cwd: repoDir, encoding: 'utf8' }).trim();
 }
 
-export function canPromote(repoDir: string, from = 'develop', to = 'main'): PromoteCheck {
-  const run = (args: string[]): void => git(repoDir, args);
+/** Resolve a branch to a usable ref, preferring a local branch but falling back to its
+ * remote-tracking ref (`origin/<branch>`). A fresh CI checkout (e.g. the promote workflow) has only
+ * the checked-out branch locally; the other side exists solely as `origin/<branch>` — without this
+ * fallback promote wrongly reports "branch not found". Returns null if neither ref resolves. */
+function resolveRef(repoDir: string, branch: string): string | null {
+  for (const ref of [branch, `origin/${branch}`]) {
+    try {
+      git(repoDir, ['rev-parse', '--verify', '--quiet', ref]);
+      return ref;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
 
-  try {
-    run(['rev-parse', '--verify', '--quiet', from]);
-    run(['rev-parse', '--verify', '--quiet', to]);
-  } catch {
+export function canPromote(repoDir: string, from = 'develop', to = 'main'): PromoteCheck {
+  const fromRef = resolveRef(repoDir, from);
+  const toRef = resolveRef(repoDir, to);
+  if (!fromRef || !toRef) {
     return { canPromote: false, reason: `branch "${from}" or "${to}" not found in ${repoDir}` };
   }
 
   try {
     // exits 0 iff `to` is an ancestor of `from` (fast-forward is possible)
-    run(['merge-base', '--is-ancestor', to, from]);
+    git(repoDir, ['merge-base', '--is-ancestor', toRef, fromRef]);
     return { canPromote: true, reason: `"${to}" can fast-forward to "${from}"` };
   } catch {
     return {
@@ -65,25 +78,35 @@ export function promote(
   const check = canPromote(repoDir, from, to);
   if (!check.canPromote) return { promoted: false, from, to, reason: check.reason };
 
-  const original = gitOut(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  try {
-    git(repoDir, ['checkout', to]);
-    git(repoDir, ['merge', '--ff-only', from]);
-    if (opts.push) git(repoDir, ['push', 'origin', to]);
-  } finally {
-    if (original && original !== 'HEAD' && original !== to) {
+  // canPromote confirmed both refs resolve + `to` is an ancestor of `from` (a true fast-forward).
+  const fromRef = resolveRef(repoDir, from) as string;
+  const fromCommit = gitOut(repoDir, ['rev-parse', fromRef]);
+  const current = gitOut(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+
+  if (opts.push) {
+    // Server-side fast-forward of origin/<to> to <from>'s commit. This works even when <to>/<from>
+    // are only remote-tracking refs in a fresh CI checkout (the promote workflow), and git rejects
+    // a non-fast-forward push — so the divergence guarantee still holds at the remote.
+    git(repoDir, ['push', 'origin', `${fromCommit}:refs/heads/${to}`]);
+    // Best-effort: keep a local <to> in sync (skip when it's the current branch, to avoid leaving
+    // the worktree behind its branch pointer). Safe — it's a verified fast-forward.
+    if (current !== to) {
       try {
-        git(repoDir, ['checkout', original]);
+        git(repoDir, ['update-ref', `refs/heads/${to}`, fromCommit]);
       } catch {
-        // best-effort restore
+        // local sync is cosmetic; the pushed remote is what matters
       }
     }
+    return { promoted: true, from, to, reason: `"${to}" fast-forwarded to "${from}" and pushed` };
   }
 
-  return {
-    promoted: true,
-    from,
-    to,
-    reason: `"${to}" fast-forwarded to "${from}"${opts.push ? ' and pushed' : ''}`,
-  };
+  // Local-only fast-forward (developer machine). Move the local <to> ref to <from>'s commit without
+  // a full checkout: `merge --ff-only` when <to> is checked out, else update the ref directly.
+  if (current === to) {
+    git(repoDir, ['merge', '--ff-only', fromRef]);
+  } else {
+    git(repoDir, ['update-ref', `refs/heads/${to}`, fromCommit]);
+  }
+
+  return { promoted: true, from, to, reason: `"${to}" fast-forwarded to "${from}"` };
 }
