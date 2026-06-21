@@ -20,6 +20,15 @@ beforeAll(async () => {
     } else if (url === '/sitemap.xml') {
       res.writeHead(200, { 'content-type': 'application/xml' });
       res.end('<?xml version="1.0"?><urlset></urlset>');
+    } else if (url === '/protected') {
+      // Simulates Vercel Deployment Protection: 401 unless the bypass header is sent.
+      if (req.headers['x-bypass'] === 'secret') {
+        res.writeHead(200);
+        res.end('ok');
+      } else {
+        res.writeHead(401);
+        res.end('protected');
+      }
     } else {
       res.writeHead(404);
       res.end('nope');
@@ -33,6 +42,19 @@ beforeAll(async () => {
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
 describe('verify api', () => {
+  it('sends requestHeaders (e.g. a Vercel protection bypass) so a gated URL is reachable', async () => {
+    const blocked = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/protected', status: 200 }],
+    });
+    expect(blocked.pass).toBe(false); // 401 without the bypass header
+    const ok = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/protected', status: 200, requestHeaders: { 'x-bypass': 'secret' } }],
+    });
+    expect(ok.pass).toBe(true);
+  });
+
   it('passes status + contains + rss + sitemap checks', async () => {
     const r = await verify(base, {
       mode: 'api',

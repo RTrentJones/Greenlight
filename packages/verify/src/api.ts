@@ -8,7 +8,7 @@ async function checkRoute(
 ): Promise<VerifyCheck> {
   const name = `GET ${c.path}`;
   try {
-    const res = await fetch(base + c.path, { redirect: 'manual' });
+    const res = await fetch(base + c.path, { redirect: 'manual', headers: c.requestHeaders });
     const reasons: string[] = [];
     if (c.status !== undefined && res.status !== c.status) {
       reasons.push(`status ${res.status} != ${c.status}`);

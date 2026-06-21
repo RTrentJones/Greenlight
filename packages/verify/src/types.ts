@@ -28,6 +28,9 @@ export interface ApiCheck {
   contains?: string;
   /** Response header that must be present (optionally equal to `value`). */
   header?: { name: string; value?: string };
+  /** Request headers to SEND — e.g. `{ 'x-vercel-protection-bypass': '…' }` to reach a Vercel
+   * deployment behind Deployment Protection. Inject secrets from env in verify.config.ts. */
+  requestHeaders?: Record<string, string>;
 }
 
 export interface ApiSpec {

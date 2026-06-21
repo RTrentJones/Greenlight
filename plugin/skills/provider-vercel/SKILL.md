@@ -42,6 +42,13 @@ wrapper deploy listener. `greenlight adopt … --target vercel` emits, into the 
 `greenlight verify --url <url> --spec <path>` is the **manifest-free** mode that makes this work
 without carrying the wrapper's `greenlight.config.ts` into the tool repo.
 
+**Deployment Protection gotcha:** `deployment_status.target_url` is the `*.vercel.app` *deployment*
+URL, which Vercel **Deployment Protection** gates (→ **401**) even though the public custom domain
+is 200. To verify the real app, create a **Protection Bypass for Automation** secret (Vercel →
+project → Settings → Deployment Protection) and set it as `VERCEL_AUTOMATION_BYPASS_SECRET` on the
+tool repo — the api check sends it as `x-vercel-protection-bypass` and asserts 200. Without it the
+generated spec asserts **401** (the deployment is served + protected), so the gate stays green.
+
 ## MCP
 
 `.mcp.json` wires `vercel` (hosted, OAuth, read-only). Run `/mcp` and authenticate in the

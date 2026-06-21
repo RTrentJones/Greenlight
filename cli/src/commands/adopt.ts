@@ -370,6 +370,9 @@ jobs:
       # (\`pnpm install --no-frozen-lockfile\`) — but unit tests usually belong in the tool's PR CI.
       - name: Verify the deployment
         env:
+          # Bypass Vercel Deployment Protection on the deployment URL (Vercel → project → Deployment
+          # Protection → Protection Bypass for Automation). Without it the gate asserts 401 (served).
+          VERCEL_AUTOMATION_BYPASS_SECRET: \${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
         run: npx -y @rtrentjones/greenlight@latest verify --url "\${{ github.event.deployment_status.target_url }}" --spec verify/${name}.config.ts
 `;
@@ -380,11 +383,20 @@ jobs:
 function nextVerifyConfig(name: string): string {
   return `// Greenlight verify spec for ${name} (next/vercel) — run by .github/workflows/greenlight-verify.yml
 // after Vercel deploys (deployment_status). An array combines modes (allPass):
-//  - api: the deployed URL serves (200). The deployment signal.
+//  - api: deployment_status' target_url is the *.vercel.app deployment URL, which Vercel Deployment
+//    Protection gates (401). With VERCEL_AUTOMATION_BYPASS_SECRET set we send the bypass header and
+//    assert 200 (the real app); without it we assert 401 (the deployment is served + protected).
 //  - agent-web: an LLM drives the live UI; runs ONLY when ANTHROPIC_API_KEY is set (else omitted,
 //    so the gate stays green). Replace the scenario with real user tasks + assertions.
 // Unit tests belong in this repo's PR CI; to also gate the deploy on them, add
 // { mode: 'test', command: 'pnpm test' } + a tolerant deps-install step in greenlight-verify.yml.
+const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+const api = bypass
+  ? {
+      mode: 'api',
+      checks: [{ path: '/', status: 200, requestHeaders: { 'x-vercel-protection-bypass': bypass } }],
+    }
+  : { mode: 'api', checks: [{ path: '/', status: 401 }] };
 const agentWeb = process.env.ANTHROPIC_API_KEY
   ? [
       {
@@ -400,7 +412,7 @@ const agentWeb = process.env.ANTHROPIC_API_KEY
     ]
   : [];
 
-export default [{ mode: 'api', checks: [{ path: '/', status: 200 }] }, ...agentWeb];
+export default [api, ...agentWeb];
 `;
 }
 
