@@ -57,20 +57,41 @@ function vendorDeps(vendorDir: string): Record<string, string> {
   return out;
 }
 
-function starterVerifyConfig(lane: string, target?: string): string {
-  const spec =
-    lane === 'mcp'
-      ? "mode: 'mcp', expectTools: []"
-      : "mode: 'api', checks: [{ path: '/', status: 200 }]";
-  // Tailor the on-failure log command to the target. $GREENLIGHT_VERIFY_URL (the failing URL) is
-  // injected so nothing is hard-coded — the stub is copy-paste ready.
-  const logHint =
-    target === 'vercel'
-      ? 'vercel logs "$GREENLIGHT_VERIFY_URL" --token "$VERCEL_API_TOKEN" 2>&1 | head -40 || true'
-      : 'curl -sS -i "$GREENLIGHT_VERIFY_URL" 2>&1 | head -30 || true';
+function starterVerifyConfig(lane: string, _target?: string): string {
+  // $GREENLIGHT_VERIFY_URL (the failing URL) is injected so logsOnFailure needs no hard-coded URL.
+  const logHint = 'curl -sS -i "$GREENLIGHT_VERIFY_URL" 2>&1 | head -30 || true';
+
+  if (lane === 'mcp') {
+    // Born conformant: exactTools (drift guard) on + a GREENLIGHT_PREVIEW branch so the same spec
+    // works under `greenlight preview` (local, usually no auth) and in prod.
+    return `// Greenlight verify spec — edit to assert this tool's real contract.
+// \`greenlight preview\` sets GREENLIGHT_PREVIEW=1 (local run, usually no auth); prod runs the full gate.
+const preview = process.env.GREENLIGHT_PREVIEW === '1';
+
+export default [
+  {
+    mode: 'mcp',
+    // List the tools this server exposes. exactTools makes the gate FAIL if a tool is added in code
+    // but not here (or removed) — so "added to the verify loop" is enforced, not optional.
+    expectTools: [],
+    exactTools: true,
+    // Auth-gated server? Require an unauthenticated request to be rejected — but not under preview
+    // (a local no-auth server can't satisfy it). Add headers:{ Authorization: \`Bearer \${process.env.X}\` }
+    // to run authenticated tools/list against prod.
+    // requireAuthRejection: !preview,
+    // logsOnFailure: '${logHint}',
+  },
+  // Quality (optional): LLM-judged tool output. Runs only with ANTHROPIC_API_KEY (degrades to a
+  // failing check otherwise). Add cases:
+  // { mode: 'eval', cases: [{ name: 'sensible', tool: 'your_tool', rubric: 'what good looks like' }] },
+];
+`;
+  }
+
   return `// Greenlight verify spec — edit to assert this tool's real contract.
 export default {
-  ${spec},
+  mode: 'api',
+  checks: [{ path: '/', status: 200 }],
   // Telemetry-into-verify: a shell command run ONLY when this report FAILS; its last ~50 lines
   // attach to the report so the agent/CI sees the "why" in-loop. $GREENLIGHT_VERIFY_URL is the
   // failing URL (no hard-coding). Best-effort (never fails the gate). Uncomment + adjust:
@@ -225,14 +246,23 @@ node = "24"
 pnpm = "10.12.1"
 `;
 
-/** Option-B, tool side: a provider-agnostic workflow that builds the container, pushes to GHCR,
- * then fires a generic `repository_dispatch(deploy-<name>)` to the wrapper. No OCI here. */
-function containerBuildYml(name: string, wrapperRepo: string): string {
+/** Option-B, tool side: a provider-agnostic workflow that GATES on the tool's own tests, then
+ * builds the container, pushes to GHCR, and fires a generic `repository_dispatch(deploy-<name>)` to
+ * the wrapper. The test gate is the model's "ship only what's verified" invariant for container
+ * tools — a broken change never produces an image or reaches prod. `testCommand` is per-tool
+ * (default `make install && make test`; e.g. add `&& make eval-smoke`, or `pnpm install && pnpm
+ * test`). No OCI here — the wrapper owns deploy. */
+function containerBuildYml(
+  name: string,
+  wrapperRepo: string,
+  testCommand = 'make install && make test',
+): string {
   return `name: greenlight-build
 
-# Provider-agnostic: build the container -> push to GHCR -> notify the wrapper to deploy.
-# The wrapper owns the OCI infra + creds; this repo only needs GREENLIGHT_DISPATCH_TOKEN
-# (a fine-grained PAT with "Contents: write" on ${wrapperRepo}) to fire the dispatch.
+# Provider-agnostic: TEST -> build the container -> push to GHCR -> notify the wrapper to deploy.
+# The ship is GATED on the tool's own tests (build \`needs: [test]\`). The wrapper owns the OCI infra
+# + creds; this repo only needs GREENLIGHT_DISPATCH_TOKEN (a fine-grained PAT with "Contents: write"
+# on ${wrapperRepo}) to fire the dispatch.
 on:
   push:
     branches: [main]
@@ -247,7 +277,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    # Ship-gate: the tool's own tests must pass before anything is built or deployed. Customize the
+    # command + add the toolchain setup your tests need (setup-node / setup-python / mise) here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ${testCommand}
+
   build:
+    needs: [test]
     # Native arm64 runner — builds the arm64 image directly (no QEMU emulation, much faster).
     runs-on: ubuntu-24.04-arm
     steps:
@@ -622,6 +661,19 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     dir: toolRel,
     external: true,
     adopted: true,
+    // oci has no built-in local serve — scaffold a `preview` descriptor so the uniform local gate
+    // (`greenlight preview <name>`) works. Default: a docker `preview` profile matching the prod
+    // transport (the tool adds that profile to its compose). Edit the command/port/path to fit.
+    ...(target === 'oci'
+      ? {
+          preview: {
+            command: 'docker compose --profile preview up',
+            teardown: 'docker compose --profile preview down -v',
+            port: 8000,
+            path: lane === 'mcp' ? '/mcp' : '',
+          },
+        }
+      : {}),
   });
   writeFileSync(regPath, serializeConfig(nextReg));
   console.log(

@@ -23,6 +23,15 @@ function serializeTool(t: ToolConfig): string {
   if (t.dir !== undefined) parts.push(`dir: ${q(t.dir)}`);
   if (t.adopted) parts.push('adopted: true');
   if (t.external) parts.push('external: true');
+  if (t.port !== undefined) parts.push(`port: ${t.port}`);
+  if (t.preview) {
+    const pv = t.preview;
+    const pvParts = [`command: ${q(pv.command)}`];
+    if (pv.teardown !== undefined) pvParts.push(`teardown: ${q(pv.teardown)}`);
+    if (pv.port !== undefined) pvParts.push(`port: ${pv.port}`);
+    if (pv.path !== undefined) pvParts.push(`path: ${q(pv.path)}`);
+    parts.push(`preview: { ${pvParts.join(', ')} }`);
+  }
   return `    { ${parts.join(', ')} },`;
 }
 
@@ -63,6 +72,7 @@ export interface NewTool {
   adopted?: boolean;
   external?: boolean;
   port?: number;
+  preview?: { command: string; teardown?: string; port?: number; path?: string };
 }
 
 /** Add a tool to the config, validating against the schema (lane × target × data matrix). */
@@ -86,6 +96,7 @@ export function addTool(config: GreenlightConfig, t: NewTool): GreenlightConfig 
         ...(t.adopted ? { adopted: true } : {}),
         ...(t.external ? { external: true } : {}),
         ...(t.port !== undefined ? { port: t.port } : {}),
+        ...(t.preview ? { preview: t.preview } : {}),
       },
     ],
   };
@@ -116,6 +127,7 @@ export function upsertTool(config: GreenlightConfig, t: NewTool): GreenlightConf
     ...(t.adopted ? { adopted: true } : {}),
     ...(t.external ? { external: true } : {}),
     ...(t.port !== undefined ? { port: t.port } : {}),
+    ...(t.preview ? { preview: t.preview } : {}),
   };
   const tools = config.tools.some((x) => x.name === t.name)
     ? config.tools.map((x) => (x.name === t.name ? entry : x))

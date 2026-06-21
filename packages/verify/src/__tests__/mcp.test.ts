@@ -89,6 +89,21 @@ describe('verify mcp', () => {
     expect(r.pass).toBe(false);
   });
 
+  it('exactTools passes when the live tool set equals expectTools', async () => {
+    const r = await verify(url, { mode: 'mcp', expectTools: ['ping'], exactTools: true });
+    const drift = r.checks.find((c) => c.name.includes('matches expectTools exactly'));
+    expect(drift?.pass).toBe(true);
+    expect(r.pass).toBe(true);
+  });
+
+  it('exactTools fails on drift — a live tool not in expectTools (added in code, not in the verify loop)', async () => {
+    const r = await verify(url, { mode: 'mcp', expectTools: [], exactTools: true });
+    const drift = r.checks.find((c) => c.name.includes('matches expectTools exactly'));
+    expect(drift?.pass).toBe(false);
+    expect(drift?.detail).toContain('ping'); // the unexpected tool
+    expect(r.pass).toBe(false);
+  });
+
   it('passes spec.headers (e.g. a Bearer token) through the transport — the authed/eval signal', async () => {
     const r = await verify(url, {
       mode: 'mcp',

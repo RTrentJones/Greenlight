@@ -54,6 +54,26 @@ describe('serializeConfig', () => {
     expect(loaded.tools[0]?.adopted).toBe(true);
     expect(loaded.tools[0]?.external).toBe(true);
   });
+
+  it('round-trips a port + preview descriptor (the local pre-deploy gate)', async () => {
+    const cfg = addTool(base, {
+      name: 'bamcp',
+      lane: 'mcp',
+      target: 'oci',
+      port: 8000,
+      preview: {
+        command: 'docker compose --profile preview up',
+        teardown: 'docker compose --profile preview down -v',
+        port: 8000,
+        path: '/mcp',
+      },
+    });
+    const p = writeRepoTmp('.vitest-preview.config.ts', serializeConfig(cfg));
+    const loaded = await loadConfig(p);
+    expect(loaded.tools[0]?.port).toBe(8000);
+    expect(loaded.tools[0]?.preview?.command).toContain('docker compose');
+    expect(loaded.tools[0]?.preview?.path).toBe('/mcp');
+  });
 });
 
 describe('addTool', () => {
@@ -109,8 +129,9 @@ describe('runDoctor', () => {
     const checks = runDoctor(cfg, root);
     expect(checks.find((c) => c.name === 'has-vc: directory')?.status).toBe('ok');
     expect(checks.find((c) => c.name === 'missing: directory')?.status).toBe('fail');
-    expect(checks.find((c) => c.name === 'has-vc: verify.config.ts')?.status).toBe('ok');
-    expect(checks.find((c) => c.name === 'missing: verify.config.ts')?.status).toBe('warn');
+    // conformance: "in the verify loop" (a verify spec exists) — generalizes the old per-tool check.
+    expect(checks.find((c) => c.name === 'has-vc: in the verify loop')?.status).toBe('ok');
+    expect(checks.find((c) => c.name === 'missing: in the verify loop')?.status).toBe('warn');
   });
 
   it('lists external tools as registry pointers (no dir check) with their prod URL', () => {

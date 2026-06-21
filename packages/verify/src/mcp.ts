@@ -38,6 +38,24 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
         detail: has ? undefined : `got [${names.join(', ')}]`,
       });
     }
+    // Drift guard: the live tool set must match expectTools exactly — catches a capability added in
+    // code but not in the verify loop (extra), or a removed/renamed one (missing).
+    if (spec.exactTools) {
+      const expected = new Set(spec.expectTools);
+      const extra = names.filter((n) => !expected.has(n));
+      const missing = spec.expectTools.filter((t) => !names.includes(t));
+      const drift = [
+        extra.length ? `unexpected: [${extra.join(', ')}]` : '',
+        missing.length ? `missing: [${missing.join(', ')}]` : '',
+      ]
+        .filter(Boolean)
+        .join('; ');
+      checks.push({
+        name: 'tools/list matches expectTools exactly',
+        pass: drift.length === 0,
+        detail: drift || undefined,
+      });
+    }
   } catch (e) {
     checks.push({ name: 'tools/list', pass: false, detail: msg(e) });
   }

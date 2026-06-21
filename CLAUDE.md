@@ -25,18 +25,22 @@ The skeleton/seam, the deploy→verify→promote loop, the verify harness, and t
 
 ## Development loop (deploy → verify → promote)
 
-Changes to a tool or the blog are shipped through the loop — it's the agent's execution
-discipline, run as part of the dev cycle (in Claude Code CLI/IDE/web). The full procedure
-is the [deploy-verify-promote skill](.claude/skills/deploy-verify-promote/SKILL.md):
-branch → make change → deploy preview → `verify` → beta → `verify` → `promote` (gated
-`develop→main` fast-forward) → prod → `verify`. The `verify` gate (same code CI runs) is
-what lets long-running, semi-autonomous changes ship with objective confidence.
+Every change to **any** tool (web or MCP) ships through **one model** — the agent's execution
+discipline. Same shape for all; only the lane×target matrix cells vary (the
+[deploy-verify-promote skill](.claude/skills/deploy-verify-promote/SKILL.md) carries the matrix):
+branch → change → **`preview` (local gate)** → **add it to the tool's verify.config** → push (CI
+**gates on the tool's own tests**) → deploy → `verify --env prod`. Web tools also get beta +
+`promote` (gated `develop→main` FF); **oci is direct-to-prod** (no beta on the free tier — the local
+gate + ship-gate are the pre-prod safety). The `verify` gate (same code CI runs) is what lets
+long-running, semi-autonomous changes ship with objective confidence.
 
-Quick reference: `pnpm greenlight preview <name>` (build + serve locally + verify in one
-command, no readiness race); `pnpm greenlight verify <name> --env beta|prod` (or `--url
-<local>`); `pnpm greenlight promote <name>`. URL scheme + modes-by-lane are in
-the skill. Cross-repo (standalone BAMCP etc.), this skill ships as the Greenlight Claude
-Code **plugin** (Phase 7); mechanics ride the `@rtrentjones/greenlight*` npm deps.
+Quick reference: `pnpm greenlight preview <name>` (spin up locally + verify — the local gate; oci
+uses the manifest's `preview` descriptor / docker, others build+serve); `pnpm greenlight verify
+<name> --env beta|prod` (or `--url <local>`); `pnpm greenlight promote <name>`; `pnpm greenlight
+status <name>` (the ship/deploy/verify run chain across repos); `pnpm greenlight doctor` (flags any
+tool drifting from the model — missing verify spec or local-preview gate). Cross-repo (adopted
+BAMCP etc.), the skill ships as the Greenlight Claude Code **plugin**; mechanics ride the
+`@rtrentjones/greenlight*` npm deps.
 
 ## Specs & background
 

@@ -154,6 +154,9 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     const build = readFileSync(join(sub, '.github/workflows/greenlight-build.yml'), 'utf8');
     expect(build).toContain('event_type=deploy-demo-mcp'); // dispatches to the wrapper
     expect(build).toContain('ghcr.io'); // builds + pushes the container (no OCI here)
+    // ship-gate: build only runs after the tool's own tests pass (never ship unverified)
+    expect(build).toMatch(/^ {2}test:/m);
+    expect(build).toContain('needs: [test]');
     // --- the wrapper got the deploy listener (OCI creds + restart live here) ---
     const listener = readFileSync(
       join(wrapper, '.github/workflows/greenlight-deploy-demo-mcp.yml'),

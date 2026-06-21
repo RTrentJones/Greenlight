@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { type GreenlightConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
+import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
 import { loadManifest } from '../manifest';
 
 export interface DoctorCheck {
@@ -15,14 +15,47 @@ function dirCheck(label: string, dir: string): DoctorCheck {
     : { name: `${label}: directory`, status: 'fail', detail: `missing ${dir}` };
 }
 
+/** Conformance to the uniform tool model: every tool must be (a) in the verify loop — a verify spec
+ * exists (external → the wrapper's `verify/<name>.config.ts`; local → `<dir>/verify.config.ts`) —
+ * and (b) locally gateable — `greenlight preview <name>` can run it (a built-in node serve for a
+ * local workers tool, else a `preview` descriptor). Warnings, not failures: they flag a consumer
+ * drifting from the shape without breaking the run. */
+function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
+  const out: DoctorCheck[] = [];
+
+  const specRel = t.external
+    ? `verify/${t.name}.config.ts`
+    : join(t.dir ?? join('tools', t.name), 'verify.config.ts');
+  const hasSpec = existsSync(join(root, specRel));
+  out.push({
+    name: `${t.name}: in the verify loop`,
+    status: hasSpec ? 'ok' : 'warn',
+    detail: hasSpec ? specRel : `no ${specRel} — verify falls back to the lane default`,
+  });
+
+  // Built-in local serve exists only for a LOCAL node tool (preview's build+`pnpm preview|start`);
+  // external tools (vercel/oci submodules) + oci need a `preview` descriptor to be locally gateable.
+  const builtIn = !t.external && t.target === 'workers';
+  const gateable = Boolean(t.preview) || builtIn;
+  out.push({
+    name: `${t.name}: local preview gate`,
+    status: gateable ? 'ok' : 'warn',
+    detail: gateable
+      ? undefined
+      : `no built-in serve for ${t.external ? 'an external ' : ''}${t.target} tool — add preview:{ command, … } so \`greenlight preview ${t.name}\` works`,
+  });
+
+  return out;
+}
+
 /** Pure consistency checks (no network). Cred-dependent checks are reported as skipped. */
 export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   if (config.blog) checks.push(dirCheck('blog', join(root, 'apps/blog')));
 
   for (const t of config.tools) {
-    // External tools live in another repo — this manifest is a registry pointer.
-    // We can't check files locally; report the subdomain `verify` should target.
+    // External tools live in another repo — this manifest is a registry pointer. We can't check the
+    // app dir locally; report the subdomain `verify` should target. Local tools get a dir check.
     if (t.external) {
       const url = resolveUrl({
         domain: config.domain,
@@ -31,18 +64,11 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
         mcp: t.lane === 'mcp',
       });
       checks.push({ name: `${t.name}: external (registry)`, status: 'ok', detail: url });
-      continue;
+    } else {
+      checks.push(dirCheck(t.name, join(root, t.dir ?? join('tools', t.name))));
     }
-    const dir = join(root, t.dir ?? join('tools', t.name));
-    checks.push(dirCheck(t.name, dir));
-    if (t.lane === 'mcp') {
-      const vc = join(dir, 'verify.config.ts');
-      checks.push({
-        name: `${t.name}: verify.config.ts`,
-        status: existsSync(vc) ? 'ok' : 'warn',
-        detail: existsSync(vc) ? undefined : 'missing — verify will use the lane default',
-      });
-    }
+    // Same conformance checks for EVERY tool — one model, enforced.
+    checks.push(...conformanceChecks(t, root));
   }
 
   // Keepalive coverage (pure): which tools need a keepalive target — data:supabase (the

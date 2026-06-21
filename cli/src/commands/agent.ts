@@ -6,11 +6,15 @@ import { packsForTool } from '../providers';
 
 const CLAUDE_BLOCK = `## Greenlight loop (deploy → verify → promote)
 
-This repo uses Greenlight. Ship changes through the deploy-verify-promote skill:
-branch → change → deploy preview → \`greenlight verify\` → beta → verify → \`greenlight promote\` → prod → verify.
+This repo uses Greenlight. Deliver every change through the ONE model (same shape for web + MCP
+tools — the deploy-verify-promote skill has the lane×target matrix):
+branch → change → \`greenlight preview <name>\` (local gate) → add it to the tool's verify.config →
+push (CI gates on the tool's own tests) → deploy → \`greenlight verify <name> --env prod\`.
+Web tools also get beta + \`greenlight promote\`; oci is direct-to-prod (the local gate is the
+pre-prod safety). \`greenlight status <name>\` shows the run chain; \`greenlight doctor\` flags drift.
 
 Agentic kit:
-- Skill: \`.claude/skills/deploy-verify-promote/SKILL.md\` (the loop).
+- Skill: \`.claude/skills/deploy-verify-promote/SKILL.md\` (the one model + the matrix).
 - MCP servers: \`.mcp.json\` recommends the relevant providers — run \`/mcp\` to authenticate.
     Vercel is OAuth; Supabase needs \`SUPABASE_ACCESS_TOKEN\` (+ \`SUPABASE_PROJECT_REF\`) in your env.
 - Best-practice skills (one-time, user scope):

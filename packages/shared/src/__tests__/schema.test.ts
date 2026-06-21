@@ -123,4 +123,28 @@ describe('ConfigSchema', () => {
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.tools[0]?.external).toBe(true);
   });
+
+  it('accepts a preview descriptor (the local pre-deploy gate for targets with no built-in serve)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [
+        {
+          name: 'bamcp',
+          lane: 'mcp',
+          target: 'oci',
+          data: 'none',
+          external: true,
+          envs: ['prod'],
+          preview: {
+            command: 'docker compose --profile preview up',
+            teardown: 'docker compose --profile preview down -v',
+            port: 8000,
+            path: '/mcp',
+          },
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.tools[0]?.preview?.port).toBe(8000);
+  });
 });

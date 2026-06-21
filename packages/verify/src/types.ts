@@ -63,6 +63,10 @@ export interface McpSpec extends VerifySpecBase {
   mode: 'mcp';
   /** Tool names that `tools/list` must include. */
   expectTools: string[];
+  /** Drift guard: require `tools/list` to equal `expectTools` EXACTLY — no missing, no extras. Use
+   * this to enforce that a capability added in code is also added to the verify loop (an unexpected
+   * tool, or a renamed/removed one, fails the gate). Default false (subset check via expectTools). */
+  exactTools?: boolean;
   /** Optionally call one tool and assert the result is non-error / has keys. */
   call?: { name: string; args?: Record<string, unknown>; expectKeys?: string[] };
   /** Assert an unauthenticated request is rejected (auth != none servers). */

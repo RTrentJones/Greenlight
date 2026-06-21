@@ -53,6 +53,18 @@ export const ToolSchema = z
     // The tool's code lives in another repo — this entry is a registry pointer only,
     // not built/deployed here (greenlight-v1.md §15.5 poly-repo).
     external: z.boolean().default(false),
+    // How `greenlight preview` spins the tool up LOCALLY for the pre-deploy gate. Optional — node
+    // lanes (astro/next/mcp→workers) use the built-in build+serve path. Set it for targets with no
+    // built-in serve (e.g. oci: a docker command that matches the prod transport). The harness polls
+    // the local URL (http://localhost:<port><path>), verifies, then runs `teardown`.
+    preview: z
+      .object({
+        command: z.string(), // spin up locally in the background (e.g. a `docker compose … up`)
+        teardown: z.string().optional(), // tear down afterwards (e.g. `docker compose … down`)
+        port: z.number().int().positive().optional(), // local port (default: tool.port ?? lane default)
+        path: z.string().optional(), // connect path (default: lane default, e.g. `/mcp`)
+      })
+      .optional(),
   })
   .superRefine((tool, ctx) => {
     const rule = MATRIX[tool.lane];

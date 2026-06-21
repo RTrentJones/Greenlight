@@ -9,6 +9,7 @@ import { initCommand } from './commands/init';
 import { previewCommand } from './commands/preview';
 import { promoteCommand } from './commands/promote';
 import { secretsCommand } from './commands/secrets';
+import { statusCommand } from './commands/status';
 import { verifyCommand } from './commands/verify';
 
 const HELP = `greenlight <command>
@@ -20,6 +21,7 @@ const HELP = `greenlight <command>
   preview <name> [--port <n>]                   build + serve locally + verify (one command)
   verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
+  status <name>                                 last ship/deploy/verify run for a tool (via gh)
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
   secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
   agent sync                                    write the loop skill + CLAUDE.md block into this repo
@@ -53,6 +55,8 @@ async function main(): Promise<void> {
       return verifyCommand(args);
     case 'promote':
       return promoteCommand(args);
+    case 'status':
+      return statusCommand(args);
     case 'secrets':
       return secretsCommand(args);
     case 'agent':

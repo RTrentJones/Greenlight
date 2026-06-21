@@ -31,6 +31,13 @@ export async function loadManifest(cwd = process.cwd()): Promise<{
   return { path, config: await loadConfig(path) };
 }
 
+export interface PreviewDescriptor {
+  command: string;
+  teardown?: string;
+  port?: number;
+  path?: string;
+}
+
 export interface ResolvedEntry {
   /** undefined = the blog (apex); a string = a subdomain tool. */
   name: string | undefined;
@@ -41,6 +48,10 @@ export interface ResolvedEntry {
   dir: string;
   /** Code lives in another repo — registry pointer; not built/deployed here. */
   external: boolean;
+  /** Container port (target: oci); also the default local preview port. */
+  port?: number;
+  /** How `greenlight preview` spins this tool up locally (target with no built-in serve). */
+  preview?: PreviewDescriptor;
 }
 
 /** Resolve a manifest entry by name. `blog` maps to the apex (no subdomain name). */
@@ -68,6 +79,8 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
     data: tool.data,
     dir: tool.dir ?? `tools/${tool.name}`,
     external: tool.external,
+    port: tool.port,
+    preview: tool.preview,
   };
 }
 
