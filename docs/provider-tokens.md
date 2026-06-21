@@ -63,9 +63,10 @@ Verify: `curl -s "https://api.vercel.com/v2/user" -H "Authorization: Bearer $VER
   curl -s "https://api.cloudflare.com/client/v4/zones?name=<your-domain>" \
     -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | grep -o '"id":"[^"]*"' | head -1
   ```
-- **`TF_VAR_supabase_database_password`** — only used if a Supabase project is **created**.
-  When importing an existing project the module sets `ignore_changes` on the password, so any
-  non-empty placeholder works.
+- **`TF_VAR_<tool>_supabase_database_password`** — **per-tool** (the password is per Supabase
+  project; it's declared inline in each `infra/<tool>.tf` so two `data: supabase` tools never
+  collide). Only used if a Supabase project is **created**; when importing an existing project the
+  module sets `ignore_changes` on the password, so any non-empty placeholder works.
 - **`TF_VAR_keepalive_github_token`** *(optional)* — the keepalive Worker's GitHub token. A
   fine-grained PAT on the wrapper repo with **Issues: Read and write** (the `github-issue` alert
   sink) **and — for auto-remediation — Contents: Read and write** (the `repository_dispatch` that
@@ -142,7 +143,7 @@ SUPABASE_ACCESS_TOKEN=...
 VERCEL_API_TOKEN=...
 # terraform variables
 TF_VAR_cloudflare_zone_id=...
-TF_VAR_supabase_database_password=import-placeholder
+TF_VAR_<tool>_supabase_database_password=import-placeholder   # per-tool (per Supabase project)
 TF_VAR_keepalive_github_token=        # optional
 ```
 

@@ -25,9 +25,9 @@ facet that triggers it.
 | `TF_API_TOKEN` | HCP Terraform | always | wrapper + local | ✅ |
 | `GITHUB_TOKEN` | GitHub | always (CI built-in) | — (auto) | ✅ (provided) |
 | `VERCEL_API_TOKEN` | Vercel | `target: vercel` | wrapper + local | ✅ for vercel |
-| `VERCEL_AUTOMATION_BYPASS_SECRET` | Vercel | `target: vercel` | wrapper / tool | optional |
+| `VERCEL_AUTOMATION_BYPASS_SECRET_<TOOL>` | Vercel | `target: vercel` | tool | optional |
 | `SUPABASE_ACCESS_TOKEN` | Supabase | `data: supabase` | wrapper + local | ✅ for supabase |
-| `TF_VAR_supabase_database_password` | Supabase | `data: supabase` | wrapper + local | optional* |
+| `TF_VAR_<tool>_supabase_database_password` | Supabase | `data: supabase` | wrapper + local | optional* |
 | `TF_VAR_oci_tenancy_ocid` | OCI | `target: oci` | wrapper + local | ✅ for oci |
 | `TF_VAR_oci_user_ocid` | OCI | `target: oci` | wrapper + local | ✅ for oci |
 | `TF_VAR_oci_fingerprint` | OCI | `target: oci` | wrapper + local | ✅ for oci |
@@ -87,7 +87,11 @@ Create at **https://vercel.com/account/settings/tokens** (scope to the **team**,
 | token | permissions | for | required |
 |---|---|---|---|
 | `VERCEL_API_TOKEN` | team-scoped | the vercel Terraform provider (custom domains + env vars on the existing project; deploys ride git integration) | ✅ for vercel |
-| `VERCEL_AUTOMATION_BYPASS_SECRET` | from project → **Settings → Deployment Protection → Protection Bypass for Automation** | lets `verify` send the bypass header and assert **200** (the real app) instead of **401** (protected-but-served) | optional |
+| `VERCEL_AUTOMATION_BYPASS_SECRET_<TOOL>` | from project → **Settings → Deployment Protection → Protection Bypass for Automation** | lets `verify` send the bypass header and assert **200** (the real app) instead of **401** (protected-but-served) | optional |
+
+> **Per-tool name.** The bypass value is per **Vercel project**, so the secret is suffixed with the
+> tool (`…_HEISTMIND`) — two vercel tools never collide. The workflow maps it to the generic
+> `VERCEL_AUTOMATION_BYPASS_SECRET` env the spec reads. Same convention as `GREENLIGHT_STATUS_TOKEN_<TOOL>`.
 
 Verify: `curl -s https://api.vercel.com/v2/user -H "Authorization: Bearer $VERCEL_API_TOKEN"`.
 
@@ -98,7 +102,7 @@ Create at **https://supabase.com/dashboard/account/tokens** → Generate new tok
 | token / var | permissions | for | required |
 |---|---|---|---|
 | `SUPABASE_ACCESS_TOKEN` | Management API PAT — **account-scoped** (manages every project in the account; keep it tight) | the supabase provider + the Supabase MCP (read-only) | ✅ for supabase |
-| `TF_VAR_supabase_database_password` | *(a value)* | only when a project is **created**; ignored on import (module sets `ignore_changes`) | optional |
+| `TF_VAR_<tool>_supabase_database_password` | *(a value)* | only when a project is **created**; ignored on import (module sets `ignore_changes`). **Per-tool** (per Supabase project) — declared inline in each `infra/<tool>.tf`, so two supabase tools don't collide | optional |
 
 Verify: `curl -s https://api.supabase.com/v1/projects -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN"`.
 
@@ -135,7 +139,7 @@ select repositories* → the repo named below → set the one permission → Gen
 | `GREENLIGHT_DISPATCH_TOKEN` | **tool** repo | the **wrapper** | **Contents: Read and write** | the tool's `greenlight-build` fires `repository_dispatch` → the wrapper deploys |
 | `GREENLIGHT_STATUS_TOKEN_<TOOL>` | **wrapper** | the **tool** | **Commit statuses: Read and write** | the wrapper posts deploy/verify status back to the tool's commit |
 | `TF_VAR_keepalive_github_token` | **wrapper** | the **wrapper** | **Issues: Read and write** + **Contents: Read and write** | keepalive `github-issue` alerts (Issues) **and** OCI auto-remediation `repository_dispatch` (Contents) |
-| `<TOOL>_VERIFY_TOKEN` (e.g. `BAMCP_VERIFY_TOKEN`) | **wrapper** | n/a (the tool's own auth, e.g. an OAuth bearer) | n/a | an *authenticated* functional/eval `verify` (initialize → tools/list / a tool call) beyond the public 401 smoke check |
+| `<TOOL>_VERIFY_TOKEN` (e.g. `BAMCP_VERIFY_TOKEN`) | **wrapper** | the tool itself (M2M service token) | a strong random value | an *authenticated* functional/eval `verify` (initialize → tools/list / a tool call) beyond the public 401 smoke check |
 
 Notes:
 - The **status token is per-tool** (`…_<TOOL>`, uppercase, hyphens→underscores: `demo-mcp` →
@@ -147,6 +151,12 @@ Notes:
   → pings still run, but alerts **and** self-heal silently no-op.
 - After onboarding, an adopted tool's repo should hold **only `GREENLIGHT_DISPATCH_TOKEN`** (its build
   pushes to GHCR with the built-in `GITHUB_TOKEN`).
+- **`<TOOL>_VERIFY_TOKEN` is a stateless M2M service token** (the per-tool prefix means no collision).
+  For an OAuth-gated MCP server whose tokens are in-memory (wiped on restart), a pre-minted OAuth
+  token can't survive a deploy — so the tool accepts one configured bearer statelessly (read scope).
+  Set the **same** value in two places: the tool's runtime env (e.g. via `TF_VAR_<tool>_verify_token`
+  → container env) **and** the wrapper secret the verify step presents. Empty → functional verify
+  stays dormant; the 401 smoke still gates.
 
 ---
 
@@ -159,7 +169,7 @@ TF_VAR_cloudflare_zone_id=...
 TF_API_TOKEN=...
 VERCEL_API_TOKEN=...                       # target: vercel
 SUPABASE_ACCESS_TOKEN=...                  # data: supabase
-TF_VAR_supabase_database_password=import-placeholder
+TF_VAR_<tool>_supabase_database_password=import-placeholder   # per-tool (per Supabase project)
 TF_VAR_oci_tenancy_ocid=...                # target: oci (×5 + optional compartment)
 TF_VAR_keepalive_github_token=...          # optional (alerts + auto-heal)
 ```

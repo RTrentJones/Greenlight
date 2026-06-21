@@ -43,7 +43,7 @@ Provider creds live in the **wrapper**, not tool repos. For a poly-repo (adopted
 | `CLOUDFLARE_API_TOKEN` scopes | wrapper | Workers Scripts:Edit + Zone DNS:Edit (+ **Cloudflare Tunnel:Edit** for `oci` tools) | DNS, keepalive Worker, tunnels |
 | `GREENLIGHT_DISPATCH_TOKEN` | **tool repo** | Contents:write on the **wrapper** | tool build → `repository_dispatch` → wrapper deploys |
 | `GREENLIGHT_STATUS_TOKEN_<TOOL>` | wrapper | Commit statuses:write on the **tool** | wrapper posts deploy/verify status back (per-tool name) |
-| `<TOOL>_VERIFY_TOKEN` / `VERCEL_AUTOMATION_BYPASS_SECRET` | wrapper / tool | per tool | optional: authenticated functional verify / bypass Vercel Deployment Protection |
+| `<TOOL>_VERIFY_TOKEN` / `VERCEL_AUTOMATION_BYPASS_SECRET_<TOOL>` | wrapper / tool | per tool (suffixed) | optional: authenticated functional verify / bypass Vercel Deployment Protection |
 | `keepalive` PAT (`TF_VAR_keepalive_github_token`) | wrapper | Issues:write **+ Contents:write** | github-issue alerts + `repository_dispatch` self-heal (auto-remediation) |
 
 The optimal end state: a tool repo holds **only** `GREENLIGHT_DISPATCH_TOKEN`.

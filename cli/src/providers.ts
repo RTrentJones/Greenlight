@@ -148,11 +148,10 @@ export const PACKS: ProviderPack[] = [
           return { ok: okStatus(r), detail: `HTTP ${r.status}` };
         },
       },
-      {
-        envVar: 'TF_VAR_supabase_database_password',
-        label: 'database password (ignored when importing an existing project)',
-        optional: true,
-      },
+      // NOTE: the database password is PER-PROJECT, so it's emitted as a per-tool variable
+      // (`<name>_supabase_database_password`) inline in each tool's <name>.tf — like the per-tool
+      // `<name>_vercel_project_id` — not a shared account credential gathered here. Set
+      // TF_VAR_<name>_supabase_database_password only when CREATING a project (ignored on import).
     ],
     mcp: {
       supabase: {

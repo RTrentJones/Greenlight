@@ -44,7 +44,7 @@ export function emitToolTf(opts: ToolTfOpts): string {
 
   const assumes = ['var.cloudflare_zone_id'];
   if (useOci) assumes.push('var.cloudflare_account_id', 'local.oci_compartment_id');
-  if (useSupabase) assumes.push('var.supabase_organization_id', 'var.supabase_database_password');
+  if (useSupabase) assumes.push('var.supabase_organization_id');
   const ghcrOwner = (slug.split('/')[0] ?? 'owner').toLowerCase(); // GHCR namespaces are lowercase
 
   blocks.push(
@@ -66,8 +66,17 @@ module "${name}_supabase" {
   name              = "${name}"
   project_name      = "${name}-db"
   organization_id   = var.supabase_organization_id
-  database_password = var.supabase_database_password
+  database_password = var.${name}_supabase_database_password
   region            = "us-east-1"
+}
+
+# Per-tool (the password is per Supabase PROJECT) — so a second data:supabase tool doesn't collide
+# on a shared variable. Set TF_VAR_${name}_supabase_database_password only when CREATING a project;
+# on import the module ignores it (the default placeholder is fine).
+variable "${name}_supabase_database_password" {
+  type      = string
+  sensitive = true
+  default   = "import-placeholder" # ignored when importing an existing project
 }`);
   }
 
@@ -241,10 +250,9 @@ export function emitWrapperMainTf(opts: {
   const vars = ['variable "cloudflare_zone_id" { type = string }'];
   vars.push('variable "cloudflare_account_id" {\n  type    = string\n  default = ""\n}');
   if (need.has('supabase')) {
+    // organization_id is account-level (shared across all supabase tools). The database password is
+    // per PROJECT, so it's declared per-tool in each tool's <name>.tf (not here) to avoid a collision.
     vars.push('variable "supabase_organization_id" { type = string }');
-    vars.push(
-      'variable "supabase_database_password" {\n  type      = string\n  sensitive = true\n  default   = "import-placeholder" # ignored when importing an existing project\n}',
-    );
   }
   if (need.has('oci')) {
     // OCI provider auth (API-key signing) — gathered by `greenlight secrets gather`, synced as

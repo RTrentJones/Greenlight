@@ -119,7 +119,8 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       TF_VAR_cloudflare_zone_id: ${{ secrets.TF_VAR_CLOUDFLARE_ZONE_ID }}
-      TF_VAR_supabase_database_password: ${{ secrets.TF_VAR_SUPABASE_DATABASE_PASSWORD }}
+      # per-tool (per Supabase project) — one line per data:supabase tool, names never collide
+      TF_VAR_blog_supabase_database_password: ${{ secrets.TF_VAR_BLOG_SUPABASE_DATABASE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3

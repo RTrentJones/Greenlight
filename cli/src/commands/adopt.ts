@@ -464,7 +464,9 @@ jobs:
         env:
           # Bypass Vercel Deployment Protection on the deployment URL (Vercel → project → Deployment
           # Protection → Protection Bypass for Automation). Without it the gate asserts 401 (served).
-          VERCEL_AUTOMATION_BYPASS_SECRET: \${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # The SECRET is per-tool (the bypass value is per Vercel PROJECT) so two vercel tools never
+          # collide; the env var the spec reads stays generic.
+          VERCEL_AUTOMATION_BYPASS_SECRET: \${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_${name.toUpperCase().replace(/-/g, '_')} }}
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
         run: npx -y @rtrentjones/greenlight@latest verify --url "\${{ github.event.deployment_status.target_url }}" --spec verify/${name}.config.ts
 `;
@@ -711,8 +713,9 @@ Next:
         : target === 'vercel'
           ? `
   Deploy is Vercel's git integration (no wrapper deploy). The tool's greenlight-verify.yml verifies
-  each deployment (deployment_status). Optional: add ANTHROPIC_API_KEY to ${slug} to enable the
-  agent-web scenarios in verify/${name}.config.ts (absent → api + test gate alone).`
+  each deployment (deployment_status). Optional secrets on ${slug}:
+    · VERCEL_AUTOMATION_BYPASS_SECRET_${name.toUpperCase().replace(/-/g, '_')}  (Vercel → project → Deployment Protection → Bypass for Automation) → verify asserts 200, not 401
+    · ANTHROPIC_API_KEY → enables the agent-web scenarios in verify/${name}.config.ts (absent → api gate alone)`
           : ''
     }`);
 }

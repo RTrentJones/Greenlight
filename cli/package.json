@@ -1,6 +1,6 @@
 {
   "name": "@rtrentjones/greenlight",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Greenlight CLI — setup and lifecycle for the harness.",
   "license": "MIT",
   "repository": {
