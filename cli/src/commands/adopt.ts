@@ -310,6 +310,11 @@ jobs:
           fi
           echo "Resolved ${name} instance: \$OCID"
           OCI_CONTAINER_INSTANCE_OCID="\$OCID" pnpm exec greenlight deploy ${name} --env prod
+      - name: Verify prod (gate the signal on real health, not just the restart)
+        # The deploy "succeeds" only if the NEW image is actually serving. verify has a built-in
+        # readiness wait (re-pull + container start). A failure here fails the job → the status
+        # posted back is red. oci is verify-gated direct-to-prod (no cheap standing beta on free A1).
+        run: pnpm exec greenlight verify ${name} --env prod
       - name: Report status back to ${toolRepo}
         if: \${{ always() && github.event.client_payload.sha != '' }}
         env:

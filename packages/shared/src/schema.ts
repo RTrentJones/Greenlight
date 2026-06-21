@@ -43,6 +43,10 @@ export const ToolSchema = z
     access: AccessEnum.default('public'),
     envs: z.array(EnvEnum).nonempty('a tool needs at least one env'),
     adopted: z.boolean().default(false),
+    // The port the container listens on (target: oci). The tunnel routes to localhost:<port>;
+    // defaults to 8000 (the mcp/FastMCP convention). Set it for a lane:docker tool on a different
+    // port so the oci modules stay generic. Ignored by non-oci targets.
+    port: z.number().int().positive().optional(),
     // Directory the tool builds/deploys from. Defaults to tools/<name>; a standalone
     // (poly-repo) tool sets '.' (the repo root).
     dir: z.string().optional(),

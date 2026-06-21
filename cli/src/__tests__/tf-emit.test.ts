@@ -53,6 +53,8 @@ describe('emitToolTf', () => {
     expect(tf).not.toContain('var.oci_availability_domain');
     // compartment comes from the shared local (blank → tenancy root), not a per-tool secret
     expect(tf).toContain('compartment_id = local.oci_compartment_id');
+    // default container port is 8000 (mcp/FastMCP convention)
+    expect(tf).toContain('service = "http://localhost:8000"');
     // tunnel routes prod to the container; dns CNAMEs at the tunnel
     expect(tf).toContain('hostname = "bamcp.example.dev", service = "http://localhost:8000"');
     expect(tf).toContain('cname_target = module.bamcp_tunnel.cname_target');
@@ -63,6 +65,20 @@ describe('emitToolTf', () => {
     expect(tf).toContain('output "bamcp_tunnel_token"');
     expect(tf).toContain('output "bamcp_container_instance_id"');
     expect(tf).toContain('output "bamcp_prod_url"');
+  });
+
+  it('routes the tunnel to a custom container port (lane:docker / non-8000 tools)', () => {
+    const tf = emitToolTf({
+      name: 'svc',
+      domain: 'x.dev',
+      lane: 'mcp',
+      target: 'oci',
+      data: 'none',
+      envs: ['prod'],
+      port: 3000,
+    });
+    expect(tf).toContain('service = "http://localhost:3000"');
+    expect(tf).not.toContain('localhost:8000');
   });
 
   it('local (non-external) tool manages GitHub environments', () => {

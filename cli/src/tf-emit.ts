@@ -22,6 +22,8 @@ export interface ToolTfOpts {
   slug?: string;
   /** External tool (code/CI in its own repo) → don't manage its GitHub environments here. */
   external?: boolean;
+  /** Container listen port for target: oci (tunnel routes to localhost:<port>). Default 8000. */
+  port?: number;
   ref?: string;
 }
 
@@ -32,6 +34,7 @@ const hcl = (s: string) => s.replace(/\n{3,}/g, '\n\n').trimEnd();
  * header lists which); never re-declares providers/backend (those are wrapper singletons). */
 export function emitToolTf(opts: ToolTfOpts): string {
   const { name, domain, lane, target, data, envs, ref = MODULE_REF } = opts;
+  const port = opts.port ?? 8000; // container listen port (oci); tunnel routes to localhost:<port>
   const slug = opts.slug ?? `OWNER/${name}`;
   const useSupabase = data === 'supabase';
   const useVercel = target === 'vercel';
@@ -114,7 +117,7 @@ variable "${name}_vercel_project_id" {
 
   if (useOci) {
     blocks.push(`# OCI Container Instance (Always-Free Ampere A1) running the tool's GHCR image + a cloudflared
-# sidecar; the tunnel routes ${name}.${domain} → the container at localhost:8000. The tool's OWN
+# sidecar; the tunnel routes ${name}.${domain} → the container at localhost:${port}. The tool's OWN
 # CI builds + pushes the image (provider-agnostic); deploy = restart the instance (re-pull).
 # beta would be a second instance + tunnel route — mind the free 2-OCPU / 12-GB A1 cap.
 module "${name}_tunnel" {
@@ -123,7 +126,7 @@ module "${name}_tunnel" {
   account_id = var.cloudflare_account_id
   name       = "${name}-tunnel"
   ingress = [
-    { hostname = "${name}.${domain}", service = "http://localhost:8000" },
+    { hostname = "${name}.${domain}", service = "http://localhost:${port}" },
   ]
 }
 

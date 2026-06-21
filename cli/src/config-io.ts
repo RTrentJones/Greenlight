@@ -62,6 +62,7 @@ export interface NewTool {
   dir?: string;
   adopted?: boolean;
   external?: boolean;
+  port?: number;
 }
 
 /** Add a tool to the config, validating against the schema (lane × target × data matrix). */
@@ -84,6 +85,7 @@ export function addTool(config: GreenlightConfig, t: NewTool): GreenlightConfig 
         ...(t.dir !== undefined ? { dir: t.dir } : {}),
         ...(t.adopted ? { adopted: true } : {}),
         ...(t.external ? { external: true } : {}),
+        ...(t.port !== undefined ? { port: t.port } : {}),
       },
     ],
   };

@@ -22,7 +22,7 @@ export async function addCommand(args: string[]): Promise<void> {
   const name = args[0];
   if (!name || name.startsWith('-')) {
     throw new Error(
-      'usage: greenlight add <name> --lane <lane> --target <target> [--data <d>] [--auth <a>] [--envs beta,prod]',
+      'usage: greenlight add <name> --lane <lane> --target <target> [--data <d>] [--auth <a>] [--envs beta,prod] [--port 8000]',
     );
   }
   const lane = flag(args, '--lane');
@@ -35,6 +35,7 @@ export async function addCommand(args: string[]): Promise<void> {
   }
 
   // Validates the lane × target × data matrix via the schema.
+  const portFlag = flag(args, '--port');
   const next = addTool(config, {
     name,
     lane,
@@ -42,6 +43,7 @@ export async function addCommand(args: string[]): Promise<void> {
     data: flag(args, '--data'),
     auth: flag(args, '--auth'),
     envs: flag(args, '--envs')?.split(','),
+    port: portFlag ? Number(portFlag) : undefined,
   });
   const entry = next.tools.find((t) => t.name === name);
   const data = entry?.data ?? 'none';
@@ -89,7 +91,10 @@ export async function addCommand(args: string[]): Promise<void> {
   if (existsSync(toolTf)) {
     console.log(`· infra/${name}.tf exists — left as-is`);
   } else {
-    writeFileSync(toolTf, emitToolTf({ name, domain: config.domain, lane, target, data, envs }));
+    writeFileSync(
+      toolTf,
+      emitToolTf({ name, domain: config.domain, lane, target, data, envs, port: entry?.port }),
+    );
     console.log(`✔ wrote infra/${name}.tf (modules: ${providers.join(', ')})`);
   }
 
