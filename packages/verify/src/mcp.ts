@@ -10,7 +10,12 @@ import { type McpSpec, type VerifyCheck, type VerifyReport, msg, report } from '
 export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyReport> {
   const checks: VerifyCheck[] = [];
   const client = new Client({ name: 'greenlight-verify', version: '0.0.0' });
-  const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+  // spec.headers (e.g. a Bearer token from env) auth the transport so initialize/tools/list/call
+  // work against an OAuth-gated server — the functional ("eval") signal beyond a 401 smoke check.
+  const transport = new StreamableHTTPClientTransport(
+    new URL(baseUrl),
+    spec.headers ? { requestInit: { headers: spec.headers } } : undefined,
+  );
 
   try {
     await client.connect(transport); // performs the initialize handshake

@@ -50,6 +50,10 @@ export interface McpSpec {
   call?: { name: string; args?: Record<string, unknown>; expectKeys?: string[] };
   /** Assert an unauthenticated request is rejected (auth != none servers). */
   requireAuthRejection?: boolean;
+  /** Extra HTTP headers for the transport — e.g. `{ Authorization: 'Bearer …' }` for an
+   * OAuth-gated server. Inject the token from an env var in your verify.config.ts so it never
+   * lands in a committed file. Lets `mcp` mode run the authenticated functional/eval checks. */
+  headers?: Record<string, string>;
 }
 
 /** playwright mode — light render check via the accessibility tree. */

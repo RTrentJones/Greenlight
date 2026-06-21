@@ -26,6 +26,7 @@ function readJson(req: http.IncomingMessage): Promise<unknown> {
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 let server: http.Server;
 let url: string;
+let lastAuthHeader: string | undefined; // captured to prove spec.headers reach the transport
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -41,6 +42,7 @@ afterAll(() => new Promise<void>((r) => server.close(() => r())));
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
   if (req.method === 'POST') {
+    lastAuthHeader = req.headers.authorization as string | undefined;
     const body = await readJson(req);
     let transport = sessionId ? transports[sessionId] : undefined;
     if (!transport && isInitializeRequest(body)) {
@@ -85,5 +87,16 @@ describe('verify mcp', () => {
   it('flags a missing expected tool', async () => {
     const r = await verify(url, { mode: 'mcp', expectTools: ['does-not-exist'] });
     expect(r.pass).toBe(false);
+  });
+
+  it('passes spec.headers (e.g. a Bearer token) through the transport — the authed/eval signal', async () => {
+    const r = await verify(url, {
+      mode: 'mcp',
+      expectTools: ['ping'],
+      call: { name: 'ping' },
+      headers: { Authorization: 'Bearer tkn-123' },
+    });
+    expect(r.pass).toBe(true);
+    expect(lastAuthHeader).toBe('Bearer tkn-123'); // the server saw the injected auth header
   });
 });

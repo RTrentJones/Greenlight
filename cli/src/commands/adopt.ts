@@ -234,13 +234,13 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Native arm64 runner — builds the arm64 image directly (no QEMU emulation, much faster).
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Resolve image ref (GHCR namespaces are lowercase)
         id: img
-        run: echo "ref=ghcr.io/\${GITHUB_REPOSITORY_OWNER,,}/${name}:prod" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@v3
+        run: echo "base=ghcr.io/\${GITHUB_REPOSITORY_OWNER,,}/${name}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -252,7 +252,12 @@ jobs:
           context: .
           platforms: linux/arm64
           push: true
-          tags: \${{ steps.img.outputs.ref }}
+          # :prod is the moving deploy tag; :<sha> is immutable (rollback + deploy-identity).
+          tags: |
+            \${{ steps.img.outputs.base }}:prod
+            \${{ steps.img.outputs.base }}:\${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Notify wrapper to deploy
         env:
           GH_TOKEN: \${{ secrets.GREENLIGHT_DISPATCH_TOKEN }}
