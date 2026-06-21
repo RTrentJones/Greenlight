@@ -461,8 +461,11 @@ export async function adoptCommand(args: string[]): Promise<void> {
       'run adopt from your site repo (needs a real greenlight.config.ts; run `greenlight init` first)',
     );
   }
-  if (reg.tools.some((t) => t.name === name) || name === 'blog') {
-    throw new Error(`"${name}" already in the registry`);
+  // `blog` is the apex site, never an adopted tool. An already-registered tool is allowed: the
+  // wrapper-centric path upserts (idempotent — re-run to complete a half-adoption). Standalone
+  // still guards against duplicates downstream (addTool).
+  if (name === 'blog') {
+    throw new Error('"blog" is the apex site, not an adopted tool');
   }
   const domain = flag(args, '--domain') ?? reg.domain;
 
