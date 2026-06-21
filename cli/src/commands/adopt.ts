@@ -62,19 +62,18 @@ function starterVerifyConfig(lane: string, target?: string): string {
     lane === 'mcp'
       ? "mode: 'mcp', expectTools: []"
       : "mode: 'api', checks: [{ path: '/', status: 200 }]";
-  // Tailor the on-failure log command to the target so the stub is copy-paste ready.
+  // Tailor the on-failure log command to the target. $GREENLIGHT_VERIFY_URL (the failing URL) is
+  // injected so nothing is hard-coded — the stub is copy-paste ready.
   const logHint =
-    target === 'oci'
-      ? 'oci logging-search search-logs ...   // the instance/container logs'
-      : target === 'vercel'
-        ? 'vercel logs <deployment-url> --token $VERCEL_API_TOKEN'
-        : 'wrangler tail --once   // workers observability';
+    target === 'vercel'
+      ? 'vercel logs "$GREENLIGHT_VERIFY_URL" --token "$VERCEL_API_TOKEN" 2>&1 | head -40 || true'
+      : 'curl -sS -i "$GREENLIGHT_VERIFY_URL" 2>&1 | head -30 || true';
   return `// Greenlight verify spec — edit to assert this tool's real contract.
 export default {
   ${spec},
   // Telemetry-into-verify: a shell command run ONLY when this report FAILS; its last ~50 lines
-  // attach to the report so the agent/CI sees the "why" in-loop. Best-effort (never fails the
-  // gate). Uncomment + adjust:
+  // attach to the report so the agent/CI sees the "why" in-loop. $GREENLIGHT_VERIFY_URL is the
+  // failing URL (no hard-coding). Best-effort (never fails the gate). Uncomment + adjust:
   // logsOnFailure: '${logHint}',
 };
 `;
@@ -485,8 +484,10 @@ function nextVerifyConfig(name: string): string {
 // { mode: 'test', command: 'pnpm test' } + a tolerant deps-install step in greenlight-verify.yml.
 const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 // Telemetry-into-verify: on a FAILED report, fetch the Vercel deployment's runtime logs and attach
-// the tail to the report (best-effort, never fails the gate). Needs VERCEL_API_TOKEN in CI.
-const logsOnFailure = 'vercel logs "$DEPLOYMENT_URL" --token "$VERCEL_API_TOKEN" 2>&1 || true';
+// the tail to the report (best-effort, never fails the gate). $GREENLIGHT_VERIFY_URL is the exact
+// failing deployment URL (injected — no hard-coding); needs VERCEL_API_TOKEN in CI.
+const logsOnFailure =
+  'vercel logs "$GREENLIGHT_VERIFY_URL" --token "$VERCEL_API_TOKEN" 2>&1 | head -40 || true';
 const api = bypass
   ? {
       mode: 'api',

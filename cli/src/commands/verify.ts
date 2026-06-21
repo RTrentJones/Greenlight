@@ -48,6 +48,10 @@ const LOG_TAIL_LINES = 50;
  * CLI, a non-zero exit, or a timeout NEVER fails the verify (mirrors verifyTest's never-throw
  * contract); it only annotates. Reports are index-aligned with specs (verifyAll preserves order).
  *
+ * The failed report's URL is exported as `GREENLIGHT_VERIFY_URL` so a command can probe the exact
+ * deployment without the URL being hard-coded — e.g. `curl -i "$GREENLIGHT_VERIFY_URL"` or
+ * `vercel logs "$GREENLIGHT_VERIFY_URL"`.
+ *
  * Seam note: a future `adapter.logs(env, lines)` (typed on the Adapter contract, like `teardown`)
  * can be the fallback when a spec sets no `logsOnFailure`; for now the spec command is the source. */
 export function attachFailureLogs(
@@ -69,6 +73,8 @@ export function attachFailureLogs(
         timeout: 30_000,
         encoding: 'utf8',
         maxBuffer: 10 * 1024 * 1024,
+        // Let the command target the exact failing URL without hard-coding it.
+        env: { ...process.env, GREENLIGHT_VERIFY_URL: report.url },
       });
       const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trimEnd();
       const tail = out.split('\n').slice(-LOG_TAIL_LINES).join('\n');

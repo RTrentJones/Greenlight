@@ -46,6 +46,22 @@ describe('attachFailureLogs (telemetry-into-verify)', () => {
     expect(report.logs).not.toContain('line-100');
   });
 
+  it('injects the failing report URL as $GREENLIGHT_VERIFY_URL (no hard-coding)', () => {
+    const report: VerifyReport = {
+      pass: false,
+      mode: 'api',
+      url: 'https://demo.example/mcp',
+      checks: [{ name: 'GET /', pass: false }],
+    };
+    const spec: VerifySpec = {
+      mode: 'api',
+      checks: [],
+      logsOnFailure: 'printf "url=%s\\n" "$GREENLIGHT_VERIFY_URL"',
+    };
+    attachFailureLogs([report], [spec], process.cwd());
+    expect(report.logs).toContain('url=https://demo.example/mcp');
+  });
+
   it('matches specs to reports by index', () => {
     const a = fail("echo 'logs-A'");
     const b = fail("echo 'logs-B'");

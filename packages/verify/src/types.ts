@@ -26,8 +26,10 @@ export interface VerifyReport {
 export interface VerifySpecBase {
   /** A shell command that fetches recent platform logs, run ONLY when this spec's report FAILS, and
    * attached to `VerifyReport.logs` so the agent/CI can self-correct in-loop. General, no provider
-   * coupling — e.g. `oci logging-search …` (oci), `vercel logs <url>` (vercel), `wrangler tail
-   * --once` (workers). Runs in the tool dir, output bounded, best-effort (never fails the verify). */
+   * coupling — e.g. `curl -i "$GREENLIGHT_VERIFY_URL"`, `vercel logs "$GREENLIGHT_VERIFY_URL"`,
+   * `wrangler tail --once`. The failing report's URL is injected as `$GREENLIGHT_VERIFY_URL` so the
+   * command needs no hard-coded URL. Runs in the tool dir, output bounded, best-effort (never fails
+   * the verify). */
   logsOnFailure?: string;
 }
 
