@@ -323,7 +323,8 @@ jobs:
       - name: Report status back to ${toolRepo}
         if: \${{ always() && github.event.client_payload.sha != '' }}
         env:
-          GH_TOKEN: \${{ secrets.GREENLIGHT_STATUS_TOKEN }}
+          # Per-tool name: the status PAT lives on the shared wrapper, scoped to this tool's repo.
+          GH_TOKEN: \${{ secrets.GREENLIGHT_STATUS_TOKEN_${name.toUpperCase().replace(/-/g, '_')} }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           gh api repos/${toolRepo}/statuses/\${{ github.event.client_payload.sha }} \\

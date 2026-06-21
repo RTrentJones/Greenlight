@@ -80,8 +80,13 @@ it only builds a container + pings the wrapper).
 | token | lives on | fine-grained scope | purpose |
 |---|---|---|---|
 | `GREENLIGHT_DISPATCH_TOKEN` | **tool sub-repo** | **Contents: write** on the **wrapper** repo | the tool's `greenlight-build` fires `repository_dispatch` → the wrapper deploys |
-| `GREENLIGHT_STATUS_TOKEN` | **wrapper** repo | **Commit statuses: write** on the **tool** repo | the wrapper posts deploy/verify status back to the tool's commit |
+| `GREENLIGHT_STATUS_TOKEN_<TOOL>` | **wrapper** repo | **Commit statuses: write** on the **tool** repo | the wrapper posts deploy/verify status back to the tool's commit |
 | `TF_VAR_OCI_*`, `CLOUDFLARE_API_TOKEN` (+ Tunnel:Edit), `TF_API_TOKEN`, … | **wrapper** repo | (see above) | the wrapper owns all infra + apply + deploy |
+
+The status token is **per-tool** (`GREENLIGHT_STATUS_TOKEN_<TOOL>`, e.g. `…_BAMCP`) because it lives
+on the **shared** wrapper, scoped to *one* tool's repo — a second tool's token would collide on a
+plain name. The dispatch token lives on the per-tool repo, so it needs no suffix. (Uppercase the
+tool name; hyphens → underscores: `demo-mcp` → `…_DEMO_MCP`.)
 
 The tool sub-repo's build pushes to GHCR with the **built-in `GITHUB_TOKEN`** (no PAT needed for
 that), so after onboarding it should hold **only `GREENLIGHT_DISPATCH_TOKEN`**. The container
@@ -94,7 +99,7 @@ Both are **fine-grained** PATs at **https://github.com/settings/personal-access-
 permissions* set the one permission below → Generate.
 
 - **`GREENLIGHT_DISPATCH_TOKEN`** — repo: the **wrapper**; permission: **Contents → Read and write**.
-- **`GREENLIGHT_STATUS_TOKEN`** — repo: the **tool**; permission: **Commit statuses → Read and write**.
+- **`GREENLIGHT_STATUS_TOKEN_<TOOL>`** — repo: the **tool**; permission: **Commit statuses → Read and write**.
 
 ### Push them with the guided CLI
 

@@ -164,5 +164,7 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     // the instance OCID is resolved by display-name at deploy time — not a manually-set secret
     expect(listener).toContain('--display-name demo-mcp');
     expect(listener).not.toContain('secrets.OCI_CONTAINER_INSTANCE_OCID');
+    // the status token is per-tool (shared wrapper) — suffixed by the (upper, _) tool name
+    expect(listener).toContain('secrets.GREENLIGHT_STATUS_TOKEN_DEMO_MCP');
   });
 });

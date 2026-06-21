@@ -25,8 +25,9 @@ pushes each to the right repo; see docs/provider-tokens.md):
 
 - **`GREENLIGHT_DISPATCH_TOKEN`** — on the **tool** repo, scoped **Contents: write** on the
   **wrapper** → the tool's build fires `repository_dispatch` so the wrapper deploys.
-- **`GREENLIGHT_STATUS_TOKEN`** — on the **wrapper** repo, scoped **Commit statuses: write** on the
-  **tool** → the wrapper posts deploy/verify status back to the tool's commit.
+- **`GREENLIGHT_STATUS_TOKEN_<TOOL>`** — on the **wrapper** repo, scoped **Commit statuses: write**
+  on the **tool** → the wrapper posts deploy/verify status back to the tool's commit. **Per-tool
+  suffix** (e.g. `…_BAMCP`) because it lives on the shared wrapper alongside other tools' tokens.
 
 Provider creds (OCI/Cloudflare/…) live **only in the wrapper**; the tool repo holds just the
 dispatch PAT (its build pushes to GHCR with the built-in `github.token`).

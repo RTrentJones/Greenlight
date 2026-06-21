@@ -239,7 +239,10 @@ async function gatherSecrets(
     for (const pack of packs) {
       console.log(`── ${pack.name}${pack.setupUrl ? `  →  ${pack.setupUrl}` : ''}`);
       for (const tok of pack.tokens) {
-        const key = tok.envVar.toUpperCase(); // GitHub secret convention (matches infra.yml refs)
+        // GitHub secret convention (matches infra.yml refs). perTool tokens live on the shared
+        // wrapper scoped to one tool's repo, so they get a `_<TOOL>` suffix to avoid collisions.
+        const suffix = `_${name.toUpperCase().replace(/-/g, '_')}`;
+        const key = tok.envVar.toUpperCase() + (tok.perTool ? suffix : '');
         if (key === 'GITHUB_TOKEN') {
           console.log('   · GITHUB_TOKEN — provided automatically by Actions; skipping');
           continue;

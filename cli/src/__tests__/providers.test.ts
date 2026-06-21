@@ -106,4 +106,10 @@ describe('setupUrl + gather tokens', () => {
     expect(oci).toContain('TF_VAR_oci_compartment_id'); // optional (blank → tenancy root)
     expect(tfModulesForTool({ target: 'oci', data: 'none' })).toContain('oci-network');
   });
+
+  it('the status token is per-tool (shared wrapper) but the dispatch token is not (per-tool repo)', () => {
+    const oci = PACKS.find((p) => p.id === 'oci');
+    expect(oci?.tokens.find((t) => t.envVar === 'GREENLIGHT_STATUS_TOKEN')?.perTool).toBe(true);
+    expect(oci?.tokens.find((t) => t.envVar === 'GREENLIGHT_DISPATCH_TOKEN')?.perTool).toBeFalsy();
+  });
 });

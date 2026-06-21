@@ -41,6 +41,10 @@ export interface TokenSpec {
   optional?: boolean;
   /** Web page to create THIS token, if different from the pack's `setupUrl` (e.g. a PAT page). */
   setupUrl?: string;
+  /** The secret name gets a per-tool `_<TOOL>` suffix (e.g. GREENLIGHT_STATUS_TOKEN_BAMCP).
+   * For tokens stored on the SHARED wrapper that are scoped to one tool's repo — without the
+   * suffix a second tool's token would collide. (Tokens on a per-tool repo don't need this.) */
+  perTool?: boolean;
   /** Fail-fast check: given the token value (+ the other gathered tokens), confirm it
    * authenticates / has scope. Network call; omitted for providers without a cheap check. */
   verify?: (token: string, env: Record<string, string>) => Promise<TokenCheck>;
@@ -239,9 +243,12 @@ export const PACKS: ProviderPack[] = [
         setupUrl: 'https://github.com/settings/personal-access-tokens/new',
       },
       {
+        // Stored on the shared wrapper, scoped to THIS tool's repo → per-tool name
+        // (GREENLIGHT_STATUS_TOKEN_<TOOL>) so multiple tools' status tokens don't collide.
         envVar: 'GREENLIGHT_STATUS_TOKEN',
-        label: 'GitHub PAT, Commits:write on the TOOL (WRAPPER posts deploy status back)',
+        label: 'GitHub PAT, Commit statuses:write on the TOOL (WRAPPER posts deploy status back)',
         optional: true,
+        perTool: true,
         setupUrl: 'https://github.com/settings/personal-access-tokens/new',
       },
     ],
