@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { type NewTool, addTool, serializeConfig } from '../config-io';
+import { type NewTool, addTool, serializeConfig, upsertTool } from '../config-io';
 import { loadManifest, resolveEntry } from '../manifest';
 import { emitToolTf, providersForTool } from '../tf-emit';
 import { MODULE_REF } from '../version';
@@ -500,8 +500,10 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     console.log(`· ${toolRel} exists — skipping submodule add`);
   }
 
-  // 2) Wrapper manifest: an external pointer with dir = the submodule path.
-  const nextReg = addTool(reg, {
+  // 2) Wrapper manifest: an external pointer with dir = the submodule path. upsert (not add) so
+  // re-running adopt to COMPLETE a half-adoption (already-registered tool gains a dir + kit) works.
+  const existed = reg.tools.some((x) => x.name === name);
+  const nextReg = upsertTool(reg, {
     name,
     lane,
     target,
@@ -513,7 +515,9 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     adopted: true,
   });
   writeFileSync(regPath, serializeConfig(nextReg));
-  console.log(`✔ registered "${name}" (external, dir ${toolRel}) in the wrapper manifest`);
+  console.log(
+    `✔ ${existed ? 'updated' : 'registered'} "${name}" (external, dir ${toolRel}) in the wrapper manifest`,
+  );
 
   // 3) Infra + verify spec live in the WRAPPER (the tool repo gets none).
   const slug =

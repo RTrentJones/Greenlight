@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { loadConfig } from '@rtrentjones/greenlight-shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runDoctor } from '../commands/doctor';
-import { addTool, scaffoldConfig, serializeConfig } from '../config-io';
+import { addTool, scaffoldConfig, serializeConfig, upsertTool } from '../config-io';
 
 const base = {
   domain: 'example.dev',
@@ -66,6 +66,33 @@ describe('addTool', () => {
   it('rejects a duplicate name', () => {
     const one = addTool(base, { name: 'x', lane: 'mcp', target: 'oci' });
     expect(() => addTool(one, { name: 'x', lane: 'mcp', target: 'oci' })).toThrow(/already exists/);
+  });
+});
+
+describe('upsertTool (idempotent — completes a half-adoption)', () => {
+  it('replaces an existing entry (adds dir) instead of throwing', () => {
+    const one = addTool(base, { name: 'x', lane: 'next', target: 'vercel', data: 'supabase' });
+    expect(one.tools.find((t) => t.name === 'x')?.dir).toBeUndefined();
+    const two = upsertTool(one, {
+      name: 'x',
+      lane: 'next',
+      target: 'vercel',
+      data: 'supabase',
+      auth: 'oauth',
+      dir: 'tools/x',
+      external: true,
+      adopted: true,
+    });
+    expect(two.tools.filter((t) => t.name === 'x')).toHaveLength(1); // replaced, not duplicated
+    const x = two.tools.find((t) => t.name === 'x');
+    expect(x?.dir).toBe('tools/x');
+    expect(x?.auth).toBe('oauth');
+    expect(x?.external).toBe(true);
+  });
+
+  it('adds a new entry when none exists (like addTool)', () => {
+    const out = upsertTool(base, { name: 'y', lane: 'mcp', target: 'oci' });
+    expect(out.tools.find((t) => t.name === 'y')?.target).toBe('oci');
   });
 });
 

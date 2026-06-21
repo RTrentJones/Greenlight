@@ -97,3 +97,34 @@ export function addTool(config: GreenlightConfig, t: NewTool): GreenlightConfig 
   }
   return result.data;
 }
+
+/** Add a tool, or REPLACE an existing entry of the same name — idempotent, so re-running `adopt`
+ * (e.g. to complete a half-adoption: add a `dir`/kit to an already-registered external tool) works
+ * instead of erroring. Pass the fields you want; the entry is rebuilt from them (so pass the
+ * existing auth/data/envs when re-adopting). Same schema validation as addTool. */
+export function upsertTool(config: GreenlightConfig, t: NewTool): GreenlightConfig {
+  if (t.name === 'blog') throw new Error('"blog" is a reserved name');
+  const entry = {
+    name: t.name,
+    lane: t.lane,
+    target: t.target,
+    data: t.data ?? 'none',
+    auth: t.auth ?? 'none',
+    access: t.access ?? 'public',
+    envs: t.envs ?? ['beta', 'prod'],
+    ...(t.dir !== undefined ? { dir: t.dir } : {}),
+    ...(t.adopted ? { adopted: true } : {}),
+    ...(t.external ? { external: true } : {}),
+    ...(t.port !== undefined ? { port: t.port } : {}),
+  };
+  const tools = config.tools.some((x) => x.name === t.name)
+    ? config.tools.map((x) => (x.name === t.name ? entry : x))
+    : [...config.tools, entry];
+  const result = ConfigSchema.safeParse({ ...config, tools });
+  if (!result.success) {
+    throw new Error(
+      result.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '),
+    );
+  }
+  return result.data;
+}
