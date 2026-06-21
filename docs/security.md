@@ -1,7 +1,8 @@
 # Security model
 
-How Greenlight handles secrets, trust boundaries, and supply chain. The deep token-by-token guide is
-[provider-tokens.md](provider-tokens.md); this is the consolidated picture.
+How Greenlight handles secrets, trust boundaries, and supply chain. The full by-provider token
+matrix (permissions + purpose + storage) is [tokens-reference.md](tokens-reference.md); the
+step-by-step setup is [provider-tokens.md](provider-tokens.md); this is the consolidated picture.
 
 ## Secrets never touch the repo
 
@@ -43,7 +44,7 @@ Provider creds live in the **wrapper**, not tool repos. For a poly-repo (adopted
 | `GREENLIGHT_DISPATCH_TOKEN` | **tool repo** | Contents:write on the **wrapper** | tool build → `repository_dispatch` → wrapper deploys |
 | `GREENLIGHT_STATUS_TOKEN_<TOOL>` | wrapper | Commit statuses:write on the **tool** | wrapper posts deploy/verify status back (per-tool name) |
 | `<TOOL>_VERIFY_TOKEN` / `VERCEL_AUTOMATION_BYPASS_SECRET` | wrapper / tool | per tool | optional: authenticated functional verify / bypass Vercel Deployment Protection |
-| `keepalive` PAT (`TF_VAR_keepalive_github_token`) | wrapper | Issues:write (**+ Contents:write** once auto-remediation is enabled) | github-issue alerts + `repository_dispatch` self-heal |
+| `keepalive` PAT (`TF_VAR_keepalive_github_token`) | wrapper | Issues:write **+ Contents:write** | github-issue alerts + `repository_dispatch` self-heal (auto-remediation) |
 
 The optimal end state: a tool repo holds **only** `GREENLIGHT_DISPATCH_TOKEN`.
 

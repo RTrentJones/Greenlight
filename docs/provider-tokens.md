@@ -1,5 +1,8 @@
 # Provider API tokens (Cloudflare · Supabase · Vercel)
 
+> For the complete by-provider matrix (every token, its permissions, what it's for, where it's
+> stored) see **[tokens-reference.md](tokens-reference.md)**. This page is the step-by-step setup prose.
+
 When you apply a tool that uses **`target: vercel`** and/or **`data: supabase`** — or deploy
 the **keepalive** Worker — Terraform's providers need their own API tokens. Greenlight reads
 each from a standard environment variable, so it's **one token → one env var**. Store them
@@ -63,9 +66,12 @@ Verify: `curl -s "https://api.vercel.com/v2/user" -H "Authorization: Bearer $VER
 - **`TF_VAR_supabase_database_password`** — only used if a Supabase project is **created**.
   When importing an existing project the module sets `ignore_changes` on the password, so any
   non-empty placeholder works.
-- **`TF_VAR_keepalive_github_token`** *(optional)* — for keepalive's `github-issue` alerts: a
-  fine-grained PAT with **Issues: Read and write** on the alert repo. Empty = no alerts (the
-  pings still run).
+- **`TF_VAR_keepalive_github_token`** *(optional)* — the keepalive Worker's GitHub token. A
+  fine-grained PAT on the wrapper repo with **Issues: Read and write** (the `github-issue` alert
+  sink) **and — for auto-remediation — Contents: Read and write** (the `repository_dispatch` that
+  fires `remediate-<tool>` on an oci outage). Empty = the pings still run, but alerts **and**
+  self-heal no-op. Stored as the wrapper Actions secret `TF_VAR_KEEPALIVE_GITHUB_TOKEN` (passed to
+  Terraform by `.github/workflows/infra.yml`).
 
 ---
 
