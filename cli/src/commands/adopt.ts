@@ -339,6 +339,77 @@ jobs:
 `;
 }
 
+/** Tool-repo verify workflow for git-deploy targets (vercel): the platform deploys on push (Vercel
+ * = preview per-PR, prod on the prod branch) and posts a deployment + status to GitHub. We hook
+ * `deployment_status(success)` and verify the exact deployed URL with the same harness CI + the
+ * agent use — a check on the commit, no wrapper round-trip (the platform owns deploy + URL). */
+function verifyWorkflowYml(name: string): string {
+  return `name: greenlight-verify
+
+# Vercel deploys ${name} on push and posts a deployment_status to GitHub; we verify the exact
+# deployed URL. ANTHROPIC_API_KEY (optional) enables the agent-web scenarios — absent → omitted
+# (see verify/${name}.config.ts), so the gate stays green on api + test alone.
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  verify:
+    if: \${{ github.event.deployment_status.state == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install deps (for test-mode)
+        run: |
+          corepack enable || true
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile;
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile;
+          else npm ci; fi
+      - name: Verify the deployment
+        env:
+          ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx -y @rtrentjones/greenlight@latest verify --url "\${{ github.event.deployment_status.target_url }}" --spec verify/${name}.config.ts
+`;
+}
+
+/** Starter verify spec for a next/vercel tool's own CI (plain — no imports — so the npx'd CLI loads
+ * it without the package installed). Array combines modes; agent-web is config-gated on the key. */
+function nextVerifyConfig(name: string): string {
+  return `// Greenlight verify spec for ${name} (next/vercel) — run by .github/workflows/greenlight-verify.yml
+// after Vercel deploys (deployment_status). An array combines modes (allPass):
+//  - api: the deployed URL serves (200).
+//  - test: this tool's own suite — set the real command for your package manager.
+//  - agent-web: an LLM drives the live UI; runs ONLY when ANTHROPIC_API_KEY is set (else omitted,
+//    so the gate stays green). Replace the scenario with real user tasks + assertions.
+const agentWeb = process.env.ANTHROPIC_API_KEY
+  ? [
+      {
+        mode: 'agent-web',
+        scenarios: [
+          {
+            name: 'home renders',
+            task: 'Open the home page and confirm the app loads without an error screen.',
+            asserts: [{ selector: 'body' }],
+          },
+        ],
+      },
+    ]
+  : [];
+
+export default [
+  { mode: 'api', checks: [{ path: '/', status: 200 }] },
+  { mode: 'test', command: 'npm test' },
+  ...agentWeb,
+];
+`;
+}
+
 function writeIfAbsent(path: string, contents: string, label: string): void {
   if (existsSync(path)) {
     console.log(`· ${label} exists — left as-is`);
@@ -454,11 +525,16 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     emitToolTf({ name, domain, lane, target, data, envs, slug, external: true }),
     `infra/${name}.tf`,
   );
-  writeIfAbsent(
-    join(cwd, `verify/${name}.config.ts`),
-    starterVerifyConfig(lane),
-    `verify/${name}.config.ts`,
-  );
+  // Verify spec location depends on WHO runs verify. oci: the wrapper's deploy listener runs it →
+  // wrapper verify/<name>.config.ts. vercel: the tool's OWN CI runs it (greenlight-verify.yml on
+  // deployment_status) → the spec is emitted into the tool repo below, not here.
+  if (target !== 'vercel') {
+    writeIfAbsent(
+      join(cwd, `verify/${name}.config.ts`),
+      starterVerifyConfig(lane),
+      `verify/${name}.config.ts`,
+    );
+  }
   const providers = providersForTool({ target, data });
   if (
     existsSync(join(cwd, 'infra/main.tf')) &&
@@ -487,6 +563,21 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     );
   }
 
+  // Git-deploy targets (vercel): the platform deploys on push; Greenlight adds only the verify
+  // gate, run by the TOOL's own CI on deployment_status (the spec travels in the tool repo).
+  if (target === 'vercel') {
+    writeIfAbsent(
+      join(dest, `verify/${name}.config.ts`),
+      nextVerifyConfig(name),
+      `${toolRel}/verify/${name}.config.ts (tool-CI verify spec)`,
+    );
+    writeIfAbsent(
+      join(dest, '.github/workflows/greenlight-verify.yml'),
+      verifyWorkflowYml(name),
+      `${toolRel}/.github/workflows/greenlight-verify.yml (verify on Vercel deployment_status)`,
+    );
+  }
+
   console.log(`
 Next:
   (in the tool repo) commit the Greenlight kit + build workflow so they travel with the submodule:
@@ -499,7 +590,12 @@ Next:
   Secrets (guided): greenlight secrets gather ${name} --repo <wrapper>   # TF_VAR_OCI_* + GREENLIGHT_STATUS_TOKEN
                     greenlight secrets gather ${name} --repo ${slug}   # GREENLIGHT_DISPATCH_TOKEN
   The instance OCID is auto-resolved by the deploy workflow (by display name) — nothing to set.`
-        : ''
+        : target === 'vercel'
+          ? `
+  Deploy is Vercel's git integration (no wrapper deploy). The tool's greenlight-verify.yml verifies
+  each deployment (deployment_status). Optional: add ANTHROPIC_API_KEY to ${slug} to enable the
+  agent-web scenarios in verify/${name}.config.ts (absent → api + test gate alone).`
+          : ''
     }`);
 }
 

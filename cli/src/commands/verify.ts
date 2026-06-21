@@ -6,7 +6,13 @@ import {
   allPass,
   verifyAll,
 } from '@rtrentjones/greenlight-verify';
-import { loadExternalVerifySpec, loadManifest, loadVerifySpec, resolveEntry } from '../manifest';
+import {
+  loadExternalVerifySpec,
+  loadManifest,
+  loadVerifySpec,
+  loadVerifySpecAt,
+  resolveEntry,
+} from '../manifest';
 
 /** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
 export function defaultSpec(lane: Lane): VerifySpec {
@@ -35,9 +41,33 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 export async function verifyCommand(args: string[]): Promise<void> {
+  // Manifest-free mode: `verify --url <url> --spec <path>` loads the spec directly and skips the
+  // manifest entirely. This is how a tool's OWN CI verifies a deployment (e.g. a Vercel tool's
+  // greenlight-verify.yml on deployment_status) without carrying the wrapper's greenlight.config.ts.
+  const specPath = flag(args, '--spec');
+  if (specPath) {
+    const url = flag(args, '--url');
+    if (!url) throw new Error('verify --spec needs --url <deployed-url>');
+    const loaded = await loadVerifySpecAt(specPath);
+    if (!loaded) throw new Error(`no verify spec at ${specPath}`);
+    const specs = Array.isArray(loaded) ? loaded : [loaded];
+    const waitMs = (flag(args, '--wait') !== undefined ? Number(flag(args, '--wait')) : 0) * 1000;
+    const reports = await verifyAll(url, specs, {
+      reachableTimeoutMs: waitMs,
+      toolDir: process.cwd(),
+    });
+    for (const report of reports) printReport(report);
+    const pass = allPass(reports);
+    if (reports.length > 1)
+      console.log(`\n${pass ? '✔ ALL PASS' : '✘ FAIL'} (${reports.length} specs)`);
+    process.exit(pass ? 0 : 1);
+  }
+
   const name = args[0];
   if (!name || name.startsWith('-')) {
-    throw new Error('usage: greenlight verify <name> [--env <beta|prod> | --url <url>]');
+    throw new Error(
+      'usage: greenlight verify <name> [--env <beta|prod> | --url <url>] | verify --url <url> --spec <path>',
+    );
   }
 
   const { config } = await loadManifest();

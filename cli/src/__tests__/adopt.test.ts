@@ -167,4 +167,43 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     // the status token is per-tool (shared wrapper) — suffixed by the (upper, _) tool name
     expect(listener).toContain('secrets.GREENLIGHT_STATUS_TOKEN_DEMO_MCP');
   });
+
+  it('wrapper-centric vercel: verify runs in the TOOL repo (deployment_status), not the wrapper', async () => {
+    const sub = join(wrapper, 'tools', 'demo-web');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'package.json'), JSON.stringify({ name: 'demo-web', private: true }));
+
+    process.chdir(wrapper);
+    await adoptCommand([
+      'demo-web',
+      '--repo',
+      tool,
+      '--lane',
+      'next',
+      '--target',
+      'vercel',
+      '--data',
+      'supabase',
+    ]);
+    process.chdir(repoRoot);
+
+    // wrapper owns infra; the verify spec is NOT in the wrapper (the tool's own CI runs verify)
+    expect(readFileSync(join(wrapper, 'infra/demo-web.tf'), 'utf8')).toContain(
+      'module "demo-web_vercel"',
+    );
+    expect(existsSync(join(wrapper, 'verify/demo-web.config.ts'))).toBe(false);
+
+    // tool repo got the deployment_status verify workflow + spec + the right provider skills
+    const vyml = readFileSync(join(sub, '.github/workflows/greenlight-verify.yml'), 'utf8');
+    expect(vyml).toContain('deployment_status');
+    expect(vyml).toContain('verify --url');
+    expect(vyml).toContain('--spec verify/demo-web.config.ts');
+    const vcfg = readFileSync(join(sub, 'verify/demo-web.config.ts'), 'utf8');
+    expect(vcfg).toContain("mode: 'api'");
+    expect(vcfg).toContain('ANTHROPIC_API_KEY'); // agent-web is config-gated on the key
+    expect(existsSync(join(sub, '.claude/skills/provider-vercel/SKILL.md'))).toBe(true);
+    expect(existsSync(join(sub, '.claude/skills/provider-supabase/SKILL.md'))).toBe(true);
+    // not the oci path — no container build workflow
+    expect(existsSync(join(sub, '.github/workflows/greenlight-build.yml'))).toBe(false);
+  });
 });

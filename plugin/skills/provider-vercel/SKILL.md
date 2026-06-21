@@ -26,6 +26,22 @@ Manages the **existing** project (nothing to import — it configures by id):
 
 The DNS CNAME is the **cloudflare** `tool` module, unproxied (`proxied = false`) → `cname.vercel-dns.com`.
 
+## The verify loop — tool-CI on `deployment_status`
+
+Because Vercel deploys (not the wrapper), the verify gate runs in the **tool repo's own CI**, not a
+wrapper deploy listener. `greenlight adopt … --target vercel` emits, into the tool repo:
+- **`.github/workflows/greenlight-verify.yml`** — triggers on GitHub's **`deployment_status`** event
+  (Vercel posts a deployment + `target_url`); on `state == success` it runs
+  `npx @rtrentjones/greenlight verify --url <target_url> --spec verify/<name>.config.ts`. The result
+  is a check on the commit — no wrapper round-trip, no dispatch/status PATs (Vercel owns deploy + URL
+  + its own statuses).
+- **`verify/<name>.config.ts`** — a verifyAll array: `api` (deployed URL 200) + `test` (the tool's
+  suite) + `agent-web` (LLM drives the live UI), where agent-web is **config-gated on
+  `ANTHROPIC_API_KEY`** (omitted when unset → the gate stays green on api + test alone).
+
+`greenlight verify --url <url> --spec <path>` is the **manifest-free** mode that makes this work
+without carrying the wrapper's `greenlight.config.ts` into the tool repo.
+
 ## MCP
 
 `.mcp.json` wires `vercel` (hosted, OAuth, read-only). Run `/mcp` and authenticate in the
