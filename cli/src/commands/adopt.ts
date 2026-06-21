@@ -300,11 +300,16 @@ jobs:
           # The instance OCID is abstracted from the developer: resolve it from OCI by the
           # instance's display name (= the tool name, set by the oci-container-instance module).
           # No manually-fetched/stored OCID secret. Compartment falls back to the tenancy (root).
+          set -o pipefail
           COMPARTMENT="\${OCI_COMPARTMENT_ID:-\$OCI_CLI_TENANCY}"
-          OCID=\$(oci container-instances container-instance list \\
-            --compartment-id "\$COMPARTMENT" --display-name ${name} \\
-            --lifecycle-state ACTIVE --query 'data.items[0].id' --raw-output 2>/dev/null)
-          if [ -z "\$OCID" ] || [ "\$OCID" = "null" ]; then
+          echo "Resolving '${name}' (region=\$OCI_CLI_REGION)…"
+          oci container-instances container-instance list \\
+            --compartment-id "\$COMPARTMENT" --display-name ${name} --all > list.json \\
+            || { echo "::error::oci list failed (auth/region/compartment) — see output above"; exit 1; }
+          # OCIDs are identifiers, not secrets (tenancy/compartment are masked by Actions).
+          echo "Matches:"; jq -r '(.data.items // .data // [])[]? | "  \\(.["lifecycle-state"] // "?")  \\(.id)"' list.json
+          OCID=\$(jq -r '[(.data.items // .data // [])[]? | select((.["lifecycle-state"] // "")=="ACTIVE") | .id][0] // ""' list.json)
+          if [ -z "\$OCID" ]; then
             echo "::error::no ACTIVE container instance named '${name}' in compartment \$COMPARTMENT"
             exit 1
           fi
