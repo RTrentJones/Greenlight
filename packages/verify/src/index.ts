@@ -20,7 +20,8 @@ export interface VerifyOptions {
    * TLS/DNS provisioning window. Retries ONLY on a connection error; a real HTTP
    * response (any status) means reachable. 0 = don't wait. */
   reachableTimeoutMs?: number;
-  /** Working dir for local modes (`test`): the tool dir the CLI resolves. Default cwd. */
+  /** Working dir for command-running modes (`test`, and a `playwright` suite): the tool dir the
+   * CLI resolves. Default cwd. */
   toolDir?: string;
 }
 
@@ -64,7 +65,7 @@ export async function verify(
     }
     case 'playwright': {
       const { verifyPlaywright } = await import('./playwright');
-      return verifyPlaywright(baseUrl, spec);
+      return verifyPlaywright(baseUrl, spec, opts?.toolDir ?? process.cwd());
     }
     case 'test': {
       const { verifyTest } = await import('./test');

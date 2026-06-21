@@ -73,11 +73,35 @@ export interface McpSpec extends VerifySpecBase {
   headers?: Record<string, string>;
 }
 
-/** playwright mode — light render check via the accessibility tree. */
+/** playwright mode — a render smoke and/or a real Playwright test suite against the deploy URL.
+ *
+ * Two complementary checks, either or both:
+ *  - `renders`: a zero-config light smoke — each path must load with a non-empty accessibility
+ *    tree (no suite, no auth).
+ *  - `suite`: run a real `playwright test` suite (fixtures, assertions, authenticated flows)
+ *    against the EXACT deployed URL. The harness injects that URL into the suite's environment as
+ *    `PLAYWRIGHT_BASE_URL` (Playwright's de-facto baseURL var) and `GREENLIGHT_VERIFY_URL`, so the
+ *    same suite runs unchanged in PR CI (local stack) and as the deploy gate — the path to gating
+ *    on full user journeys (e.g. an authenticated session injected via a service-role key,
+ *    bypassing third-party OAuth that can't be scripted). */
+export interface PlaywrightSuite {
+  /** Command to run. Default: `pnpm exec playwright test`. */
+  command?: string;
+  /** Working directory (default: the tool dir the CLI passes, else cwd). */
+  cwd?: string;
+  /** Per-run timeout in ms (default 600000). */
+  timeoutMs?: number;
+  /** Extra env to forward to the suite (e.g. a secret already in the harness env). The deploy URL
+   * is always provided as PLAYWRIGHT_BASE_URL / GREENLIGHT_VERIFY_URL regardless. */
+  env?: Record<string, string>;
+}
+
 export interface PlaywrightSpec extends VerifySpecBase {
   mode: 'playwright';
   /** Paths that must load with a non-empty accessibility tree. */
-  renders: string[];
+  renders?: string[];
+  /** Run a real Playwright suite against the deployed URL (see PlaywrightSuite). */
+  suite?: PlaywrightSuite;
 }
 
 /** test mode — run the tool's own unit/integration command in its dir and gate on the exit

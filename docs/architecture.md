@@ -111,7 +111,7 @@ Switching a tool between Workers / Vercel / OCI is config, not a rewrite.
 |---|---|
 | `api` | URL smoke / status + shape |
 | `mcp` | MCP protocol: initialize → `tools/list` → call a tool & assert shape → assert auth rejection |
-| `playwright` | a11y-tree render |
+| `playwright` | a11y-tree render smoke (`renders`) **and/or** a real Playwright suite (`suite`) run against the deploy URL (injected as `PLAYWRIGHT_BASE_URL`/`GREENLIGHT_VERIFY_URL`), gated on exit code |
 | `test` | the tool's own test command (gate on exit code) |
 | `agent-web` | an LLM drives the live UI via Playwright to do a task, then assertions confirm |
 | `eval` | an LLM judge scores an MCP tool result against a rubric |
