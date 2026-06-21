@@ -365,12 +365,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Install deps (for test-mode)
-        run: |
-          corepack enable || true
-          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile;
-          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile;
-          else npm ci; fi
+      # agent-web needs browsers: add \`- run: npx -y playwright install --with-deps chromium\` when
+      # you set ANTHROPIC_API_KEY. test-mode needs the tool's deps: add a tolerant install step
+      # (\`pnpm install --no-frozen-lockfile\`) — but unit tests usually belong in the tool's PR CI.
       - name: Verify the deployment
         env:
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
@@ -383,10 +380,11 @@ jobs:
 function nextVerifyConfig(name: string): string {
   return `// Greenlight verify spec for ${name} (next/vercel) — run by .github/workflows/greenlight-verify.yml
 // after Vercel deploys (deployment_status). An array combines modes (allPass):
-//  - api: the deployed URL serves (200).
-//  - test: this tool's own suite — set the real command for your package manager.
+//  - api: the deployed URL serves (200). The deployment signal.
 //  - agent-web: an LLM drives the live UI; runs ONLY when ANTHROPIC_API_KEY is set (else omitted,
 //    so the gate stays green). Replace the scenario with real user tasks + assertions.
+// Unit tests belong in this repo's PR CI; to also gate the deploy on them, add
+// { mode: 'test', command: 'pnpm test' } + a tolerant deps-install step in greenlight-verify.yml.
 const agentWeb = process.env.ANTHROPIC_API_KEY
   ? [
       {
@@ -402,11 +400,7 @@ const agentWeb = process.env.ANTHROPIC_API_KEY
     ]
   : [];
 
-export default [
-  { mode: 'api', checks: [{ path: '/', status: 200 }] },
-  { mode: 'test', command: 'npm test' },
-  ...agentWeb,
-];
+export default [{ mode: 'api', checks: [{ path: '/', status: 200 }] }, ...agentWeb];
 `;
 }
 
