@@ -86,7 +86,7 @@ function flag(args: string[], name: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-function detectRepo(cwd: string): string | null {
+export function detectRepo(cwd: string): string | null {
   try {
     const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
       cwd,
@@ -210,7 +210,7 @@ export function setGitHubSecret(
  * its scopes, hidden-prompt for the value (no echo), fail-fast `verify()`, then push via `gh`
  * (stdin). Nothing touches disk; no value is echoed or logged. Blank input skips a token.
  */
-async function gatherSecrets(
+export async function gatherSecrets(
   name: string,
   repo: string,
   env: string | undefined,

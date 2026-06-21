@@ -4,8 +4,8 @@ import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
 import { loadManifest } from '../manifest';
 import { emitToolTf, emitWrapperMainTf, providersForTool } from '../tf-emit';
-import { ensureTokensForTool } from '../tokens';
 import { materializeAgentKit } from './agent';
+import { detectRepo, gatherSecrets } from './secrets';
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -98,29 +98,31 @@ export async function addCommand(args: string[]): Promise<void> {
     console.log(`✔ wrote infra/${name}.tf (modules: ${providers.join(', ')})`);
   }
 
-  // 3) Tokens — gather + fail-fast verify (best-effort; surfaces a bad scope immediately).
-  if (!args.includes('--no-tokens')) {
+  // 3) Agent kit — merge the new providers' MCP + provider skills into the wrapper's kit.
+  materializeAgentKit(cwd, toolInfo);
+
+  // 4) Per-tool secrets — gather THIS tool's provider keys straight to GitHub (link-first, hidden,
+  // verified, no disk). Already-set base tokens show [already set] (Enter to keep). Interactive
+  // only; CI/non-TTY (or --no-tokens) prints the command instead. So adding a tool includes getting
+  // exactly the keys that tool needs.
+  const repo = flag(args, '--repo') ?? detectRepo(cwd) ?? '';
+  const gather = !args.includes('--no-tokens') && process.stdin.isTTY && repo !== '';
+  if (gather) {
+    console.log(`\nGathering ${name}'s provider keys${repo ? ` → ${repo}` : ''}:`);
     try {
-      const outcomes = await ensureTokensForTool(cwd, toolInfo, {
-        verify: !args.includes('--no-verify'),
-      });
-      const missing = outcomes.filter((o) => o.outcome === 'missing').map((o) => o.envVar);
-      if (missing.length) {
-        console.log(
-          `! missing token(s): ${missing.join(', ')} — set in .greenlight/secrets.env, then \`greenlight secrets sync\``,
-        );
-      }
+      await gatherSecrets(name, repo, flag(args, '--env'));
     } catch (e) {
-      // Fail-fast verification error — surface it but keep the manifest/infra edits.
-      console.log(`✖ ${e instanceof Error ? e.message : String(e)}`);
+      console.log(`✖ secrets gather: ${e instanceof Error ? e.message : String(e)}`);
+      console.log(`  retry: greenlight secrets gather ${name}${repo ? ` --repo ${repo}` : ''}`);
     }
   }
 
-  // 4) Agent kit — merge the new providers' MCP + provider skills into the wrapper's kit.
-  materializeAgentKit(cwd, toolInfo);
-
   console.log(`
-Next:
+Next:${
+    gather
+      ? ''
+      : `\n  greenlight secrets gather ${name}${repo ? ` --repo ${repo}` : ' --repo <owner/repo>'}   # this tool's keys → GitHub`
+  }
   review infra/${name}.tf, then commit + push → CI (infra.yml) runs \`terraform apply\`
   greenlight preview ${name}        # local build + serve + verify`);
 }
