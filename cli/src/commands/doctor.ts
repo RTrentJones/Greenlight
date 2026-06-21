@@ -33,16 +33,20 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
     detail: hasSpec ? specRel : `no ${specRel} — verify falls back to the lane default`,
   });
 
-  // Built-in local serve exists only for a LOCAL node tool (preview's build+`pnpm preview|start`);
-  // external tools (vercel/oci submodules) + oci need a `preview` descriptor to be locally gateable.
+  // A pre-prod gate exists if: a `preview` descriptor (any target), a built-in local serve (a local
+  // node/workers tool), OR the platform supplies per-PR previews (vercel → the deployment_status
+  // verify is the gate). Only oci/other tools with no descriptor lack one.
   const builtIn = !t.external && t.target === 'workers';
-  const gateable = Boolean(t.preview) || builtIn;
+  const platformPreview = t.target === 'vercel';
+  const gateable = Boolean(t.preview) || builtIn || platformPreview;
   out.push({
     name: `${t.name}: local preview gate`,
     status: gateable ? 'ok' : 'warn',
-    detail: gateable
-      ? undefined
-      : `no built-in serve for ${t.external ? 'an external ' : ''}${t.target} tool — add preview:{ command, … } so \`greenlight preview ${t.name}\` works`,
+    detail: platformPreview
+      ? 'vercel per-PR preview + deployment_status verify'
+      : gateable
+        ? undefined
+        : `no built-in serve for ${t.external ? 'an external ' : ''}${t.target} tool — add preview:{ command, … } so \`greenlight preview ${t.name}\` works`,
   });
 
   return out;

@@ -54,6 +54,25 @@ describe('runDoctor — conformance to the uniform model', () => {
     expect(find(checks, 'bamcp: in the verify loop')).toBe('ok');
   });
 
+  it('a vercel tool is gateable via the platform per-PR preview (no descriptor needed)', () => {
+    const checks = runDoctor(
+      cfg([
+        {
+          name: 'hm',
+          lane: 'next',
+          target: 'vercel',
+          data: 'supabase',
+          external: true,
+          envs: ['beta', 'prod'],
+        },
+      ]),
+      root,
+    );
+    const gate = checks.find((c) => c.name === 'hm: local preview gate');
+    expect(gate?.status).toBe('ok');
+    expect(gate?.detail).toContain('per-PR preview');
+  });
+
   it('a local workers tool is gateable via the built-in serve', () => {
     mkdirSync(join(root, 'tools/notes'), { recursive: true });
     const checks = runDoctor(
