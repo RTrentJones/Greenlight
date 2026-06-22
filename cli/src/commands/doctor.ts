@@ -23,14 +23,24 @@ function dirCheck(label: string, dir: string): DoctorCheck {
 function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
   const out: DoctorCheck[] = [];
 
-  const specRel = t.external
-    ? `verify/${t.name}.config.ts`
-    : join(t.dir ?? join('tools', t.name), 'verify.config.ts');
-  const hasSpec = existsSync(join(root, specRel));
+  // The verify config's location is matrix-aware: oci external → wrapper `verify/<name>.config.ts`;
+  // vercel external → the tool repo (`<dir>/verify/<name>.config.ts`, run by its own CI); local →
+  // `<dir>/verify.config.ts`. Accept any that exists.
+  const toolDir = t.dir ?? join('tools', t.name);
+  const specCandidates = t.external
+    ? [
+        `verify/${t.name}.config.ts`,
+        join(toolDir, `verify/${t.name}.config.ts`),
+        join(toolDir, 'verify.config.ts'),
+      ]
+    : [join(toolDir, 'verify.config.ts')];
+  const found = specCandidates.find((p) => existsSync(join(root, p)));
   out.push({
     name: `${t.name}: in the verify loop`,
-    status: hasSpec ? 'ok' : 'warn',
-    detail: hasSpec ? specRel : `no ${specRel} — verify falls back to the lane default`,
+    status: found ? 'ok' : 'warn',
+    detail:
+      found ??
+      `no verify spec (looked: ${specCandidates.join(', ')}) — falls back to the lane default`,
   });
 
   // A pre-prod gate exists if: a `preview` descriptor (any target), a built-in local serve (a local

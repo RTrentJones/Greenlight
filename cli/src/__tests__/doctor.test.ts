@@ -54,7 +54,10 @@ describe('runDoctor — conformance to the uniform model', () => {
     expect(find(checks, 'bamcp: in the verify loop')).toBe('ok');
   });
 
-  it('a vercel tool is gateable via the platform per-PR preview (no descriptor needed)', () => {
+  it('a vercel tool: platform preview gate + verify spec found in the tool repo', () => {
+    // vercel external tools keep their verify config in the tool repo (run by their own CI).
+    mkdirSync(join(root, 'tools/hm/verify'), { recursive: true });
+    writeFileSync(join(root, 'tools/hm/verify/hm.config.ts'), 'export default { mode: "api" };');
     const checks = runDoctor(
       cfg([
         {
@@ -71,6 +74,7 @@ describe('runDoctor — conformance to the uniform model', () => {
     const gate = checks.find((c) => c.name === 'hm: local preview gate');
     expect(gate?.status).toBe('ok');
     expect(gate?.detail).toContain('per-PR preview');
+    expect(find(checks, 'hm: in the verify loop')).toBe('ok'); // found in tools/hm/verify/
   });
 
   it('a local workers tool is gateable via the built-in serve', () => {

@@ -185,6 +185,10 @@ export async function previewCommand(args: string[]): Promise<void> {
   let pass: boolean;
   if (entry.preview) {
     pass = await previewViaDescriptor(entry, name, port);
+  } else if (entry.external && entry.target === 'vercel') {
+    throw new Error(
+      `"${name}" is a vercel tool — its pre-prod gate is Vercel's per-PR preview deployment (the greenlight-verify.yml on deployment_status), not \`greenlight preview\`. Open a PR on its repo to get a preview + verify.`,
+    );
   } else if (entry.external) {
     throw new Error(
       `"${name}" is external and has no preview descriptor — add preview:{ command, … } to its manifest entry (e.g. a docker command), or preview it from its own repo`,
