@@ -27,8 +27,12 @@ This is what lets the framework ship as a package while your wrapper stays yours
 
 ## Trust boundaries
 
-- **`private` tools + all `beta.*`** sit behind **Cloudflare Access**; mutating/private MCP servers
-  default to `bearer`/`oauth`, never `none`.
+- **`private` tools + sensitive `beta.*` envs** sit behind **Cloudflare Access**. (A purely public
+  content site — e.g. the blog — may keep its `beta.*` open by design; gate anything with data/auth.)
+- **MCP auth:** a mutating or `private` MCP server MUST use `bearer`/`oauth`, never `none`; `auth:
+  none` is allowed ONLY for a fully public, **read-only** server. The schema enforces the `private`
+  ⇒ not-`none` rule (`packages/shared`); keeping a public `none` server read-only is the author's
+  contract — there is no `mutating` flag yet, so don't expose writes from a `none` server.
 - **OCI**: the only manual input is the API key — the VCN/subnet/AD are IaC; the container instance
   OCID is auto-resolved (never a stored secret). Provider auth is API-key request signing.
 - **Migrations** pass a dangerous-SQL scan gate before apply.

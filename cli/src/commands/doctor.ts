@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
 import { loadManifest } from '../manifest';
@@ -78,6 +79,84 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
   return out;
 }
 
+/** Lockstep drift: the consumer's infra `?ref=` pins should equal the installed
+ * `@rtrentjones/greenlight` version (CLAUDE.md: "?ref lockstep with the npm dep"). Reads the
+ * installed package version + every `?ref=` in `infra/*.tf`; warns on a mismatch (or non-uniform
+ * pins when the installed version can't be read). No-ops in the framework repo itself (neither
+ * present). This is the check that would have caught the scattered v0.2.3/v0.2.5/v0.2.19 pins. */
+export function versionDriftCheck(root: string): DoctorCheck {
+  const name = 'framework version drift';
+  let installed: string | undefined;
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(root, 'node_modules/@rtrentjones/greenlight/package.json'), 'utf8'),
+    ) as { version?: string };
+    installed = pkg.version;
+  } catch {
+    /* not a consumer / not installed */
+  }
+
+  const refs = new Set<string>();
+  try {
+    for (const f of readdirSync(join(root, 'infra')).filter((f) => f.endsWith('.tf'))) {
+      const body = readFileSync(join(root, 'infra', f), 'utf8');
+      for (const m of body.matchAll(/greenlight\.git\/\/infra\/modules\/[^?"]+\?ref=(v[0-9.]+)/g)) {
+        if (m[1]) refs.add(m[1]);
+      }
+    }
+  } catch {
+    /* no infra dir */
+  }
+
+  if (!installed && refs.size === 0) {
+    return {
+      name,
+      status: 'skip',
+      detail: 'no installed @rtrentjones/greenlight or infra pins here',
+    };
+  }
+  const refList = [...refs];
+  if (installed) {
+    const want = `v${installed}`;
+    const bad = refList.filter((r) => r !== want);
+    return bad.length === 0
+      ? { name, status: 'ok', detail: `infra pins == installed ${want}` }
+      : {
+          name,
+          status: 'warn',
+          detail: `installed ${want}, but infra pins ${bad.join(', ')} — bump ?ref to ${want}`,
+        };
+  }
+  // No installed version to compare against — at least require the pins to be uniform.
+  return refList.length <= 1
+    ? { name, status: 'ok', detail: `infra pins uniform (${refList[0] ?? 'none'})` }
+    : { name, status: 'warn', detail: `infra ?ref pins not uniform: ${refList.join(', ')}` };
+}
+
+/** Submodule drift: `git submodule status` prefixes a line with `+` (checked-out ≠ recorded),
+ * `-` (uninitialized), or `U` (conflicts). Any of those means a `git status`-dirty pointer that
+ * can pin an unexpected revision in a commit / CI checkout. Warn (don't fail) — a drifted submodule
+ * is sometimes intentional WIP; the point is to make it visible. */
+export function submoduleDriftCheck(root: string): DoctorCheck {
+  const name = 'submodule drift';
+  let out: string;
+  try {
+    // stderr ignored so a "not a git repository" never leaks to the doctor output.
+    out = execFileSync('git', ['submodule', 'status'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return { name, status: 'skip', detail: 'no git / not a repo' };
+  }
+  if (!out) return { name, status: 'skip', detail: 'no submodules' };
+  const dirty = out.split('\n').filter((l) => /^[+\-U]/.test(l));
+  return dirty.length === 0
+    ? { name, status: 'ok', detail: 'all submodules match their recorded commit' }
+    : { name, status: 'warn', detail: dirty.map((l) => l.trim()).join('; ') };
+}
+
 /** Pure consistency checks (no network). Cred-dependent checks are reported as skipped. */
 export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
@@ -94,6 +173,19 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
         mcp: t.lane === 'mcp',
       });
       checks.push({ name: `${t.name}: external (registry)`, status: 'ok', detail: url });
+      // If an external tool declares a local `dir` (e.g. a submodule), it should actually be there —
+      // a missing dir means an uninitialized submodule, which breaks preview/verify run from here.
+      if (t.dir) {
+        checks.push(
+          existsSync(join(root, t.dir))
+            ? { name: `${t.name}: dir present`, status: 'ok', detail: t.dir }
+            : {
+                name: `${t.name}: dir present`,
+                status: 'warn',
+                detail: `declared dir "${t.dir}" missing — run \`git submodule update --init\``,
+              },
+        );
+      }
     } else {
       checks.push(dirCheck(t.name, join(root, t.dir ?? join('tools', t.name))));
     }
@@ -116,6 +208,10 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
         : 'no data:supabase / target:oci tools',
   });
 
+  // Local consistency (no creds): lockstep + submodule drift.
+  checks.push(versionDriftCheck(root));
+  checks.push(submoduleDriftCheck(root));
+
   // Cred / infra-dependent — wired in later phases.
   for (const name of [
     'DNS propagation',
@@ -123,7 +219,6 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
     'Vercel cap headroom',
     'keepalive health (live)',
     'OCI PAYG status',
-    'framework version drift',
   ]) {
     checks.push({ name, status: 'skip', detail: 'needs provider creds / packages (Phase 5/7/8)' });
   }

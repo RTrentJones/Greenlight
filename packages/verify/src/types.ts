@@ -56,11 +56,18 @@ export interface ApiSpec extends VerifySpecBase {
   sitemapValid?: boolean;
   /** Crawl internal links from `/` and assert none are broken. */
   noBrokenInternalLinks?: boolean;
-  /** Eventual-consistency settle: if any check fails, re-run the WHOLE set up to `settleRetries`
-   * more times, waiting `settleMs` between tries. Absorbs the propagation lag of statically-served
-   * hosts (e.g. Cloudflare Workers Static Assets serve some paths before others for a few seconds
-   * right after a deploy). A genuine failure still fails — just after the retries. Absent/0 ⇒ no
-   * retry (the default; a local `preview` against a built dir needs none). */
+  /** Max internal links to crawl from `/` (default 50). The check reports when the cap is hit so a
+   * silently-truncated crawl never reads as "all links checked". */
+  maxLinks?: number;
+  /** Per-request timeout in ms for every HTTP fetch this spec makes (default 10000). Bounds a hung
+   * endpoint so the gate fails instead of blocking forever — and bounds total settle time too. */
+  timeoutMs?: number;
+  /** Eventual-consistency settle: if any check fails, re-run ONLY the still-failing checks up to
+   * `settleRetries` more times, waiting `settleMs` between tries. Absorbs the propagation lag of
+   * statically-served hosts (e.g. Cloudflare Workers Static Assets serve some paths before others
+   * for a few seconds right after a deploy). A genuine failure still fails — just after the retries.
+   * Absent/0 ⇒ no retry (the default; a local `preview` against a built dir needs none). Bounded by
+   * `timeoutMs` per fetch, so the whole settle window is finite. */
   settleRetries?: number;
   /** Delay between settle retries, in ms (default 5000). */
   settleMs?: number;

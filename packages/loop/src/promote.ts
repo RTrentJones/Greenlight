@@ -41,13 +41,20 @@ function tryRev(repoDir: string, ref: string): string | null {
 }
 
 /** Refresh the remote-tracking refs for the branches in play so promotion reasons about the
- * *verified remote* state (what beta deployed + verified), not a stale local checkout. Best-effort:
- * a repo with no `origin` (purely local tests) or an offline machine keeps whatever refs it has. */
-function fetchRefs(repoDir: string, branches: string[]): void {
+ * *verified remote* state (what beta deployed + verified), not a stale local checkout. Best-effort,
+ * but reports the outcome so the caller can WARN when an `origin` exists yet the fetch failed
+ * (offline?) — vs. staying quiet for a purely-local repo with no `origin` to fetch. */
+function fetchRefs(repoDir: string, branches: string[]): { ok: boolean; hasOrigin: boolean } {
+  try {
+    git(repoDir, ['remote', 'get-url', 'origin']); // throws if there is no `origin` remote
+  } catch {
+    return { ok: false, hasOrigin: false }; // local-only repo — nothing to refresh, not an error
+  }
   try {
     git(repoDir, ['fetch', '--no-tags', 'origin', ...branches]);
+    return { ok: true, hasOrigin: true };
   } catch {
-    // no origin / offline — fall back to whatever refs already exist
+    return { ok: false, hasOrigin: true }; // origin exists but the fetch failed (offline / auth?)
   }
 }
 
@@ -89,15 +96,25 @@ function staleLocalWarnings(repoDir: string, branches: string[]): string[] {
 
 export function canPromote(repoDir: string, from = 'develop', to = 'main'): PromoteCheck {
   // Reason about the verified *remote* state — refresh tracking refs before resolving (best-effort).
-  fetchRefs(repoDir, [from, to]);
+  const warnings: string[] = [];
+  const fetched = fetchRefs(repoDir, [from, to]);
+  if (fetched.hasOrigin && !fetched.ok) {
+    warnings.push(
+      'could not `git fetch origin` — eligibility may be based on stale remote-tracking refs (offline / auth?). Re-run after a successful fetch.',
+    );
+  }
 
   const fromRef = resolveRef(repoDir, from);
   const toRef = resolveRef(repoDir, to);
   if (!fromRef || !toRef) {
-    return { canPromote: false, reason: `branch "${from}" or "${to}" not found in ${repoDir}` };
+    return {
+      canPromote: false,
+      reason: `branch "${from}" or "${to}" not found in ${repoDir}`,
+      warnings: warnings.length ? warnings : undefined,
+    };
   }
 
-  const warnings = staleLocalWarnings(repoDir, [from, to]);
+  warnings.push(...staleLocalWarnings(repoDir, [from, to]));
 
   try {
     // exits 0 iff `to` is an ancestor of `from` (fast-forward is possible)

@@ -232,7 +232,7 @@ export async function verifyAgentWeb(baseUrl: string, spec: AgentWebSpec): Promi
   }
 
   let chromium: typeof import('playwright').chromium;
-  let Anthropic: new (opts: { apiKey: string }) => {
+  let Anthropic: new (opts: { apiKey: string; timeout?: number; maxRetries?: number }) => {
     messages: { create(body: unknown): Promise<{ content: ContentBlock[] }> };
   };
   try {
@@ -258,7 +258,12 @@ export async function verifyAgentWeb(baseUrl: string, spec: AgentWebSpec): Promi
     ]);
   }
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  // Bound each model call (60s) with one retry, so a hung Anthropic request can't stall the gate.
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    timeout: 60_000,
+    maxRetries: 1,
+  });
   let browser: Awaited<ReturnType<typeof chromium.launch>>;
   try {
     browser = await chromium.launch({ headless: !spec.headed });

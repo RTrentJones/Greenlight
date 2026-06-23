@@ -16,6 +16,11 @@ resource "supabase_project" "this" {
   # Imported, never replaced. name/region/instance_size are replace-forcing in the
   # provider (a replace destroys the database), and the password is set out-of-band.
   # A true rebuild is the deliberate recreate runbook, not a stray plan diff.
+  #
+  # DANGER: `database_password` MUST stay in ignore_changes. Consumers pass a placeholder for it
+  # (infra.yml: `${{ secrets.… || 'import-placeholder' }}`) since the live password is set
+  # out-of-band; removing it here would make a stray apply RESET the live DB password and lock the
+  # app out. A guard test (cli/src/__tests__/infra-supabase-guard.test.ts) fails CI on removal.
   lifecycle {
     ignore_changes = [database_password, name, region, instance_size]
   }

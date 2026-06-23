@@ -5,13 +5,21 @@ import { verify } from '../index';
 let server: http.Server;
 let base: string;
 let eventuallyHits = 0; // for the settle-retry test: 404 until the 3rd hit, then 200
+let rootHits = 0; // for the settle-only-failed test: count requests to `/`
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const url = req.url ?? '/';
     if (url === '/') {
+      rootHits += 1;
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<html><body><a href="/about">about</a><a href="/missing">x</a></body></html>');
+    } else if (url === '/hang') {
+      // Never responds within the test's timeout window — exercises the per-fetch AbortSignal.
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end('late');
+      }, 3000).unref();
     } else if (url === '/about') {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<html><body>about page</body></html>');
@@ -50,7 +58,13 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
 });
 
-afterAll(() => new Promise<void>((r) => server.close(() => r())));
+afterAll(
+  () =>
+    new Promise<void>((r) => {
+      server.closeAllConnections?.(); // force-close any in-flight (e.g. /hang) so close() resolves
+      server.close(() => r());
+    }),
+);
 
 describe('verify api', () => {
   it('sends requestHeaders (e.g. a Vercel protection bypass) so a gated URL is reachable', async () => {
@@ -110,5 +124,50 @@ describe('verify api', () => {
       settleMs: 0,
     });
     expect(r.pass).toBe(false);
+  });
+
+  it('a hung endpoint fails on the timeout instead of blocking forever', async () => {
+    const started = Date.now();
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/hang', status: 200 }],
+      timeoutMs: 200,
+    });
+    expect(r.pass).toBe(false); // aborted, not hung
+    expect(Date.now() - started).toBeLessThan(2000); // returned well before the 3s server delay
+  });
+
+  it('settle re-runs ONLY the failed checks (passing endpoints are not re-hit)', async () => {
+    eventuallyHits = 0; // 404 on hits 1–2, 200 on hit 3
+    rootHits = 0;
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [
+        { path: '/', status: 200 },
+        { path: '/eventually', status: 200 },
+      ],
+      settleRetries: 5,
+      settleMs: 0,
+    });
+    expect(r.pass).toBe(true);
+    expect(rootHits).toBe(1); // `/` passed first try and was never re-run during the settle
+    expect(eventuallyHits).toBe(3); // only the failing check was retried
+  });
+
+  it('fails (not vacuously passes) when the home page yields no internal links', async () => {
+    const linkless = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<html><body>no links here</body></html>');
+    });
+    await new Promise<void>((r) => linkless.listen(0, '127.0.0.1', () => r()));
+    const addr = linkless.address();
+    const lbase = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      const r = await verify(lbase, { mode: 'api', noBrokenInternalLinks: true });
+      const link = r.checks.find((c) => c.name.includes('broken internal links'));
+      expect(link?.pass).toBe(false); // 0 links checked must not read as green
+    } finally {
+      await new Promise<void>((r) => linkless.close(() => r()));
+    }
   });
 });

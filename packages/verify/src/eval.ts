@@ -33,14 +33,19 @@ export function llmJudge(model: string): Judge {
     const sdkName = '@anthropic-ai/sdk';
     const Anthropic = (
       (await import(sdkName)) as {
-        default: new (o: { apiKey: string }) => {
+        default: new (o: { apiKey: string; timeout?: number; maxRetries?: number }) => {
           messages: {
             create(b: unknown): Promise<{ content: Array<{ type: string; text?: string }> }>;
           };
         };
       }
     ).default;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    // Bound the judge call (60s, one retry) so a hung request can't stall the gate.
+    const client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      timeout: 60_000,
+      maxRetries: 1,
+    });
     const resp = await client.messages.create({
       model,
       max_tokens: 512,

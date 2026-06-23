@@ -25,8 +25,11 @@ jobs:
       - name: Ensure npm >= 11.5.1 (trusted publishing)
         run: npm install -g npm@latest && npm --version
       - run: pnpm install --frozen-lockfile
+      # Gate the publish on the SAME suite CI runs — a v* tag must not ship un-tested code
+      # (lint + typecheck + tests + seam + boundaries + the version-lockstep check).
+      - run: pnpm run check-all
       - run: pnpm build:packages # tsup bundles shared/verify/adapters/loop into cli/dist
       - name: Pack the CLI (pnpm resolves workspace deps in the tarball)
         run: (cd cli && pnpm pack --pack-destination "$RUNNER_TEMP/dist")
-      - name: Publish via OIDC trusted publishing
-        run: npm publish "$RUNNER_TEMP"/dist/rtrentjones-greenlight-*.tgz --access public
+      - name: Publish via OIDC trusted publishing (+ provenance attestation)
+        run: npm publish "$RUNNER_TEMP"/dist/rtrentjones-greenlight-*.tgz --access public --provenance

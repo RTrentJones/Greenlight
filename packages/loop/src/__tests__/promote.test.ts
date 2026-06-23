@@ -43,6 +43,22 @@ describe('canPromote', () => {
     expect(r.canPromote).toBe(false);
     expect(r.reason).toMatch(/not found/i);
   });
+
+  it('warns (does not silently swallow) when an origin exists but the fetch fails', () => {
+    git('checkout', '-q', '-b', 'develop');
+    git('commit', '-q', '--allow-empty', '-m', 'feature');
+    git('checkout', '-q', 'main');
+    git('remote', 'add', 'origin', join(tmpdir(), 'gl-no-such-origin.git')); // unreachable path
+    const r = canPromote(dir);
+    expect(r.warnings?.some((w) => /could not `git fetch origin`/.test(w))).toBe(true);
+  });
+
+  it('does NOT warn about fetch for a purely-local repo (no origin)', () => {
+    git('checkout', '-q', '-b', 'develop');
+    git('commit', '-q', '--allow-empty', '-m', 'feature');
+    const r = canPromote(dir); // no origin remote configured
+    expect(r.warnings?.some((w) => /git fetch origin/.test(w))).not.toBe(true);
+  });
 });
 
 describe('promote', () => {

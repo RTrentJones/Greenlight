@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConfigSchema } from '@rtrentjones/greenlight-shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runDoctor } from '../commands/doctor';
+import { runDoctor, submoduleDriftCheck, versionDriftCheck } from '../commands/doctor';
 
 let root: string;
 beforeEach(() => {
@@ -140,5 +140,47 @@ describe('runDoctor — conformance to the uniform model', () => {
       root,
     );
     expect(find(checks, 'heistmind: token scoping')).toBe('ok');
+  });
+});
+
+describe('versionDriftCheck — infra ?ref lockstep', () => {
+  const installPkg = (v: string) => {
+    mkdirSync(join(root, 'node_modules/@rtrentjones/greenlight'), { recursive: true });
+    writeFileSync(
+      join(root, 'node_modules/@rtrentjones/greenlight/package.json'),
+      JSON.stringify({ version: v }),
+    );
+  };
+  const writeTf = (file: string, ref: string) => {
+    mkdirSync(join(root, 'infra'), { recursive: true });
+    writeFileSync(
+      join(root, 'infra', file),
+      `module "x" {\n  source = "git::https://github.com/RTrentJones/greenlight.git//infra/modules/tool?ref=${ref}"\n}`,
+    );
+  };
+
+  it('ok when every infra pin matches the installed version', () => {
+    installPkg('0.2.23');
+    writeTf('a.tf', 'v0.2.23');
+    writeTf('b.tf', 'v0.2.23');
+    expect(versionDriftCheck(root).status).toBe('ok');
+  });
+
+  it('warns when an infra pin lags the installed version', () => {
+    installPkg('0.2.23');
+    writeTf('a.tf', 'v0.2.19'); // the scattered-pin scenario the review caught
+    const c = versionDriftCheck(root);
+    expect(c.status).toBe('warn');
+    expect(c.detail).toContain('v0.2.19');
+  });
+
+  it('skips when neither an installed package nor infra pins are present', () => {
+    expect(versionDriftCheck(root).status).toBe('skip');
+  });
+});
+
+describe('submoduleDriftCheck', () => {
+  it('skips outside a git repo (no submodules to inspect)', () => {
+    expect(submoduleDriftCheck(root).status).toBe('skip');
   });
 });

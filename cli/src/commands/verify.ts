@@ -50,6 +50,20 @@ export function printReport(report: VerifyReport): void {
 
 const LOG_TAIL_LINES = 50;
 
+/** Defense-in-depth: a `logsOnFailure` command runs with the full process env (it may legitimately
+ * need a token — e.g. `vercel logs --token "$VERCEL_API_TOKEN"`), and its captured output is printed
+ * to CI. Scrub any secret-looking env VALUE out of the text before it can leak into a log. Keys
+ * matching TOKEN/KEY/SECRET/PASSWORD with a non-trivial value are replaced wherever they appear. */
+export function redactSecrets(text: string, env: NodeJS.ProcessEnv = process.env): string {
+  let out = text;
+  for (const [k, v] of Object.entries(env)) {
+    if (!v || v.length < 6) continue; // skip empty / trivial values to avoid over-redaction
+    if (!/TOKEN|KEY|SECRET|PASSWORD|PWD/i.test(k)) continue;
+    out = out.split(v).join('***'); // literal replace-all (no regex escaping needed)
+  }
+  return out;
+}
+
 /** Telemetry-into-verify: for every FAILED report whose spec set `logsOnFailure`, run that shell
  * command in the tool dir and attach the last ~50 lines to `report.logs`. Best-effort — a missing
  * CLI, a non-zero exit, or a timeout NEVER fails the verify (mirrors verifyTest's never-throw
@@ -83,7 +97,7 @@ export function attachFailureLogs(
         // Let the command target the exact failing URL without hard-coding it.
         env: { ...process.env, GREENLIGHT_VERIFY_URL: report.url },
       });
-      const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trimEnd();
+      const out = redactSecrets(`${res.stdout ?? ''}${res.stderr ?? ''}`.trimEnd());
       const tail = out.split('\n').slice(-LOG_TAIL_LINES).join('\n');
       report.logs =
         tail || `(logsOnFailure produced no output${res.error ? `: ${res.error.message}` : ''})`;

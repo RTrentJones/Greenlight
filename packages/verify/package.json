@@ -1,6 +1,6 @@
 {
   "name": "@rtrentjones/greenlight-verify",
-  "version": "0.2.22",
+  "version": "0.2.23",
   "private": true,
   "description": "Greenlight verify harness (api | mcp | playwright | test | agent-web | eval).",
   "license": "MIT",
