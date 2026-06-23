@@ -283,6 +283,6 @@ docs/                       # this doc, development, runbook, provider-tokens, a
 - **[development.md](development.md)** — toolchain, commands, build model, how to work in the repo.
 - **[agentic-loop.md](agentic-loop.md)** — the agent kit (skills + MCP + best practices).
 - **[oci-payg-runbook.md](oci-payg-runbook.md)** — the OCI free-tier runbook.
-- **[provider-tokens.md](provider-tokens.md)** / **[terraform-state-r2.md](terraform-state-r2.md)** —
+- **[provider-tokens.md](provider-tokens.md)** / **[terraform-state.md](terraform-state.md)** —
   the token + remote-state deep guides.
 - **[archive/](archive/)** — the per-phase build plans (historical record).

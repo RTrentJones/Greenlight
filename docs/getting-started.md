@@ -73,7 +73,7 @@ What each target needs (the gather prompts walk you through it, with the create-
 ## 4. Set the remote-state backend (once)
 
 Open `infra/main.tf` and fill the `cloud {}` block with your HCP Terraform org + workspace
-(free tier, no credit card). See [terraform-state-r2.md](terraform-state-r2.md).
+(free tier, no credit card). See [terraform-state.md](terraform-state.md).
 
 ## 5. Commit + push → CI applies
 

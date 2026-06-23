@@ -302,7 +302,7 @@ export function emitWrapperMainTf(opts: {
 
   return `# Wrapper infra (singleton): providers + remote-state backend + shared variables.
 # \`greenlight add\` appends per-tool module blocks as infra/<name>.tf. Apply is CI/CD's job
-# (infra.yml). Fill in the HCP backend below before the first apply (docs/terraform-state-r2.md).
+# (infra.yml). Fill in the HCP backend below before the first apply (docs/terraform-state.md).
 
 terraform {
   required_version = ">= 1.7"

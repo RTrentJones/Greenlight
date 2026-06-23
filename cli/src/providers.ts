@@ -59,7 +59,7 @@ export interface ProviderPack {
   appliesTo(tool: ProviderToolInfo): boolean;
   /** Tokens this provider needs in the provider stores. */
   tokens: TokenSpec[];
-  /** Pointer into the deep guide (docs/provider-tokens.md / terraform-state-r2.md). */
+  /** Pointer into the deep guide (docs/provider-tokens.md / terraform-state.md). */
   guide: string;
   /** Web console where these tokens are created — printed by `greenlight secrets gather`. */
   setupUrl?: string;
@@ -168,7 +168,7 @@ export const PACKS: ProviderPack[] = [
     name: 'HCP Terraform (remote state)',
     always: true, // remote state backs every wrapper's infra
     appliesTo: () => true,
-    guide: 'docs/terraform-state-r2.md — HCP Terraform free tier (no credit card)',
+    guide: 'docs/terraform-state.md — HCP Terraform free tier (no credit card)',
     setupUrl: 'https://app.terraform.io/app/settings/tokens',
     tokens: [
       {

@@ -191,7 +191,7 @@ Next:
                                                                  ? ''
                                                                  : '\n  (run `greenlight secrets sync` if base tokens were not pushed)'
                                                              }
-  2. set the HCP backend (cloud{} org + workspace) in infra/main.tf   # docs/terraform-state-r2.md
+  2. set the HCP backend (cloud{} org + workspace) in infra/main.tf   # docs/terraform-state.md
   3. commit + push → CI (.github/workflows/infra.yml) runs \`terraform apply\`
   4. greenlight verify <name> --env prod   |   greenlight doctor`);
 }
