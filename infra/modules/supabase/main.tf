@@ -21,6 +21,22 @@ resource "supabase_project" "this" {
   }
 }
 
+locals {
+  # Partial auth config — built only when Discord is enabled, and carrying ONLY the keys we
+  # explicitly manage. The Management API PATCHes /config/auth, so keys not present here (email,
+  # phone, JWT, other providers…) are left untouched. site_url / uri_allow_list are included
+  # only when supplied, so enabling Discord doesn't clobber a redirect setup unless asked to.
+  auth_config = var.discord_auth_enabled ? merge(
+    {
+      external_discord_enabled   = true
+      external_discord_client_id = var.discord_client_id
+      external_discord_secret    = var.discord_client_secret
+    },
+    var.auth_site_url != "" ? { site_url = var.auth_site_url } : {},
+    length(var.auth_additional_redirect_urls) > 0 ? { uri_allow_list = join(",", var.auth_additional_redirect_urls) } : {},
+  ) : null
+}
+
 resource "supabase_settings" "this" {
   project_ref = supabase_project.this.id
   api = jsonencode({
@@ -28,6 +44,17 @@ resource "supabase_settings" "this" {
     db_extra_search_path = "public,extensions"
     max_rows             = 1000
   })
+
+  # Auth config is managed ONLY when Discord auth is on. null => attribute unset => the provider
+  # does not touch /config/auth, preserving every existing consumer's behavior unchanged.
+  auth = local.auth_config != null ? jsonencode(local.auth_config) : null
+
+  lifecycle {
+    precondition {
+      condition     = !var.discord_auth_enabled || (var.discord_client_id != "" && var.discord_client_secret != "")
+      error_message = "discord_auth_enabled requires both discord_client_id and discord_client_secret to be set."
+    }
+  }
 }
 
 data "supabase_apikeys" "this" {

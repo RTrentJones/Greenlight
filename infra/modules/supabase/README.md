@@ -24,6 +24,35 @@ ownership here, keys flowing straight into Vercel env (no manual copy), and keep
 | `instance_size` | default `micro` |
 | `legacy_api_keys_enabled` | default `true` (app uses anon/service_role) |
 | `api_db_schema` | schemas PostgREST exposes; add a `beta` schema here for schema-per-env |
+| `discord_auth_enabled` | default `false`; enable Discord OAuth on `/config/auth` |
+| `discord_client_id` / `discord_client_secret` | Discord app creds (secret sensitive); required when enabled |
+| `auth_site_url` / `auth_additional_redirect_urls` | optional GoTrue Site URL + `uri_allow_list` (managed only when set) |
+
+## Auth: optional Discord OAuth provider
+
+Default **off** — when `discord_auth_enabled = false` the module doesn't manage the auth
+config at all (`auth` is unset), so existing email/JWT/redirect settings are untouched. When
+enabled it PATCHes `/config/auth` with **only** the keys it manages (Discord fields + any
+`auth_site_url`/`uri_allow_list` you pass), leaving everything else as-is.
+
+The Discord **application** is created manually (Discord Developer Portal → OAuth2): copy its
+Client ID + Secret into the vars, and add this redirect URI to the app:
+
+```
+https://<project_ref>.supabase.co/auth/v1/callback
+```
+
+Wrapper example (creds arrive as scoped TF-var secrets; enable only when both are present):
+
+```hcl
+discord_auth_enabled          = var.heistmind_discord_client_id != "" && var.heistmind_discord_client_secret != ""
+discord_client_id             = var.heistmind_discord_client_id
+discord_client_secret         = var.heistmind_discord_client_secret
+auth_site_url                 = "https://heistmind.rtrentjones.dev"
+auth_additional_redirect_urls = ["https://heistmind.rtrentjones.dev/**", "https://beta.heistmind.rtrentjones.dev/**"]
+```
+
+Review `terraform plan` before the first apply (it shows the auth-config change).
 
 ## Outputs
 
