@@ -1,6 +1,6 @@
 # Phase 3 — CI/CD + the promote gate (implementation plan)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 3. **Goal:** wire the loop into GitHub Actions (deploy + promote + alert) with the `canPromote` fast-forward guard performing the actual gated `develop → main` promotion.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 3. **Goal:** wire the loop into GitHub Actions (deploy + promote + alert) with the `canPromote` fast-forward guard performing the actual gated `develop → main` promotion.
 
 ## Reality check (what's validatable now)
 

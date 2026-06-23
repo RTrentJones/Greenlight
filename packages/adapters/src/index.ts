@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { type DeployEnv, type Target, resolveUrl } from '@rtrentjones/greenlight-shared';
 
 /**
- * Deploy-target adapters (greenlight-v1.md §5). Every target implements the same
+ * Deploy-target adapters (docs/archive/greenlight-v1.md §5). Every target implements the same
  * four hooks; the contract is the product. `url()` is deterministic (delegates to
  * the shared resolver) so `verify` never scrapes deploy logs. The adapter is bound
  * to one entry via `AdapterContext` (name undefined = apex/blog).

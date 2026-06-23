@@ -6,7 +6,7 @@
  *
  * A Worker cron (not a GitHub Actions schedule) is used deliberately: it's immune to
  * GitHub's "disable scheduled workflows after 60 days of repo inactivity" rule
- * (greenlight-v1.md §6). The pure functions below are unit-tested; the Worker's
+ * (docs/archive/greenlight-v1.md §6). The pure functions below are unit-tested; the Worker's
  * `scheduled`/`fetch` handlers are thin wrappers over them.
  *
  * Note: keepalive does NOT prevent OCI Always-Free idle-reclaim — that needs the tenancy

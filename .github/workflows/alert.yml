@@ -1,7 +1,7 @@
 name: alert
 
 # Reusable alert sink (alerts.sink = github-issue) — opens an issue so GitHub emails
-# you. Zero new vendor. Other workflows call this on failure (greenlight-v1.md §13).
+# you. Zero new vendor. Other workflows call this on failure (docs/archive/greenlight-v1.md §13).
 on:
   workflow_call:
     inputs:

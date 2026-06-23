@@ -8,7 +8,7 @@ import { packsForTool, secretKeyFor } from '../providers';
 /**
  * `greenlight secrets sync` — push the local `.greenlight/secrets.env` to the repo's
  * GitHub Actions secrets via `gh` (encrypted client-side; values never echoed). This
- * is the "init writes to provider stores" piece (greenlight-v1.md §8/§14). Prefer
+ * is the "init writes to provider stores" piece (docs/archive/greenlight-v1.md §8/§14). Prefer
  * GitHub OIDC → cloud over long-lived tokens where the target supports it.
  */
 

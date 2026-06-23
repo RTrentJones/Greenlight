@@ -1,7 +1,7 @@
 # Greenlight — Architecture (as built)
 
 > The canonical description of how Greenlight works today. For the *why* and the original narrowed
-> scope see [greenlight-v1.md](../greenlight-v1.md) (the spec); for how to work in the repo see
+> scope see [greenlight-v2.md](../greenlight-v2.md) (the spec); for how to work in the repo see
 > [development.md](development.md). The per-phase build plans that got us here are archived under
 > [archive/](archive/) — this doc supersedes them for the current state.
 
@@ -66,7 +66,7 @@ flowchart TD
 
 ## The manifest — the single source of truth
 
-[`greenlight.config.ts`](../greenlight-v1.md) (`defineConfig`, schema in
+[`greenlight.config.ts`](../greenlight-v2.md) (`defineConfig`, schema in
 [`packages/shared`](../packages/shared)) lists the domain, the blog, and every tool with its facets:
 
 ```ts
@@ -252,11 +252,11 @@ Three channels, one source of truth per artifact type:
   `private`. `playwright` + `@anthropic-ai/sdk` are optional/external. Publishing is **OIDC Trusted
   Publishing** (`.github/workflows/release.yml`, no `NPM_TOKEN`), triggered by a `v*` tag.
 - **git tags** — the Terraform modules, source-ref-pinned via `MODULE_REF`
-  ([`cli/src/version.ts`](../cli/src/version.ts)), e.g. `?ref=v0.2.5`.
+  ([`cli/src/version.ts`](../cli/src/version.ts)), e.g. `?ref=v0.2.20`.
 - **plugin marketplace** — the skills (`/plugin marketplace add RTrentJones/greenlight`).
 
 **Lockstep:** the npm version, the `MODULE_REF` git tag, and the wrapper's module `?ref=` move
-together (e.g. `v0.2.5`). The personal repo is a **thin consumer** that depends on the one package
+together (e.g. `v0.2.20`). The personal repo is a **thin consumer** that depends on the one package
 and updates via `pnpm update` — no merging framework code.
 
 ## Repo topology (key dirs)
@@ -279,7 +279,7 @@ docs/                       # this doc, development, runbook, provider-tokens, a
 - **[getting-started.md](getting-started.md)** — stand up a new wrapper (init → add+gather → push → verify).
 - **[demo.md](demo.md)** — try it cold in ~3 min, no cloud credentials.
 - **[security.md](security.md)** — secrets, trust boundaries, token topology, supply chain.
-- **[greenlight-v1.md](../greenlight-v1.md)** — the executable spec (the *why* + V1 scope + identity).
+- **[greenlight-v2.md](../greenlight-v2.md)** — the executable spec (the *why* + V1 scope + identity).
 - **[development.md](development.md)** — toolchain, commands, build model, how to work in the repo.
 - **[agentic-loop.md](agentic-loop.md)** — the agent kit (skills + MCP + best practices).
 - **[oci-payg-runbook.md](oci-payg-runbook.md)** — the OCI free-tier runbook.

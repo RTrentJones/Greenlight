@@ -1,6 +1,6 @@
 # Phase 1 — Verify harness + deploy adapters + the loop (implementation plan)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 1. **Goal:** the deploy → validate → iterate loop, runnable end-to-end against a stub, with a verify harness whose reports are identical whether CI or the agent calls them. This is the centerpiece of V1.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 1. **Goal:** the deploy → validate → iterate loop, runnable end-to-end against a stub, with a verify harness whose reports are identical whether CI or the agent calls them. This is the centerpiece of V1.
 
 ## Objective
 

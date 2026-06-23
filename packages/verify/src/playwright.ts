@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { type PlaywrightSpec, type VerifyCheck, type VerifyReport, msg, report } from './types';
 
 /**
- * playwright mode (greenlight-v1.md §9/§11). Two complementary checks, either or both:
+ * playwright mode (docs/archive/greenlight-v1.md §9/§11). Two complementary checks, either or both:
  *
  *  - `renders`: a light render smoke via the accessibility tree. Playwright is an optional
  *    dependency, dynamically imported, so api/mcp users don't pull a browser; if it (or a

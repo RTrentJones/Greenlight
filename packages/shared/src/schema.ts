@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * The Greenlight manifest schema (greenlight-v1.md §4).
+ * The Greenlight manifest schema (docs/archive/greenlight-v1.md §4).
  *
  * The schema is the single runtime validator AND the source of exported types.
  * It enforces the V1 lane × target × data matrix at load time, so an illegal
@@ -16,7 +16,7 @@ export const AccessEnum = z.enum(['public', 'private']);
 export const EnvEnum = z.enum(['preview', 'beta', 'prod']);
 
 /**
- * V1 lane → allowed targets + allowed data (greenlight-v1.md §4 matrix).
+ * V1 lane → allowed targets + allowed data (docs/archive/greenlight-v1.md §4 matrix).
  * `mcp` supports both `workers` (dev/throwaway) and `oci` (BAMCP production).
  */
 const MATRIX: Record<
@@ -51,7 +51,7 @@ export const ToolSchema = z
     // (poly-repo) tool sets '.' (the repo root).
     dir: z.string().optional(),
     // The tool's code lives in another repo — this entry is a registry pointer only,
-    // not built/deployed here (greenlight-v1.md §15.5 poly-repo).
+    // not built/deployed here (docs/archive/greenlight-v1.md §15.5 poly-repo).
     external: z.boolean().default(false),
     // How `greenlight preview` spins the tool up LOCALLY for the pre-deploy gate. Optional — node
     // lanes (astro/next/mcp→workers) use the built-in build+serve path. Set it for targets with no
@@ -103,7 +103,7 @@ export const ToolSchema = z
 /**
  * The blog is special: it lives on Workers and must NEVER use Supabase —
  * Supabase pauses after 7 days idle, and the blog must stay up unattended
- * (greenlight-v1.md §9). The literal types here make that unrepresentable.
+ * (docs/archive/greenlight-v1.md §9). The literal types here make that unrepresentable.
  */
 export const BlogSchema = z.object({
   lane: z.literal('astro'),

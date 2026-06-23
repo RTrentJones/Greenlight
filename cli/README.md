@@ -48,7 +48,8 @@ greenlight <command>
 | `verify <name> --env <beta\|prod>` (or `--url`) | run the shared verify harness |
 | `promote <name>` | gated `develop → main` fast-forward (after beta verify) |
 | `deploy <name>` | target deploy hook (e.g. OCI restart = re-pull) |
-| `doctor` / `config` | health checks / load + validate + print the manifest |
+| `status <name>` | the ship → deploy → verify run chain across repos |
+| `doctor` / `config` | health checks (incl. token-scoping conformance) / load + validate + print the manifest |
 
 ## The loop
 
@@ -70,7 +71,8 @@ import { defineConfig, defineVerify } from '@rtrentjones/greenlight';
 
 export default defineConfig({
   domain: 'you.dev',
-  tools: { notes: { lane: 'mcp', target: 'oci', data: 'none', auth: 'bearer' } },
+  alerts: { sink: 'github-issue' },
+  tools: [{ name: 'notes', lane: 'mcp', target: 'oci', data: 'none', auth: 'bearer', envs: ['prod'] }],
 });
 ```
 
@@ -80,6 +82,7 @@ Also exported: `loadConfig`, and the `GreenlightConfig` / `VerifySpec` types.
 
 - **Repo + full docs:** <https://github.com/RTrentJones/greenlight>
 - **Architecture:** [docs/architecture.md](https://github.com/RTrentJones/greenlight/blob/main/docs/architecture.md)
-- **Spec:** [greenlight-v1.md](https://github.com/RTrentJones/greenlight/blob/main/greenlight-v1.md)
+- **Spec:** [greenlight-v2.md](https://github.com/RTrentJones/greenlight/blob/main/greenlight-v2.md)
+- **Add a provider type:** [docs/adding-a-provider.md](https://github.com/RTrentJones/greenlight/blob/main/docs/adding-a-provider.md)
 
 MIT

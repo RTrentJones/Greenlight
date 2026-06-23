@@ -1,6 +1,6 @@
 # Phase 6 — CLI completion: init / add / doctor (+ adopt stub)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 6. **Goal:** complete the CLI surface. Most of this is local logic and is fully validated; the cred-dependent bits (live token validation, terraform apply, first deploy, DNS/drift/cap checks) are gated/deferred.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 6. **Goal:** complete the CLI surface. Most of this is local logic and is fully validated; the cred-dependent bits (live token validation, terraform apply, first deploy, DNS/drift/cap checks) are gated/deferred.
 
 ## What was built
 

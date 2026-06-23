@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { type McpSpec, type VerifyCheck, type VerifyReport, msg, report } from './types';
 
 /**
- * Protocol-level MCP verification (greenlight-v1.md §6):
+ * Protocol-level MCP verification (docs/archive/greenlight-v1.md §6):
  *   initialize handshake → tools/list → optional tools/call → optional auth assertion.
  * No UI — this replaces Playwright for the mcp lane.
  */

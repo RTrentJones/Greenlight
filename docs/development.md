@@ -1,7 +1,7 @@
 # Development
 
 > How to work in the Greenlight repo. For the system design see [architecture.md](architecture.md);
-> for the spec see [../greenlight-v1.md](../greenlight-v1.md).
+> for the spec see [../greenlight-v2.md](../greenlight-v2.md).
 
 ## Prerequisites
 

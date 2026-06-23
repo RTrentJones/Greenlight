@@ -2,7 +2,7 @@ import { defineConfig } from '@rtrentjones/greenlight-shared';
 
 /**
  * Example manifest — the single source of truth for a Greenlight setup
- * (greenlight-v1.md §4). `greenlight init` copies this to `greenlight.config.ts`
+ * (docs/archive/greenlight-v1.md §4). `greenlight init` copies this to `greenlight.config.ts`
  * and rewrites `domain` + tokens for your setup (§15.3). This file ships with the
  * baseline and MUST stay generic — no real domain (the seam check enforces it).
  */

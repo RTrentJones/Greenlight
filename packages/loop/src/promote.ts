@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 /**
  * Promote = fast-forward `develop` → `main` after beta verify passes
- * (greenlight-v1.md §12). The guard enforces the divergence policy: a
+ * (docs/archive/greenlight-v1.md §12). The guard enforces the divergence policy: a
  * fast-forward is only possible if `main` is an ancestor of `develop`. If `main`
  * has diverged (e.g. a direct hotfix), refuse with a reconcile instruction
  * rather than force-push.

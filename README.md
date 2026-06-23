@@ -54,7 +54,7 @@ branch → change → preview → verify → develop/beta → verify → promote
 ```
 
 See **[docs/architecture.md](docs/architecture.md)** for how it all fits together and
-[greenlight-v1.md](greenlight-v1.md) for the spec.
+[greenlight-v2.md](greenlight-v2.md) for the spec.
 
 ## Two planes over one spine
 

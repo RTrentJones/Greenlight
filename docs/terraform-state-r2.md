@@ -1,6 +1,6 @@
 # Terraform remote state (R2, or HCP Terraform — no credit card)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §11 (config as code) + §17 (state on R2). **Goal:** make a wrapper repo's Terraform state shared, durable, and CI-applyable — so `push → terraform apply` works and the state isn't trapped on one machine.
+> **Parent:** [greenlight-v1.md](archive/greenlight-v1.md) §11 (config as code) + §17 (state on R2). **Goal:** make a wrapper repo's Terraform state shared, durable, and CI-applyable — so `push → terraform apply` works and the state isn't trapped on one machine.
 
 ## Choosing a backend
 

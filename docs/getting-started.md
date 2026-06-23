@@ -114,7 +114,7 @@ loop kit (+ a deploy/verify workflow) into the tool repo. The tool repo holds **
 ```bash
 pnpm update @rtrentjones/greenlight     # the CLI + bundled libs
 ```
-Terraform module refs are pinned per emitted block (e.g. `?ref=v0.2.9`); bump them when you adopt a
+Terraform module refs are pinned per emitted block (e.g. `?ref=v0.2.20`); bump them when you adopt a
 newer line. You never merge framework code — your wrapper only consumes it.
 
 ---

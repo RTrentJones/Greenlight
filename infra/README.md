@@ -2,8 +2,8 @@
 
 The **framework** ships the reusable Terraform `module "tool"` and verifies its *logic*
 with no creds and no cloud resources. The **real `apply`** against real accounts is the
-**wrapper repo's** job (greenlight-v1.md §15.4/§15.7), with scoped tokens, the R2 state
-backend, and `plan`-on-PR / gated `apply`-on-merge.
+**wrapper repo's** job (greenlight-v2.md §12–§13), with scoped tokens, the HCP Terraform
+state backend, and `plan`-on-PR / gated `apply`-on-merge.
 
 ```
 infra/

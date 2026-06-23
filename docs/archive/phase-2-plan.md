@@ -1,6 +1,6 @@
 # Phase 2 — The blog (first loop subject) + the real Workers adapter
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 2. **Goal:** prove the deploy → verify loop on a real, greenfield artifact — an Astro blog on Cloudflare Workers — and stand up the first real `workers` deploy adapter.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 2. **Goal:** prove the deploy → verify loop on a real, greenfield artifact — an Astro blog on Cloudflare Workers — and stand up the first real `workers` deploy adapter.
 
 ## Objective
 

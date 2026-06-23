@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Seam check — enforces hard rule 15.2.1 (greenlight-v1.md §15.2):
+ * Seam check — enforces hard rule 15.2.1 (docs/archive/greenlight-v1.md §15.2):
  * no personal value (domain, email, real tokens) may appear in a FRAMEWORK file.
  * Every framework file must read such values from the manifest at runtime.
  *

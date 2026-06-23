@@ -3,7 +3,7 @@ import type { DeployEnv } from '@rtrentjones/greenlight-shared';
 import { type VerifyReport, type VerifySpec, verify } from '@rtrentjones/greenlight-verify';
 
 /**
- * One turn of the loop: build → deploy → verify (greenlight-v1.md §11).
+ * One turn of the loop: build → deploy → verify (docs/archive/greenlight-v1.md §11).
  * `verify` targets the deterministic deploy URL — no log scraping. The same
  * orchestration runs locally, in CI, and from the agent.
  */

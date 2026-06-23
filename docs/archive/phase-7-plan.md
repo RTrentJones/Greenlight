@@ -1,6 +1,6 @@
 # Phase 7 — Publish tooling + Claude Code plugin + wrapper repo
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 7 + §15. **Goal:** make the framework consumable by other repos (the wrapper `RTrentJones.dev` + others). Build the publish tooling, the agent-context plugin, and scaffold the wrapper — validate everything locally; defer the actual `npm publish` + live Cloudflare deploy (need creds).
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 7 + §15. **Goal:** make the framework consumable by other repos (the wrapper `RTrentJones.dev` + others). Build the publish tooling, the agent-context plugin, and scaffold the wrapper — validate everything locally; defer the actual `npm publish` + live Cloudflare deploy (need creds).
 
 ## What was built (validated, no creds)
 

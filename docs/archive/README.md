@@ -3,7 +3,7 @@
 These are point-in-time documents kept for provenance. They are **not** the current source of truth.
 
 - For the **current architecture**, see [../architecture.md](../architecture.md).
-- For the **spec / why**, see [../../greenlight-v1.md](../../greenlight-v1.md).
+- For the **spec / why**, see [greenlight-v1.md](greenlight-v1.md).
 
 ## Contents
 

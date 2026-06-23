@@ -1,6 +1,6 @@
 name: promote
 
-# Explicit, gated develop -> main fast-forward (greenlight-v1.md §12): verify beta
+# Explicit, gated develop -> main fast-forward (docs/archive/greenlight-v1.md §12): verify beta
 # (the gate) -> fast-forward via the canPromote guard -> deploy + verify prod, all in
 # this job. (A push made with GITHUB_TOKEN does NOT trigger deploy.yml, so promotion
 # owns the prod deploy+verify itself rather than relying on the main-push hook.)

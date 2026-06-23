@@ -1,7 +1,7 @@
 import type { DeployEnv } from './schema';
 
 /**
- * Deterministic URL scheme (greenlight-v1.md §10/§12, Phase 1 plan).
+ * Deterministic URL scheme (docs/archive/greenlight-v1.md §10/§12, Phase 1 plan).
  *
  * The scheme is computed, never scraped from deploy logs, so `verify` can always
  * target a deployment. `preview` is per-target (not derivable from a tool name

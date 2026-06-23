@@ -1,6 +1,6 @@
 # Phase 4 — The MCP loop (second loop subject)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 4. **Goal:** prove the `mcp` protocol loop end-to-end on a throwaway MCP server, with the `_template-mcp` lane and per-tool verify specs wired. Unlike the blog deploy, this is **fully validatable locally** — the verify runs over HTTP, no cloud creds.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 4. **Goal:** prove the `mcp` protocol loop end-to-end on a throwaway MCP server, with the `_template-mcp` lane and per-tool verify specs wired. Unlike the blog deploy, this is **fully validatable locally** — the verify runs over HTTP, no cloud creds.
 
 ## What was built
 

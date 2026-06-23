@@ -1,6 +1,6 @@
 # Phase 9 — The two planes: infra editor + validation gate (implementation record)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §15 (distribution) / §8 (CLI) / §11 (verify). **Goal of this doc:** what Phase 9 built and why, the deferred outward steps, and how it's verified. Written as a record (the code landed) rather than a forward plan.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §15 (distribution) / §8 (CLI) / §11 (verify). **Goal of this doc:** what Phase 9 built and why, the deferred outward steps, and how it's verified. Written as a record (the code landed) rather than a forward plan.
 
 ## Objective
 

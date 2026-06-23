@@ -1,6 +1,6 @@
 # Phase 8 — Keepalive (implementation plan)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 8 (and §6 liveness, §13 data model). **Goal of this doc:** the concrete, ordered build plan for keepalive — what to create, in what order, and how we know it's done.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 8 (and §6 liveness, §13 data model). **Goal of this doc:** the concrete, ordered build plan for keepalive — what to create, in what order, and how we know it's done.
 
 ## Objective
 

@@ -7,7 +7,7 @@ When you apply a tool that uses **`target: vercel`** and/or **`data: supabase`**
 the **keepalive** Worker — Terraform's providers need their own API tokens. Greenlight reads
 each from a standard environment variable, so it's **one token → one env var**. Store them
 only in the gitignored `.greenlight/secrets.env` (+ the provider stores) — never commit or
-echo them (greenlight-v1.md §14).
+echo them (docs/archive/greenlight-v1.md §14).
 
 | env var | used by | needed when |
 |---|---|---|

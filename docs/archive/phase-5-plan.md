@@ -1,6 +1,6 @@
 # Phase 5 — Terraform / infra as code (module + credless verification)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 5. **Goal:** the reusable `module "tool"`, **fully verified with no creds and no cloud resources** (mock-provider tests), with real `apply` delegated to the wrapper.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 5. **Goal:** the reusable `module "tool"`, **fully verified with no creds and no cloud resources** (mock-provider tests), with real `apply` delegated to the wrapper.
 
 ## The testing strategy (answering "won't it break something?")
 

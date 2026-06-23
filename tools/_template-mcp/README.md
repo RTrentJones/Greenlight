@@ -25,4 +25,4 @@ export default { mode: 'mcp', expectTools: ['<tool>'], call: { name: '<tool>' } 
 
 ## Auth
 
-`auth: none` only for public read-only servers. Mutating/private servers default to `bearer`/`oauth` (greenlight-v1.md §6/§14).
+`auth: none` only for public read-only servers. Mutating/private servers default to `bearer`/`oauth` (docs/archive/greenlight-v1.md §6/§14).

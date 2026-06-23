@@ -1,7 +1,7 @@
 import { canPromote, promote } from '@rtrentjones/greenlight-loop';
 
 /**
- * Gated develop→main fast-forward (greenlight-v1.md §12).
+ * Gated develop→main fast-forward (docs/archive/greenlight-v1.md §12).
  *   default          report eligibility only (safe)
  *   --perform        run the fast-forward locally
  *   --push           also push the promoted branch (implies --perform)

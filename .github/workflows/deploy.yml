@@ -1,6 +1,6 @@
 name: deploy
 
-# Git-mapped envs (greenlight-v1.md §12): develop -> beta, main -> prod.
+# Git-mapped envs (docs/archive/greenlight-v1.md §12): develop -> beta, main -> prod.
 # Creds-guarded: without CLOUDFLARE_API_TOKEN the deploy/verify steps skip cleanly.
 # (PR -> preview is intentionally not wired — Workers preview URLs aren't deterministic
 # and verify --env preview throws by design; add it via Workers versions when needed.)

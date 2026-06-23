@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: built + published; first live tool (BAMCP on free OCI) mid-onboarding
+## Status: built, published, and live on two tools
 
-The skeleton/seam, the deploy→verify→promote loop, the verify harness, and the two planes are built and pass `check-all`, and the framework is **published**: `@rtrentjones/greenlight@0.2.5` on npm (OIDC trusted publishing) + Terraform modules tagged `v0.2.5` (lockstep with the npm version via `MODULE_REF`). **Plane 1 (infra editor):** a provider-pack registry ([cli/src/providers.ts](cli/src/providers.ts)) makes `greenlight add`/`adopt` a one-stop declarative IaC editor — one manifest entry → emitted Terraform + gathered/verified tokens + wired kit. **The CLI edits IaC; CI/CD applies it.** **Plane 2 (validation gate):** verify modes `api | mcp | playwright | test | agent-web | eval`, and a `verify.config.ts` may export an array to combine them. **OCI is free-tier + network-as-IaC** (VCN/subnet/AD are all Terraform — the only manual OCI input is the API key). See [docs/architecture.md](docs/architecture.md) for the as-built architecture, [docs/development.md](docs/development.md) for how to work in the repo, and [docs/archive/](docs/archive/) for the per-phase build records. In flight: the live BAMCP apply on free OCI + the HeistMind submodule wrap.
+The skeleton/seam, the deploy→verify→promote loop, the verify harness, and the two planes are built and pass `check-all`, and the framework is **published**: `@rtrentjones/greenlight@0.2.20` on npm (OIDC trusted publishing) + Terraform modules tagged `v0.2.20` (lockstep with the npm version via `MODULE_REF`). **Plane 1 (infra editor):** a provider-pack registry ([cli/src/providers.ts](cli/src/providers.ts)) makes `greenlight add`/`adopt` a one-stop declarative IaC editor — one manifest entry → emitted Terraform + gathered/verified tokens + wired kit. **The CLI edits IaC; CI/CD applies it.** **Plane 2 (validation gate):** verify modes `api | mcp | playwright | test | agent-web | eval`, and a `verify.config.ts` may export an array to combine them. **OCI is free-tier + network-as-IaC** (VCN/subnet/AD are all Terraform — the only manual OCI input is the API key). See [docs/architecture.md](docs/architecture.md) for the as-built architecture, [docs/development.md](docs/development.md) for how to work in the repo, and [docs/archive/](docs/archive/) for the per-phase build records. **Both tools run the full loop end to end:** BAMCP (`mcp`/`oci`, free A1 container, auto-healed; direct-to-prod) and HeistMind (`next`/`vercel`/`supabase`, prod ship-gate + authenticated Playwright deploy-gate). Token scoping + provider token-overrides are baked into the framework (`secretKeyFor`; see [docs/tokens-reference.md](docs/tokens-reference.md)).
 
 ## Commands
 
@@ -15,7 +15,7 @@ The skeleton/seam, the deploy→verify→promote loop, the verify harness, and t
 - `pnpm greenlight add <name> --lane --target [--data --auth --envs]` — the **IaC editor**: add a manifest entry, emit `infra/<name>.tf` module blocks (scaffold `infra/main.tf` if absent), gather + fail-fast-verify the providers' tokens, and materialize the kit (MCP + per-provider skills). **Edits IaC; never applies** — commit + push and CI (`infra.yml`) runs `terraform apply`.
 - `pnpm greenlight secrets sync [--repo o/r] [--env <env>]` — push `.greenlight/secrets.env` to GitHub Actions secrets via `gh` (the "init writes to provider stores" piece). Branches/protection/environments are Terraform (`infra/modules/repo`).
 - `pnpm greenlight agent sync` — materialize the agentic dev loop kit (deploy-verify-promote skill + per-provider skills + `.mcp.json` + CLAUDE.md block) into a repo. The kit (skills + MCP servers + best practices) is [docs/agentic-loop.md](docs/agentic-loop.md); cross-repo via the Claude Code plugin: `/plugin marketplace add RTrentJones/greenlight`.
-- `pnpm greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--standalone]` — poly-repo onboarding, two modes. **Default (wrapper-centric):** wrap the tool repo as a `tools/<name>` git submodule, edit its infra in the wrapper (`infra/<name>.tf` + `verify/<name>.config.ts`), and push the loop kit back into the tool repo; register an `external` pointer with `dir: "tools/<name>"`. **`--standalone`:** scaffold the full self-contained consumer (merged `package.json` + vendored tarballs + infra + namespaced workflows + verify + kit) into the tool repo, app code untouched. Run from your site repo. See greenlight-v1.md §8 and [docs/architecture.md](docs/architecture.md).
+- `pnpm greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--standalone]` — poly-repo onboarding, two modes. **Default (wrapper-centric):** wrap the tool repo as a `tools/<name>` git submodule, edit its infra in the wrapper (`infra/<name>.tf` + `verify/<name>.config.ts`), and push the loop kit back into the tool repo; register an `external` pointer with `dir: "tools/<name>"`. **`--standalone`:** scaffold the full self-contained consumer (merged `package.json` + vendored tarballs + infra + namespaced workflows + verify + kit) into the tool repo, app code untouched. Run from your site repo. See greenlight-v2.md and [docs/architecture.md](docs/architecture.md).
 - `pnpm test` — Vitest across the workspace. Single file: `pnpm test packages/shared/src/__tests__/schema.test.ts`. Watch: `pnpm test:watch`.
 - `pnpm lint` / `pnpm lint:fix` — Biome (single quotes for JS/TS, double for JSX).
 - `pnpm check-seam` — fail if personal data (domain/email) leaks into a framework file (rule 15.2.1).
@@ -44,7 +44,7 @@ BAMCP etc.), the skill ships as the Greenlight Claude Code **plugin**; mechanics
 
 ## Specs & background
 
-- **[greenlight-v1.md](greenlight-v1.md) is the executable spec — build from this.** It is the narrowed, buildable slice and includes a phased implementation plan (§15) ordered stop-the-bleeding-first. Treat it as the source of truth; if reality forces a deviation, update it in the same change.
+- **[greenlight-v2.md](greenlight-v2.md) is the executable spec — build from this.** It reflects the as-built framework + the forward aims; V1 ([docs/archive/greenlight-v1.md](docs/archive/greenlight-v1.md)) is the historical record (the narrowed buildable slice + phased plan). Treat v2 as the source of truth; if reality forces a deviation, update it in the same change.
 - **[docs/archive/greenlight-design-doc-v0.md](docs/archive/greenlight-design-doc-v0.md)** is the original full provider-agnostic vision (north star, not the V1 build target). Anything V1 defers (Neon, `hono` lane, provider-agnostic target-switching, standalone eject) lives there.
 
 **V1 was extracted from two real, already-built tools that keep timing out** — BAMCP (stateful MCP on OCI, idle-reclaimed) and HeistMind (Next.js + Supabase on Vercel, DB pauses after 7 days). V1's whole reason for being is to make them stay alive on their own and make (re)wiring declarative. This is an extraction, not speculation.
@@ -57,7 +57,7 @@ Greenlight turns a domain + API tokens into a live personal site plus a self-ver
 
 ## V1 build scope (what to actually build first)
 
-The load-bearing ideas below describe the *full* design. **V1 builds a deliberate subset** — see [greenlight-v1.md](greenlight-v1.md) §2/§4/§15:
+The load-bearing ideas below describe the *full* design; the deliberate built subset + aims are in [greenlight-v2.md](greenlight-v2.md) §2/§7/§14:
 
 - **Lanes:** `next`, `mcp`, `astro` only. **Targets:** `vercel`, `oci`, `workers` (incl. `mcp`→`workers` as a dev/throwaway target so the MCP loop can be developed without a live OCI box). **Data:** `supabase` (HeistMind only) + `none`/`d1`/`kv` (blog). Everything else (Neon, `hono`, `docker`, target-switching) is V0/V2.
 - **Build order is framework-and-loop-first** (§16): the deploy→validate→iterate loop comes first; **blog is the first loop subject, the MCP loop is second.** Both real tools (BAMCP, HeistMind) are currently down and are *migration targets in later phases* — keepalive and adoption are deferred, not first.
@@ -68,9 +68,9 @@ The load-bearing ideas below describe the *full* design. **V1 builds a deliberat
 
 ## Core architecture (the load-bearing ideas)
 
-These concepts span many files and drive most decisions. Read greenlight-v1.md §3–§14 (or V0 §4–§13 for the full vision) before non-trivial work.
+These concepts span many files and drive most decisions. Read greenlight-v2.md §3–§14 (or V0 §4–§13 for the full vision) before non-trivial work.
 
-- **The manifest is the single source of truth.** `greenlight.config.ts` (`defineConfig`) lists the domain, blog, and every tool with its `{ lane, target, data, auth, access, envs }`. The CLI and Terraform are both driven by it; adding a tool is one manifest entry + scoped `terraform apply`. Keep manifest ↔ tool dir ↔ workflow consistency (this is one of `doctor`'s checks).
+- **The manifest is the single source of truth.** `greenlight.config.ts` (`defineConfig`) lists the domain, alerts, optional blog, and every tool with its `{ name, lane, target, data, auth, access, envs }` (+ optional `adopted`/`external`/`dir`/`port`/`preview`/`tokens`/`tokenOverrides`). The CLI and Terraform are both driven by it; adding a tool is one manifest entry + scoped `terraform apply`. Keep manifest ↔ tool dir ↔ workflow consistency (this is one of `doctor`'s checks).
 
 - **Two orthogonal axes: `lane` × `target`.**
   - `lane` = what the tool *is*: `astro | hono | next | mcp | docker`.
@@ -103,4 +103,4 @@ See design-doc §7 for the full tree. Key dirs once built: `cli/`, `infra/` (Ter
 
 ## Key locked decisions (design-doc §17)
 
-Name **Greenlight**; blog default target **workers**; `next` lane supports both, defaults **vercel**; **Neon by default everywhere**, Supabase per-tool only when bundled features needed; Terraform state on **R2** with lockfile locking; MCP transport **streamable HTTP**, `auth: none` only for public read-only; **MIT, public from day one**. Identity: GitHub `RTrentJones/greenlight`, npm `@rtrentjones/greenlight` (bin `greenlight`), docs dogfooded at `greenlight.rtrentjones.dev`.
+Name **Greenlight**; blog default target **workers**; `next` lane supports both, defaults **vercel**; **Supabase** for bundled auth+storage+realtime (Neon — branch-per-env Postgres — is the next data backend, see [greenlight-v2.md](greenlight-v2.md) §14); Terraform state on **HCP Terraform** (free tier, local execution); MCP transport **streamable HTTP**, `auth: none` only for public read-only; **MIT, public from day one**. Identity: GitHub `RTrentJones/greenlight`, npm `@rtrentjones/greenlight` (bin `greenlight`), docs dogfooded at `greenlight.rtrentjones.dev`.

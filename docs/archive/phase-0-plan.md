@@ -1,6 +1,6 @@
 # Phase 0 — Monorepo skeleton + the seam (implementation plan)
 
-> **Parent:** [greenlight-v1.md](../greenlight-v1.md) §16 Phase 0. **Goal of this doc:** the concrete, ordered build plan for Phase 0 — what to create, in what order, and how we know it's done.
+> **Parent:** [greenlight-v1.md](greenlight-v1.md) §16 Phase 0. **Goal of this doc:** the concrete, ordered build plan for Phase 0 — what to create, in what order, and how we know it's done.
 
 ## Objective
 

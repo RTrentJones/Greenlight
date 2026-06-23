@@ -29,7 +29,7 @@ const HELP = `greenlight <command>
   doctor                                        manifest + repo consistency checks
   help                                          show this message
 
-Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see greenlight-v1.md §16.`;
+Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
 
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);

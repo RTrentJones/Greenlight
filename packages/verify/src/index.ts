@@ -47,7 +47,7 @@ export async function waitForReachable(url: string, timeoutMs: number): Promise<
 /**
  * Run the verify harness against a deployed URL. Dispatches on `spec.mode`;
  * every mode returns the same `VerifyReport`. CI and the agent call this same
- * function (greenlight-v1.md §11). `mcp`/`playwright` are loaded lazily so the
+ * function (docs/archive/greenlight-v1.md §11). `mcp`/`playwright` are loaded lazily so the
  * common `api` path stays dependency-light.
  */
 export async function verify(

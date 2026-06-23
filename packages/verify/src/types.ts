@@ -1,6 +1,6 @@
 /**
  * Verify harness types — the stable contract shared by CI and the agent
- * (greenlight-v1.md §11). `verify(baseUrl, spec)` dispatches on `spec.mode`;
+ * (docs/archive/greenlight-v1.md §11). `verify(baseUrl, spec)` dispatches on `spec.mode`;
  * every mode returns the same `VerifyReport` shape.
  */
 
@@ -33,7 +33,7 @@ export interface VerifySpecBase {
   logsOnFailure?: string;
 }
 
-/** api mode — HTTP assertions (greenlight-v1.md §9/§11). */
+/** api mode — HTTP assertions (docs/archive/greenlight-v1.md §9/§11). */
 export interface ApiCheck {
   path: string;
   /** Expected HTTP status (redirects are not followed). */
@@ -58,7 +58,7 @@ export interface ApiSpec extends VerifySpecBase {
   noBrokenInternalLinks?: boolean;
 }
 
-/** mcp mode — protocol-level verification (greenlight-v1.md §6). */
+/** mcp mode — protocol-level verification (docs/archive/greenlight-v1.md §6). */
 export interface McpSpec extends VerifySpecBase {
   mode: 'mcp';
   /** Tool names that `tools/list` must include. */
@@ -109,7 +109,7 @@ export interface PlaywrightSpec extends VerifySpecBase {
 }
 
 /** test mode — run the tool's own unit/integration command in its dir and gate on the exit
- * code (greenlight-v1.md §11 — classic tests in the same gate CI + the agent use). Unlike
+ * code (docs/archive/greenlight-v1.md §11 — classic tests in the same gate CI + the agent use). Unlike
  * the URL modes this runs locally; the deployed URL is ignored (it's still in the report). */
 export interface TestSpec extends VerifySpecBase {
   mode: 'test';
@@ -156,7 +156,7 @@ export interface AgentWebSpec extends VerifySpecBase {
   headed?: boolean;
 }
 
-/** eval mode — scored quality assertions over an MCP tool's output (greenlight-v1.md §6,
+/** eval mode — scored quality assertions over an MCP tool's output (docs/archive/greenlight-v1.md §6,
  * beyond protocol-shape `mcp`). Each case calls a tool and an LLM judge scores the result
  * against a rubric. STRETCH/thin cut: spec + judge interface are stable; the default LLM
  * judge needs ANTHROPIC_API_KEY + @anthropic-ai/sdk (optional, lazy). */
