@@ -19,8 +19,15 @@ import {
 export function defaultSpec(lane: Lane): VerifySpec {
   switch (lane) {
     case 'astro':
-      // Generic web smoke. Content sites (blog) add rss/sitemap via a verify.config.ts.
-      return { mode: 'api', checks: [{ path: '/', status: 200 }], noBrokenInternalLinks: true };
+      // Generic web smoke. Content sites (blog) add rss/sitemap via a verify.config.ts. The settle
+      // retries absorb Cloudflare Workers Static Assets propagation lag right after a deploy.
+      return {
+        mode: 'api',
+        checks: [{ path: '/', status: 200 }],
+        noBrokenInternalLinks: true,
+        settleRetries: 8,
+        settleMs: 5000,
+      };
     case 'next':
       return { mode: 'api', checks: [{ path: '/', status: 200 }] };
     case 'mcp':

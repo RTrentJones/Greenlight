@@ -4,6 +4,7 @@ import { verify } from '../index';
 
 let server: http.Server;
 let base: string;
+let eventuallyHits = 0; // for the settle-retry test: 404 until the 3rd hit, then 200
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -28,6 +29,16 @@ beforeAll(async () => {
       } else {
         res.writeHead(401);
         res.end('protected');
+      }
+    } else if (url === '/eventually') {
+      // Simulates a just-deployed static asset that propagates after a couple of hits.
+      eventuallyHits += 1;
+      if (eventuallyHits >= 3) {
+        res.writeHead(200);
+        res.end('ok');
+      } else {
+        res.writeHead(404);
+        res.end('not yet');
       }
     } else {
       res.writeHead(404);
@@ -78,5 +89,26 @@ describe('verify api', () => {
     const r = await verify(base, { mode: 'api', noBrokenInternalLinks: true });
     const link = r.checks.find((c) => c.name.includes('broken internal links'));
     expect(link?.pass).toBe(false); // '/' links to /missing (404)
+  });
+
+  it('settleRetries re-runs until an eventually-consistent path is live', async () => {
+    eventuallyHits = 0; // 404 on hits 1–2, 200 on hit 3 (simulates post-deploy propagation)
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/eventually', status: 200 }],
+      settleRetries: 5,
+      settleMs: 0, // no real delay in the test
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('settleRetries does not mask a genuine failure (still fails after the retries)', async () => {
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/missing', status: 200 }],
+      settleRetries: 3,
+      settleMs: 0,
+    });
+    expect(r.pass).toBe(false);
   });
 });

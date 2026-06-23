@@ -56,6 +56,14 @@ export interface ApiSpec extends VerifySpecBase {
   sitemapValid?: boolean;
   /** Crawl internal links from `/` and assert none are broken. */
   noBrokenInternalLinks?: boolean;
+  /** Eventual-consistency settle: if any check fails, re-run the WHOLE set up to `settleRetries`
+   * more times, waiting `settleMs` between tries. Absorbs the propagation lag of statically-served
+   * hosts (e.g. Cloudflare Workers Static Assets serve some paths before others for a few seconds
+   * right after a deploy). A genuine failure still fails — just after the retries. Absent/0 ⇒ no
+   * retry (the default; a local `preview` against a built dir needs none). */
+  settleRetries?: number;
+  /** Delay between settle retries, in ms (default 5000). */
+  settleMs?: number;
 }
 
 /** mcp mode — protocol-level verification (docs/archive/greenlight-v1.md §6). */

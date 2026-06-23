@@ -84,8 +84,7 @@ async function checkInternalLinks(base: string, max = 25): Promise<VerifyCheck> 
   }
 }
 
-export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyReport> {
-  const base = trimSlash(baseUrl);
+async function runChecks(base: string, spec: ApiSpec): Promise<VerifyCheck[]> {
   const checks: VerifyCheck[] = [];
 
   for (const c of spec.checks ?? []) checks.push(await checkRoute(base, c));
@@ -105,6 +104,23 @@ export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyR
     );
   }
   if (spec.noBrokenInternalLinks) checks.push(await checkInternalLinks(base));
+
+  return checks;
+}
+
+export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyReport> {
+  const base = trimSlash(baseUrl);
+  const retries = Math.max(0, spec.settleRetries ?? 0);
+  const delayMs = spec.settleMs ?? 5000;
+
+  // Eventual-consistency settle: re-run the whole set while anything fails, up to `retries` extra
+  // times. A just-deployed static host can serve some paths before others; this absorbs that lag
+  // without masking a real failure (which still fails, after the retries).
+  let checks = await runChecks(base, spec);
+  for (let i = 0; i < retries && !checks.every((c) => c.pass); i++) {
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    checks = await runChecks(base, spec);
+  }
 
   return report('api', baseUrl, checks);
 }

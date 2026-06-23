@@ -3,7 +3,7 @@
  * to. Keep this in lockstep with the published module tag (bump when tagging a release).
  * One source so `add`, `adopt`, and any future emitter agree.
  */
-export const MODULE_REF = 'v0.2.20';
+export const MODULE_REF = 'v0.2.21';
 
 /** Base of the git source URL for the framework's Terraform modules. */
 export const MODULE_SOURCE_BASE =
