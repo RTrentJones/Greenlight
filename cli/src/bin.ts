@@ -6,6 +6,7 @@ import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
 import { doctorCommand } from './commands/doctor';
 import { initCommand } from './commands/init';
+import { migrationsCommand } from './commands/migrations';
 import { previewCommand } from './commands/preview';
 import { promoteCommand } from './commands/promote';
 import { secretsCommand } from './commands/secrets';
@@ -24,9 +25,10 @@ const HELP = `greenlight <command>
   status <name>                                 last ship/deploy/verify run for a tool (via gh)
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
   secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
-  agent sync                                    write the loop skill + CLAUDE.md block into this repo
+  agent sync [<name>]                           write the loop kit (named → tool-aware, into its dir)
   adopt <name> --repo <path> --lane --target    onboard an existing tool repo as a thin consumer
-  doctor                                        manifest + repo consistency checks
+  migrations scan [<dir>] [--strict]            dangerous-SQL gate for migrations (pre-apply)
+  doctor [--live]                               consistency checks (--live: DNS + reachability probes)
   help                                          show this message
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
@@ -63,8 +65,10 @@ async function main(): Promise<void> {
       return agentCommand(args);
     case 'adopt':
       return adoptCommand(args);
+    case 'migrations':
+      return migrationsCommand(args);
     case 'doctor':
-      return doctorCommand();
+      return doctorCommand(args);
     default:
       throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
   }

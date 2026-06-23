@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { lookup } from 'node:dns/promises';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
@@ -211,23 +212,69 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
   // Local consistency (no creds): lockstep + submodule drift.
   checks.push(versionDriftCheck(root));
   checks.push(submoduleDriftCheck(root));
+  // Live operational health (DNS + reachability + the cred-bound checks) runs under `--live` —
+  // see runDoctorLive. Kept out of the default so a transient outage never gates CI.
+  return checks;
+}
 
-  // Cred / infra-dependent — wired in later phases.
-  for (const name of [
-    'DNS propagation',
-    'terraform drift',
-    'Vercel cap headroom',
-    'keepalive health (live)',
-    'OCI PAYG status',
-  ]) {
-    checks.push({ name, status: 'skip', detail: 'needs provider creds / packages (Phase 5/7/8)' });
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Does the prod URL respond? Any HTTP status < 500 = reachable (a 401 from an auth-gated MCP is
+ * "up"); 5xx = degraded; a connection error / timeout = down. */
+async function livenessCheck(name: string, url: string): Promise<DoctorCheck> {
+  try {
+    const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+    return res.status >= 500
+      ? { name: `${name}: live`, status: 'warn', detail: `${url} → ${res.status} (degraded)` }
+      : { name: `${name}: live`, status: 'ok', detail: `${url} → ${res.status}` };
+  } catch (e) {
+    return { name: `${name}: live`, status: 'fail', detail: `${url} unreachable: ${errMsg(e)}` };
+  }
+}
+
+/** Does the tool's hostname resolve in DNS? */
+async function dnsCheck(name: string, url: string): Promise<DoctorCheck> {
+  const host = new URL(url).hostname;
+  try {
+    await lookup(host);
+    return { name: `${name}: DNS`, status: 'ok', detail: host };
+  } catch {
+    return { name: `${name}: DNS`, status: 'fail', detail: `${host} does not resolve` };
+  }
+}
+
+/** Live operational health (network) — behind `greenlight doctor --live` so a transient outage
+ * never gates the pure CI-wired `doctor`. Probes each prod URL (DNS resolves? reachable?). The
+ * cred-bound checks (terraform drift, Vercel free-tier cap, OCI PAYG status) stay honest skips
+ * until each provider's API client is wired. */
+export async function runDoctorLive(config: GreenlightConfig): Promise<DoctorCheck[]> {
+  const targets: Array<{ name: string; url: string }> = [];
+  if (config.blog) targets.push({ name: 'blog', url: `https://${config.domain}` });
+  for (const t of config.tools) {
+    if (!t.envs?.includes('prod')) continue;
+    targets.push({
+      name: t.name,
+      url: resolveUrl({ domain: config.domain, name: t.name, env: 'prod', mcp: t.lane === 'mcp' }),
+    });
+  }
+  const checks: DoctorCheck[] = [];
+  for (const tg of targets) {
+    checks.push(await dnsCheck(tg.name, tg.url));
+    checks.push(await livenessCheck(tg.name, tg.url));
+  }
+  for (const name of ['terraform drift', 'Vercel cap headroom', 'OCI PAYG status']) {
+    checks.push({
+      name,
+      status: 'skip',
+      detail: 'not yet implemented — needs the provider API + creds',
+    });
   }
   return checks;
 }
 
 const ICON = { ok: '✔', warn: '!', fail: '✘', skip: '·' } as const;
 
-export async function doctorCommand(): Promise<void> {
+export async function doctorCommand(args: string[] = []): Promise<void> {
   let config: GreenlightConfig;
   try {
     ({ config } = await loadManifest());
@@ -237,11 +284,17 @@ export async function doctorCommand(): Promise<void> {
     process.exit(1);
   }
 
+  const live = args.includes('--live');
   const checks = runDoctor(config, process.cwd());
+  if (live) {
+    console.log('  (probing live prod URLs…)');
+    checks.push(...(await runDoctorLive(config)));
+  }
   for (const c of checks) {
     console.log(`  ${ICON[c.status]} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
   }
   const failed = checks.filter((c) => c.status === 'fail').length;
   console.log(`\n${failed === 0 ? '✔ no failures' : `✘ ${failed} failure(s)`}`);
+  if (!live) console.log('· run `greenlight doctor --live` for DNS + reachability probes');
   process.exit(failed === 0 ? 0 : 1);
 }

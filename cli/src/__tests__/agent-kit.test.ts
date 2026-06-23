@@ -1,5 +1,9 @@
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { mergeMcpServers, recommendedMcp } from '../agent-kit';
+import { materializeAgentKit } from '../commands/agent';
 
 describe('mergeMcpServers', () => {
   it('adds recommended servers to an empty/absent config', () => {
@@ -46,5 +50,20 @@ describe('recommendedMcp', () => {
 
   it('does not add Supabase for a non-supabase tool', () => {
     expect(recommendedMcp({ target: 'workers', data: 'none' }).supabase).toBeUndefined();
+  });
+});
+
+describe('materializeAgentKit — tool-aware sync', () => {
+  it('includes the target-specific provider skill (oci) when given tool info', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gl-kit-'));
+    try {
+      materializeAgentKit(dir, { target: 'oci', data: 'none' });
+      // The core loop skill is always written…
+      expect(existsSync(join(dir, '.claude/skills/deploy-verify-promote/SKILL.md'))).toBe(true);
+      // …and a tool-aware sync also pulls the target's provider skill (the bug: bare sync misses it).
+      expect(existsSync(join(dir, '.claude/skills/provider-oci/SKILL.md'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

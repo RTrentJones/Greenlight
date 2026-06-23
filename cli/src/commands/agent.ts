@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node
 import { resolve } from 'node:path';
 import { type McpConfig, type ToolKitInfo, mergeMcpServers, recommendedMcp } from '../agent-kit';
 import { skillAssetDir } from '../asset-paths';
+import { loadManifest, resolveEntry } from '../manifest';
 import { packsForTool } from '../providers';
 
 const CLAUDE_BLOCK = `## Greenlight loop (deploy → verify → promote)
@@ -74,10 +75,29 @@ export function materializeAgentKit(dir: string, tool?: ToolKitInfo): void {
 export async function agentCommand(args: string[]): Promise<void> {
   if (args[0] !== 'sync') {
     console.log(
-      'usage: greenlight agent sync   # write the loop skill + .mcp.json + CLAUDE.md block',
+      'usage: greenlight agent sync [<name>]\n' +
+        '  (no name)  write the generic loop kit into THIS repo (the fallback)\n' +
+        "  <name>     load the manifest and sync that tool's kit into its dir, with the\n" +
+        '             target-specific provider skills (oci/vercel/supabase), not just the always-on ones',
     );
     process.exit(args[0] ? 1 : 0);
   }
+
+  // Tool-aware sync: a named tool gets its target/data from the manifest so `packsForTool` includes
+  // the target-specific provider skills. Bare `agent sync` (no name) only materializes the always-on
+  // packs into cwd — fine for a single-tool repo, but it MISSES oci/vercel/supabase on a re-sync.
+  const name = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
+  if (name) {
+    const { config } = await loadManifest();
+    const entry = resolveEntry(config, name);
+    const dir = resolve(process.cwd(), entry.dir ?? '.');
+    materializeAgentKit(dir, { target: entry.target, data: entry.data });
+    console.log(
+      `\nSynced the kit for "${name}" → ${entry.dir ?? '.'} (target=${entry.target}, data=${entry.data}).`,
+    );
+    return;
+  }
+
   materializeAgentKit(process.cwd());
   console.log(
     '\nNote: the Greenlight Claude Code plugin (user scope) is the preferred path; this sync is the fallback.\nRun `/mcp` to authenticate the MCP servers.',
