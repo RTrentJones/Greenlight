@@ -89,6 +89,57 @@ describe('promote', () => {
     expect(mainAfter).toBe(mainBefore); // nothing moved
   });
 
+  it('promotes the origin (verified) commit even when a local develop is stale (the dev-machine footgun)', () => {
+    // The footgun: `git push origin HEAD:develop` advances origin/develop but never moves a LOCAL
+    // develop ref. A later promote that preferred the (stale) local develop would silently
+    // fast-forward main to an OLD commit and report success. Promote must use origin/develop.
+    const origin = mkdtempSync(join(tmpdir(), 'gl-origin-'));
+    const work = mkdtempSync(join(tmpdir(), 'gl-work-'));
+    try {
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+      git('remote', 'add', 'origin', origin);
+      git('push', '-q', 'origin', 'main');
+      git('checkout', '-q', '-b', 'develop');
+      git('commit', '-q', '--allow-empty', '-m', 'feature-1');
+      git('push', '-q', 'origin', 'develop');
+
+      // A working clone with BOTH branches local — local develop sits at feature-1.
+      execFileSync('git', ['clone', '-q', origin, work]);
+      const wgit = (...a: string[]) => execFileSync('git', ['-C', work, ...a], { stdio: 'ignore' });
+      const wout = (...a: string[]) =>
+        execFileSync('git', ['-C', work, ...a], { encoding: 'utf8' }).trim();
+      wgit('config', 'user.email', 't@e.dev');
+      wgit('config', 'user.name', 't');
+      wgit('checkout', '-q', 'develop'); // materialize a local develop at feature-1
+      wgit('checkout', '-q', 'main');
+      const staleLocalDevelop = wout('rev-parse', 'develop');
+
+      // origin/develop advances to feature-2 from elsewhere; the clone's local develop stays behind.
+      git('commit', '-q', '--allow-empty', '-m', 'feature-2');
+      git('push', '-q', 'origin', 'develop');
+      const verifiedTip = execFileSync('git', ['rev-parse', 'develop'], {
+        cwd: dir,
+        encoding: 'utf8',
+      }).trim();
+      expect(verifiedTip).not.toBe(staleLocalDevelop);
+
+      // promote() (via canPromote) fetches + prefers origin/develop, so it promotes feature-2.
+      const r = promote(work, { push: true });
+      expect(r.promoted).toBe(true);
+      expect(r.warnings?.some((w) => /local "develop".*differs from origin\/develop/.test(w))).toBe(
+        true,
+      );
+
+      wgit('fetch', '-q', 'origin', 'main', 'develop');
+      const originMain = wout('rev-parse', 'origin/main');
+      expect(originMain).toBe(verifiedTip); // main got the VERIFIED tip, not the stale local one
+      expect(originMain).not.toBe(staleLocalDevelop);
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
   it('promotes when develop exists only as a remote-tracking ref (the CI checkout case)', () => {
     // Build a bare origin with main + develop, then a fresh clone with ONLY main checked out —
     // exactly what actions/checkout gives the promote workflow (no local `develop`).

@@ -10,6 +10,8 @@ import { execFileSync } from 'node:child_process';
 export interface PromoteCheck {
   canPromote: boolean;
   reason: string;
+  /** Non-fatal advisories — e.g. a stale local branch that differs from its `origin/` ref. */
+  warnings?: string[];
 }
 
 export interface PromoteResult {
@@ -17,6 +19,8 @@ export interface PromoteResult {
   from: string;
   to: string;
   reason: string;
+  /** Non-fatal advisories carried up from the eligibility check (see PromoteCheck). */
+  warnings?: string[];
 }
 
 function git(repoDir: string, args: string[]): void {
@@ -27,12 +31,34 @@ function gitOut(repoDir: string, args: string[]): string {
   return execFileSync('git', args, { cwd: repoDir, encoding: 'utf8' }).trim();
 }
 
-/** Resolve a branch to a usable ref, preferring a local branch but falling back to its
- * remote-tracking ref (`origin/<branch>`). A fresh CI checkout (e.g. the promote workflow) has only
- * the checked-out branch locally; the other side exists solely as `origin/<branch>` — without this
- * fallback promote wrongly reports "branch not found". Returns null if neither ref resolves. */
+/** SHA of a ref, or null if it doesn't resolve. */
+function tryRev(repoDir: string, ref: string): string | null {
+  try {
+    return gitOut(repoDir, ['rev-parse', '--verify', '--quiet', ref]);
+  } catch {
+    return null;
+  }
+}
+
+/** Refresh the remote-tracking refs for the branches in play so promotion reasons about the
+ * *verified remote* state (what beta deployed + verified), not a stale local checkout. Best-effort:
+ * a repo with no `origin` (purely local tests) or an offline machine keeps whatever refs it has. */
+function fetchRefs(repoDir: string, branches: string[]): void {
+  try {
+    git(repoDir, ['fetch', '--no-tags', 'origin', ...branches]);
+  } catch {
+    // no origin / offline — fall back to whatever refs already exist
+  }
+}
+
+/** Resolve a branch to a usable ref. Promotion advances the *remote* prod branch to the *verified
+ * remote* develop, so prefer `origin/<branch>` (the state beta verified) and fall back to a local
+ * branch only when the remote-tracking ref is absent (e.g. a purely local repo, or a non-default
+ * branch a CI checkout never materialized). Preferring the local branch was a footgun: a stale
+ * local `develop` (common after `git push origin HEAD:develop`, which never moves a local ref) would
+ * silently promote an old commit and report success. Returns null if neither ref resolves. */
 function resolveRef(repoDir: string, branch: string): string | null {
-  for (const ref of [branch, `origin/${branch}`]) {
+  for (const ref of [`origin/${branch}`, branch]) {
     try {
       git(repoDir, ['rev-parse', '--verify', '--quiet', ref]);
       return ref;
@@ -43,21 +69,45 @@ function resolveRef(repoDir: string, branch: string): string | null {
   return null;
 }
 
+/** Advisory: when a local branch exists AND differs from its `origin/` counterpart, the local one is
+ * stale (or ahead). Promotion uses the origin (verified) state regardless — surface the gap so a
+ * stale local `develop`/`main` never silently confuses (the old footgun reported a phantom success). */
+function staleLocalWarnings(repoDir: string, branches: string[]): string[] {
+  const warnings: string[] = [];
+  for (const branch of branches) {
+    const local = tryRev(repoDir, branch);
+    const origin = tryRev(repoDir, `origin/${branch}`);
+    if (local && origin && local !== origin) {
+      warnings.push(
+        `local "${branch}" (${local.slice(0, 7)}) differs from origin/${branch} (${origin.slice(0, 7)}) — ` +
+          `promoting the origin (verified) state. Sync with \`git fetch && git branch -f ${branch} origin/${branch}\`.`,
+      );
+    }
+  }
+  return warnings;
+}
+
 export function canPromote(repoDir: string, from = 'develop', to = 'main'): PromoteCheck {
+  // Reason about the verified *remote* state — refresh tracking refs before resolving (best-effort).
+  fetchRefs(repoDir, [from, to]);
+
   const fromRef = resolveRef(repoDir, from);
   const toRef = resolveRef(repoDir, to);
   if (!fromRef || !toRef) {
     return { canPromote: false, reason: `branch "${from}" or "${to}" not found in ${repoDir}` };
   }
 
+  const warnings = staleLocalWarnings(repoDir, [from, to]);
+
   try {
     // exits 0 iff `to` is an ancestor of `from` (fast-forward is possible)
     git(repoDir, ['merge-base', '--is-ancestor', toRef, fromRef]);
-    return { canPromote: true, reason: `"${to}" can fast-forward to "${from}"` };
+    return { canPromote: true, reason: `"${to}" can fast-forward to "${from}"`, warnings };
   } catch {
     return {
       canPromote: false,
       reason: `"${to}" has diverged from "${from}" — fast-forward refused. Reconcile first (rebase "${from}" onto "${to}", or merge "${to}" into "${from}") before promoting.`,
+      warnings,
     };
   }
 }
@@ -76,7 +126,10 @@ export function promote(
   const to = opts.to ?? 'main';
 
   const check = canPromote(repoDir, from, to);
-  if (!check.canPromote) return { promoted: false, from, to, reason: check.reason };
+  if (!check.canPromote) {
+    return { promoted: false, from, to, reason: check.reason, warnings: check.warnings };
+  }
+  const warnings = check.warnings;
 
   // canPromote confirmed both refs resolve + `to` is an ancestor of `from` (a true fast-forward).
   const fromRef = resolveRef(repoDir, from) as string;
@@ -97,7 +150,13 @@ export function promote(
         // local sync is cosmetic; the pushed remote is what matters
       }
     }
-    return { promoted: true, from, to, reason: `"${to}" fast-forwarded to "${from}" and pushed` };
+    return {
+      promoted: true,
+      from,
+      to,
+      reason: `"${to}" fast-forwarded to "${from}" and pushed`,
+      warnings,
+    };
   }
 
   // Local-only fast-forward (developer machine). Move the local <to> ref to <from>'s commit without
@@ -108,5 +167,5 @@ export function promote(
     git(repoDir, ['update-ref', `refs/heads/${to}`, fromCommit]);
   }
 
-  return { promoted: true, from, to, reason: `"${to}" fast-forwarded to "${from}"` };
+  return { promoted: true, from, to, reason: `"${to}" fast-forwarded to "${from}"`, warnings };
 }
