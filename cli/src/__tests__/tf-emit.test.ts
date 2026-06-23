@@ -51,6 +51,41 @@ describe('emitToolTf', () => {
     expect(tf).not.toContain('module "notes_supabase"');
     // no per-tool password var: the connection string is a module OUTPUT, not an input
     expect(tf).not.toContain('notes_neon_database_password');
+    // single-account default: no aliased provider
+    expect(tf).not.toContain('provider "neon"');
+  });
+
+  it('a NEON_API_KEY override emits an aliased neon provider + scoped var + providers={}', () => {
+    const tf = emitToolTf({
+      name: 'notes',
+      domain: 'x.dev',
+      lane: 'next',
+      target: 'vercel',
+      data: 'neon',
+      envs: ['prod'],
+      tokenOverrides: { NEON_API_KEY: 'NEON_API_KEY_SECONDARY' },
+    });
+    expect(tf).toContain('providers = { neon = neon.notes }');
+    expect(tf).toContain('alias   = "notes"');
+    expect(tf).toContain('api_key = var.notes_neon_api_key');
+    expect(tf).toContain('variable "notes_neon_api_key"');
+    expect(tf).toContain('NEON_API_KEY_SECONDARY');
+  });
+
+  it('a dataShareWith tool emits NO neon module but wires the OWNER’s connection strings (one DB, many services)', () => {
+    const tf = emitToolTf({
+      name: 'worker',
+      domain: 'x.dev',
+      lane: 'next',
+      target: 'vercel',
+      data: 'neon',
+      envs: ['beta', 'prod'],
+      dataShareWith: 'app',
+    });
+    expect(tf).not.toContain('module "worker_neon"'); // creates nothing
+    expect(tf).toContain('module.app_neon.database_url["prod"]'); // reads the owner's branch
+    expect(tf).toContain('module.app_neon.direct_url["beta"]');
+    expect(tf).toContain('Shares the Neon project owned by "app"');
   });
 
   it('emits tunnel + container-instance + dns (wired) for an mcp/oci tool', () => {

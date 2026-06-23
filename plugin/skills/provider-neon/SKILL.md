@@ -34,11 +34,27 @@ prod and beta hit **different branches**. Pin the provider `kislerdm/neon ~> 0.1
 Do **not** add a Neon tool to `module.keepalive.targets_json`. Neon resumes on connect — a request
 just wakes it. (`doctor` does not flag `data: neon` for keepalive; that exemption is intentional.)
 
-## Migrations
+## Schema as code / migrations
 
-Run migrations against the env's **branch** (`DIRECT_URL`). A PR's ephemeral branch is the safe place
-to test a migration before it touches prod. Gate them with `greenlight migrations scan` (the
-dangerous-SQL pre-apply check) in the tool's CI.
+**Greenlight does NOT run migrations — by design.** The split:
+- **Schema** lives in the tool (an ORM — Drizzle/Prisma — or plain `.sql` migrations).
+- **Branch-per-env**: the TF module owns stable `prod`/`beta`; the **native Neon↔Vercel integration**
+  owns ephemeral per-PR preview branches (+ auto-injects `DATABASE_URL`). Don't put ephemeral branches
+  in Terraform.
+- **Execution**: the app's own build runs its migrate (`drizzle-kit migrate` / `prisma migrate deploy`)
+  against the wired **`DIRECT_URL`** — prod build → prod branch, preview build → preview branch. A
+  failed migrate fails the build = a natural gate.
+- **Greenlight's role**: the **dangerous-SQL gate**. Run `greenlight migrations scan` (no `<dir>` →
+  it auto-detects `supabase/migrations | migrations | drizzle/migrations | …`) in CI before the migrate.
+
+See [docs/migrations.md](../../../docs/migrations.md).
+
+## Sharing one DB + multi-account
+
+- **One DB, many services**: a second tool sets `dataShareWith: '<owner>'` (or `add … --share <owner>`)
+  — it creates no project and wires the owner's connection strings.
+- **A second Neon account**: `tokenOverrides: { NEON_API_KEY: 'NEON_API_KEY_X' }` → an aliased `neon`
+  provider authenticates that account. (A sharer can't also override — it uses the owner's account.)
 
 ## MCP
 

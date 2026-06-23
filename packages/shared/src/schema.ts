@@ -74,6 +74,11 @@ export const ToolSchema = z
     // — e.g. { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' }. Absent ⇒ unchanged (the
     // default token). `add`/`adopt` emit an aliased provider + scoped var/secret for an overridden token.
     tokenOverrides: z.record(z.string(), z.string()).optional(),
+    // Share another tool's data store instead of creating one (multiple services on one Neon DB).
+    // The value is the OWNER tool's name; this tool emits no data module and wires the owner's
+    // connection strings. Cross-tool validity (owner exists, same data, no chains) is checked on
+    // the whole config below.
+    dataShareWith: z.string().optional(),
   })
   .superRefine((tool, ctx) => {
     const rule = MATRIX[tool.lane];
@@ -98,6 +103,13 @@ export const ToolSchema = z
         message: 'private tools must set auth to "bearer" or "oauth", never "none"',
       });
     }
+    if (tool.dataShareWith && tool.data !== 'neon') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dataShareWith'],
+        message: 'dataShareWith currently supports data: "neon" only',
+      });
+    }
   });
 
 /**
@@ -115,13 +127,47 @@ export const AlertsSchema = z.object({
   sink: z.enum(['github-issue', 'email']),
 });
 
-export const ConfigSchema = z.object({
-  domain: z.string().min(1, 'domain is required'),
-  alerts: AlertsSchema,
-  // Optional: a tool-only repo (a poly-repo consumer) has no blog.
-  blog: BlogSchema.optional(),
-  tools: z.array(ToolSchema).default([]),
-});
+export const ConfigSchema = z
+  .object({
+    domain: z.string().min(1, 'domain is required'),
+    alerts: AlertsSchema,
+    // Optional: a tool-only repo (a poly-repo consumer) has no blog.
+    blog: BlogSchema.optional(),
+    tools: z.array(ToolSchema).default([]),
+  })
+  .superRefine((config, ctx) => {
+    // Shared data store (multiple services on one Neon DB): a tool's `dataShareWith` must name another
+    // tool that OWNS a matching store — same `data`, not itself, and not itself a sharer (no chains).
+    for (const [i, tool] of config.tools.entries()) {
+      if (!tool.dataShareWith) continue;
+      const issue = (message: string) =>
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['tools', i, 'dataShareWith'], message });
+      if (tool.dataShareWith === tool.name) {
+        issue(`"${tool.name}" cannot share a data store with itself`);
+        continue;
+      }
+      const owner = config.tools.find((t) => t.name === tool.dataShareWith);
+      if (!owner) {
+        issue(`dataShareWith "${tool.dataShareWith}" is not a tool in this manifest`);
+        continue;
+      }
+      if (owner.data !== tool.data) {
+        issue(
+          `"${tool.name}" (data: ${tool.data}) must share a tool with the same data — "${owner.name}" is ${owner.data}`,
+        );
+      }
+      if (owner.dataShareWith) {
+        issue(
+          `cannot share with "${owner.name}" — it is itself a sharer (no chains); point at the owner`,
+        );
+      }
+      if (tool.tokenOverrides?.NEON_API_KEY) {
+        issue(
+          `a sharer uses the owner's Neon account — remove the NEON_API_KEY override from "${tool.name}"`,
+        );
+      }
+    }
+  });
 
 /** Resolved config (after defaults applied) — what consumers receive. */
 export type GreenlightConfig = z.infer<typeof ConfigSchema>;

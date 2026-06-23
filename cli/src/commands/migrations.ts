@@ -1,8 +1,24 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanSqlFiles } from '@rtrentjones/greenlight-shared';
 
+// Common migration dirs, in precedence order — `migrations scan` (no <dir>) uses the first that
+// exists, so the gate wires into a supabase OR a neon/Drizzle/Prisma tool with no path argument.
 const DEFAULT_DIR = 'supabase/migrations';
+const CANDIDATE_DIRS = [
+  DEFAULT_DIR,
+  'migrations',
+  'drizzle/migrations',
+  'drizzle',
+  'db/migrations',
+];
+
+/** Resolve the migrations dir: an explicit arg wins; else the first existing candidate (or the
+ * default, which then reports "no migrations dir"). `root` defaults to cwd (overridable for tests). */
+export function resolveMigrationsDir(explicit?: string, root: string = process.cwd()): string {
+  if (explicit) return explicit;
+  return CANDIDATE_DIRS.find((d) => existsSync(join(root, d))) ?? DEFAULT_DIR;
+}
 
 /**
  * `greenlight migrations scan [<dir>] [--strict]` — the pre-apply dangerous-SQL gate. Scans the
@@ -15,12 +31,12 @@ export async function migrationsCommand(args: string[]): Promise<void> {
     console.log(
       `usage: greenlight migrations scan [<dir>] [--strict]
   scan SQL migrations for data-destroying / lock-heavy statements (the pre-apply gate).
-  default dir: ${DEFAULT_DIR}. Acknowledge an intentional op with \`-- greenlight:allow\`.`,
+  no <dir> → auto-detects ${CANDIDATE_DIRS.join(' | ')}. Acknowledge an intentional op with \`-- greenlight:allow\`.`,
     );
     process.exit(args[0] ? 1 : 0);
   }
 
-  const dir = args.slice(1).find((a) => !a.startsWith('-')) ?? DEFAULT_DIR;
+  const dir = resolveMigrationsDir(args.slice(1).find((a) => !a.startsWith('-')));
   const strict = args.includes('--strict');
 
   let names: string[];

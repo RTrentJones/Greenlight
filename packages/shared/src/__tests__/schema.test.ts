@@ -147,4 +147,67 @@ describe('ConfigSchema', () => {
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.tools[0]?.preview?.port).toBe(8000);
   });
+
+  describe('shared data store (dataShareWith — multiple services on one Neon DB)', () => {
+    const neon = (name: string, extra: Record<string, unknown> = {}) => ({
+      name,
+      lane: 'next',
+      target: 'vercel',
+      data: 'neon',
+      envs: ['beta', 'prod'],
+      ...extra,
+    });
+    const ok = (tools: unknown[]) => ConfigSchema.safeParse({ ...base, tools }).success;
+
+    it('accepts a sharer pointing at a matching neon owner', () => {
+      expect(ok([neon('app'), neon('worker', { dataShareWith: 'app' })])).toBe(true);
+    });
+    it('rejects a missing owner', () => {
+      expect(ok([neon('worker', { dataShareWith: 'nope' })])).toBe(false);
+    });
+    it('rejects sharing with itself', () => {
+      expect(ok([neon('app', { dataShareWith: 'app' })])).toBe(false);
+    });
+    it('rejects a chain (the owner is itself a sharer)', () => {
+      expect(
+        ok([
+          neon('root'),
+          neon('mid', { dataShareWith: 'root' }),
+          neon('leaf', { dataShareWith: 'mid' }),
+        ]),
+      ).toBe(false);
+    });
+    it('rejects a neon sharer pointing at a non-neon owner', () => {
+      const supa = {
+        name: 'app',
+        lane: 'next',
+        target: 'vercel',
+        data: 'supabase',
+        envs: ['prod'],
+      };
+      expect(ok([supa, neon('worker', { dataShareWith: 'app' })])).toBe(false);
+    });
+    it('rejects a sharer that also overrides the Neon account', () => {
+      expect(
+        ok([
+          neon('app'),
+          neon('worker', { dataShareWith: 'app', tokenOverrides: { NEON_API_KEY: 'X' } }),
+        ]),
+      ).toBe(false);
+    });
+    it('rejects dataShareWith on a non-neon tool', () => {
+      expect(
+        ok([
+          {
+            name: 'x',
+            lane: 'next',
+            target: 'vercel',
+            data: 'supabase',
+            envs: ['prod'],
+            dataShareWith: 'y',
+          },
+        ]),
+      ).toBe(false);
+    });
+  });
 });

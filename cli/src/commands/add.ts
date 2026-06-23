@@ -22,7 +22,7 @@ export async function addCommand(args: string[]): Promise<void> {
   const name = args[0];
   if (!name || name.startsWith('-')) {
     throw new Error(
-      'usage: greenlight add <name> --lane <lane> --target <target> [--data <d>] [--auth <a>] [--envs beta,prod] [--port 8000]',
+      'usage: greenlight add <name> --lane <lane> --target <target> [--data <d>] [--auth <a>] [--envs beta,prod] [--port 8000] [--share <owner>]',
     );
   }
   const lane = flag(args, '--lane');
@@ -44,6 +44,8 @@ export async function addCommand(args: string[]): Promise<void> {
     auth: flag(args, '--auth'),
     envs: flag(args, '--envs')?.split(','),
     port: portFlag ? Number(portFlag) : undefined,
+    // --share <owner>: this tool reads the owner's Neon DB instead of creating its own (one DB, many services).
+    dataShareWith: flag(args, '--share'),
   });
   const entry = next.tools.find((t) => t.name === name);
   const data = entry?.data ?? 'none';
@@ -102,6 +104,7 @@ export async function addCommand(args: string[]): Promise<void> {
         envs,
         port: entry?.port,
         tokenOverrides: entry?.tokenOverrides,
+        dataShareWith: entry?.dataShareWith,
       }),
     );
     console.log(`✔ wrote infra/${name}.tf (modules: ${providers.join(', ')})`);

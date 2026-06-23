@@ -28,6 +28,9 @@ export interface ToolTfOpts {
   /** Per-tool provider-token overrides (multi-account): default env var → alternate secret name.
    * When SUPABASE_ACCESS_TOKEN is overridden, emit an aliased supabase provider on its own token. */
   tokenOverrides?: Record<string, string>;
+  /** This tool SHARES another tool's Neon project (multiple services on one DB). When set, emit no
+   * neon module of its own — wire `module.<owner>_neon.*` (the owner creates the project). */
+  dataShareWith?: string;
 }
 
 const hcl = (s: string) => s.replace(/\n{3,}/g, '\n\n').trimEnd();
@@ -43,9 +46,12 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const useNeon = data === 'neon';
   const useVercel = target === 'vercel';
   const useOci = target === 'oci';
-  // Multi-account: a tool that overrides SUPABASE_ACCESS_TOKEN gets an aliased provider on its own
-  // token, selected by the module's providers={} (no module change — selects which config it uses).
+  // Multi-account: a tool that overrides SUPABASE_ACCESS_TOKEN / NEON_API_KEY gets an aliased provider
+  // on its own token, selected by the module's providers={} (no module change — selects the config).
   const supabaseOverride = opts.tokenOverrides?.SUPABASE_ACCESS_TOKEN;
+  const neonOverride = opts.tokenOverrides?.NEON_API_KEY;
+  // Shared Neon DB: a sharer wires the OWNER's neon module; an owner (no dataShareWith) is itself.
+  const neonOwner = opts.dataShareWith ?? name;
   const envList = envs.map((e) => `"${e}"`).join(', ');
   const blocks: string[] = [];
 
@@ -104,18 +110,39 @@ variable "${name}_supabase_database_password" {
 }${overrideBlock}`);
   }
 
-  if (useNeon) {
+  if (useNeon && opts.dataShareWith) {
+    // Sharer: no project of its own — the env below wires the owner's per-env connection strings.
+    blocks.push(`# Shares the Neon project owned by "${opts.dataShareWith}" (one DB, many services).
+# No neon module here — the env wiring below reads module.${neonOwner}_neon.* (its prod/beta branches).`);
+  } else if (useNeon) {
+    const providersLine = neonOverride ? `\n  providers = { neon = neon.${name} }` : '';
+    const overrideBlock = neonOverride
+      ? `
+
+# Multi-account: ${name}'s Neon lives in a SECOND account — an aliased provider authenticates with
+# its own token. In infra.yml: TF_VAR_${name}_neon_api_key: \${{ secrets.${neonOverride} }}
+provider "neon" {
+  alias   = "${name}"
+  api_key = var.${name}_neon_api_key
+}
+
+variable "${name}_neon_api_key" {
+  type        = string
+  sensitive   = true
+  description = "Neon API key for ${name}'s account (scoped secret ${neonOverride})."
+}`
+      : '';
     blocks.push(`# One Neon project, a branch per env (prod = the project's default branch; beta = a child
 # branch — copy-on-write, instant). Compute scales to zero and auto-resumes on the next connection,
 # so a Neon tool needs NO keepalive (the reason Neon is the default Postgres). NEON_API_KEY configures
 # the provider in main.tf; the connection strings are module OUTPUTS — no per-tool secret to gather.
 module "${name}_neon" {
-  source = "${moduleSource('neon', ref)}"
+  source = "${moduleSource('neon', ref)}"${providersLine}
 
   name   = "${name}"
   region = "aws-us-east-1" # Neon region id, e.g. aws-us-east-1 / aws-us-west-2
   envs   = [${envList}]
-}`);
+}${overrideBlock}`);
   }
 
   if (useVercel) {
@@ -156,10 +183,10 @@ module "${name}_neon" {
   environment_values = {
     site_url_prod  = "https://${name}.${domain}"
     site_url_beta  = "https://beta.${name}.${domain}"
-    db_url_prod    = module.${name}_neon.database_url["prod"]
-    db_direct_prod = module.${name}_neon.direct_url["prod"]
-    db_url_beta    = module.${name}_neon.database_url["beta"]
-    db_direct_beta = module.${name}_neon.direct_url["beta"]
+    db_url_prod    = module.${neonOwner}_neon.database_url["prod"]
+    db_direct_prod = module.${neonOwner}_neon.direct_url["prod"]
+    db_url_beta    = module.${neonOwner}_neon.database_url["beta"]
+    db_direct_beta = module.${neonOwner}_neon.direct_url["beta"]
   }`
         : `
   # No managed data store — add environment/environment_values if the app needs vars.
