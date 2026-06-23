@@ -1,7 +1,6 @@
 # Greenlight
 
 [![ci](https://github.com/RTrentJones/Greenlight/actions/workflows/ci.yml/badge.svg)](https://github.com/RTrentJones/Greenlight/actions/workflows/ci.yml)
-[![release](https://github.com/RTrentJones/Greenlight/actions/workflows/release.yml/badge.svg)](https://github.com/RTrentJones/Greenlight/actions/workflows/release.yml)
 [![npm](https://img.shields.io/npm/v/@rtrentjones/greenlight)](https://www.npmjs.com/package/@rtrentjones/greenlight)
 [![license](https://img.shields.io/npm/l/@rtrentjones/greenlight)](LICENSE)
 
