@@ -10,7 +10,7 @@ import { z } from 'zod';
 
 export const LaneEnum = z.enum(['astro', 'next', 'mcp']);
 export const TargetEnum = z.enum(['workers', 'vercel', 'oci']);
-export const DataEnum = z.enum(['none', 'd1', 'kv', 'supabase']);
+export const DataEnum = z.enum(['none', 'd1', 'kv', 'supabase', 'neon']);
 export const AuthEnum = z.enum(['none', 'bearer', 'oauth']);
 export const AccessEnum = z.enum(['public', 'private']);
 export const EnvEnum = z.enum(['preview', 'beta', 'prod']);
@@ -27,7 +27,7 @@ const MATRIX: Record<
   }
 > = {
   astro: { targets: ['workers'], data: ['none', 'd1', 'kv'] },
-  next: { targets: ['vercel'], data: ['none', 'supabase'] },
+  next: { targets: ['vercel'], data: ['none', 'supabase', 'neon'] },
   mcp: { targets: ['workers', 'oci'], data: ['none'] },
 };
 

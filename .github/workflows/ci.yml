@@ -56,6 +56,13 @@ jobs:
         working-directory: infra/examples/single-tool
         run: terraform test
 
+      - name: Neon module — validate (real provider schema) + test (mock)
+        working-directory: infra/modules/neon
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
       - name: Security scan (advisory)
         uses: aquasecurity/tfsec-action@v1.0.3
         with:

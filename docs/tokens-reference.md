@@ -28,6 +28,7 @@ facet that triggers it.
 | `VERCEL_AUTOMATION_BYPASS_SECRET_<TOOL>` | Vercel | `target: vercel` | tool | optional |
 | `SUPABASE_ACCESS_TOKEN` | Supabase | `data: supabase` | wrapper + local | ✅ for supabase |
 | `TF_VAR_<tool>_supabase_database_password` | Supabase | `data: supabase` | wrapper + local | optional* |
+| `NEON_API_KEY` | Neon | `data: neon` | wrapper + local | ✅ for neon |
 | `TF_VAR_oci_tenancy_ocid` | OCI | `target: oci` | wrapper + local | ✅ for oci |
 | `TF_VAR_oci_user_ocid` | OCI | `target: oci` | wrapper + local | ✅ for oci |
 | `TF_VAR_oci_fingerprint` | OCI | `target: oci` | wrapper + local | ✅ for oci |
@@ -106,6 +107,18 @@ Create at **https://supabase.com/dashboard/account/tokens** → Generate new tok
 
 Verify: `curl -s https://api.supabase.com/v1/projects -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN"`.
 
+### Neon (`data: neon`)
+
+Create at **https://console.neon.tech/app/settings/api-keys** → Create API key (shown once).
+
+| token / var | permissions | for | required |
+|---|---|---|---|
+| `NEON_API_KEY` | account-level API key (manages the account's Neon projects + branches) | the `neon` Terraform provider + the Neon MCP | ✅ for neon |
+
+**Account-level, not per-tool** — one key configures the provider for every Neon tool; the role /
+password / connection strings are module **outputs**, so there is no per-tool secret to gather.
+Verify: `curl -s https://console.neon.tech/api/v2/projects -H "Authorization: Bearer $NEON_API_KEY"`.
+
 ## Oracle Cloud (OCI) — `target: oci`
 
 The **only** manual OCI input is the API key — the VCN/subnet/availability-domain are IaC, and the
@@ -167,7 +180,7 @@ tool's name; account-level credentials stay plain:
 
 | kind | name | examples |
 |---|---|---|
-| **Account / provider** (shared) | plain | `CLOUDFLARE_API_TOKEN`, `VERCEL_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `TF_API_TOKEN`, `TF_VAR_CLOUDFLARE_ZONE_ID`, `TF_VAR_OCI_*`, `TF_VAR_KEEPALIVE_GITHUB_TOKEN` |
+| **Account / provider** (shared) | plain | `CLOUDFLARE_API_TOKEN`, `VERCEL_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `NEON_API_KEY`, `TF_API_TOKEN`, `TF_VAR_CLOUDFLARE_ZONE_ID`, `TF_VAR_OCI_*`, `TF_VAR_KEEPALIVE_GITHUB_TOKEN` |
 | **Project-scoped — workflow secret** | **suffix** `_<TOOL>` | `GREENLIGHT_STATUS_TOKEN_BAMCP`, `VERCEL_AUTOMATION_BYPASS_SECRET_HEISTMIND` |
 | **Project-scoped — Terraform var** | `TF_VAR_<TOOL>_<NAME>` (TF var `<tool>_<name>`) | `TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN`, `TF_VAR_HEISTMIND_SUPABASE_DATABASE_PASSWORD` |
 | **A tool's own app-env secret** | tool-prefixed | `BAMCP_VERIFY_TOKEN` |

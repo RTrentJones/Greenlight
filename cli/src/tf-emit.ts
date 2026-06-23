@@ -40,6 +40,7 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const port = opts.port ?? 8000; // container listen port (oci); tunnel routes to localhost:<port>
   const slug = opts.slug ?? `OWNER/${name}`;
   const useSupabase = data === 'supabase';
+  const useNeon = data === 'neon';
   const useVercel = target === 'vercel';
   const useOci = target === 'oci';
   // Multi-account: a tool that overrides SUPABASE_ACCESS_TOKEN gets an aliased provider on its own
@@ -54,9 +55,9 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const ghcrOwner = (slug.split('/')[0] ?? 'owner').toLowerCase(); // GHCR namespaces are lowercase
 
   blocks.push(
-    `# ${name} — ${lane}/${target}${useSupabase ? '/supabase' : ''}, emitted by \`greenlight add\`.
+    `# ${name} — ${lane}/${target}${data && data !== 'none' ? `/${data}` : ''}, emitted by \`greenlight add\`.
 # Review, then commit + push: the wrapper's infra.yml (HCP-backed) runs \`terraform apply\`.
-# Assumes infra/main.tf declares: ${[useVercel && 'vercel', useSupabase && 'supabase', useOci && 'oci'].filter(Boolean).join(' + ') || 'cloudflare + github'} provider(s)
+# Assumes infra/main.tf declares: ${[useVercel && 'vercel', useSupabase && 'supabase', useNeon && 'neon', useOci && 'oci'].filter(Boolean).join(' + ') || 'cloudflare + github'} provider(s)
 # and the variables ${assumes.join(', ')}.${
       opts.external
         ? `\n# External tool: app code + deploy live in ${slug}; this manages only its infra here.`
@@ -103,6 +104,20 @@ variable "${name}_supabase_database_password" {
 }${overrideBlock}`);
   }
 
+  if (useNeon) {
+    blocks.push(`# One Neon project, a branch per env (prod = the project's default branch; beta = a child
+# branch — copy-on-write, instant). Compute scales to zero and auto-resumes on the next connection,
+# so a Neon tool needs NO keepalive (the reason Neon is the default Postgres). NEON_API_KEY configures
+# the provider in main.tf; the connection strings are module OUTPUTS — no per-tool secret to gather.
+module "${name}_neon" {
+  source = "${moduleSource('neon', ref)}"
+
+  name   = "${name}"
+  region = "aws-us-east-1" # Neon region id, e.g. aws-us-east-1 / aws-us-west-2
+  envs   = [${envList}]
+}`);
+  }
+
   if (useVercel) {
     const env = useSupabase
       ? `
@@ -126,7 +141,27 @@ variable "${name}_supabase_database_password" {
     supa_anon_beta    = module.${name}_supabase.anon_key
     supa_service_beta = module.${name}_supabase.service_role_key
   }`
-      : `
+      : useNeon
+        ? `
+  environment = {
+    site_url_prod  = { key = "SITE_URL", target = ["production"], sensitive = false }
+    site_url_beta  = { key = "SITE_URL", target = ["preview"], sensitive = false }
+    db_url_prod    = { key = "DATABASE_URL", target = ["production"], sensitive = true }
+    db_direct_prod = { key = "DIRECT_URL", target = ["production"], sensitive = true }
+    db_url_beta    = { key = "DATABASE_URL", target = ["preview"], sensitive = true }
+    db_direct_beta = { key = "DIRECT_URL", target = ["preview"], sensitive = true }
+  }
+  # Pooled (DATABASE_URL) for the serverless app; direct (DIRECT_URL) for migrations. Prod hits the
+  # project's default branch; beta hits the "beta" branch — separate data, instant copy-on-write.
+  environment_values = {
+    site_url_prod  = "https://${name}.${domain}"
+    site_url_beta  = "https://beta.${name}.${domain}"
+    db_url_prod    = module.${name}_neon.database_url["prod"]
+    db_direct_prod = module.${name}_neon.direct_url["prod"]
+    db_url_beta    = module.${name}_neon.database_url["beta"]
+    db_direct_beta = module.${name}_neon.direct_url["beta"]
+  }`
+        : `
   # No managed data store — add environment/environment_values if the app needs vars.
   environment        = {}
   environment_values = {}`;
@@ -253,11 +288,14 @@ export function emitWrapperMainTf(opts: {
     req.push('    vercel     = { source = "vercel/vercel", version = "~> 3.0" }');
   if (need.has('supabase'))
     req.push('    supabase   = { source = "supabase/supabase", version = "~> 1.0" }');
+  if (need.has('neon'))
+    req.push('    neon       = { source = "kislerdm/neon", version = "~> 0.13" }');
   if (need.has('oci')) req.push('    oci        = { source = "oracle/oci", version = ">= 5.0" }');
 
   const providerBlocks = ['provider "cloudflare" {}', `provider "github" { owner = "${owner}" }`];
   if (need.has('vercel')) providerBlocks.push('provider "vercel" {}');
   if (need.has('supabase')) providerBlocks.push('provider "supabase" {}');
+  if (need.has('neon')) providerBlocks.push('provider "neon" { api_key = var.neon_api_key }');
   if (need.has('oci')) {
     providerBlocks.push(`provider "oci" {
   # trimspace guards against a trailing newline/space in a pasted secret (a malformed region
@@ -276,6 +314,11 @@ export function emitWrapperMainTf(opts: {
     // organization_id is account-level (shared across all supabase tools). The database password is
     // per PROJECT, so it's declared per-tool in each tool's <name>.tf (not here) to avoid a collision.
     vars.push('variable "supabase_organization_id" { type = string }');
+  }
+  if (need.has('neon')) {
+    // Account-level API key — configures the neon provider for every neon tool (no per-tool secret;
+    // the connection strings are module outputs). Synced as TF_VAR_neon_api_key.
+    vars.push('variable "neon_api_key" {\n  type      = string\n  sensitive = true\n}');
   }
   if (need.has('oci')) {
     // OCI provider auth (API-key signing) — gathered by `greenlight secrets gather`, synced as
@@ -330,6 +373,7 @@ export function providersForTool(tool: { target?: string; data?: string }): stri
   const out = ['cloudflare', 'github'];
   if (ids.has('vercel')) out.push('vercel');
   if (ids.has('supabase')) out.push('supabase');
+  if (ids.has('neon')) out.push('neon');
   if (ids.has('oci')) out.push('oci');
   return out;
 }

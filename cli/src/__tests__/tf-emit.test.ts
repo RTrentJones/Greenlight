@@ -29,6 +29,30 @@ describe('emitToolTf', () => {
     expect(tf).toMatch(/ref=v\d+\.\d+\.\d+/);
   });
 
+  it('emits the neon module + DATABASE_URL/DIRECT_URL wiring, and NO keepalive, for a next/vercel/neon tool', () => {
+    const tf = emitToolTf({
+      name: 'notes',
+      domain: 'example.dev',
+      lane: 'next',
+      target: 'vercel',
+      data: 'neon',
+      envs: ['beta', 'prod'],
+    });
+    expect(tf).toContain('module "notes_neon"');
+    expect(tf).toContain('infra/modules/neon');
+    expect(tf).toContain('module "notes_vercel"');
+    // pooled (DATABASE_URL) + direct (DIRECT_URL) conn strings flow from the module's per-env outputs
+    expect(tf).toContain('DATABASE_URL');
+    expect(tf).toContain('DIRECT_URL');
+    expect(tf).toContain('module.notes_neon.database_url["prod"]');
+    expect(tf).toContain('module.notes_neon.direct_url["beta"]');
+    // neon auto-suspends + auto-resumes → NO keepalive (the reason it's the default Postgres)
+    expect(tf).not.toContain('module.keepalive.targets_json');
+    expect(tf).not.toContain('module "notes_supabase"');
+    // no per-tool password var: the connection string is a module OUTPUT, not an input
+    expect(tf).not.toContain('notes_neon_database_password');
+  });
+
   it('emits tunnel + container-instance + dns (wired) for an mcp/oci tool', () => {
     const tf = emitToolTf({
       name: 'bamcp',
@@ -150,6 +174,16 @@ describe('emitWrapperMainTf', () => {
     expect(tf).not.toContain('supabase/supabase');
   });
 
+  it('includes the neon provider + api_key var when needed', () => {
+    const tf = emitWrapperMainTf({
+      domain: 'x.dev',
+      providers: ['cloudflare', 'github', 'vercel', 'neon'],
+    });
+    expect(tf).toContain('neon       = { source = "kislerdm/neon"');
+    expect(tf).toContain('provider "neon" { api_key = var.neon_api_key }');
+    expect(tf).toContain('variable "neon_api_key"');
+  });
+
   it('for oci: auth vars + a compartment local (root default), but no manual subnet/AD vars', () => {
     const tf = emitWrapperMainTf({ domain: 'x.dev', providers: ['cloudflare', 'github', 'oci'] });
     expect(tf).toContain('provider "oci"');
@@ -175,6 +209,12 @@ describe('providersForTool', () => {
     expect(providersForTool({ target: 'workers', data: 'none' }).sort()).toEqual([
       'cloudflare',
       'github',
+    ]);
+    expect(providersForTool({ target: 'vercel', data: 'neon' }).sort()).toEqual([
+      'cloudflare',
+      'github',
+      'neon',
+      'vercel',
     ]);
   });
 });

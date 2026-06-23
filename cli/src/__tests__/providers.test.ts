@@ -55,6 +55,19 @@ describe('packsForTool', () => {
     expect(ids).toContain('supabase');
   });
 
+  it('adds neon for data:neon (its own pack, NOT folded into supabase)', () => {
+    const ids = packsForTool({ target: 'vercel', data: 'neon' }).map((p) => p.id);
+    expect(ids).toContain('neon');
+    expect(ids).not.toContain('supabase');
+    // NEON_API_KEY is a shared account credential (configures the provider), not per-tool
+    const neon = tokensForTool({ target: 'vercel', data: 'neon' }).find(
+      (t) => t.envVar === 'NEON_API_KEY',
+    );
+    expect(neon).toBeTruthy();
+    expect(neon?.perTool).toBeFalsy();
+    expect(tfModulesForTool({ target: 'vercel', data: 'neon' })).toContain('neon');
+  });
+
   it('adds oci for target:oci only', () => {
     expect(packsForTool({ target: 'oci' }).map((p) => p.id)).toContain('oci');
     expect(packsForTool({ target: 'vercel' }).map((p) => p.id)).not.toContain('oci');
@@ -118,6 +131,18 @@ describe('token verify()', () => {
     vi.stubGlobal('fetch', fetchMock);
     expect((await vc?.verify?.('t', {}))?.ok).toBe(true);
     expect((await vc?.verify?.('t', {}))?.ok).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('neon verify is ok on HTTP 200, not on 401', async () => {
+    const neon = PACKS.find((p) => p.id === 'neon')?.tokens[0];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: false, status: 401 });
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await neon?.verify?.('t', {}))?.ok).toBe(true);
+    expect((await neon?.verify?.('t', {}))?.ok).toBe(false);
     vi.unstubAllGlobals();
   });
 });

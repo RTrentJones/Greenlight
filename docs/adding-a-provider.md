@@ -7,6 +7,12 @@ Greenlight's extension seam is the **provider-pack registry**
 `secrets gather` / `agent sync`) is driven entirely from the registry, so a new provider plugs in
 without touching the commands.
 
+> **Neon (`data: neon`) is now implemented** — this guide's running example is live, not hypothetical.
+> The real thing to read: the `neon` pack in [providers.ts](../cli/src/providers.ts), the
+> [infra/modules/neon](../infra/modules/neon) module (validated against `kislerdm/neon` v0.13 + a
+> mock-provider `tftest`), the `useNeon` emit in [tf-emit.ts](../cli/src/tf-emit.ts), and the
+> `provider-neon` skill. Note its one twist vs Supabase: Neon auto-resumes, so it is **keepalive-exempt**.
+
 **Golden rule: default-off, additive.** A new pack must change nothing for existing consumers — its
 `appliesTo` only matches tools that opt in (by `target`/`data`/`lane`), and `pnpm run check-all`
 stays green. The seam checks (`check-seam`, `check-boundaries`) forbid personal values and

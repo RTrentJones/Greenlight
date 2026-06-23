@@ -164,6 +164,37 @@ export const PACKS: ProviderPack[] = [
     tfModules: ['supabase'],
   },
   {
+    id: 'neon',
+    name: 'Neon',
+    appliesTo: (t) => t.data === 'neon',
+    guide: 'docs/provider-tokens.md — NEON_API_KEY (project + branch management)',
+    setupUrl: 'https://console.neon.tech/app/settings/api-keys',
+    tokens: [
+      {
+        // Shared account credential (configures the neon TF provider, like CLOUDFLARE_API_TOKEN) —
+        // NOT per-tool. The role password + connection string are module OUTPUTS, not inputs, so
+        // (unlike Supabase) there is no per-tool password variable to gather.
+        envVar: 'NEON_API_KEY',
+        label: 'Neon API key (project + branch management)',
+        verify: async (t) => {
+          const r = await fetch('https://console.neon.tech/api/v2/projects', {
+            headers: { Authorization: `Bearer ${t}` },
+          });
+          return { ok: okStatus(r), detail: `HTTP ${r.status}` };
+        },
+      },
+    ],
+    mcp: {
+      neon: {
+        type: 'http',
+        url: 'https://mcp.neon.tech/mcp',
+        headers: { Authorization: 'Bearer ${NEON_API_KEY}' },
+      },
+    },
+    skill: 'provider-neon',
+    tfModules: ['neon'],
+  },
+  {
     id: 'hcp',
     name: 'HCP Terraform (remote state)',
     always: true, // remote state backs every wrapper's infra
