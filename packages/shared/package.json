@@ -1,6 +1,6 @@
 {
   "name": "@rtrentjones/greenlight-shared",
-  "version": "0.2.4",
+  "version": "0.2.22",
   "private": true,
   "description": "Greenlight manifest schema, defineConfig, types, and loader.",
   "license": "MIT",
