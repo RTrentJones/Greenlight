@@ -25,6 +25,9 @@ export interface ToolTfOpts {
   /** Container listen port for target: oci (tunnel routes to localhost:<port>). Default 8000. */
   port?: number;
   ref?: string;
+  /** Per-tool provider-token overrides (multi-account): default env var → alternate secret name.
+   * When SUPABASE_ACCESS_TOKEN is overridden, emit an aliased supabase provider on its own token. */
+  tokenOverrides?: Record<string, string>;
 }
 
 const hcl = (s: string) => s.replace(/\n{3,}/g, '\n\n').trimEnd();
@@ -39,6 +42,9 @@ export function emitToolTf(opts: ToolTfOpts): string {
   const useSupabase = data === 'supabase';
   const useVercel = target === 'vercel';
   const useOci = target === 'oci';
+  // Multi-account: a tool that overrides SUPABASE_ACCESS_TOKEN gets an aliased provider on its own
+  // token, selected by the module's providers={} (no module change — selects which config it uses).
+  const supabaseOverride = opts.tokenOverrides?.SUPABASE_ACCESS_TOKEN;
   const envList = envs.map((e) => `"${e}"`).join(', ');
   const blocks: string[] = [];
 
@@ -59,9 +65,26 @@ export function emitToolTf(opts: ToolTfOpts): string {
   );
 
   if (useSupabase) {
+    const providersLine = supabaseOverride ? `\n  providers = { supabase = supabase.${name} }` : '';
+    const overrideBlock = supabaseOverride
+      ? `
+
+# Multi-account: ${name}'s Supabase lives in a SECOND account — an aliased provider authenticates
+# with its own token. In infra.yml: TF_VAR_${name}_supabase_access_token: \${{ secrets.${supabaseOverride} }}
+provider "supabase" {
+  alias        = "${name}"
+  access_token = var.${name}_supabase_access_token
+}
+
+variable "${name}_supabase_access_token" {
+  type        = string
+  sensitive   = true
+  description = "Supabase Management API token for ${name}'s account (scoped secret ${supabaseOverride})."
+}`
+      : '';
     blocks.push(`# One Supabase project (schema-per-env), kept declarative + recreatable + kept alive.
 module "${name}_supabase" {
-  source = "${moduleSource('supabase', ref)}"
+  source = "${moduleSource('supabase', ref)}"${providersLine}
 
   name              = "${name}"
   project_name      = "${name}-db"
@@ -77,7 +100,7 @@ variable "${name}_supabase_database_password" {
   type      = string
   sensitive = true
   default   = "import-placeholder" # ignored when importing an existing project
-}`);
+}${overrideBlock}`);
   }
 
   if (useVercel) {

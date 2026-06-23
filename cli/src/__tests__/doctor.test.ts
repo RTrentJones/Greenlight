@@ -85,4 +85,60 @@ describe('runDoctor — conformance to the uniform model', () => {
     );
     expect(find(checks, 'notes: local preview gate')).toBe('ok');
   });
+
+  it('token scoping: ok when every declared secret carries the tool name', () => {
+    const checks = runDoctor(
+      cfg([
+        {
+          name: 'bamcp',
+          lane: 'mcp',
+          target: 'oci',
+          data: 'none',
+          external: true,
+          envs: ['prod'],
+          tokens: ['GREENLIGHT_STATUS_TOKEN_BAMCP', 'BAMCP_VERIFY_TOKEN'],
+        },
+      ]),
+      root,
+    );
+    expect(find(checks, 'bamcp: token scoping')).toBe('ok');
+  });
+
+  it('token scoping: warns on a generic (non-tool-scoped) secret name', () => {
+    const checks = runDoctor(
+      cfg([
+        {
+          name: 'heistmind',
+          lane: 'next',
+          target: 'vercel',
+          data: 'supabase',
+          external: true,
+          envs: ['prod'],
+          tokens: ['TF_VAR_GITHUB_ADMIN_TOKEN'], // generic — should carry HEISTMIND
+        },
+      ]),
+      root,
+    );
+    const c = checks.find((x) => x.name === 'heistmind: token scoping');
+    expect(c?.status).toBe('warn');
+    expect(c?.detail).toContain('TF_VAR_GITHUB_ADMIN_TOKEN');
+  });
+
+  it('token scoping: a tokenOverride target is also conformance-checked', () => {
+    const checks = runDoctor(
+      cfg([
+        {
+          name: 'heistmind',
+          lane: 'next',
+          target: 'vercel',
+          data: 'supabase',
+          external: true,
+          envs: ['prod'],
+          tokenOverrides: { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' },
+        },
+      ]),
+      root,
+    );
+    expect(find(checks, 'heistmind: token scoping')).toBe('ok');
+  });
 });

@@ -52,6 +52,10 @@ export interface ResolvedEntry {
   port?: number;
   /** How `greenlight preview` spins this tool up locally (target with no built-in serve). */
   preview?: PreviewDescriptor;
+  /** Project-scoped secret names this tool needs (conformance/docs). */
+  tokens?: string[];
+  /** Per-tool provider-token overrides (multi-account): default env var → alternate secret name. */
+  tokenOverrides?: Record<string, string>;
 }
 
 /** Resolve a manifest entry by name. `blog` maps to the apex (no subdomain name). */
@@ -81,6 +85,8 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
     external: tool.external,
     port: tool.port,
     preview: tool.preview,
+    tokens: tool.tokens,
+    tokenOverrides: tool.tokenOverrides,
   };
 }
 

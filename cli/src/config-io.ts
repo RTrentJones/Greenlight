@@ -32,6 +32,13 @@ function serializeTool(t: ToolConfig): string {
     if (pv.path !== undefined) pvParts.push(`path: ${q(pv.path)}`);
     parts.push(`preview: { ${pvParts.join(', ')} }`);
   }
+  if (t.tokens?.length) parts.push(`tokens: [${t.tokens.map(q).join(', ')}]`);
+  if (t.tokenOverrides && Object.keys(t.tokenOverrides).length) {
+    const ov = Object.entries(t.tokenOverrides)
+      .map(([k, v]) => `${k}: ${q(v)}`)
+      .join(', ');
+    parts.push(`tokenOverrides: { ${ov} }`);
+  }
   return `    { ${parts.join(', ')} },`;
 }
 
@@ -73,6 +80,8 @@ export interface NewTool {
   external?: boolean;
   port?: number;
   preview?: { command: string; teardown?: string; port?: number; path?: string };
+  tokens?: string[];
+  tokenOverrides?: Record<string, string>;
 }
 
 /** Add a tool to the config, validating against the schema (lane × target × data matrix). */
@@ -97,6 +106,10 @@ export function addTool(config: GreenlightConfig, t: NewTool): GreenlightConfig 
         ...(t.external ? { external: true } : {}),
         ...(t.port !== undefined ? { port: t.port } : {}),
         ...(t.preview ? { preview: t.preview } : {}),
+        ...(t.tokens?.length ? { tokens: t.tokens } : {}),
+        ...(t.tokenOverrides && Object.keys(t.tokenOverrides).length
+          ? { tokenOverrides: t.tokenOverrides }
+          : {}),
       },
     ],
   };
@@ -128,6 +141,10 @@ export function upsertTool(config: GreenlightConfig, t: NewTool): GreenlightConf
     ...(t.external ? { external: true } : {}),
     ...(t.port !== undefined ? { port: t.port } : {}),
     ...(t.preview ? { preview: t.preview } : {}),
+    ...(t.tokens?.length ? { tokens: t.tokens } : {}),
+    ...(t.tokenOverrides && Object.keys(t.tokenOverrides).length
+      ? { tokenOverrides: t.tokenOverrides }
+      : {}),
   };
   const tools = config.tools.some((x) => x.name === t.name)
     ? config.tools.map((x) => (x.name === t.name ? entry : x))

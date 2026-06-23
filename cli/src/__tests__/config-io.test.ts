@@ -74,6 +74,26 @@ describe('serializeConfig', () => {
     expect(loaded.tools[0]?.preview?.command).toContain('docker compose');
     expect(loaded.tools[0]?.preview?.path).toBe('/mcp');
   });
+
+  it('round-trips the project-scoped tokens list + tokenOverrides (multi-account)', async () => {
+    const cfg = addTool(base, {
+      name: 'heistmind',
+      lane: 'next',
+      target: 'vercel',
+      data: 'supabase',
+      tokens: ['TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN', 'VERCEL_AUTOMATION_BYPASS_SECRET_HEISTMIND'],
+      tokenOverrides: { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' },
+    });
+    const p = writeRepoTmp('.vitest-tokens.config.ts', serializeConfig(cfg));
+    const loaded = await loadConfig(p);
+    expect(loaded.tools[0]?.tokens).toEqual([
+      'TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN',
+      'VERCEL_AUTOMATION_BYPASS_SECRET_HEISTMIND',
+    ]);
+    expect(loaded.tools[0]?.tokenOverrides).toEqual({
+      SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND',
+    });
+  });
 });
 
 describe('addTool', () => {

@@ -160,6 +160,49 @@ Notes:
 
 ---
 
+## Naming convention (project-scoped secrets)
+
+So two tools never collide on the **shared wrapper**, a secret scoped to one tool carries that
+tool's name; account-level credentials stay plain:
+
+| kind | name | examples |
+|---|---|---|
+| **Account / provider** (shared) | plain | `CLOUDFLARE_API_TOKEN`, `VERCEL_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `TF_API_TOKEN`, `TF_VAR_CLOUDFLARE_ZONE_ID`, `TF_VAR_OCI_*`, `TF_VAR_KEEPALIVE_GITHUB_TOKEN` |
+| **Project-scoped — workflow secret** | **suffix** `_<TOOL>` | `GREENLIGHT_STATUS_TOKEN_BAMCP`, `VERCEL_AUTOMATION_BYPASS_SECRET_HEISTMIND` |
+| **Project-scoped — Terraform var** | `TF_VAR_<TOOL>_<NAME>` (TF var `<tool>_<name>`) | `TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN`, `TF_VAR_HEISTMIND_SUPABASE_DATABASE_PASSWORD` |
+| **A tool's own app-env secret** | tool-prefixed | `BAMCP_VERIFY_TOKEN` |
+
+`<TOOL>` is the uppercased manifest name with `-`→`_` (`demo-mcp` → `DEMO_MCP`). One source of truth
+for the rule: `secretKeyFor()` in `cli/src/providers.ts` (used by `secrets gather` + tf-emit).
+
+**Declare them in the manifest.** Each tool may list the project-scoped secrets it needs:
+
+```ts
+{ name: 'heistmind', lane: 'next', target: 'vercel', data: 'supabase', /* … */
+  tokens: ['TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN', 'VERCEL_AUTOMATION_BYPASS_SECRET_HEISTMIND'] }
+```
+
+`greenlight doctor` runs a **token-scoping conformance** check: a `tokens` (or `tokenOverrides`
+target) name that doesn't contain the tool name is flagged `warn` (`<tool>: token scoping`).
+
+## Multi-account: provider token overrides
+
+By default a provider has one token env var (one account). To point **one tool** at a **second
+account** of the same provider — e.g. a different Supabase account/project — set `tokenOverrides`
+on that tool, mapping the provider's default env var to an alternate (scoped) secret name:
+
+```ts
+{ name: 'heistmind', /* … */ data: 'supabase',
+  tokenOverrides: { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' } }
+```
+
+- **Default (absent) ⇒ unchanged** — the shared account token, byte-identical to today.
+- `secrets gather` writes/reads the override name (the 2nd account's token), not the default.
+- `greenlight add` emits an **aliased provider** + scoped var so the apply authenticates that
+  tool's resources with the alternate account (no module change — the module selects it via
+  `providers = { supabase = supabase.<tool> }`), and prints the `infra.yml` mapping
+  (`TF_VAR_<tool>_supabase_access_token: ${{ secrets.SUPABASE_ACCESS_TOKEN_HEISTMIND }}`).
+
 ## Where they live
 
 ```sh

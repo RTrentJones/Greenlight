@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadManifest, resolveEntry } from '../manifest';
-import { packsForTool } from '../providers';
+import { packsForTool, secretKeyFor } from '../providers';
 
 /**
  * `greenlight secrets sync` — push the local `.greenlight/secrets.env` to the repo's
@@ -239,10 +239,9 @@ export async function gatherSecrets(
     for (const pack of packs) {
       console.log(`── ${pack.name}${pack.setupUrl ? `  →  ${pack.setupUrl}` : ''}`);
       for (const tok of pack.tokens) {
-        // GitHub secret convention (matches infra.yml refs). perTool tokens live on the shared
-        // wrapper scoped to one tool's repo, so they get a `_<TOOL>` suffix to avoid collisions.
-        const suffix = `_${name.toUpperCase().replace(/-/g, '_')}`;
-        const key = tok.envVar.toUpperCase() + (tok.perTool ? suffix : '');
+        // GitHub secret name (matches infra.yml refs) — the convention lives in secretKeyFor:
+        // perTool tokens get a `_<TOOL>` suffix; a manifest tokenOverride (multi-account) wins.
+        const key = secretKeyFor(tok, name, entry.tokenOverrides);
         if (key === 'GITHUB_TOKEN') {
           console.log('   · GITHUB_TOKEN — provided automatically by Actions; skipping');
           continue;

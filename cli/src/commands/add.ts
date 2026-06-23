@@ -93,7 +93,16 @@ export async function addCommand(args: string[]): Promise<void> {
   } else {
     writeFileSync(
       toolTf,
-      emitToolTf({ name, domain: config.domain, lane, target, data, envs, port: entry?.port }),
+      emitToolTf({
+        name,
+        domain: config.domain,
+        lane,
+        target,
+        data,
+        envs,
+        port: entry?.port,
+        tokenOverrides: entry?.tokenOverrides,
+      }),
     );
     console.log(`✔ wrote infra/${name}.tf (modules: ${providers.join(', ')})`);
   }

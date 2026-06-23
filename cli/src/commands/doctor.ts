@@ -59,6 +59,22 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
         : `no built-in serve for ${t.external ? 'an external ' : ''}${t.target} tool — add preview:{ command, … } so \`greenlight preview ${t.name}\` works`,
   });
 
+  // Token scoping (docs/tokens-reference.md): every project-scoped secret a tool declares — its
+  // `tokens` list + any `tokenOverrides` targets — must carry the tool name, else a second tool's
+  // same-provider secret would collide on the shared wrapper. Pure name check; warn, don't fail.
+  const declared = [...(t.tokens ?? []), ...Object.values(t.tokenOverrides ?? {})];
+  if (declared.length) {
+    const tag = t.name.toUpperCase().replace(/-/g, '_');
+    const generic = declared.filter((s) => !s.toUpperCase().includes(tag));
+    out.push({
+      name: `${t.name}: token scoping`,
+      status: generic.length ? 'warn' : 'ok',
+      detail: generic.length
+        ? `not tool-scoped (should contain ${tag}): ${generic.join(', ')}`
+        : `${declared.length} scoped secret name(s)`,
+    });
+  }
+
   return out;
 }
 

@@ -92,6 +92,40 @@ describe('emitToolTf', () => {
     });
     expect(tf).not.toContain('manage_github_environments = false');
   });
+
+  it('no tokenOverride → default supabase provider (byte-identical, no aliased provider)', () => {
+    const tf = emitToolTf({
+      name: 'heistmind',
+      domain: 'x.dev',
+      lane: 'next',
+      target: 'vercel',
+      data: 'supabase',
+      envs: ['prod'],
+    });
+    expect(tf).not.toContain('provider "supabase"');
+    expect(tf).not.toContain('providers = { supabase');
+    expect(tf).not.toContain('variable "heistmind_supabase_access_token"');
+  });
+
+  it('a SUPABASE_ACCESS_TOKEN override emits an aliased provider + scoped var + providers={}', () => {
+    const tf = emitToolTf({
+      name: 'heistmind',
+      domain: 'x.dev',
+      lane: 'next',
+      target: 'vercel',
+      data: 'supabase',
+      envs: ['prod'],
+      tokenOverrides: { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' },
+    });
+    // the module selects the aliased provider (no module change needed)
+    expect(tf).toContain('providers = { supabase = supabase.heistmind }');
+    // an aliased provider authenticates with the tool's own token
+    expect(tf).toContain('alias        = "heistmind"');
+    expect(tf).toContain('access_token = var.heistmind_supabase_access_token');
+    expect(tf).toContain('variable "heistmind_supabase_access_token"');
+    // the scoped secret name is documented for the infra.yml mapping
+    expect(tf).toContain('SUPABASE_ACCESS_TOKEN_HEISTMIND');
+  });
 });
 
 describe('emitWrapperMainTf', () => {

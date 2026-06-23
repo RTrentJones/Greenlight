@@ -257,6 +257,25 @@ export const PACKS: ProviderPack[] = [
   },
 ];
 
+/**
+ * The Actions/provider-store secret name for a token on a tool — the single source of the
+ * project-scoped-secret naming convention (docs/tokens-reference.md):
+ *  1. an explicit per-tool `tokenOverride` wins (multi-account — use that exact secret name);
+ *  2. else the env var uppercased, with a `_<TOOL>` suffix when `perTool` (a shared-wrapper token
+ *     scoped to one tool's repo, so a second tool's token can't collide).
+ * Pure; used by `secrets gather`, the manifest `tokens` derivation, and tf-emit.
+ */
+export function secretKeyFor(
+  tok: Pick<TokenSpec, 'envVar' | 'perTool'>,
+  toolName: string,
+  overrides?: Record<string, string>,
+): string {
+  const override = overrides?.[tok.envVar];
+  if (override) return override;
+  const suffix = `_${toolName.toUpperCase().replace(/-/g, '_')}`;
+  return tok.envVar.toUpperCase() + (tok.perTool ? suffix : '');
+}
+
 /** The provider packs a tool needs: always-on packs + those whose `appliesTo` matches. */
 export function packsForTool(tool?: ProviderToolInfo): ProviderPack[] {
   return PACKS.filter((p) => p.always || (tool ? p.appliesTo(tool) : false));

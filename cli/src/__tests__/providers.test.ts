@@ -1,5 +1,41 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PACKS, mcpForTool, packsForTool, tfModulesForTool, tokensForTool } from '../providers';
+import {
+  PACKS,
+  mcpForTool,
+  packsForTool,
+  secretKeyFor,
+  tfModulesForTool,
+  tokensForTool,
+} from '../providers';
+
+describe('secretKeyFor — the project-scoped-secret naming convention', () => {
+  it('uppercases an account-level token (no per-tool suffix)', () => {
+    expect(secretKeyFor({ envVar: 'SUPABASE_ACCESS_TOKEN' }, 'heistmind')).toBe(
+      'SUPABASE_ACCESS_TOKEN',
+    );
+  });
+
+  it('adds a _<TOOL> suffix for a perTool token (collision-safe on the shared wrapper)', () => {
+    expect(secretKeyFor({ envVar: 'GREENLIGHT_STATUS_TOKEN', perTool: true }, 'bamcp')).toBe(
+      'GREENLIGHT_STATUS_TOKEN_BAMCP',
+    );
+    // kebab tool names normalize to _
+    expect(secretKeyFor({ envVar: 'GREENLIGHT_STATUS_TOKEN', perTool: true }, 'my-tool')).toBe(
+      'GREENLIGHT_STATUS_TOKEN_MY_TOOL',
+    );
+  });
+
+  it('a tokenOverride wins (multi-account) over both base + suffix', () => {
+    const overrides = { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' };
+    expect(secretKeyFor({ envVar: 'SUPABASE_ACCESS_TOKEN' }, 'heistmind', overrides)).toBe(
+      'SUPABASE_ACCESS_TOKEN_HEISTMIND',
+    );
+    // an override for a different env var doesn't affect this one
+    expect(secretKeyFor({ envVar: 'VERCEL_API_TOKEN' }, 'heistmind', overrides)).toBe(
+      'VERCEL_API_TOKEN',
+    );
+  });
+});
 
 describe('packsForTool', () => {
   it('always includes the always-on packs (cloudflare, hcp, github)', () => {

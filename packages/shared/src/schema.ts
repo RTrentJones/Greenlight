@@ -65,6 +65,15 @@ export const ToolSchema = z
         path: z.string().optional(), // connect path (default: lane default, e.g. `/mcp`)
       })
       .optional(),
+    // The project-scoped secret names this tool needs (e.g. ['TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN']).
+    // The convention (docs/tokens-reference.md): a project-scoped secret carries the uppercased tool name.
+    // `doctor` warns on a name that doesn't — documentation + conformance, no behavior.
+    tokens: z.array(z.string()).optional(),
+    // Opt-in per-tool provider-token OVERRIDES (multi-account). Maps a provider's default token env
+    // var to an alternate secret name, so this tool authenticates that provider with a SECOND account
+    // — e.g. { SUPABASE_ACCESS_TOKEN: 'SUPABASE_ACCESS_TOKEN_HEISTMIND' }. Absent ⇒ unchanged (the
+    // default token). `add`/`adopt` emit an aliased provider + scoped var/secret for an overridden token.
+    tokenOverrides: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((tool, ctx) => {
     const rule = MATRIX[tool.lane];
