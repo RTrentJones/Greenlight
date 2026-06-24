@@ -8,7 +8,7 @@ import { z } from 'zod';
  * combination fails when the config is read — never at deploy.
  */
 
-export const LaneEnum = z.enum(['astro', 'next', 'mcp']);
+export const LaneEnum = z.enum(['astro', 'next', 'mcp', 'agent']);
 export const TargetEnum = z.enum(['workers', 'vercel', 'oci']);
 export const DataEnum = z.enum(['none', 'd1', 'kv', 'supabase', 'neon']);
 export const AuthEnum = z.enum(['none', 'bearer', 'oauth']);
@@ -18,6 +18,8 @@ export const EnvEnum = z.enum(['preview', 'beta', 'prod']);
 /**
  * V1 lane → allowed targets + allowed data (docs/archive/greenlight-v1.md §4 matrix).
  * `mcp` supports both `workers` (dev/throwaway) and `oci` (BAMCP production).
+ * `agent` is an autonomous cron-triggered Worker (LLM-backed, Gemini free tier); `kv` holds its
+ * last output + run metadata (see docs/agents-plan.md).
  */
 const MATRIX: Record<
   z.infer<typeof LaneEnum>,
@@ -29,6 +31,7 @@ const MATRIX: Record<
   astro: { targets: ['workers'], data: ['none', 'd1', 'kv'] },
   next: { targets: ['vercel'], data: ['none', 'supabase', 'neon'] },
   mcp: { targets: ['workers', 'oci'], data: ['none'] },
+  agent: { targets: ['workers'], data: ['none', 'kv'] },
 };
 
 export const ToolSchema = z

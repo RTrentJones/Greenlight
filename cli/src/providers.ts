@@ -21,6 +21,7 @@ export interface McpServer {
 
 /** A tool's provider-relevant facets (a subset of the manifest entry). */
 export interface ProviderToolInfo {
+  lane?: string;
   target?: string;
   data?: string;
 }
@@ -193,6 +194,29 @@ export const PACKS: ProviderPack[] = [
     },
     skill: 'provider-neon',
     tfModules: ['neon'],
+  },
+  {
+    id: 'gemini',
+    name: 'Google Gemini (free tier)',
+    // The LLM behind the `agent` lane. (A future `llm` axis would generalize this beyond agents.)
+    appliesTo: (t) => t.lane === 'agent',
+    guide: 'docs/provider-tokens.md — GEMINI_API_KEY (Google AI Studio, free tier, no billing)',
+    setupUrl: 'https://aistudio.google.com/apikey',
+    tokens: [
+      {
+        // The agent Worker's LLM credential. Free tier (no billing / no card); set as a Cloudflare
+        // Worker secret, never in the repo. One key serves every agent (shared, not per-tool).
+        envVar: 'GEMINI_API_KEY',
+        label: 'Google AI Studio API key (Gemini free tier)',
+        verify: async (t) => {
+          const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${t}`);
+          return { ok: okStatus(r), detail: `HTTP ${r.status}` };
+        },
+      },
+    ],
+    skill: 'provider-gemini',
+    // No tfModules: the agent Worker (cron + KV + secret + custom_domain) deploys via wrangler,
+    // like the astro blog — KV/DNS are wrangler-managed for the workers target.
   },
   {
     id: 'hcp',

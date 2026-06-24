@@ -72,6 +72,23 @@ describe('packsForTool', () => {
     expect(packsForTool({ target: 'oci' }).map((p) => p.id)).toContain('oci');
     expect(packsForTool({ target: 'vercel' }).map((p) => p.id)).not.toContain('oci');
   });
+
+  it('adds gemini for lane:agent (the LLM behind the agent lane)', () => {
+    const ids = packsForTool({ lane: 'agent', target: 'workers', data: 'kv' }).map((p) => p.id);
+    expect(ids).toContain('gemini');
+    // GEMINI_API_KEY is a shared account credential (one key serves every agent), not per-tool
+    const key = tokensForTool({ lane: 'agent', target: 'workers' }).find(
+      (t) => t.envVar === 'GEMINI_API_KEY',
+    );
+    expect(key).toBeTruthy();
+    expect(key?.perTool).toBeFalsy();
+    // gemini is wrangler-deployed → no Terraform module
+    expect(tfModulesForTool({ lane: 'agent', target: 'workers' })).not.toContain('gemini');
+    // and it does NOT apply to non-agent lanes
+    expect(packsForTool({ lane: 'next', target: 'vercel' }).map((p) => p.id)).not.toContain(
+      'gemini',
+    );
+  });
 });
 
 describe('mcpForTool', () => {

@@ -218,7 +218,7 @@ export async function gatherSecrets(
 ): Promise<void> {
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
-  const packs = packsForTool({ target: entry.target, data: entry.data });
+  const packs = packsForTool({ lane: entry.lane, target: entry.target, data: entry.data });
   const dest = env ? `env "${env}" of ${repo}` : repo;
   const existing = listGitHubSecrets(repo, env); // flag which paste would override
   console.log(`Gathering secrets for "${name}" → GitHub ${dest}`);

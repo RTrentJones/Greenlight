@@ -390,7 +390,11 @@ ${localsBlock}`;
 
 /** Which `required_providers`/provider blocks a tool needs in main.tf (cloudflare/github
  * always; vercel/supabase per target/data). Used to scaffold or to nudge the user. */
-export function providersForTool(tool: { target?: string; data?: string }): string[] {
+export function providersForTool(tool: {
+  lane?: string;
+  target?: string;
+  data?: string;
+}): string[] {
   const ids = new Set(packsForTool(tool).map((p) => p.id));
   const out = ['cloudflare', 'github'];
   if (ids.has('vercel')) out.push('vercel');

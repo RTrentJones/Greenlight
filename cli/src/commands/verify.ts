@@ -32,6 +32,15 @@ export function defaultSpec(lane: Lane): VerifySpec {
       return { mode: 'api', checks: [{ path: '/', status: 200 }] };
     case 'mcp':
       return { mode: 'mcp', expectTools: [] };
+    case 'agent':
+      // An agent exposes GET /status (last-run metadata). The default just smoke-checks it's up;
+      // the tool's verify.config.ts asserts ok:true + a recent run. settle absorbs deploy lag.
+      return {
+        mode: 'api',
+        checks: [{ path: '/status', status: 200 }],
+        settleRetries: 6,
+        settleMs: 5000,
+      };
   }
 }
 

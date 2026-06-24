@@ -72,7 +72,7 @@ export async function addCommand(args: string[]): Promise<void> {
   const entry = next.tools.find((t) => t.name === name);
   const data = entry?.data ?? 'none';
   const envs = entry?.envs ?? ['beta', 'prod'];
-  const toolInfo = { target, data };
+  const toolInfo = { lane, target, data };
 
   const dest = resolve(process.cwd(), 'tools', name);
   if (existsSync(dest)) throw new Error(`tools/${name} already exists`);

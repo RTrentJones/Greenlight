@@ -46,6 +46,30 @@ describe('ConfigSchema', () => {
     expect(r.success).toBe(false);
   });
 
+  it('accepts an agent on workers with kv', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'muse', lane: 'agent', target: 'workers', data: 'kv', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects an agent on vercel (out of matrix — agent is workers-only)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'muse', lane: 'agent', target: 'vercel', data: 'kv', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects an agent with supabase data (out of matrix)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'muse', lane: 'agent', target: 'workers', data: 'supabase', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(false);
+  });
+
   it('rejects a private tool with auth none', () => {
     const r = ConfigSchema.safeParse({
       ...base,

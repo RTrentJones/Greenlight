@@ -700,7 +700,7 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
       `verify/${name}.config.ts`,
     );
   }
-  const providers = providersForTool({ target, data });
+  const providers = providersForTool({ lane, target, data });
   if (
     existsSync(join(cwd, 'infra/main.tf')) &&
     providers.some((p) => p !== 'cloudflare' && p !== 'github')
@@ -709,7 +709,7 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
   }
 
   // 4) Bidirectional kit INTO the tool repo (committed there → travels with the submodule).
-  materializeAgentKit(dest, { target, data });
+  materializeAgentKit(dest, { lane, target, data });
   addGreenlightScript(dest);
 
   // 5) Event-driven deploy (option B) for container-built targets: the tool builds + pushes +
@@ -843,7 +843,7 @@ async function adoptStandalone(ctx: AdoptCtx): Promise<void> {
   // 6) verify spec
   writeIfAbsent(join(repo, 'verify.config.ts'), starterVerifyConfig(lane), 'verify.config.ts');
   // 7) agent kit (MCP tailored to the tool's target/data)
-  materializeAgentKit(repo, { target, data });
+  materializeAgentKit(repo, { lane, target, data });
   // 8) toolchain
   writeIfAbsent(join(repo, 'mise.toml'), MISE_TOML, 'mise.toml');
   writeIfAbsent(join(repo, '.node-version'), '24\n', '.node-version');

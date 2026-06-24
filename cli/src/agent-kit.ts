@@ -18,6 +18,7 @@ export interface McpConfig {
 }
 
 export interface ToolKitInfo {
+  lane?: string;
   target?: string;
   data?: string;
 }

@@ -91,9 +91,9 @@ export async function agentCommand(args: string[]): Promise<void> {
     const { config } = await loadManifest();
     const entry = resolveEntry(config, name);
     const dir = resolve(process.cwd(), entry.dir ?? '.');
-    materializeAgentKit(dir, { target: entry.target, data: entry.data });
+    materializeAgentKit(dir, { lane: entry.lane, target: entry.target, data: entry.data });
     console.log(
-      `\nSynced the kit for "${name}" → ${entry.dir ?? '.'} (target=${entry.target}, data=${entry.data}).`,
+      `\nSynced the kit for "${name}" → ${entry.dir ?? '.'} (lane=${entry.lane}, target=${entry.target}, data=${entry.data}).`,
     );
     return;
   }
