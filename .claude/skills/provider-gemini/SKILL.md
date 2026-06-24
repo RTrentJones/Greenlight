@@ -29,9 +29,17 @@ POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:ge
 → candidates[0].content.parts[0].text
 ```
 
-## Deploy — wrangler (workers target)
+## Deploy — emitted CI (push to main)
 
-Like the astro blog: cron + KV + secret + `custom_domain` in `wrangler.toml`; no Terraform.
+`greenlight add` resolves the Cloudflare **account id** into `wrangler.toml` (so wrangler skips the
+`/memberships` call a scoped token can't do) and emits **`.github/workflows/deploy-<name>.yml`**. On
+a push to main that touches `tools/<name>`, that workflow: **creates the KV namespace** (find-or-create
+in-CI — no manual step, the id stays a placeholder), deploys the Worker (cron + `custom_domain` from
+`wrangler.toml`), sets the `GEMINI_API_KEY` + `RUN_TOKEN` **Worker secrets** from GitHub secrets, seeds
+the first run, and verifies. So the only setup is **adding those two GitHub secrets**. (Local instead:
+`pnpm exec wrangler deploy --env prod`.)
+
+`wrangler.toml` carries the cron + KV binding + the per-env `custom_domain` route; no Terraform.
 
 ```toml
 [triggers]

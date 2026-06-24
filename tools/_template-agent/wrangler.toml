@@ -1,9 +1,11 @@
-# Agent Worker. `greenlight add` rewrites `name` (agent-tool → your tool) + the route domain
-# (example.dev → your domain). You still set the KV namespace id (create it once with
-# `wrangler kv namespace create STATE`) and the secrets:
-#   wrangler secret put GEMINI_API_KEY --env prod   (Google AI Studio key — free tier)
-#   wrangler secret put RUN_TOKEN --env prod         (any random string; bearer for POST /run)
+# Agent Worker. `greenlight add` rewrites `name` + the route domain + the account_id, and emits a
+# .github/workflows/deploy-<name>.yml that (on push to main) creates the KV namespace, deploys, sets
+# the GEMINI_API_KEY + RUN_TOKEN Worker secrets from GitHub secrets, seeds, and verifies. So you only
+# add those two GitHub secrets — no manual wrangler.
 name = "agent-tool"
+# Non-secret account id (committed config). `greenlight add` resolves + fills this from your domain's
+# zone; without it wrangler calls /memberships, which a scoped API token can't do.
+account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 main = "src/index.ts"
 compatibility_date = "2025-06-01"
 

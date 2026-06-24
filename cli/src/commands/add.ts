@@ -1,9 +1,11 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { emitAgentDeployWorkflow, resolveCloudflareAccountId } from '../agent-deploy';
 import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
 import { loadManifest } from '../manifest';
 import { emitToolTf, emitWrapperMainTf, providersForTool } from '../tf-emit';
+import { presentEnv } from '../tokens';
 import { materializeAgentKit } from './agent';
 import { detectRepo, gatherSecrets } from './secrets';
 
@@ -89,13 +91,27 @@ export async function addCommand(args: string[]): Promise<void> {
     // Templates ship `.gitignore` as `gitignore` (npm drops dotfiles from the tarball) — restore it.
     const shippedGitignore = join(dest, 'gitignore');
     if (existsSync(shippedGitignore)) renameSync(shippedGitignore, join(dest, '.gitignore'));
-    // Agent (workers) templates carry a wrangler.toml with a placeholder name + route domain — bind
-    // them to this tool so it's deploy-ready (the user still sets the KV id + the secrets).
+    // Agent (workers) templates carry a wrangler.toml with placeholder name + route domain + account
+    // id — bind them so it's deploy-ready (the workflow + secrets are emitted/set separately).
     const wranglerPath = join(dest, 'wrangler.toml');
     if (existsSync(wranglerPath)) {
-      const wt = readFileSync(wranglerPath, 'utf8')
+      let wt = readFileSync(wranglerPath, 'utf8')
         .replaceAll('agent-tool', name)
         .replaceAll('example.dev', config.domain);
+      // Resolve + inject the non-secret Cloudflare account id (so wrangler skips /memberships, which
+      // a scoped token can't do). Best-effort: needs CLOUDFLARE_API_TOKEN in the env / local store.
+      if (wt.includes('REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID')) {
+        const token = presentEnv(process.cwd()).CLOUDFLARE_API_TOKEN;
+        const acct = token ? await resolveCloudflareAccountId(config.domain, token) : null;
+        if (acct) {
+          wt = wt.replaceAll('REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID', acct);
+          console.log('✔ resolved the Cloudflare account id into wrangler.toml');
+        } else {
+          console.log(
+            '· could not resolve the Cloudflare account id — set account_id in wrangler.toml',
+          );
+        }
+      }
       writeFileSync(wranglerPath, wt);
     }
     console.log(`✔ copied ${src} → tools/${name}`);
@@ -145,6 +161,20 @@ export async function addCommand(args: string[]): Promise<void> {
       }),
     );
     console.log(`✔ wrote infra/${name}.tf (modules: ${providers.join(', ')})`);
+  }
+
+  // 2b) Agent: emit the per-tool deploy workflow (KV-as-code + Worker secrets + seed + verify), so a
+  // push to main deploys it — no hand-written CI. GEMINI_API_KEY + RUN_TOKEN are GitHub secrets.
+  if (lane === 'agent') {
+    const wfDir = resolve(cwd, '.github/workflows');
+    const wfPath = join(wfDir, `deploy-${name}.yml`);
+    if (existsSync(wfPath)) {
+      console.log(`· .github/workflows/deploy-${name}.yml exists — left as-is`);
+    } else {
+      mkdirSync(wfDir, { recursive: true });
+      writeFileSync(wfPath, emitAgentDeployWorkflow(name, config.domain));
+      console.log(`✔ wrote .github/workflows/deploy-${name}.yml`);
+    }
   }
 
   // 3) Agent kit — merge the new providers' MCP + provider skills into the wrapper's kit.
