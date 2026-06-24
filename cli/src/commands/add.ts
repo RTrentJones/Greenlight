@@ -89,6 +89,15 @@ export async function addCommand(args: string[]): Promise<void> {
     // Templates ship `.gitignore` as `gitignore` (npm drops dotfiles from the tarball) — restore it.
     const shippedGitignore = join(dest, 'gitignore');
     if (existsSync(shippedGitignore)) renameSync(shippedGitignore, join(dest, '.gitignore'));
+    // Agent (workers) templates carry a wrangler.toml with a placeholder name + route domain — bind
+    // them to this tool so it's deploy-ready (the user still sets the KV id + the secrets).
+    const wranglerPath = join(dest, 'wrangler.toml');
+    if (existsSync(wranglerPath)) {
+      const wt = readFileSync(wranglerPath, 'utf8')
+        .replaceAll('agent-tool', name)
+        .replaceAll('example.dev', config.domain);
+      writeFileSync(wranglerPath, wt);
+    }
     console.log(`✔ copied ${src} → tools/${name}`);
     // A scaffolded JS package must be a pnpm workspace member, or a monorepo (e.g. Vercel) build
     // installs from the repo root and skips the tool's deps. Submodule tools (adopt) are excluded.

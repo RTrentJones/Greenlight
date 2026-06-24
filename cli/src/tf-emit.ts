@@ -40,6 +40,20 @@ const hcl = (s: string) => s.replace(/\n{3,}/g, '\n\n').trimEnd();
  * header lists which); never re-declares providers/backend (those are wrapper singletons). */
 export function emitToolTf(opts: ToolTfOpts): string {
   const { name, domain, lane, target, data, envs, ref = MODULE_REF } = opts;
+
+  // An agent is fully wrangler-managed: the Worker + cron + KV + custom_domain route + the
+  // GEMINI_API_KEY/RUN_TOKEN secrets all live in tools/<name>/wrangler.toml, and `wrangler deploy`
+  // registers the cron. No Terraform — emit a marker so infra/<name>.tf documents that, rather than
+  // a DNS module that would fight wrangler's custom_domain over the same record.
+  if (lane === 'agent') {
+    const suffix = data && data !== 'none' ? `/${data}` : '';
+    return `# ${name} — agent/${target}${suffix}, emitted by \`greenlight add\`.
+# Wrangler-managed: the Worker (cron + KV + custom_domain route + GEMINI_API_KEY/RUN_TOKEN
+# secrets) deploys via \`wrangler deploy\` from tools/${name}/. No Terraform here — see that
+# wrangler.toml + the provider-gemini skill + docs/agents-plan.md.
+`;
+  }
+
   const port = opts.port ?? 8000; // container listen port (oci); tunnel routes to localhost:<port>
   const slug = opts.slug ?? `OWNER/${name}`;
   const useSupabase = data === 'supabase';

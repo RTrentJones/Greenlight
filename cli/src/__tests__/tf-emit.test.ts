@@ -73,6 +73,22 @@ describe('emitToolTf', () => {
     expect(tf).toContain('NEON_API_KEY_SECONDARY');
   });
 
+  it('emits a wrangler-managed marker (no Terraform modules) for an agent tool', () => {
+    const tf = emitToolTf({
+      name: 'muse',
+      domain: 'example.dev',
+      lane: 'agent',
+      target: 'workers',
+      data: 'kv',
+      envs: ['beta', 'prod'],
+    });
+    expect(tf).toContain('Wrangler-managed');
+    expect(tf).toContain('agent/workers/kv');
+    // an agent is wrangler-managed — no TF modules at all (no DNS module that would fight wrangler)
+    expect(tf).not.toContain('module "');
+    expect(tf).not.toContain('cloudflare_dns_record');
+  });
+
   it('a dataShareWith tool emits NO neon module but wires the OWNER’s connection strings (one DB, many services)', () => {
     const tf = emitToolTf({
       name: 'worker',
