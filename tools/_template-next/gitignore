@@ -1,0 +1,5 @@
+# Shipped as `gitignore` (no dot) so it survives the npm tarball; `greenlight add` renames it to
+# `.gitignore` on scaffold. Next.js build output + generated types (regenerated on every build).
+.next/
+next-env.d.ts
+node_modules/

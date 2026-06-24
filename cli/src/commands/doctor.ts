@@ -77,6 +77,31 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
     });
   }
 
+  // A local next/vercel tool builds as a monorepo subdir on Vercel, which needs two things the
+  // first such tool's bring-up exposed: (1) it must be a pnpm workspace member, or the root install
+  // skips its deps (`Cannot find package 'pg'`); (2) a vercel.json framework preset, or Vercel
+  // treats the Next output as a static site (`No Output Directory named "public"`).
+  if (!t.external && t.lane === 'next' && t.target === 'vercel') {
+    const wsPath = join(root, 'pnpm-workspace.yaml');
+    const ws = existsSync(wsPath) ? readFileSync(wsPath, 'utf8') : '';
+    const member = ws.includes(toolDir) || /^\s*-\s*["']?tools\/\*/m.test(ws);
+    out.push({
+      name: `${t.name}: pnpm workspace member`,
+      status: member ? 'ok' : 'warn',
+      detail: member
+        ? undefined
+        : `add "${toolDir}" to pnpm-workspace.yaml — else Vercel's root install skips its deps`,
+    });
+    const hasVercelJson = existsSync(join(root, toolDir, 'vercel.json'));
+    out.push({
+      name: `${t.name}: vercel.json framework`,
+      status: hasVercelJson ? 'ok' : 'warn',
+      detail: hasVercelJson
+        ? undefined
+        : `no ${join(toolDir, 'vercel.json')} (framework: "nextjs") — Vercel may treat the build as static`,
+    });
+  }
+
   return out;
 }
 

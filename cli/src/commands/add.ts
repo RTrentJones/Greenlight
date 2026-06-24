@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
@@ -16,6 +16,28 @@ function flag(args: string[], name: string): string | undefined {
 function templateDir(lane: string, target: string): string {
   const base = join(templatesRoot(), `_template-${lane}`);
   return lane === 'mcp' ? join(base, target) : base;
+}
+
+/** Ensure `member` (e.g. "tools/foo") is a pnpm workspace package, so the root install resolves the
+ * tool's deps. No-op if already listed or covered by a `tools/*` glob. Idempotent; order-agnostic. */
+export function registerWorkspaceMember(cwd: string, member: string): void {
+  const wsPath = join(cwd, 'pnpm-workspace.yaml');
+  if (!existsSync(wsPath)) {
+    writeFileSync(wsPath, `packages:\n  - "${member}"\n`);
+    console.log(`✔ created pnpm-workspace.yaml (member ${member})`);
+    return;
+  }
+  const text = readFileSync(wsPath, 'utf8');
+  if (text.includes(member) || /^\s*-\s*["']?tools\/\*/m.test(text)) return; // already covered
+  const lines = text.split('\n');
+  const pkgIdx = lines.findIndex((l) => /^packages\s*:/.test(l));
+  if (pkgIdx === -1) {
+    writeFileSync(wsPath, `${text.replace(/\s*$/, '')}\npackages:\n  - "${member}"\n`);
+  } else {
+    lines.splice(pkgIdx + 1, 0, `  - "${member}"`);
+    writeFileSync(wsPath, lines.join('\n'));
+  }
+  console.log(`✔ registered ${member} in pnpm-workspace.yaml`);
 }
 
 export async function addCommand(args: string[]): Promise<void> {
@@ -64,7 +86,13 @@ export async function addCommand(args: string[]): Promise<void> {
       pkg.name = name;
       writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
     }
+    // Templates ship `.gitignore` as `gitignore` (npm drops dotfiles from the tarball) — restore it.
+    const shippedGitignore = join(dest, 'gitignore');
+    if (existsSync(shippedGitignore)) renameSync(shippedGitignore, join(dest, '.gitignore'));
     console.log(`✔ copied ${src} → tools/${name}`);
+    // A scaffolded JS package must be a pnpm workspace member, or a monorepo (e.g. Vercel) build
+    // installs from the repo root and skips the tool's deps. Submodule tools (adopt) are excluded.
+    if (existsSync(pkgPath)) registerWorkspaceMember(process.cwd(), `tools/${name}`);
   } else {
     console.log(`! no template at ${src} — manifest entry added without scaffolding`);
   }

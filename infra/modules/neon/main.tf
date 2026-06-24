@@ -33,8 +33,10 @@ resource "neon_branch" "env" {
 resource "neon_endpoint" "env" {
   for_each = neon_branch.env
 
-  project_id     = neon_project.this.id
-  branch_id      = each.value.id
-  type           = "read_write"
-  pooler_enabled = true
+  project_id = neon_project.this.id
+  branch_id  = each.value.id
+  type       = "read_write"
+  # No pooler_enabled: it's optional+computed in the provider and a set `true` isn't persisted (it
+  # reads back `false` → a perpetual plan diff). Pooling needs no flag — the app's DATABASE_URL uses
+  # the endpoint's `-pooler` host (see outputs.tf), which routes through PgBouncer regardless.
 }

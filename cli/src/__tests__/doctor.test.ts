@@ -86,6 +86,38 @@ describe('runDoctor — conformance to the uniform model', () => {
     expect(find(checks, 'notes: local preview gate')).toBe('ok');
   });
 
+  it('a local next/vercel tool warns when not a workspace member and missing vercel.json', () => {
+    mkdirSync(join(root, 'tools/site'), { recursive: true });
+    const checks = runDoctor(
+      cfg([{ name: 'site', lane: 'next', target: 'vercel', data: 'neon', envs: ['beta', 'prod'] }]),
+      root,
+    );
+    expect(find(checks, 'site: pnpm workspace member')).toBe('warn');
+    expect(find(checks, 'site: vercel.json framework')).toBe('warn');
+  });
+
+  it('a local next/vercel tool is ok when a workspace member with vercel.json', () => {
+    mkdirSync(join(root, 'tools/site'), { recursive: true });
+    writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - "tools/site"\n');
+    writeFileSync(join(root, 'tools/site/vercel.json'), '{ "framework": "nextjs" }');
+    const checks = runDoctor(
+      cfg([{ name: 'site', lane: 'next', target: 'vercel', data: 'neon', envs: ['beta', 'prod'] }]),
+      root,
+    );
+    expect(find(checks, 'site: pnpm workspace member')).toBe('ok');
+    expect(find(checks, 'site: vercel.json framework')).toBe('ok');
+  });
+
+  it('a tools/* glob satisfies the workspace-member check', () => {
+    mkdirSync(join(root, 'tools/site'), { recursive: true });
+    writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - "tools/*"\n');
+    const checks = runDoctor(
+      cfg([{ name: 'site', lane: 'next', target: 'vercel', data: 'neon', envs: ['beta', 'prod'] }]),
+      root,
+    );
+    expect(find(checks, 'site: pnpm workspace member')).toBe('ok');
+  });
+
   it('token scoping: ok when every declared secret carries the tool name', () => {
     const checks = runDoctor(
       cfg([
