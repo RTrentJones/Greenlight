@@ -15,6 +15,9 @@ resource "neon_project" "this" {
   name       = var.name
   region_id  = var.region
   pg_version = var.pg_version
+  # Explicit free-tier-safe retention — the provider defaults to 86400 (24h), which free projects
+  # reject (max 21600 / 6h). See variables.tf; override for paid plans.
+  history_retention_seconds = var.history_retention_seconds
 }
 
 resource "neon_branch" "env" {

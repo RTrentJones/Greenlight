@@ -196,16 +196,13 @@ module "${name}_neon" {
 module "${name}_vercel" {
   source = "${moduleSource('vercel', ref)}"
 
-  project_id  = var.${name}_vercel_project_id
+  # Non-secret id — create the Vercel project first (git-import, root dir tools/${name}), then commit
+  # the literal here (the heistmind pattern). No TF var / HCP workspace variable needed.
+  project_id  = "prj_REPLACE_WITH_YOUR_VERCEL_PROJECT_ID"
   name        = "${name}"
   domain      = "${domain}"
   beta_branch = "develop"
 ${env}
-}
-
-variable "${name}_vercel_project_id" {
-  type        = string
-  description = "Vercel project id for ${name} (prj_…); the project must already exist."
 }`);
   }
 
@@ -322,7 +319,8 @@ export function emitWrapperMainTf(opts: {
   const providerBlocks = ['provider "cloudflare" {}', `provider "github" { owner = "${owner}" }`];
   if (need.has('vercel')) providerBlocks.push('provider "vercel" {}');
   if (need.has('supabase')) providerBlocks.push('provider "supabase" {}');
-  if (need.has('neon')) providerBlocks.push('provider "neon" { api_key = var.neon_api_key }');
+  // neon reads NEON_API_KEY from the env natively (like supabase/SUPABASE_ACCESS_TOKEN) — no TF var.
+  if (need.has('neon')) providerBlocks.push('provider "neon" {}');
   if (need.has('oci')) {
     providerBlocks.push(`provider "oci" {
   # trimspace guards against a trailing newline/space in a pasted secret (a malformed region
@@ -342,11 +340,8 @@ export function emitWrapperMainTf(opts: {
     // per PROJECT, so it's declared per-tool in each tool's <name>.tf (not here) to avoid a collision.
     vars.push('variable "supabase_organization_id" { type = string }');
   }
-  if (need.has('neon')) {
-    // Account-level API key — configures the neon provider for every neon tool (no per-tool secret;
-    // the connection strings are module outputs). Synced as TF_VAR_neon_api_key.
-    vars.push('variable "neon_api_key" {\n  type      = string\n  sensitive = true\n}');
-  }
+  // neon needs no TF variable: the provider reads the account-level NEON_API_KEY from the env (the
+  // consumer exposes it in infra.yml, like SUPABASE_ACCESS_TOKEN); connection strings are module outputs.
   if (need.has('oci')) {
     // OCI provider auth (API-key signing) — gathered by `greenlight secrets gather`, synced as
     // TF_VAR_oci_*. private_key is the PEM content. The VCN/subnet/AD are IaC (oci-network module

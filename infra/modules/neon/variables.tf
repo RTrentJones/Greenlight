@@ -15,6 +15,19 @@ variable "pg_version" {
   description = "Postgres major version."
 }
 
+variable "history_retention_seconds" {
+  type    = number
+  default = 21600 # 6h — the Neon FREE-tier maximum. The provider's own default (86400 / 24h) is
+  # rejected on free projects ("requested history retention seconds exceeds allowed maximum ... max
+  # 21600"). Bump this on a paid plan (up to 7d / 604800) for longer point-in-time restore.
+  description = "Point-in-time restore window (seconds). Default 21600 = the free-tier cap."
+
+  validation {
+    condition     = var.history_retention_seconds >= 0 && var.history_retention_seconds <= 604800
+    error_message = "history_retention_seconds must be between 0 and 604800 (7 days)."
+  }
+}
+
 variable "envs" {
   type        = list(string)
   description = <<-EOT

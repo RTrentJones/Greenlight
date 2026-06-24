@@ -21,8 +21,9 @@ describe('emitToolTf', () => {
     expect(tf).toContain('NEXT_PUBLIC_SUPABASE_URL');
     // external → don't manage GitHub envs in the wrapper
     expect(tf).toContain('manage_github_environments = false');
-    // a vercel project id variable is declared
-    expect(tf).toContain('variable "heistmind_vercel_project_id"');
+    // vercel project id is a committed literal (non-secret), not a var that needs an out-of-band store
+    expect(tf).toContain('prj_REPLACE_WITH_YOUR_VERCEL_PROJECT_ID');
+    expect(tf).not.toContain('variable "heistmind_vercel_project_id"');
     // keepalive nudge (aggregated, not a per-tool worker)
     expect(tf).toContain('module.keepalive.targets_json');
     // pinned module ref
@@ -209,14 +210,15 @@ describe('emitWrapperMainTf', () => {
     expect(tf).not.toContain('supabase/supabase');
   });
 
-  it('includes the neon provider + api_key var when needed', () => {
+  it('includes the neon provider (native NEON_API_KEY env, no TF var) when needed', () => {
     const tf = emitWrapperMainTf({
       domain: 'x.dev',
       providers: ['cloudflare', 'github', 'vercel', 'neon'],
     });
     expect(tf).toContain('neon       = { source = "kislerdm/neon"');
-    expect(tf).toContain('provider "neon" { api_key = var.neon_api_key }');
-    expect(tf).toContain('variable "neon_api_key"');
+    // reads NEON_API_KEY from the env natively (like supabase) — empty provider block, no TF var
+    expect(tf).toContain('provider "neon" {}');
+    expect(tf).not.toContain('variable "neon_api_key"');
   });
 
   it('for oci: auth vars + a compartment local (root default), but no manual subnet/AD vars', () => {
