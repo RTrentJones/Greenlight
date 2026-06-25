@@ -242,7 +242,7 @@ export const PACKS: ProviderPack[] = [
   {
     id: 'github',
     name: 'GitHub',
-    always: true, // secrets sync + repo/branch infra
+    always: true, // the single secret store (Actions secrets) + repo/branch infra
     appliesTo: () => true,
     guide: 'docs/provider-tokens.md — GitHub (gh auth, or a fine-grained PAT)',
     setupUrl: 'https://github.com/settings/personal-access-tokens/new',

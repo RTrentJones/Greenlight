@@ -1,10 +1,10 @@
-# Agent Worker. `greenlight add` rewrites `name` + the route domain + the account_id, and emits a
-# .github/workflows/deploy-<name>.yml that (on push to main) creates the KV namespace, deploys, sets
-# the GEMINI_API_KEY + RUN_TOKEN Worker secrets from GitHub secrets, seeds, and verifies. So you only
-# add those two GitHub secrets — no manual wrangler.
+# Agent Worker. `greenlight add` rewrites `name` + the route domain, and emits a
+# .github/workflows/deploy-<name>.yml that (on push to main) resolves the account id + KV namespace,
+# deploys, sets the GEMINI_API_KEY + RUN_TOKEN Worker secrets from GitHub secrets, seeds, and verifies.
+# So you only add those two GitHub secrets — no manual wrangler, no local secrets.
 name = "agent-tool"
-# Non-secret account id (committed config). `greenlight add` resolves + fills this from your domain's
-# zone; without it wrangler calls /memberships, which a scoped API token can't do.
+# Non-secret account id. The emitted deploy workflow resolves it from your domain's zone in CI and
+# fills this placeholder (wrangler can't call /memberships to auto-discover it with a scoped token).
 account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 main = "src/index.ts"
 compatibility_date = "2025-06-01"

@@ -1,11 +1,10 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { emitAgentDeployWorkflow, resolveCloudflareAccountId } from '../agent-deploy';
+import { emitAgentDeployWorkflow } from '../agent-deploy';
 import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
 import { loadManifest } from '../manifest';
 import { emitToolTf, emitWrapperMainTf, providersForTool } from '../tf-emit';
-import { presentEnv } from '../tokens';
 import { materializeAgentKit } from './agent';
 import { detectRepo, gatherSecrets } from './secrets';
 
@@ -91,27 +90,14 @@ export async function addCommand(args: string[]): Promise<void> {
     // Templates ship `.gitignore` as `gitignore` (npm drops dotfiles from the tarball) — restore it.
     const shippedGitignore = join(dest, 'gitignore');
     if (existsSync(shippedGitignore)) renameSync(shippedGitignore, join(dest, '.gitignore'));
-    // Agent (workers) templates carry a wrangler.toml with placeholder name + route domain + account
-    // id — bind them so it's deploy-ready (the workflow + secrets are emitted/set separately).
+    // Agent (workers) templates carry a wrangler.toml with a placeholder name + route domain — bind
+    // those to this tool. The account id + KV namespace id stay placeholders that the emitted deploy
+    // workflow resolves in CI (the local loop has no secrets — v0.4.0; see agent-deploy.ts).
     const wranglerPath = join(dest, 'wrangler.toml');
     if (existsSync(wranglerPath)) {
-      let wt = readFileSync(wranglerPath, 'utf8')
+      const wt = readFileSync(wranglerPath, 'utf8')
         .replaceAll('agent-tool', name)
         .replaceAll('example.dev', config.domain);
-      // Resolve + inject the non-secret Cloudflare account id (so wrangler skips /memberships, which
-      // a scoped token can't do). Best-effort: needs CLOUDFLARE_API_TOKEN in the env / local store.
-      if (wt.includes('REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID')) {
-        const token = presentEnv().CLOUDFLARE_API_TOKEN;
-        const acct = token ? await resolveCloudflareAccountId(config.domain, token) : null;
-        if (acct) {
-          wt = wt.replaceAll('REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID', acct);
-          console.log('✔ resolved the Cloudflare account id into wrangler.toml');
-        } else {
-          console.log(
-            '· could not resolve the Cloudflare account id — set account_id in wrangler.toml',
-          );
-        }
-      }
       writeFileSync(wranglerPath, wt);
     }
     console.log(`✔ copied ${src} → tools/${name}`);

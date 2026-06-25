@@ -52,6 +52,12 @@ jobs:
           RUN_TOKEN: \${{ secrets.RUN_TOKEN }}
         run: |
           cd tools/${name}
+          # Account id as code: resolve the (non-secret) account id from the domain's zone and inject
+          # it into wrangler.toml — wrangler can't call /memberships to auto-discover it with a scoped
+          # token. Derived, so the repo keeps the REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID placeholder.
+          ACCT=$(curl -fsS "https://api.cloudflare.com/client/v4/zones?name=${domain}" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | jq -r '.result[0].account.id // empty')
+          if [ -z "$ACCT" ]; then echo "::error::could not resolve the Cloudflare account id for ${domain} (token needs Zone:Read?)"; exit 1; fi
+          sed -i "s/REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID/$ACCT/g" wrangler.toml
           # KV namespace as code: find-or-create the STATE namespace (idempotent), then inject its id
           # into wrangler.toml for this deploy. The id is non-secret + derived, so the repo keeps the
           # REPLACE_WITH_KV_NAMESPACE_ID placeholder — no manual create, no hardcoded id.
@@ -82,24 +88,4 @@ jobs:
         if: steps.creds.outputs.have != '1'
         run: echo "Missing CLOUDFLARE_API_TOKEN or GEMINI_API_KEY — ${name} deploy skipped."
 `;
-}
-
-/** The (non-secret) Cloudflare account id for a domain's zone — committed in wrangler.toml so
- * wrangler doesn't call /memberships (which a scoped API token can't). Returns null on any failure
- * (no token, no zone, network) so `add` can fall back to a placeholder. */
-export async function resolveCloudflareAccountId(
-  domain: string,
-  token: string,
-): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(domain)}`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!res.ok) return null;
-    const data = (await res.json()) as { result?: { account?: { id?: string } }[] };
-    return data.result?.[0]?.account?.id ?? null;
-  } catch {
-    return null;
-  }
 }
