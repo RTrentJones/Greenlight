@@ -37,7 +37,11 @@ plain `.sql`); the app's own build runs its migrate against the wired **`DIRECT_
 prod branch, preview build → preview branch; a failed migrate fails the build = a natural gate). The
 **native Neon↔Vercel integration** owns ephemeral per-PR preview branches (don't put those in
 Terraform). Greenlight's only role is the **dangerous-SQL gate**: run `greenlight migrations scan`
-(auto-detects `supabase/migrations | migrations | drizzle/migrations | …`) in CI before the migrate.
+(auto-detects `supabase/migrations | migrations | drizzle/migrations | …`) **before** the migrate.
+For a Vercel-git tool the migrate runs in the build, so wire the scan there — first in the build/migrate
+script: `"migrate": "greenlight migrations scan && node scripts/migrate.mjs"`, `"build": "pnpm run
+migrate && next build"` (add `@rtrentjones/greenlight` as a devDep so the bin resolves in the build).
+`doctor` recognizes the scan wired in the build script **or** a workflow.
 See [migrations.md](https://github.com/RTrentJones/greenlight/blob/main/docs/migrations.md).
 
 ## Sharing one DB + multi-account
