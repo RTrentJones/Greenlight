@@ -36,8 +36,8 @@ state + locks, runs happen in your CI with your own provider tokens.
 
 ### 2. API token
 app.terraform.io → **Account settings → Tokens** → create a user API token. Store it as the GitHub
-Actions secret **`TF_API_TOKEN`** (+ the gitignored `.greenlight/secrets.env`). Terraform reads it
-from the env var `TF_TOKEN_app_terraform_io`.
+Actions secret **`TF_API_TOKEN`** (`greenlight secrets gather` / `gh secret set` — Greenlight keeps
+no local secret file). CI reads it from the env var `TF_TOKEN_app_terraform_io`.
 
 ### 3. Backend block (wrapper `infra/main.tf`)
 ```hcl
@@ -52,18 +52,20 @@ terraform {
 before the first apply.
 
 ### 4. Migrate local state up (one-time)
-From a checkout with the current local `terraform.tfstate`:
+From a checkout with the current local `terraform.tfstate`, export the provider tokens into your
+shell for this one-time migration (paste them directly — Greenlight keeps no local secret file):
 ```sh
-set -a; source .greenlight/secrets.env; set +a        # provider tokens
+export CLOUDFLARE_API_TOKEN=... TF_API_TOKEN=...     # provider tokens (+ any others this state needs)
 export TF_TOKEN_app_terraform_io="$TF_API_TOKEN"
 terraform -chdir=infra init     # prompts to migrate local state → HCP; answer "yes"
 terraform -chdir=infra plan     # should show "No changes" (state intact)
 ```
-After this HCP holds the state; the local `terraform.tfstate` can be deleted.
+After this HCP holds the state; the local `terraform.tfstate` can be deleted. From here on every
+apply runs in CI — there is no local-secrets apply path.
 
 ### 5. CI workflow — apply infra on push
-Push the provider tokens + `TF_API_TOKEN` to the wrapper's **GitHub Actions secrets**
-(`gh secret set …`, or `greenlight secrets sync`), then add `.github/workflows/infra.yml`:
+Set the provider tokens + `TF_API_TOKEN` on the wrapper's **GitHub Actions secrets**
+(`greenlight secrets gather`, or `gh secret set …`), then add `.github/workflows/infra.yml`:
 
 ```yaml
 name: infra
@@ -145,7 +147,7 @@ terraform {
 
 ## Security
 
-- All tokens + state keys live only in `.greenlight/secrets.env` (gitignored) + the CI secret store —
-  never committed.
+- All tokens + state keys live only in **GitHub Actions secrets** (set via `greenlight secrets
+  gather` / `gh secret set`) — Greenlight keeps no local secret file, and nothing is committed.
 - The state file itself contains secrets (DB passwords, API keys) — which is exactly why it belongs
   in HCP / a private bucket, not git.

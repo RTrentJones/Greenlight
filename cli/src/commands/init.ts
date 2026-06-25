@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { scaffoldConfig } from '../config-io';
 import { ensureTokensForTool } from '../tokens';
 import { MODULE_REF } from '../version';
-import { syncSecrets } from './secrets';
+import { detectRepo, setGitHubSecret } from './secrets';
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -30,7 +30,7 @@ function wrapperPackageJson(name: string): string {
 
 const WRAPPER_GITIGNORE = `# Greenlight wrapper
 node_modules/
-.greenlight/        # gathered tokens — never committed
+.greenlight/        # local scratch — never committed (tokens live in GitHub Actions)
 .terraform/
 *.tfplan
 tf.plan
@@ -107,7 +107,8 @@ function scaffoldIfAbsent(path: string, contents: string, label: string): void {
   console.log(`✔ wrote ${label}`);
 }
 
-/** Token flag → provider-store env var. Stored only in the local gitignored file (+ later provider stores). */
+/** Token flag → GitHub Actions secret name. Pushed straight to GitHub (no disk); a GITHUB_* name is
+ * skipped (reserved by Actions, and the built-in token covers it). */
 const TOKEN_FLAGS: Record<string, string> = {
   '--cf-token': 'CLOUDFLARE_API_TOKEN',
   '--github-token': 'GITHUB_TOKEN',
@@ -147,39 +148,50 @@ export async function initCommand(args: string[]): Promise<void> {
   scaffoldIfAbsent(resolve(cwd, 'mise.toml'), WRAPPER_MISE, 'mise.toml');
   scaffoldIfAbsent(resolve(cwd, '.node-version'), '24\n', '.node-version');
 
-  const secrets: string[] = [];
-  for (const [f, key] of Object.entries(TOKEN_FLAGS)) {
-    const v = flag(args, f);
-    if (v) secrets.push(`${key}=${v}`);
-  }
-  if (secrets.length > 0) {
-    mkdirSync(resolve(cwd, '.greenlight'), { recursive: true });
-    writeFileSync(resolve(cwd, '.greenlight/secrets.env'), `${secrets.join('\n')}\n`, {
-      mode: 0o600,
-    });
-    console.log(`✔ wrote .greenlight/secrets.env (${secrets.length} token(s), gitignored)`);
-  }
+  // The wrapper's GitHub repo — the single secret store. Tokens are pushed STRAIGHT to GitHub
+  // Actions (never written to disk). Without a repo yet (fresh dir / no remote), token-setting is
+  // deferred with guidance.
+  const repo = flag(args, '--repo') ?? detectRepo(cwd);
 
-  // Interactive: gather + fail-fast verify the always-on provider tokens (Cloudflare / HCP /
-  // GitHub) from the registry. TTY only — CI uses the --*-token flags above. `--no-tokens` skips.
-  if (process.stdin.isTTY && !args.includes('--no-tokens')) {
-    try {
-      await ensureTokensForTool(cwd, {}, { verify: !args.includes('--no-verify') });
-    } catch (e) {
-      console.log(`✖ ${e instanceof Error ? e.message : String(e)}`);
+  // Non-interactive seeding: every `--*-token` flag is pushed straight to GitHub Actions (value
+  // never on disk). GITHUB_* names are reserved by Actions (and the built-in token covers it), so
+  // they're skipped. Needs a repo + an authenticated `gh`.
+  let pushed = 0;
+  if (repo && !args.includes('--no-push')) {
+    for (const [f, key] of Object.entries(TOKEN_FLAGS)) {
+      const v = flag(args, f);
+      if (!v || key.startsWith('GITHUB_')) continue;
+      try {
+        setGitHubSecret(repo, undefined, key, v);
+        console.log(`✔ set ${key} → ${repo} (GitHub Actions)`);
+        pushed++;
+      } catch (e) {
+        console.log(`! could not set ${key}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 
-  // Push whatever's in secrets.env to GitHub Actions secrets (best-effort, one-and-done).
-  let pushed = false;
-  if (existsSync(resolve(cwd, '.greenlight/secrets.env')) && !args.includes('--no-push')) {
-    try {
-      const { repo, count } = syncSecrets({ cwd, repo: flag(args, '--repo') });
-      console.log(`✔ pushed ${count} secret(s) to ${repo} (GitHub Actions)`);
-      pushed = true;
-    } catch (e) {
-      console.log(`! skipped pushing secrets: ${e instanceof Error ? e.message : String(e)}`);
-      console.log('  run `greenlight secrets sync` once `gh` is authenticated.');
+  // Interactive: gather + fail-fast verify the always-on base tokens (Cloudflare / HCP Terraform)
+  // straight to GitHub Actions. TTY only; CI uses the --*-token flags above. `--no-tokens` skips.
+  if (process.stdin.isTTY && !args.includes('--no-tokens')) {
+    if (repo) {
+      try {
+        const results = await ensureTokensForTool(
+          repo,
+          {},
+          {
+            verify: !args.includes('--no-verify'),
+          },
+        );
+        pushed += results.filter((r) => r.outcome === 'entered').length;
+      } catch (e) {
+        console.log(`✖ ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } else {
+      console.log(
+        '\n· no GitHub repo detected yet — create it + `gh auth login`, then set the base secrets\n' +
+          '  (CLOUDFLARE_API_TOKEN, TF_API_TOKEN) via `greenlight add <tool>` (prompts them) or `gh secret set`.',
+      );
     }
   }
 
@@ -189,7 +201,7 @@ Next:
                                                              # gather THAT tool's keys → GitHub${
                                                                pushed
                                                                  ? ''
-                                                                 : '\n  (run `greenlight secrets sync` if base tokens were not pushed)'
+                                                                 : '\n  (it also prompts the base tokens if they are not set yet)'
                                                              }
   2. set the HCP backend (cloud{} org + workspace) in infra/main.tf   # docs/terraform-state.md
   3. commit + push → CI (.github/workflows/infra.yml) runs \`terraform apply\`

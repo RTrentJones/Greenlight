@@ -8,35 +8,10 @@ import {
   ociPrefill,
   parseOciConfig,
   parseRepo,
-  parseSecretsEnv,
   setGitHubSecret,
 } from '../commands/secrets';
 
 vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
-
-describe('parseSecretsEnv', () => {
-  it('parses KEY=VALUE, skips blanks and comments, splits on the first =', () => {
-    const entries = parseSecretsEnv(
-      [
-        '# a comment',
-        '',
-        'CLOUDFLARE_API_TOKEN=abc123',
-        'SUPABASE_URL=https://x.supabase.co?a=b', // = inside the value is preserved
-        '   ',
-        'GITHUB_TOKEN = ghp_xxx ', // trimmed key; value keeps leading space then ghp_xxx
-      ].join('\n'),
-    );
-    expect(entries).toEqual([
-      { key: 'CLOUDFLARE_API_TOKEN', value: 'abc123' },
-      { key: 'SUPABASE_URL', value: 'https://x.supabase.co?a=b' },
-      { key: 'GITHUB_TOKEN', value: ' ghp_xxx' },
-    ]);
-  });
-
-  it('returns nothing for empty / comment-only input', () => {
-    expect(parseSecretsEnv('# only\n\n')).toEqual([]);
-  });
-});
 
 describe('parseRepo', () => {
   it('extracts owner/repo from each GitHub remote form', () => {

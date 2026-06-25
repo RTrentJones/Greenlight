@@ -24,7 +24,6 @@ const HELP = `greenlight <command>
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
   status <name>                                 last ship/deploy/verify run for a tool (via gh)
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
-  secrets sync [--repo o/r] [--env <env>]       push .greenlight/secrets.env -> GitHub Actions secrets
   agent sync [<name>]                           write the loop kit (named → tool-aware, into its dir)
   adopt <name> --repo <path> --lane --target    onboard an existing tool repo as a thin consumer
   migrations scan [<dir>] [--strict]            dangerous-SQL gate for migrations (pre-apply)

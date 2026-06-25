@@ -6,29 +6,11 @@ import { loadManifest, resolveEntry } from '../manifest';
 import { packsForTool, secretKeyFor } from '../providers';
 
 /**
- * `greenlight secrets sync` — push the local `.greenlight/secrets.env` to the repo's
- * GitHub Actions secrets via `gh` (encrypted client-side; values never echoed). This
- * is the "init writes to provider stores" piece (docs/archive/greenlight-v1.md §8/§14). Prefer
- * GitHub OIDC → cloud over long-lived tokens where the target supports it.
+ * `greenlight secrets gather <name>` — guided, link-first token onboarding straight to a repo's
+ * GitHub Actions secrets via `gh` (value on stdin; never echoed, never written to disk). GitHub
+ * Actions is the single secret store: the local loop needs no secrets, and CI reads them at
+ * deploy/apply time. Prefer GitHub OIDC → cloud over long-lived tokens where the target supports it.
  */
-
-export interface SecretEntry {
-  key: string;
-  value: string;
-}
-
-/** Parse KEY=VALUE lines; skip blanks + `#` comments; split on the first `=`. */
-export function parseSecretsEnv(text: string): SecretEntry[] {
-  const out: SecretEntry[] = [];
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (line === '' || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    out.push({ key: line.slice(0, eq).trim(), value: line.slice(eq + 1) });
-  }
-  return out;
-}
 
 /**
  * Parse an OCI CLI config (the "Configuration file preview" OCI shows after *Add API key*).
@@ -99,56 +81,11 @@ export function detectRepo(cwd: string): string | null {
   }
 }
 
-export interface SyncOptions {
-  cwd: string;
-  repo?: string;
-  env?: string;
-}
-
-/**
- * Push `.greenlight/secrets.env` to the repo's GitHub Actions secrets. Returns the
- * resolved repo + count. Throws on hard errors (no repo, no secrets file, gh missing/
- * unauthenticated). Reused by the standalone command and by `greenlight init`.
- */
-export function syncSecrets(opts: SyncOptions): { repo: string; count: number } {
-  const repo = opts.repo ?? detectRepo(opts.cwd);
-  if (!repo) {
-    throw new Error(
-      'could not determine the repo — pass --repo owner/repo (no github.com origin remote)',
-    );
-  }
-  const path = resolve(opts.cwd, '.greenlight/secrets.env');
-  if (!existsSync(path)) {
-    throw new Error('no .greenlight/secrets.env — run `greenlight init` with tokens first');
-  }
-  const entries = parseSecretsEnv(readFileSync(path, 'utf8'));
-  const target = opts.env ? `env "${opts.env}"` : 'repo';
-  for (const { key, value } of entries) {
-    // No --body: gh reads the value from stdin (portable across gh versions), so it
-    // never appears in argv / the process list.
-    const ghArgs = ['secret', 'set', key, '--repo', repo];
-    if (opts.env) ghArgs.push('--env', opts.env);
-    try {
-      execFileSync('gh', ghArgs, { input: value });
-    } catch (e) {
-      const err = e as NodeJS.ErrnoException & { stderr?: Buffer };
-      if (err.code === 'ENOENT') {
-        throw new Error('the GitHub CLI `gh` is required — install it and run `gh auth login`');
-      }
-      const detail = err.stderr?.toString().trim();
-      throw new Error(
-        `failed to set ${key}${detail ? `: ${detail}` : ' (check `gh auth status`)'}`,
-      );
-    }
-    console.log(`✔ set ${key} → ${repo} ${target}`); // value intentionally not printed
-  }
-  return { repo, count: entries.length };
-}
-
 /** A hidden-input prompter over ONE readline interface (creating one per prompt loses piped
  * input between prompts). On a real TTY, readline's echo is suppressed so pasted values never
- * show; piped input (tests/CI) reads lines without echoing anyway. Close it when done. */
-function hiddenPrompter(): { ask: (query: string) => Promise<string>; close: () => void } {
+ * show; piped input (tests/CI) reads lines without echoing anyway. Close it when done. Exported
+ * so `init`'s base-token onboarding can reuse the same no-echo prompt. */
+export function hiddenPrompter(): { ask: (query: string) => Promise<string>; close: () => void } {
   const tty = Boolean(process.stdin.isTTY);
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: tty });
   if (tty) (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = () => {};
@@ -305,26 +242,10 @@ export async function secretsCommand(args: string[]): Promise<void> {
     return;
   }
 
-  if (sub !== 'sync') {
-    console.log(
-      'usage:\n' +
-        '  greenlight secrets sync [--repo owner/repo] [--env <env>]            # push .greenlight/secrets.env\n' +
-        '  greenlight secrets gather <name> [--repo owner/repo] [--env <env>]   # guided, link-first, straight to GitHub (no disk/logs)\n' +
-        '    [--oci-config <path>] [--oci-key <path>]                           # auto-fill OCI auth from the API-key config preview + .pem',
-    );
-    process.exit(sub ? 1 : 0);
-  }
-
-  const { count } = syncSecrets({
-    cwd: process.cwd(),
-    repo: flag(args, '--repo'),
-    env: flag(args, '--env'),
-  });
-  if (count === 0) {
-    console.log('no secrets to sync');
-    return;
-  }
   console.log(
-    `\n${count} secret(s) synced. (Prefer GitHub OIDC over long-lived tokens where supported.)`,
+    'usage:\n' +
+      '  greenlight secrets gather <name> [--repo owner/repo] [--env <env>]   # guided, link-first, straight to GitHub (no disk/logs)\n' +
+      '    [--oci-config <path>] [--oci-key <path>]                           # auto-fill OCI auth from the API-key config preview + .pem',
   );
+  process.exit(sub ? 1 : 0);
 }

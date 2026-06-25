@@ -1,6 +1,6 @@
 {
   "name": "@rtrentjones/greenlight-keepalive",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "Greenlight keepalive — a Cloudflare Worker cron that pings data:supabase projects so they never hit the 7-day idle pause, and alerts on failure.",
   "license": "MIT",
