@@ -175,6 +175,63 @@ describe('runDoctor — conformance to the uniform model', () => {
   });
 });
 
+describe('migrations gate conformance (S3)', () => {
+  const neonTool = (name: string) => ({
+    name,
+    lane: 'next',
+    target: 'vercel',
+    data: 'neon',
+    envs: ['beta', 'prod'],
+  });
+  const withMigrations = (name: string) => {
+    mkdirSync(join(root, `tools/${name}/migrations`), { recursive: true });
+    writeFileSync(join(root, `tools/${name}/migrations/0001_init.sql`), 'CREATE TABLE t (id int);');
+  };
+
+  it('warns when a neon tool owns migrations but nothing scans them', () => {
+    withMigrations('site');
+    const c = runDoctor(cfg([neonTool('site')]), root).find(
+      (x) => x.name === 'site: migrations gate',
+    );
+    expect(c?.status).toBe('warn');
+    expect(c?.detail).toContain('no workflow or build script');
+  });
+
+  it('ok when the scan is wired into the build script (Vercel-git tool)', () => {
+    withMigrations('site');
+    writeFileSync(
+      join(root, 'tools/site/package.json'),
+      JSON.stringify({
+        scripts: { build: 'greenlight migrations scan && node scripts/migrate.mjs && next build' },
+      }),
+    );
+    const c = runDoctor(cfg([neonTool('site')]), root).find(
+      (x) => x.name === 'site: migrations gate',
+    );
+    expect(c?.status).toBe('ok');
+    expect(c?.detail).toContain('build script');
+  });
+
+  it('ok when a workflow runs the scan', () => {
+    withMigrations('site');
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    writeFileSync(
+      join(root, '.github/workflows/deploy.yml'),
+      'steps:\n  - run: pnpm exec greenlight migrations scan tools/site\n',
+    );
+    const c = runDoctor(cfg([neonTool('site')]), root).find(
+      (x) => x.name === 'site: migrations gate',
+    );
+    expect(c?.status).toBe('ok');
+    expect(c?.detail).toContain('CI workflow');
+  });
+
+  it('no migrations dir → the gate check is skipped entirely', () => {
+    const checks = runDoctor(cfg([neonTool('site')]), root);
+    expect(checks.find((x) => x.name === 'site: migrations gate')).toBeUndefined();
+  });
+});
+
 describe('versionDriftCheck — infra ?ref lockstep', () => {
   const installPkg = (v: string) => {
     mkdirSync(join(root, 'node_modules/@rtrentjones/greenlight'), { recursive: true });

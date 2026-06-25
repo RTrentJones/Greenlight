@@ -23,9 +23,29 @@ the loop; your stack owns the schema.
    branch — prod build → prod branch, preview build → that PR's branch — so each env migrates its own
    data. A failed migrate fails the build, so a broken migration never reaches users.
 3. Gate it: run `greenlight migrations scan` (no `<dir>` → it auto-detects `supabase/migrations`,
-   `migrations`, `drizzle/migrations`, `drizzle`, `db/migrations`) in CI **before** the migrate. It
+   `migrations`, `drizzle/migrations`, `drizzle`, `db/migrations`) **before** the migrate. It
    fails on data-destroying ops (DROP/TRUNCATE/DELETE- or UPDATE-without-WHERE) and warns on lock-heavy
    ones; acknowledge an intentional op with an inline `-- greenlight:allow`.
+
+### Where to wire the scan (and where `doctor` looks for it)
+
+The scan must run **immediately before the apply**, which lives in a different place per deploy style:
+
+- **The tool applies in its own build** (a Vercel-git tool whose `build` runs the migrate) → put the
+  scan first in the tool's `package.json` build/migrate script, so a bad migration fails the build
+  before it touches the DB:
+  ```jsonc
+  // tools/<name>/package.json
+  "migrate": "greenlight migrations scan && node scripts/migrate.mjs",
+  "build":   "pnpm run migrate && next build"
+  ```
+- **A workflow applies** (`supabase db push` / a `psql` deploy job) → add the scan as a step (or a
+  gating job the apply `needs:`) in that workflow, before the apply step.
+
+`greenlight doctor` recognizes **either** placement — it treats a `data: supabase|neon` tool's
+migrations gate as wired if `greenlight migrations scan` appears in the tool's (or wrapper's)
+`.github/workflows/*` **or** in the tool's `package.json` scripts. A migrations dir with neither is
+flagged `warn` (`<tool>: migrations gate`).
 
 ## Why not a Greenlight migrations runner?
 

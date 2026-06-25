@@ -105,14 +105,16 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
   }
 
   // Dangerous-SQL gate conformance (docs/security.md): a data tool that owns migrations must run
-  // `greenlight migrations scan` in the CI that applies them, else a data-destroying migration can
-  // ship ungated. Warn when a migrations dir exists under the tool but no workflow (the tool's own
-  // or the wrapper's) references the scan. Skipped for tools without migrations.
+  // `greenlight migrations scan` before the step that applies them, else a data-destroying migration
+  // can ship ungated. The gate is "wired" if the scan runs either (a) in a workflow — the tool's own
+  // or the wrapper's, where a workflow-deployed tool applies — OR (b) in the tool's package.json
+  // build/migrate scripts, where a Vercel-git tool's migrate runs (its build IS the apply). Warn when
+  // a migrations dir exists but neither references the scan. Skipped for tools without migrations.
   if (t.data === 'supabase' || t.data === 'neon') {
     const migBase = join(root, toolDir);
     const migDir = resolveMigrationsDir(undefined, migBase);
     if (existsSync(join(migBase, migDir))) {
-      const wired = [join(migBase, '.github/workflows'), join(root, '.github/workflows')].some(
+      const inWorkflow = [join(migBase, '.github/workflows'), join(root, '.github/workflows')].some(
         (d) => {
           try {
             return readdirSync(d)
@@ -123,12 +125,23 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
           }
         },
       );
+      const inScripts = (() => {
+        try {
+          const pkg = JSON.parse(readFileSync(join(migBase, 'package.json'), 'utf8')) as {
+            scripts?: Record<string, string>;
+          };
+          return Object.values(pkg.scripts ?? {}).some((s) => s.includes('migrations scan'));
+        } catch {
+          return false;
+        }
+      })();
+      const wired = inWorkflow || inScripts;
       out.push({
         name: `${t.name}: migrations gate`,
         status: wired ? 'ok' : 'warn',
         detail: wired
-          ? `${migDir} scanned in CI`
-          : `${migDir} present but no workflow runs \`greenlight migrations scan\` — wire the dangerous-SQL gate before the apply step`,
+          ? `${migDir} scanned before apply (${inWorkflow ? 'CI workflow' : 'build script'})`
+          : `${migDir} present but no workflow or build script runs \`greenlight migrations scan\` — wire the dangerous-SQL gate before the apply step`,
       });
     }
   }
