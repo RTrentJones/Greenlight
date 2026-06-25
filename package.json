@@ -18,10 +18,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check-seam": "tsx scripts/check-seam.ts",
+    "check-plugin-sync": "node scripts/check-plugin-sync.mjs",
     "check-boundaries": "depcruise cli packages --config .dependency-cruiser.cjs",
     "infra:test": "for d in single-tool heistmind; do terraform -chdir=infra/examples/$d init -backend=false && terraform -chdir=infra/examples/$d test || exit 1; done",
     "greenlight": "tsx cli/src/bin.ts",
-    "check-all": "pnpm build && pnpm lint && pnpm test && pnpm check-seam && pnpm check-boundaries",
+    "release": "node scripts/release.mjs",
+    "check-all": "pnpm build && pnpm lint && pnpm test && pnpm check-seam && pnpm check-plugin-sync && pnpm check-boundaries",
     "changeset": "changeset",
     "prepare": "husky"
   },

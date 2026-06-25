@@ -36,7 +36,17 @@ This is what lets the framework ship as a package while your wrapper stays yours
   contract — there is no `mutating` flag yet, so don't expose writes from a `none` server.
 - **OCI**: the only manual input is the API key — the VCN/subnet/AD are IaC; the container instance
   OCID is auto-resolved (never a stored secret). Provider auth is API-key request signing.
-- **Migrations** pass a dangerous-SQL scan gate before apply.
+  **Rotation:** the OCI API signing key is the one long-lived credential here. Rotate it on a
+  schedule (and immediately on suspected exposure): generate a new key pair in the OCI console
+  (Identity → your user → API Keys → Add), update `TF_VAR_OCI_PRIVATE_KEY`/`TF_VAR_OCI_FINGERPRINT`
+  in the wrapper's GitHub Actions secrets, run an infra apply, then delete the old key in the
+  console. Nothing in the harness rotates it for you.
+- **IDs are not secrets.** Enumerable identifiers (`cloudflare_zone_id`, account IDs, project refs)
+  carry no authority on their own — store them as repo **variables** (`vars.*`), not secrets. Only
+  values that grant access (API tokens, signing keys, passwords) belong in secrets.
+- **Migrations** pass a dangerous-SQL scan gate before apply — `greenlight migrations scan` must run
+  in the CI that applies them (a data tool that owns migrations wires it itself; `doctor` flags a
+  migrations dir whose workflows don't reference the scan).
 
 ## Token topology (who holds what)
 

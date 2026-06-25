@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { MATRIX, describeMatrix } from '@rtrentjones/greenlight-shared';
 import { emitAgentDeployWorkflow } from '../agent-deploy';
 import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
@@ -50,7 +51,20 @@ export async function addCommand(args: string[]): Promise<void> {
   }
   const lane = flag(args, '--lane');
   const target = flag(args, '--target');
-  if (!lane || !target) throw new Error('add needs --lane and --target');
+  if (!lane || !target) {
+    throw new Error(
+      `add needs --lane and --target. Valid combinations:\n${describeMatrix()}\n  (defaults: next→vercel; astro/mcp/agent→workers)`,
+    );
+  }
+  if (!(lane in MATRIX)) {
+    throw new Error(`unknown lane "${lane}". Valid lanes:\n${describeMatrix()}`);
+  }
+  const rule = MATRIX[lane as keyof typeof MATRIX];
+  if (!rule.targets.includes(target as (typeof rule.targets)[number])) {
+    throw new Error(
+      `lane "${lane}" can't target "${target}" — valid target(s): ${rule.targets.join(' | ')}`,
+    );
+  }
 
   const { config, path } = await loadManifest();
   if (path.endsWith('.example.ts')) {

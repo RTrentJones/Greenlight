@@ -223,8 +223,57 @@ export async function gatherSecrets(
   console.log(`\n${pushed} secret(s) pushed to ${repo}. (None written to disk.)`);
 }
 
+/** `greenlight secrets check [<name>]` — list the GitHub Actions secrets each tool's deploy/apply
+ * needs (the required tokens from its provider packs + the agent RUN_TOKEN + its manifest `tokens`)
+ * and flag any that are MISSING. Best-effort: it can't see secret VALUES, so it catches the
+ * missing-secret class (the most common deploy footgun); expiry/scope stay a `verify()` concern. */
+async function secretsCheck(name: string | undefined, repo: string): Promise<void> {
+  const { config } = await loadManifest();
+  const tools = name ? config.tools.filter((t) => t.name === name) : config.tools;
+  if (name && tools.length === 0) throw new Error(`no tool "${name}" in the manifest`);
+  const present = listGitHubSecrets(repo, undefined);
+  console.log(`Secrets check → ${repo}`);
+  if (!present) console.log('! could not list secrets (gh unauth/no access) — names only\n');
+  else console.log('');
+
+  let missing = 0;
+  for (const t of tools) {
+    const expected = new Set<string>();
+    for (const pack of packsForTool({ lane: t.lane, target: t.target, data: t.data })) {
+      for (const tok of pack.tokens) {
+        if (!tok.optional) expected.add(secretKeyFor(tok, t.name, t.tokenOverrides));
+      }
+    }
+    if (t.lane === 'agent') {
+      expected.add('GEMINI_API_KEY');
+      expected.add('RUN_TOKEN');
+    }
+    for (const s of t.tokens ?? []) expected.add(s);
+
+    console.log(
+      `── ${t.name} (${t.lane}/${t.target}${t.data && t.data !== 'none' ? `/${t.data}` : ''})`,
+    );
+    for (const key of [...expected].sort()) {
+      const have = present ? present.has(key) : undefined;
+      if (have === false) missing++;
+      console.log(`   ${have === undefined ? '?' : have ? '✔' : '✘'} ${key}`);
+    }
+  }
+  if (present)
+    console.log(`\n${missing === 0 ? '✔ all required secrets present' : `✘ ${missing} missing`}`);
+  process.exit(missing > 0 ? 1 : 0);
+}
+
 export async function secretsCommand(args: string[]): Promise<void> {
   const sub = args[0];
+
+  if (sub === 'check') {
+    const name = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
+    const repo = flag(args, '--repo') ?? detectRepo(process.cwd());
+    if (!repo) throw new Error('could not determine the repo — pass --repo owner/repo');
+    await secretsCheck(name, repo);
+    return;
+  }
 
   if (sub === 'gather') {
     const name = args[1];
