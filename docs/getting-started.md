@@ -15,8 +15,7 @@ You don't fork Greenlight. You **install the CLI** and run `greenlight init`, wh
 - A **domain on Cloudflare** (the zone), and free accounts as needed per tool: HCP Terraform
   (remote state), Vercel (`next`), Supabase (`data: supabase`), Oracle Cloud (`mcp`/`oci`).
 - Tokens are entered once, verified, and pushed **straight to GitHub Actions secrets** — never
-  committed or written to the repo (a gitignored `.greenlight/secrets.env` is the only local copy,
-  and only for `init`'s base tokens).
+  committed or written to disk (Greenlight keeps no local secret file).
 
 ## 1. Create the wrapper repo
 

@@ -1,48 +1,32 @@
 /**
- * Token gathering + fail-fast verification, driven by the provider-pack registry. `init`
- * and `add` use this to make sure a tool's providers have their tokens in the local
- * gitignored store (`.greenlight/secrets.env`) before pointing the user at CI — and to
- * catch a wrong-scope / dead token immediately (the `verify()` curl-style checks), not on
- * the first failed `terraform apply`. Tokens live ONLY in the gitignored file (+ provider
- * stores via `secrets sync`); never committed or echoed.
+ * Base-token onboarding + fail-fast verification, driven by the provider-pack registry. `init`
+ * uses this to set the always-on providers' tokens (Cloudflare / HCP Terraform) as the wrapper's
+ * GitHub Actions secrets before pointing the user at CI — and to catch a wrong-scope / dead token
+ * immediately (the `verify()` curl-style checks), not on the first failed `terraform apply`.
+ *
+ * Secrets go STRAIGHT to GitHub Actions (via `gh`, value on stdin) — Greenlight keeps no local
+ * secret file. The whole local loop (preview/verify/config/doctor/promote/build) needs no secrets;
+ * `deploy` + `terraform apply` run in CI with those GitHub Actions secrets.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { createInterface } from 'node:readline/promises';
-import { parseSecretsEnv } from './commands/secrets';
-import { type ProviderToolInfo, type TokenCheck, type TokenSpec, tokensForTool } from './providers';
+import { hiddenPrompter, listGitHubSecrets, setGitHubSecret } from './commands/secrets';
+import {
+  type ProviderToolInfo,
+  type TokenCheck,
+  type TokenSpec,
+  secretKeyFor,
+  tokensForTool,
+} from './providers';
 
-const SECRETS_DIR = '.greenlight';
-const SECRETS_FILE = 'secrets.env';
-
-/** Tokens already available to a wrapper: `.greenlight/secrets.env` first, then process.env. */
-export function presentEnv(cwd: string): Record<string, string> {
+/** Token names available to THIS process from the environment (CI exports them; locally, an
+ * explicit `export`). Greenlight no longer reads a local secrets file — the store is GitHub
+ * Actions, written via `secrets gather` / `init`. */
+export function presentEnv(): Record<string, string> {
   const out: Record<string, string> = {};
-  const p = resolve(cwd, SECRETS_DIR, SECRETS_FILE);
-  if (existsSync(p)) {
-    for (const { key, value } of parseSecretsEnv(readFileSync(p, 'utf8'))) out[key] = value;
-  }
   for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !(k in out)) out[k] = v;
+    if (v !== undefined) out[k] = v;
   }
   return out;
-}
-
-/** Upsert a KEY=VALUE into `.greenlight/secrets.env` (created 0600), preserving other lines
- * and comments. The value is never logged. */
-export function upsertSecret(cwd: string, key: string, value: string): void {
-  const dir = resolve(cwd, SECRETS_DIR);
-  mkdirSync(dir, { recursive: true });
-  const p = resolve(dir, SECRETS_FILE);
-  const lines = existsSync(p) ? readFileSync(p, 'utf8').split('\n') : [];
-  const idx = lines.findIndex((l) => l.startsWith(`${key}=`));
-  if (idx >= 0) lines[idx] = `${key}=${value}`;
-  else {
-    while (lines.length && (lines[lines.length - 1] ?? '').trim() === '') lines.pop();
-    lines.push(`${key}=${value}`);
-  }
-  writeFileSync(p, `${lines.join('\n').replace(/\n*$/, '')}\n`, { mode: 0o600 });
 }
 
 export interface TokenStatus {
@@ -50,9 +34,10 @@ export interface TokenStatus {
   present: boolean;
 }
 
-/** Which of a tool's required/optional tokens are already present (pure; for reporting). */
-export function tokenStatus(cwd: string, tool: ProviderToolInfo): TokenStatus[] {
-  const env = presentEnv(cwd);
+/** Which of a tool's required/optional tokens are present in THIS process's environment. The GitHub
+ * Actions store is authoritative — query it with `gh secret list` / `greenlight doctor`. */
+export function tokenStatus(tool: ProviderToolInfo): TokenStatus[] {
+  const env = presentEnv();
   return tokensForTool(tool).map((spec) => ({ spec, present: Boolean(env[spec.envVar]) }));
 }
 
@@ -63,65 +48,68 @@ export interface EnsureResult {
 }
 
 /**
- * Ensure a tool's provider tokens are set, prompting (when a TTY exists) for missing ones
- * and running each provider's fail-fast `verify()`. Throws if a REQUIRED token's verify()
- * fails (wrong scope / dead token). Returns a per-token report. Non-fatal for optional
- * tokens; in a non-TTY it reports what to set instead of prompting.
+ * Ensure a tool's provider tokens are set as the repo's GitHub Actions secrets: hidden-prompt (TTY
+ * only) for the ones not already set, run each provider's fail-fast `verify()`, then push via `gh`.
+ * Entered values go STRAIGHT to GitHub — never to disk, never echoed. Throws if a REQUIRED token's
+ * verify() fails (wrong scope / dead token). Non-fatal for optional tokens; in a non-TTY it reports
+ * what is missing instead of prompting.
  */
 export async function ensureTokensForTool(
-  cwd: string,
+  repo: string,
   tool: ProviderToolInfo,
-  opts: { verify?: boolean } = {},
+  opts: { verify?: boolean; env?: string } = {},
 ): Promise<EnsureResult[]> {
   const doVerify = opts.verify !== false;
-  const interactive = Boolean(process.stdin.isTTY);
-  const env = presentEnv(cwd);
+  const env = presentEnv();
+  const already = listGitHubSecrets(repo, opts.env); // GitHub secret names; null if gh can't list
   const results: EnsureResult[] = [];
-  const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+  const prompt = process.stdin.isTTY ? hiddenPrompter() : null;
 
   try {
     for (const spec of tokensForTool(tool)) {
-      let value = env[spec.envVar];
-      if (value) {
+      const key = secretKeyFor(spec, '', undefined);
+      // Actions injects GITHUB_TOKEN automatically — never prompt for or store it.
+      if (key === 'GITHUB_TOKEN') {
+        results.push({ envVar: spec.envVar, outcome: 'skipped' });
+        continue;
+      }
+      if (env[spec.envVar] || already?.has(key)) {
         results.push({ envVar: spec.envVar, outcome: 'present' });
-      } else if (rl) {
-        console.log(`\n${spec.envVar} — ${spec.label}`);
-        if (spec.scopes?.length) console.log(`  scopes: ${spec.scopes.join(', ')}`);
-        const entered = (
-          await rl.question(`  paste value${spec.optional ? ' (optional, Enter to skip)' : ''}: `)
-        ).trim();
-        if (!entered) {
-          results.push({ envVar: spec.envVar, outcome: spec.optional ? 'skipped' : 'missing' });
-          continue;
-        }
-        upsertSecret(cwd, spec.envVar, entered);
-        env[spec.envVar] = entered;
-        value = entered;
-        results.push({ envVar: spec.envVar, outcome: 'entered' });
-      } else {
+        continue;
+      }
+      if (!prompt) {
         results.push({ envVar: spec.envVar, outcome: spec.optional ? 'skipped' : 'missing' });
         continue;
       }
+      console.log(`\n${key} — ${spec.label}`);
+      if (spec.scopes?.length) console.log(`  scopes: ${spec.scopes.join(', ')}`);
+      const entered = await prompt.ask(
+        `  value${spec.optional ? ' (optional, Enter to skip)' : ''}: `,
+      );
+      if (!entered) {
+        results.push({ envVar: spec.envVar, outcome: spec.optional ? 'skipped' : 'missing' });
+        continue;
+      }
+      env[spec.envVar] = entered; // visible to a later token's verify(value, env)
 
-      // fail-fast scope/auth check (only when we have a value + a checker)
-      if (value && doVerify && spec.verify) {
-        let check: TokenCheck;
+      let check: TokenCheck | undefined;
+      if (doVerify && spec.verify) {
         try {
-          check = await spec.verify(value, env);
+          check = await spec.verify(entered, env);
         } catch (e) {
           check = { ok: false, detail: e instanceof Error ? e.message : String(e) };
         }
-        const last = results[results.length - 1];
-        if (last) last.verify = check;
         if (!check.ok && !spec.optional) {
           throw new Error(
-            `${spec.envVar} failed verification${check.detail ? ` (${check.detail})` : ''} — check the token's scopes (${spec.label}).`,
+            `${key} failed verification${check.detail ? ` (${check.detail})` : ''} — check the token's scopes (${spec.label}).`,
           );
         }
       }
+      setGitHubSecret(repo, opts.env, key, entered);
+      results.push({ envVar: spec.envVar, outcome: 'entered', verify: check });
     }
   } finally {
-    rl?.close();
+    prompt?.close();
   }
   return results;
 }

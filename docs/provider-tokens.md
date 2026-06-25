@@ -6,8 +6,8 @@
 When you apply a tool that uses **`target: vercel`** and/or **`data: supabase`** — or deploy
 the **keepalive** Worker — Terraform's providers need their own API tokens. Greenlight reads
 each from a standard environment variable, so it's **one token → one env var**. Store them
-only in the gitignored `.greenlight/secrets.env` (+ the provider stores) — never commit or
-echo them (docs/archive/greenlight-v1.md §14).
+only in **GitHub Actions secrets** (set via `greenlight secrets gather` / `gh secret set`) —
+Greenlight keeps no local secret file; CI reads them at apply time. Never commit or echo them.
 
 | env var | used by | needed when |
 |---|---|---|
@@ -134,7 +134,11 @@ greenlight secrets gather <tool> --repo <owner>/<tool>
 
 ---
 
-## Where they go: `.greenlight/secrets.env` (gitignored)
+## Where they go: GitHub Actions secrets (no local file)
+
+`gather` / `gh secret set` push these straight into the repo's Actions secrets — Greenlight
+keeps no local secret file. CI (`infra.yml`) reads them from the environment at `terraform
+apply` time:
 
 ```sh
 # provider auth (terraform reads these from the environment)
@@ -147,7 +151,8 @@ TF_VAR_<tool>_supabase_database_password=import-placeholder   # per-tool (per Su
 TF_VAR_keepalive_github_token=        # optional
 ```
 
-Load before running Terraform: `set -a; source .greenlight/secrets.env; set +a`.
+`terraform apply` runs in CI (push to `main` → `infra.yml`), reading these secrets — there is no
+local-secrets apply path.
 
 > The same `CLOUDFLARE_API_TOKEN` / `SUPABASE_ACCESS_TOKEN` also authenticate the Cloudflare
 > and Supabase MCP servers, and `gh` handles GitHub — so the agent loop can introspect these

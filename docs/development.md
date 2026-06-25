@@ -34,7 +34,7 @@ Workers Builds) read `.node-version`/`engines`, not `mise.toml`. Keep the two in
 | `pnpm run check-all` | the full suite CI runs. **Use `run`** — `pnpm ci` hits a reserved pnpm builtin |
 | `pnpm run infra:test` | Terraform module tests (`infra/examples/*`). **Not in `check-all`** (needs the `terraform` binary); CI runs it in the `ci.yml` infra job. |
 
-CLI surface (run via `pnpm greenlight <cmd>` in dev): `init`, `add`, `adopt`, `secrets gather|sync`,
+CLI surface (run via `pnpm greenlight <cmd>` in dev): `init`, `add`, `adopt`, `secrets gather`,
 `agent sync`, `preview`, `deploy`, `verify`, `promote`, `doctor`, `config`. See
 [architecture.md](architecture.md) for what each plane's commands do.
 
@@ -70,8 +70,8 @@ tarball with `pnpm --filter @rtrentjones/greenlight pack`.
 
 ## The two seam rules (keep these true)
 
-1. **No personal data in framework files.** Domain/tokens/tool-names live only in
-   `greenlight.config.ts` + `.greenlight/secrets.env`. `pnpm check-seam` enforces it; docs are exempt.
+1. **No personal data in framework files.** Domain/tool-names live only in `greenlight.config.ts`;
+   tokens live only in GitHub Actions secrets. `pnpm check-seam` enforces it; docs are exempt.
 2. **No load-bearing logic outside `packages/*` and `cli/`.** Workflows and app files only *call* the
    framework. `dependency-cruiser` guards the import direction (consumer → framework, never reverse).
 

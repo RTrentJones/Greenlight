@@ -101,7 +101,7 @@ export async function addCommand(args: string[]): Promise<void> {
       // Resolve + inject the non-secret Cloudflare account id (so wrangler skips /memberships, which
       // a scoped token can't do). Best-effort: needs CLOUDFLARE_API_TOKEN in the env / local store.
       if (wt.includes('REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID')) {
-        const token = presentEnv(process.cwd()).CLOUDFLARE_API_TOKEN;
+        const token = presentEnv().CLOUDFLARE_API_TOKEN;
         const acct = token ? await resolveCloudflareAccountId(config.domain, token) : null;
         if (acct) {
           wt = wt.replaceAll('REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID', acct);

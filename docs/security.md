@@ -10,16 +10,17 @@ step-by-step setup is [provider-tokens.md](provider-tokens.md); this is the cons
   create-link + least-privilege scopes per token, **hidden-prompts** for the value, runs a fail-fast
   `verify()`, and pushes via `gh` with the value on **stdin** — never argv, never a file, never echoed.
   It flags `[already set]` so you know when a paste would override.
-- **One local copy at most.** `init` may write base tokens to a gitignored `.greenlight/secrets.env`
-  (mode 600) to push them once; `add`/`gather` write nothing to disk. `.greenlight/` is gitignored by
-  the scaffolded `.gitignore`.
+- **No local secret file.** `init`, `add`, and `gather` all push tokens **straight to GitHub Actions
+  secrets** — nothing is written to disk. `gh secret set` is the manual alternative. GitHub Actions
+  secrets are the single secret store.
 - **Prefer OIDC over long-lived secrets** where the provider supports it.
 
 ## The clone seam — no personal data in framework files
 
 Two rules, both CI-enforced ([development.md](development.md)):
-1. **No personal data** (domain/email/token/tool-name) in framework files — only in
-   `greenlight.config.ts` + `.greenlight/secrets.env`. `pnpm check-seam` scans every framework file.
+1. **No personal data** (domain/email/token/tool-name) in framework files — domain/tool-names live
+   only in `greenlight.config.ts`, tokens only in GitHub Actions secrets. `pnpm check-seam` scans
+   every framework file.
 2. **No load-bearing logic outside `packages/*` and `cli/`** — `pnpm check-boundaries`
    (dependency-cruiser) enforces consumer → framework import direction.
 

@@ -12,7 +12,8 @@ name/region are replace-forcing, so the module sets `ignore_changes` to protect 
 
 ## Token — `SUPABASE_ACCESS_TOKEN`
 
-Dashboard → Account → Access Tokens (Management API). Store in `.greenlight/secrets.env`;
+Dashboard → Account → Access Tokens (Management API). Push it straight to GitHub Actions with
+`greenlight secrets gather` (or `gh secret set`) — Greenlight keeps no local secret file.
 `greenlight add` verifies it against `/v1/projects` (HTTP 200). The DB password
 (`TF_VAR_supabase_database_password`) is only used if the project is recreated — ignored on
 import, so `import-placeholder` is fine for an existing project.

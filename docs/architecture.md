@@ -163,18 +163,20 @@ blocks ([`tf-emit.ts`](../cli/src/tf-emit.ts)) + scaffold `infra/main.tf` when a
 fail-fast-verify the providers' tokens → materialize the kit (MCP + per-provider skills + CLAUDE
 block). **It edits IaC; it never applies.** Commit + push and CI (`infra.yml`) runs `terraform apply`.
 
-### Secrets — `greenlight secrets gather` / `sync`
+### Secrets — `greenlight secrets gather`
 
-Tokens are entered once, validated (fail fast), and stored **only** in provider stores (GitHub
-Actions secrets/environments; Cloudflare/Vercel/Supabase/OCI via Terraform vars) plus a local
-gitignored `.greenlight/secrets.env` — **never committed or echoed**.
+GitHub Actions secrets are the **single** secret store — Greenlight keeps no local secret file.
+Tokens are entered once, validated (fail fast), and pushed straight to GitHub
+(secrets/environments; Cloudflare/Vercel/Supabase/OCI consumed by CI as Terraform vars at apply
+time) — **never written to disk, committed, or echoed**.
 
 - **`secrets gather <tool>`** ([`secrets.ts`](../cli/src/commands/secrets.ts)) — guided, link-first
   onboarding straight to a repo's GitHub secrets: prints each provider's setup link + scopes,
   hidden-prompts for the value, runs `verify()`, and pushes via `gh` with the value on **stdin**
-  (never argv/file/log). Flags which secrets are **already set** (paste overrides, Enter keeps).
+  (never argv/file/log). Also prompts the always-on base tokens (`CLOUDFLARE_API_TOKEN`,
+  `TF_API_TOKEN`). Flags which secrets are **already set** (paste overrides, Enter keeps).
   `--oci-config <path>` ingests OCI's API-key config preview + `.pem` to auto-fill the auth values.
-- **`secrets sync`** — push `.greenlight/secrets.env` to GitHub Actions secrets.
+- `gh secret set` is the manual alternative for setting/rotating an individual secret.
 
 For a poly-repo (adopted) tool, tokens **split** across the wrapper and the tool sub-repo: provider
 creds live only in the wrapper; the tool repo holds exactly one PAT (`GREENLIGHT_DISPATCH_TOKEN`).
@@ -236,8 +238,8 @@ BAMCP). It stays on the **Always-Free** tier — **no PAYG**.
 
 These keep the framework reusable and the consumer thin, without merge-hell:
 
-1. **No personal data in framework files.** Domain/tokens/tool-names live only in
-   `greenlight.config.ts` + `.greenlight/secrets.env`. `pnpm check-seam` enforces it (docs exempt).
+1. **No personal data in framework files.** Domain/tool-names live only in `greenlight.config.ts`;
+   tokens live only in GitHub Actions secrets. `pnpm check-seam` enforces it (docs exempt).
 2. **No load-bearing logic outside `packages/*` and `cli/`.** Consumer files only *call* the
    framework. `pnpm check-boundaries` (dependency-cruiser) guards the import direction.
 

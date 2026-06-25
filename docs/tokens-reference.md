@@ -5,14 +5,14 @@ what it's for, and where it's stored.** For the step-by-step setup prose see
 [provider-tokens.md](provider-tokens.md); for the trust model see [security.md](security.md). This
 page is the at-a-glance matrix.
 
-**Rules (non-negotiable):** one token → one env var; stored **only** in provider stores (GitHub
-Actions secrets) + the gitignored `.greenlight/secrets.env` — never committed or echoed. Gather them
-with `greenlight secrets gather <tool> --repo <owner>/<repo>` (link-first, hidden input, writes
-straight to GitHub — no disk, no logs). Prefer GitHub OIDC over long-lived secrets where supported.
+**Rules (non-negotiable):** one token → one env var; stored **only** in **GitHub Actions secrets**
+(Greenlight keeps no local secret file) — never committed or echoed. Set them with `greenlight
+secrets gather <tool> --repo <owner>/<repo>` (link-first, hidden input, writes straight to GitHub —
+no disk, no logs), or `gh secret set` manually. Prefer GitHub OIDC over long-lived secrets where
+supported.
 
 Legend: **Store** = where the value lives (`wrapper` = your site repo's Actions secrets, `tool` =
-an adopted tool's repo, `local` = `.greenlight/secrets.env`). **When** = always, or the manifest
-facet that triggers it.
+an adopted tool's repo). **When** = always, or the manifest facet that triggers it.
 
 ---
 
@@ -20,24 +20,24 @@ facet that triggers it.
 
 | env var | provider | when | store | required |
 |---|---|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare | always | wrapper + local | ✅ |
-| `TF_VAR_cloudflare_zone_id` | Cloudflare | always | wrapper + local | ✅ |
-| `TF_API_TOKEN` | HCP Terraform | always | wrapper + local | ✅ |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare | always | wrapper | ✅ |
+| `TF_VAR_cloudflare_zone_id` | Cloudflare | always | wrapper | ✅ |
+| `TF_API_TOKEN` | HCP Terraform | always | wrapper | ✅ |
 | `GITHUB_TOKEN` | GitHub | always (CI built-in) | — (auto) | ✅ (provided) |
-| `VERCEL_API_TOKEN` | Vercel | `target: vercel` | wrapper + local | ✅ for vercel |
+| `VERCEL_API_TOKEN` | Vercel | `target: vercel` | wrapper | ✅ for vercel |
 | `VERCEL_AUTOMATION_BYPASS_SECRET_<TOOL>` | Vercel | `target: vercel` | tool | optional |
-| `SUPABASE_ACCESS_TOKEN` | Supabase | `data: supabase` | wrapper + local | ✅ for supabase |
-| `TF_VAR_<tool>_supabase_database_password` | Supabase | `data: supabase` | wrapper + local | optional* |
-| `NEON_API_KEY` | Neon | `data: neon` | wrapper + local | ✅ for neon |
-| `TF_VAR_oci_tenancy_ocid` | OCI | `target: oci` | wrapper + local | ✅ for oci |
-| `TF_VAR_oci_user_ocid` | OCI | `target: oci` | wrapper + local | ✅ for oci |
-| `TF_VAR_oci_fingerprint` | OCI | `target: oci` | wrapper + local | ✅ for oci |
-| `TF_VAR_oci_private_key` | OCI | `target: oci` | wrapper + local | ✅ for oci |
-| `TF_VAR_oci_region` | OCI | `target: oci` | wrapper + local | ✅ for oci |
-| `TF_VAR_oci_compartment_id` | OCI | `target: oci` | wrapper + local | optional |
+| `SUPABASE_ACCESS_TOKEN` | Supabase | `data: supabase` | wrapper | ✅ for supabase |
+| `TF_VAR_<tool>_supabase_database_password` | Supabase | `data: supabase` | wrapper | optional* |
+| `NEON_API_KEY` | Neon | `data: neon` | wrapper | ✅ for neon |
+| `TF_VAR_oci_tenancy_ocid` | OCI | `target: oci` | wrapper | ✅ for oci |
+| `TF_VAR_oci_user_ocid` | OCI | `target: oci` | wrapper | ✅ for oci |
+| `TF_VAR_oci_fingerprint` | OCI | `target: oci` | wrapper | ✅ for oci |
+| `TF_VAR_oci_private_key` | OCI | `target: oci` | wrapper | ✅ for oci |
+| `TF_VAR_oci_region` | OCI | `target: oci` | wrapper | ✅ for oci |
+| `TF_VAR_oci_compartment_id` | OCI | `target: oci` | wrapper | optional |
 | `GREENLIGHT_DISPATCH_TOKEN` | GitHub | adopted tool | **tool** | ✅ for adopted |
 | `GREENLIGHT_STATUS_TOKEN_<TOOL>` | GitHub | adopted `oci` tool | wrapper | optional |
-| `TF_VAR_keepalive_github_token` | GitHub | keepalive / auto-heal | wrapper + local | optional† |
+| `TF_VAR_keepalive_github_token` | GitHub | keepalive / auto-heal | wrapper | optional† |
 | `<TOOL>_VERIFY_TOKEN` | (tool's own auth) | OAuth-gated tool | wrapper | optional |
 
 \* Only used when a Supabase project is **created**; on import the module ignores it (any
@@ -219,7 +219,8 @@ on that tool, mapping the provider's default env var to an alternate (scoped) se
 ## Where they live
 
 ```sh
-# .greenlight/secrets.env  (gitignored, mode 600) — for LOCAL terraform/CLI runs
+# GitHub Actions secrets on the wrapper — set via `greenlight secrets gather` / `gh secret set`.
+# Greenlight keeps no local secret file; CI reads these at terraform-apply time.
 CLOUDFLARE_API_TOKEN=...
 TF_VAR_cloudflare_zone_id=...
 TF_API_TOKEN=...
@@ -230,9 +231,9 @@ TF_VAR_oci_tenancy_ocid=...                # target: oci (×5 + optional compart
 TF_VAR_keepalive_github_token=...          # optional (alerts + auto-heal)
 ```
 
-Load before a local apply: `set -a; source .greenlight/secrets.env; set +a`. In CI the same names
-are **GitHub Actions secrets** on the wrapper (uppercased for the `TF_VAR_*` ones, e.g.
-`TF_VAR_CLOUDFLARE_ZONE_ID`); `.github/workflows/infra.yml` maps them to the lowercase `TF_VAR_*`
+`terraform apply` runs in CI (`.github/workflows/infra.yml` on push to `main`), reading these
+GitHub Actions secrets — there is no local-secrets apply path. The `TF_VAR_*` names are stored
+uppercased (e.g. `TF_VAR_CLOUDFLARE_ZONE_ID`); `infra.yml` maps them to the lowercase `TF_VAR_*`
 Terraform variables at apply time.
 
 The same `CLOUDFLARE_API_TOKEN` / `SUPABASE_ACCESS_TOKEN` also authenticate their MCP servers, and
