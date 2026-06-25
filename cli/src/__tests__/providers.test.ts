@@ -127,15 +127,27 @@ describe('tfModulesForTool', () => {
 });
 
 describe('token verify()', () => {
-  it('cloudflare verify is ok only when status === active', async () => {
+  it('cloudflare verify: active + an account visible → ok; inactive or zero-accounts → fail', async () => {
     const cf = PACKS.find((p) => p.id === 'cloudflare')?.tokens[0];
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ result: { status: 'active' } }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ result: { status: 'disabled' } }) });
-    vi.stubGlobal('fetch', fetchMock);
+    const active = { ok: true, json: async () => ({ result: { status: 'active' } }) };
+    const inactive = { ok: true, json: async () => ({ result: { status: 'disabled' } }) };
+    const oneAccount = { ok: true, json: async () => ({ result: [{ id: 'acct' }] }) };
+    const noAccounts = { ok: true, json: async () => ({ result: [] }) };
+
+    // active token + the /accounts scope probe sees an account → ok
+    const okMock = vi.fn().mockResolvedValueOnce(active).mockResolvedValueOnce(oneAccount);
+    vi.stubGlobal('fetch', okMock);
     expect((await cf?.verify?.('t', {}))?.ok).toBe(true);
+
+    // inactive token → fails before probing scope
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(inactive));
     expect((await cf?.verify?.('t', {}))?.ok).toBe(false);
+
+    // active but the /accounts probe returns zero accounts (a Zone-DNS-only token) → fails
+    const zoneOnly = vi.fn().mockResolvedValueOnce(active).mockResolvedValueOnce(noAccounts);
+    vi.stubGlobal('fetch', zoneOnly);
+    expect((await cf?.verify?.('t', {}))?.ok).toBe(false);
+
     vi.unstubAllGlobals();
   });
 

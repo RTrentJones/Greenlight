@@ -1,78 +1,64 @@
 ---
 name: provider-gemini
-description: How the `agent` lane works in Greenlight — an autonomous cron-triggered Cloudflare Worker backed by Google Gemini (free tier). Covers the GEMINI_API_KEY (Google AI Studio, no billing), the gemini-2.5-flash generateContent call, the wrangler deploy (cron + KV + secret + custom_domain), the /, /status, /run surface, api-mode verify, and the free-tier safety envelope. Use when building, deploying, or verifying an agent tool.
+description: The `agent` lane in Greenlight — an autonomous cron-triggered Cloudflare Worker backed by Google Gemini (free tier). Use when building, deploying, or verifying an agent tool, or debugging its KV / account-id / seed wiring.
 ---
 
 # provider-gemini
 
 The `agent` lane is an **autonomous tool**: a Cloudflare Worker that wakes on a **cron trigger**,
-calls **Gemini** (Google's LLM, free tier), does low-stakes work, stores the result in KV, and
-exposes a tiny HTTP surface. It's the keepalive Worker pattern promoted to a user tool — free,
-always-available, immune to repo-inactivity, no OCI box, no new paid account.
-
-`agent` → target **workers**, data **none | kv** (kv holds the last output + run metadata).
+calls **Gemini** (free tier), does low-stakes work, stores the result in KV, and exposes a tiny
+HTTP surface. It's the keepalive-Worker pattern promoted to a user tool — free, always-available,
+immune to repo-inactivity, no OCI box, no paid account. `agent` → target **workers**, data
+**none | kv** (kv holds the last output + run metadata).
 
 ## Token — `GEMINI_API_KEY`
 
-Create it at **Google AI Studio** (https://aistudio.google.com/apikey) — **free tier, no billing,
-no card**. `greenlight add` verifies it against `…/v1beta/models?key=…` (HTTP 200). One key serves
-every agent (shared, not per-tool). It is a **Cloudflare Worker secret** (`wrangler secret put
-GEMINI_API_KEY`) — never in the repo.
+Creation + verify live in
+[tokens-reference.md](https://github.com/RTrentJones/greenlight/blob/main/docs/tokens-reference.md).
+**Free tier, no billing / no card** (Google AI Studio). One key serves every agent (shared, not
+per-tool); stored as a **Cloudflare Worker secret** (`wrangler secret put`), never in the repo.
+`RUN_TOKEN` (bearer-gates `POST /run`) is the second Worker secret.
 
 ## The model + call
 
-`gemini-2.5-flash` (fast; generous free limits — ~15 RPM / 1500 req/day, so a daily cron is ~1/day).
+`gemini-2.5-flash` (fast; ~15 RPM / 1500 req/day free, so a daily cron is ~1/day).
 
 ```
 POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}
-{ "contents": [{ "parts": [{ "text": "<prompt>" }] }] }
-→ candidates[0].content.parts[0].text
+{ "contents": [{ "parts": [{ "text": "<prompt>" }] }] }   → candidates[0].content.parts[0].text
 ```
 
 ## Deploy — emitted CI (push to main)
 
-`greenlight add` resolves the Cloudflare **account id** into `wrangler.toml` (so wrangler skips the
-`/memberships` call a scoped token can't do) and emits **`.github/workflows/deploy-<name>.yml`**. On
-a push to main that touches `tools/<name>`, that workflow: **creates the KV namespace** (find-or-create
-in-CI — no manual step, the id stays a placeholder), deploys the Worker (cron + `custom_domain` from
-`wrangler.toml`), sets the `GEMINI_API_KEY` + `RUN_TOKEN` **Worker secrets** from GitHub secrets, seeds
-the first run, and verifies. So the only setup is **adding those two GitHub secrets**. (Local instead:
-`pnpm exec wrangler deploy --env prod`.)
+`greenlight add` emits `.github/workflows/deploy-<name>.yml`. On a push to main that touches
+`tools/<name>` it: creates the KV namespace (find-or-create in CI), deploys the Worker (cron +
+`custom_domain`), sets `GEMINI_API_KEY` + `RUN_TOKEN` Worker secrets from GitHub secrets, seeds the
+first run, and verifies. The only manual setup is **adding those two GitHub secrets**. `wrangler.toml`
+carries the cron + KV binding + per-env `custom_domain`; no Terraform. (Local: `wrangler deploy --env prod`.)
 
-`wrangler.toml` carries the cron + KV binding + the per-env `custom_domain` route; no Terraform.
-
-```toml
-[triggers]
-crons = ["0 13 * * *"]            # daily; stays far under the free-tier quota
-[[kv_namespaces]]
-binding = "STATE"
-[[routes]]
-pattern = "<name>.<domain>"
-custom_domain = true
-```
-
-## Surface
+## Surface + verify
 
 | route | purpose |
 |---|---|
 | `scheduled()` | the cron: prompt Gemini → `STATE.put(today, text + metadata)` |
-| `GET /` | the latest output (public, read-only) |
+| `GET /` | latest output (public, read-only) |
 | `GET /status` | `{ ok, lastRun, model, preview }` — the **api-mode verify** target |
-| `POST /run` | force a run — **bearer-gated** (a `RUN_TOKEN` secret) so randoms can't burn the Gemini quota; lets deploy/verify seed the first output |
+| `POST /run` | force a run — **bearer-gated** (`RUN_TOKEN`); lets deploy/verify seed the first output |
 
-## Verify — `api` mode on `/status`
+`verify.config.ts` hits `/status` and asserts `ok` + a recent run. (Output *quality* is a future
+`eval` mode — LLM-judged.)
 
-`verify.config.ts` hits `/status` and asserts `ok: true` + a recent run. (Output *quality* is a
-future `eval` mode — LLM-judged.) Because the first cron may not have fired at deploy time, the
-deploy step `POST /run`s once to seed, then verifies.
+## Gotchas
+- **KV namespace as code (no manual id).** The deploy workflow does a **find-or-create** on the KV
+  namespace in CI and binds it — the `wrangler.toml` id stays a placeholder, never hand-filled.
+- **Account id from a scoped token.** `add` resolves the Cloudflare account id into `wrangler.toml`
+  so wrangler skips the `/memberships` call a scoped token can't make (see provider-cloudflare).
+- **Seed before verify.** The first cron may not have fired at deploy time, so `/status` would
+  (correctly) report no run — the deploy step `POST /run`s once to seed *before* verifying. Don't
+  reorder these.
+- **No keepalive.** The cron *is* the heartbeat and the edge Worker is always-available — never add
+  an agent to `module.keepalive.targets_json`.
 
 ## Safety envelope
-
-- **Low-stakes / read-only** first agents (generate → store → serve; no destructive external actions).
-- **Bearer on `/run`**; the cron frequency stays far under the free-tier daily limit.
-- Key is **secret-only** (a Worker secret), never committed or echoed.
-
-## No keepalive
-
-An agent needs no keepalive — the cron *is* its heartbeat and the Worker is always-available
-(Cloudflare's edge, not a reclaimable box). Don't add it to `module.keepalive.targets_json`.
+Low-stakes / read-only first agents (generate → store → serve, no destructive external actions);
+bearer on `/run`; cron frequency far under the free-tier daily limit; key secret-only, never echoed.

@@ -95,11 +95,33 @@ export const PACKS: ProviderPack[] = [
           'Account · Cloudflare Tunnel · Edit (only if a tool uses target: oci)',
         ],
         verify: async (t) => {
+          const auth = { Authorization: `Bearer ${t}` };
           const r = await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify', {
-            headers: { Authorization: `Bearer ${t}` },
+            headers: auth,
           });
           const j = (await r.json().catch(() => ({}))) as { result?: { status?: string } };
-          return { ok: r.ok && j.result?.status === 'active', detail: j.result?.status };
+          if (!r.ok || j.result?.status !== 'active') {
+            return { ok: false, detail: j.result?.status ?? `HTTP ${r.status}` };
+          }
+          // Best-effort scope probe: account discovery is the lived footgun — a zone-only token is
+          // `active` but can't resolve the account_id that Workers/KV deploys need (the agent lane
+          // resolves it from the zone in CI). A correctly-scoped token (Account Settings:Read +
+          // Workers Scripts/KV:Edit) sees ≥1 account; a Zone-DNS-only token sees none. Probe errors
+          // are inconclusive (network/transient) → don't fail on them; only a definitive empty list.
+          const ar = await fetch('https://api.cloudflare.com/client/v4/accounts?per_page=1', {
+            headers: auth,
+          }).catch(() => null);
+          if (ar?.ok) {
+            const aj = (await ar.json().catch(() => ({}))) as { result?: unknown[] };
+            if (Array.isArray(aj.result) && aj.result.length === 0) {
+              return {
+                ok: false,
+                detail:
+                  "active but no account access — a Zone-DNS-only token can't resolve account_id; needs Account · Workers Scripts:Edit + Workers KV Storage:Edit + Account Settings:Read",
+              };
+            }
+          }
+          return { ok: true, detail: 'active' };
         },
       },
     ],

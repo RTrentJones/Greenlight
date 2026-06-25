@@ -4,6 +4,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
 import { loadManifest } from '../manifest';
+import { infraRefs, installedVersion } from '../refs';
+import { resolveMigrationsDir } from './migrations';
 
 export interface DoctorCheck {
   name: string;
@@ -102,6 +104,35 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
     });
   }
 
+  // Dangerous-SQL gate conformance (docs/security.md): a data tool that owns migrations must run
+  // `greenlight migrations scan` in the CI that applies them, else a data-destroying migration can
+  // ship ungated. Warn when a migrations dir exists under the tool but no workflow (the tool's own
+  // or the wrapper's) references the scan. Skipped for tools without migrations.
+  if (t.data === 'supabase' || t.data === 'neon') {
+    const migBase = join(root, toolDir);
+    const migDir = resolveMigrationsDir(undefined, migBase);
+    if (existsSync(join(migBase, migDir))) {
+      const wired = [join(migBase, '.github/workflows'), join(root, '.github/workflows')].some(
+        (d) => {
+          try {
+            return readdirSync(d)
+              .filter((f) => /\.ya?ml$/.test(f))
+              .some((f) => readFileSync(join(d, f), 'utf8').includes('migrations scan'));
+          } catch {
+            return false;
+          }
+        },
+      );
+      out.push({
+        name: `${t.name}: migrations gate`,
+        status: wired ? 'ok' : 'warn',
+        detail: wired
+          ? `${migDir} scanned in CI`
+          : `${migDir} present but no workflow runs \`greenlight migrations scan\` — wire the dangerous-SQL gate before the apply step`,
+      });
+    }
+  }
+
   return out;
 }
 
@@ -112,36 +143,16 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
  * present). This is the check that would have caught the scattered v0.2.3/v0.2.5/v0.2.19 pins. */
 export function versionDriftCheck(root: string): DoctorCheck {
   const name = 'framework version drift';
-  let installed: string | undefined;
-  try {
-    const pkg = JSON.parse(
-      readFileSync(join(root, 'node_modules/@rtrentjones/greenlight/package.json'), 'utf8'),
-    ) as { version?: string };
-    installed = pkg.version;
-  } catch {
-    /* not a consumer / not installed */
-  }
+  const installed = installedVersion(root);
+  const refList = infraRefs(root);
 
-  const refs = new Set<string>();
-  try {
-    for (const f of readdirSync(join(root, 'infra')).filter((f) => f.endsWith('.tf'))) {
-      const body = readFileSync(join(root, 'infra', f), 'utf8');
-      for (const m of body.matchAll(/greenlight\.git\/\/infra\/modules\/[^?"]+\?ref=(v[0-9.]+)/g)) {
-        if (m[1]) refs.add(m[1]);
-      }
-    }
-  } catch {
-    /* no infra dir */
-  }
-
-  if (!installed && refs.size === 0) {
+  if (!installed && refList.length === 0) {
     return {
       name,
       status: 'skip',
       detail: 'no installed @rtrentjones/greenlight or infra pins here',
     };
   }
-  const refList = [...refs];
   if (installed) {
     const want = `v${installed}`;
     const bad = refList.filter((r) => r !== want);
@@ -150,7 +161,7 @@ export function versionDriftCheck(root: string): DoctorCheck {
       : {
           name,
           status: 'warn',
-          detail: `installed ${want}, but infra pins ${bad.join(', ')} — bump ?ref to ${want}`,
+          detail: `installed ${want}, but infra pins ${bad.join(', ')} — run \`greenlight bump\``,
         };
   }
   // No installed version to compare against — at least require the pins to be uniform.
@@ -310,6 +321,7 @@ export async function doctorCommand(args: string[] = []): Promise<void> {
   }
 
   const live = args.includes('--live');
+  const strict = args.includes('--strict');
   const checks = runDoctor(config, process.cwd());
   if (live) {
     console.log('  (probing live prod URLs…)');
@@ -319,7 +331,12 @@ export async function doctorCommand(args: string[] = []): Promise<void> {
     console.log(`  ${ICON[c.status]} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
   }
   const failed = checks.filter((c) => c.status === 'fail').length;
-  console.log(`\n${failed === 0 ? '✔ no failures' : `✘ ${failed} failure(s)`}`);
+  const warned = checks.filter((c) => c.status === 'warn').length;
+  console.log(
+    `\n${failed === 0 ? '✔ no failures' : `✘ ${failed} failure(s)`}${warned ? ` · ${warned} warning(s)` : ''}`,
+  );
   if (!live) console.log('· run `greenlight doctor --live` for DNS + reachability probes');
-  process.exit(failed === 0 ? 0 : 1);
+  if (!strict && warned) console.log('· run `greenlight doctor --strict` to fail on warnings (CI)');
+  // Failures always gate; --strict makes warnings (drift) gate too — the CI-enforceable mode.
+  process.exit(failed > 0 || (strict && warned > 0) ? 1 : 0);
 }

@@ -21,7 +21,7 @@ export const EnvEnum = z.enum(['preview', 'beta', 'prod']);
  * `agent` is an autonomous cron-triggered Worker (LLM-backed, Gemini free tier); `kv` holds its
  * last output + run metadata (see docs/agents-plan.md).
  */
-const MATRIX: Record<
+export const MATRIX: Record<
   z.infer<typeof LaneEnum>,
   {
     targets: ReadonlyArray<z.infer<typeof TargetEnum>>;
@@ -33,6 +33,17 @@ const MATRIX: Record<
   mcp: { targets: ['workers', 'oci'], data: ['none'] },
   agent: { targets: ['workers'], data: ['none', 'kv'] },
 };
+
+/** The lane × target × data matrix as a human-readable table — for `greenlight lanes` and `add`'s
+ * error, so valid combinations are discoverable at the point of use (not just on a schema reject). */
+export function describeMatrix(): string {
+  return (Object.keys(MATRIX) as Array<keyof typeof MATRIX>)
+    .map((lane) => {
+      const r = MATRIX[lane];
+      return `  ${lane.padEnd(6)} → target: ${r.targets.join(' | ')}   data: ${r.data.join(' | ')}`;
+    })
+    .join('\n');
+}
 
 export const ToolSchema = z
   .object({

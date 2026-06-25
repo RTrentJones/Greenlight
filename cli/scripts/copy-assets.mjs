@@ -28,4 +28,14 @@ for (const entry of readdirSync(skillsSrc)) {
   cpSync(join(skillsSrc, entry), join(skillsOut, entry), { recursive: true });
 }
 
-console.log('cli: copied templates + skill assets');
+// 3) Plugin mirror: .claude/skills/* -> plugin/skills/* (the Claude Code marketplace plugin, a
+// COMMITTED pure mirror — `plugin/.claude-plugin` holds the manifest and is left untouched). Done
+// here so editing a skill once propagates to the plugin on build; `check-plugin-sync` guards drift.
+const pluginSkills = join(repoRoot, 'plugin', 'skills');
+rmSync(pluginSkills, { recursive: true, force: true });
+mkdirSync(pluginSkills, { recursive: true });
+for (const entry of readdirSync(skillsSrc)) {
+  cpSync(join(skillsSrc, entry), join(pluginSkills, entry), { recursive: true });
+}
+
+console.log('cli: copied templates + skill assets + plugin mirror');

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { describeMatrix } from '@rtrentjones/greenlight-shared';
 import { addCommand } from './commands/add';
 import { adoptCommand } from './commands/adopt';
 import { agentCommand } from './commands/agent';
+import { bumpCommand } from './commands/bump';
 import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
 import { doctorCommand } from './commands/doctor';
@@ -17,6 +19,7 @@ const HELP = `greenlight <command>
 
   init --domain <d> [--cf-token ..] [--force]   scaffold manifest + secrets, push to GitHub Actions
   add <name> --lane <l> --target <t> [..]       scaffold a tool from a lane template + manifest entry
+  lanes                                         list the valid lane × target × data combinations
   config                                        load & validate the manifest, then print it
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
   preview <name> [--port <n>]                   build + serve locally + verify (one command)
@@ -24,10 +27,12 @@ const HELP = `greenlight <command>
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
   status <name>                                 last ship/deploy/verify run for a tool (via gh)
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
+  secrets check [<name>] [--repo o/r]           list the GitHub secrets a tool's deploy needs + flag missing
   agent sync [<name>]                           write the loop kit (named → tool-aware, into its dir)
   adopt <name> --repo <path> --lane --target    onboard an existing tool repo as a thin consumer
   migrations scan [<dir>] [--strict]            dangerous-SQL gate for migrations (pre-apply)
-  doctor [--live]                               consistency checks (--live: DNS + reachability probes)
+  bump                                          re-pin a consumer's infra ?ref + dep to the installed version
+  doctor [--live] [--strict]                    consistency checks (--live: probes; --strict: fail on warnings)
   help                                          show this message
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
@@ -46,6 +51,9 @@ async function main(): Promise<void> {
       return initCommand(args);
     case 'add':
       return addCommand(args);
+    case 'lanes':
+      console.log(`Valid lane × target × data combinations:\n${describeMatrix()}`);
+      return;
     case 'config':
       return configCommand();
     case 'deploy':
@@ -66,6 +74,8 @@ async function main(): Promise<void> {
       return adoptCommand(args);
     case 'migrations':
       return migrationsCommand(args);
+    case 'bump':
+      return bumpCommand(args);
     case 'doctor':
       return doctorCommand(args);
     default:

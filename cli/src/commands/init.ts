@@ -71,8 +71,9 @@ jobs:
       TF_TOKEN_app_terraform_io: \${{ secrets.TF_API_TOKEN }} # HCP state backend auth
       GITHUB_TOKEN: \${{ github.token }} # github provider (branch/protection); creates nothing risky
       CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
-      TF_VAR_cloudflare_zone_id: \${{ secrets.TF_VAR_CLOUDFLARE_ZONE_ID }}
-      TF_VAR_cloudflare_account_id: \${{ secrets.TF_VAR_CLOUDFLARE_ACCOUNT_ID }}
+      # zone/account ids are enumerable identifiers, not secrets — repo VARIABLES (vars.*)
+      TF_VAR_cloudflare_zone_id: \${{ vars.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_cloudflare_account_id: \${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       # vercel (target: vercel tools)
       VERCEL_API_TOKEN: \${{ secrets.VERCEL_API_TOKEN }}
       # supabase (data: supabase tools)

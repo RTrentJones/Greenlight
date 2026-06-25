@@ -180,10 +180,16 @@ tool's name; account-level credentials stay plain:
 
 | kind | name | examples |
 |---|---|---|
-| **Account / provider** (shared) | plain | `CLOUDFLARE_API_TOKEN`, `VERCEL_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `NEON_API_KEY`, `TF_API_TOKEN`, `TF_VAR_CLOUDFLARE_ZONE_ID`, `TF_VAR_OCI_*`, `TF_VAR_KEEPALIVE_GITHUB_TOKEN` |
+| **Account / provider** (shared) | plain | `CLOUDFLARE_API_TOKEN`, `VERCEL_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `NEON_API_KEY`, `TF_API_TOKEN`, `TF_VAR_OCI_*`, `TF_VAR_KEEPALIVE_GITHUB_TOKEN` |
 | **Project-scoped — workflow secret** | **suffix** `_<TOOL>` | `GREENLIGHT_STATUS_TOKEN_BAMCP`, `VERCEL_AUTOMATION_BYPASS_SECRET_HEISTMIND` |
 | **Project-scoped — Terraform var** | `TF_VAR_<TOOL>_<NAME>` (TF var `<tool>_<name>`) | `TF_VAR_HEISTMIND_GITHUB_ADMIN_TOKEN`, `TF_VAR_HEISTMIND_SUPABASE_DATABASE_PASSWORD` |
 | **A tool's own app-env secret** | tool-prefixed | `BAMCP_VERIFY_TOKEN` |
+
+**IDs are repo variables, not secrets.** An enumerable identifier carries no authority on its own,
+so it belongs in a GitHub repo **variable** (`vars.*`), not a secret. The Cloudflare **zone id** is
+the canonical case: set it as `CLOUDFLARE_ZONE_ID` (a repo variable) and reference it in `infra.yml`
+as `TF_VAR_CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}`. Same for account ids / project refs.
+Only values that grant access (tokens, signing keys, passwords) go in secrets.
 
 `<TOOL>` is the uppercased manifest name with `-`→`_` (`demo-mcp` → `DEMO_MCP`). One source of truth
 for the rule: `secretKeyFor()` in `cli/src/providers.ts` (used by `secrets gather` + tf-emit).

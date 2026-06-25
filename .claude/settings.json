@@ -8,7 +8,8 @@
       "Read(**/.env.local)",
       "Read(**/.env.*.local)",
       "Read(**/.dev.vars)",
-      "Read(**/.dev.vars.*)"
+      "Read(**/.dev.vars.*)",
+      "Read(**/.mcp.json)"
     ]
   }
 }
