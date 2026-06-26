@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  appSecretsToGather,
   listGitHubSecrets,
   ociPrefill,
   parseOciConfig,
   parseRepo,
   setGitHubSecret,
 } from '../commands/secrets';
+import { packsForTool } from '../providers';
 
 vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
 
@@ -118,6 +120,30 @@ describe('ociPrefill', () => {
     const map = ociPrefill(cfgPath);
     expect(map.has('TF_VAR_OCI_PRIVATE_KEY')).toBe(false);
     expect(map.get('TF_VAR_OCI_TENANCY_OCID')).toBe('ocid1.tenancy');
+  });
+});
+
+describe('appSecretsToGather', () => {
+  const vercelNeon = packsForTool({ lane: 'next', target: 'vercel', data: 'neon' });
+
+  it('returns the manifest app secrets that no provider pack covers', () => {
+    const out = appSecretsToGather(
+      { name: 'tracer', tokens: ['TF_VAR_TRACER_INGEST_TOKEN', 'TF_VAR_TRACER_GEMINI_API_KEY'] },
+      vercelNeon,
+    );
+    expect(out).toEqual(['TF_VAR_TRACER_INGEST_TOKEN', 'TF_VAR_TRACER_GEMINI_API_KEY']);
+  });
+
+  it('dedups a manifest token a pack already covers (e.g. VERCEL_API_TOKEN)', () => {
+    const out = appSecretsToGather(
+      { name: 'tracer', tokens: ['VERCEL_API_TOKEN', 'TF_VAR_TRACER_INGEST_TOKEN'] },
+      vercelNeon,
+    );
+    expect(out).toEqual(['TF_VAR_TRACER_INGEST_TOKEN']);
+  });
+
+  it('returns [] when the tool declares no tokens', () => {
+    expect(appSecretsToGather({ name: 'blog' }, packsForTool())).toEqual([]);
   });
 });
 

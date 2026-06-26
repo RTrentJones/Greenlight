@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { loadManifest, resolveEntry } from '../manifest';
-import { packsForTool, secretKeyFor } from '../providers';
+import { type ResolvedEntry, loadManifest, resolveEntry } from '../manifest';
+import { type ProviderPack, packsForTool, secretKeyFor } from '../providers';
 
 /**
  * `greenlight secrets gather <name>` — guided, link-first token onboarding straight to a repo's
@@ -141,11 +141,28 @@ export function setGitHubSecret(
   }
 }
 
+/** A tool's manifest-declared **app secrets** (`tokens`) that aren't already covered by a provider
+ * pack — its own project-scoped values (an ingest bearer, an API-route LLM key, …). These are opaque
+ * (no scopes / no verify), so `gather` prompts them after the pack creds rather than leaving them
+ * manual-only. Dedup against the pack tokens (whose names come from `secretKeyFor`). */
+export function appSecretsToGather(
+  entry: Pick<ResolvedEntry, 'name' | 'tokens' | 'tokenOverrides'>,
+  packs: ProviderPack[],
+): string[] {
+  const packKeys = new Set(
+    packs.flatMap((p) =>
+      p.tokens.map((t) => secretKeyFor(t, entry.name ?? '', entry.tokenOverrides)),
+    ),
+  );
+  return (entry.tokens ?? []).filter((k) => !packKeys.has(k));
+}
+
 /**
  * `greenlight secrets gather <name>` — guided, link-first secret onboarding straight to a repo's
  * GitHub Actions secrets. For each provider pack the tool uses: print where to create the token +
  * its scopes, hidden-prompt for the value (no echo), fail-fast `verify()`, then push via `gh`
- * (stdin). Nothing touches disk; no value is echoed or logged. Blank input skips a token.
+ * (stdin). Then prompt the tool's own manifest-declared app secrets. Nothing touches disk; no value
+ * is echoed or logged. Blank input skips a token.
  */
 export async function gatherSecrets(
   name: string,
@@ -214,6 +231,31 @@ export async function gatherSecrets(
         setGitHubSecret(repo, env, key, value);
         const verb = existing?.has(key) ? 'overrode' : 'pushed';
         console.log(`   ✔ ${verb} ${key} → ${repo}`); // name only — never the value
+        pushed++;
+      }
+    }
+
+    // The tool's own manifest-declared app secrets (e.g. TF_VAR_TRACER_INGEST_TOKEN) — not pack creds,
+    // so prompt them too (opaque: no scopes/verify) instead of forcing a manual `gh secret set`.
+    const appSecrets = appSecretsToGather(entry, packs);
+    if (appSecrets.length) {
+      console.log(`── ${name} (app secrets)`);
+      for (const key of appSecrets) {
+        const pre = prefill?.get(key);
+        if (pre) {
+          setGitHubSecret(repo, env, key, pre);
+          console.log(`   ✔ ${existing?.has(key) ? 'overrode' : 'pushed'} ${key} ← prefill`);
+          pushed++;
+          continue;
+        }
+        const state = existing ? (existing.has(key) ? '  [already set]' : '  [not set]') : '';
+        const value = await prompt.ask(`   ${key}${state}\n   value: `);
+        if (!value) {
+          console.log(existing?.has(key) ? '   · kept existing' : '   · skipped');
+          continue;
+        }
+        setGitHubSecret(repo, env, key, value);
+        console.log(`   ✔ ${existing?.has(key) ? 'overrode' : 'pushed'} ${key} → ${repo}`);
         pushed++;
       }
     }
