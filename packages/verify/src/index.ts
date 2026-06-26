@@ -13,7 +13,13 @@ export { verifyMcp } from './mcp';
 export { verifyPlaywright } from './playwright';
 export { verifyTest } from './test';
 export { verifyAgentWeb } from './agent-web';
-export { verifyEval, llmJudge } from './eval';
+export { verifyEval, llmJudge, clamp01 } from './eval';
+export {
+  toExportResult,
+  type VerifyExportResult,
+  type VerifyExportCheck,
+  type ExportContext,
+} from './export';
 
 export interface VerifyOptions {
   /** Poll for the URL to become reachable before checking — absorbs the first-deploy

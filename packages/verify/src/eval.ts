@@ -25,8 +25,16 @@ function resultText(res: unknown): string {
   return JSON.stringify(res);
 }
 
-/** Default judge — an LLM scores the result against the rubric (1–5 + pass + reason).
- * Optional deps (@anthropic-ai/sdk) + ANTHROPIC_API_KEY; lazy so the common path stays light. */
+/** Clamp a judge score into the standard [0,1] band (1 = perfect). A stray legacy 1–5 reply clamps
+ * to 1 rather than silently sailing past a 0..1 `minScore`; a non-number → 0. */
+export const clamp01 = (n: unknown): number => {
+  const v = typeof n === 'number' ? n : Number(n);
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
+};
+
+/** Default judge — an LLM scores the result against the rubric in [0,1] + pass + rationale (v0.6.0;
+ * was a 1–5 scale before). Optional deps (@anthropic-ai/sdk) + ANTHROPIC_API_KEY; lazy so the common
+ * path stays light. */
 export function llmJudge(model: string): Judge {
   return async ({ rubric, result }) => {
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
@@ -35,7 +43,10 @@ export function llmJudge(model: string): Judge {
       (await import(sdkName)) as {
         default: new (o: { apiKey: string; timeout?: number; maxRetries?: number }) => {
           messages: {
-            create(b: unknown): Promise<{ content: Array<{ type: string; text?: string }> }>;
+            create(b: unknown): Promise<{
+              content: Array<{ type: string; text?: string }>;
+              usage?: { input_tokens?: number; output_tokens?: number };
+            }>;
           };
         };
       }
@@ -50,15 +61,21 @@ export function llmJudge(model: string): Judge {
       model,
       max_tokens: 512,
       system:
-        'You are a strict evaluation judge. Score how well RESULT satisfies RUBRIC on a 1–5 scale ' +
-        '(5 = fully satisfies). Reply ONLY with JSON: {"score": <1-5>, "pass": <bool>, "reason": "<short>"}.',
+        'You are a strict evaluation judge. Score how well RESULT satisfies RUBRIC on a 0..1 scale ' +
+        '(1 = fully satisfies). Reply ONLY with JSON: {"score": <0..1>, "pass": <bool>, "rationale": "<one sentence>"}.',
       messages: [{ role: 'user', content: `RUBRIC:\n${rubric}\n\nRESULT:\n${result}` }],
     });
     const text = resp.content.find((b) => b.type === 'text')?.text ?? '';
     const json = text.match(/\{[\s\S]*\}/);
     if (!json) throw new Error(`judge returned no JSON: ${text.slice(0, 120)}`);
     const parsed = JSON.parse(json[0]) as JudgeResult;
-    return { score: Number(parsed.score) || 0, pass: Boolean(parsed.pass), reason: parsed.reason };
+    return {
+      score: clamp01(parsed.score),
+      pass: Boolean(parsed.pass),
+      rationale: parsed.rationale ?? parsed.reason, // `reason` = deprecated alias, one release
+      tokensIn: resp.usage?.input_tokens,
+      tokensOut: resp.usage?.output_tokens,
+    };
   };
 }
 
@@ -73,8 +90,12 @@ export async function verifyEval(
   spec: EvalSpec,
   judge?: Judge,
 ): Promise<VerifyReport> {
-  const score = judge ?? llmJudge(spec.model ?? 'claude-sonnet-4-6');
+  const model = spec.model ?? 'claude-sonnet-4-6';
+  const score = judge ?? llmJudge(model);
   const checks: VerifyCheck[] = [];
+  const started = Date.now();
+  let tokensIn = 0;
+  let tokensOut = 0;
 
   const client = new Client({ name: 'greenlight-verify', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
@@ -86,15 +107,22 @@ export async function verifyEval(
 
   try {
     for (const c of spec.cases) {
-      const min = c.minScore ?? 4;
+      const min = c.minScore ?? 0.8;
       try {
         const res = await client.callTool({ name: c.tool, arguments: c.args ?? {} });
-        const verdict = await score({ rubric: c.rubric, result: resultText(res) });
+        const result = resultText(res);
+        const verdict = await score({ rubric: c.rubric, result });
         const pass = verdict.pass && verdict.score >= min;
+        const rationale = verdict.rationale ?? verdict.reason;
+        tokensIn += verdict.tokensIn ?? 0;
+        tokensOut += verdict.tokensOut ?? 0;
         checks.push({
           name: `eval: ${c.name}`,
           pass,
-          detail: `score ${verdict.score}/5 (min ${min})${verdict.reason ? ` — ${verdict.reason}` : ''}`,
+          score: verdict.score,
+          explanation: rationale,
+          output: result,
+          detail: `score ${verdict.score.toFixed(2)} (min ${min})${rationale ? ` — ${rationale}` : ''}`,
         });
       } catch (e) {
         checks.push({ name: `eval: ${c.name}`, pass: false, detail: msg(e) });
@@ -104,5 +132,11 @@ export async function verifyEval(
     await client.close();
   }
 
-  return report('eval', baseUrl, checks);
+  // Run metadata for the `--json` export (best-effort; tokens are 0 with a deterministic test judge).
+  return {
+    ...report('eval', baseUrl, checks),
+    model,
+    durationMs: Date.now() - started,
+    ...(tokensIn || tokensOut ? { tokensIn, tokensOut } : {}),
+  };
 }

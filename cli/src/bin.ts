@@ -23,7 +23,7 @@ const HELP = `greenlight <command>
   config                                        load & validate the manifest, then print it
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
   preview <name> [--port <n>]                   build + serve locally + verify (one command)
-  verify <name> [--env <env> | --url <url>]     run the verify harness against the URL
+  verify <name> [--env <env> | --url <url>] [--json]  run the verify harness (--json: standards-shaped result to stdout)
   promote <name> [--perform] [--push]           gated develop -> main fast-forward
   status <name>                                 last ship/deploy/verify run for a tool (via gh)
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
