@@ -114,12 +114,16 @@ Switching a tool between Workers / Vercel / OCI is config, not a rewrite.
 | `playwright` | a11y-tree render smoke (`renders`) **and/or** a real Playwright suite (`suite`) run against the deploy URL (injected as `PLAYWRIGHT_BASE_URL`/`GREENLIGHT_VERIFY_URL`), gated on exit code |
 | `test` | the tool's own test command (gate on exit code) |
 | `agent-web` | an LLM drives the live UI via Playwright to do a task, then assertions confirm |
-| `eval` | an LLM judge scores an MCP tool result against a rubric |
+| `eval` | an LLM judge scores an MCP tool result against a rubric (**0..1**; `minScore` default 0.8) |
 
 A `verify.config.ts` may export an **array** to combine modes (`verifyAll` / `allPass`). `agent-web`
 and `eval` lazy-load optional deps (`playwright`, `@anthropic-ai/sdk`) and **degrade to a failing
 check — never a throw** — without the dep or `ANTHROPIC_API_KEY`. **CI and the agent loop call the
 same harness**, which is what wires verification to promotion.
+
+`greenlight verify <name> --json` (or `GREENLIGHT_VERIFY_JSON=1`) emits the result as one
+standards-shaped (OTel-GenAI / OpenInference) JSON object to **stdout** (human report to **stderr**) —
+backend-agnostic, for an eval dashboard, Langfuse, Phoenix, or any OTLP consumer.
 
 ## The agentic loop — deploy → verify → promote
 
@@ -254,7 +258,7 @@ Three channels, one source of truth per artifact type:
   `private`. `playwright` + `@anthropic-ai/sdk` are optional/external. Publishing is **OIDC Trusted
   Publishing** (`.github/workflows/release.yml`, no `NPM_TOKEN`), triggered by a `v*` tag.
 - **git tags** — the Terraform modules, source-ref-pinned via `MODULE_REF`
-  ([`cli/src/version.ts`](../cli/src/version.ts)), e.g. `?ref=v0.2.20`.
+  ([`cli/src/version.ts`](../cli/src/version.ts)), e.g. `?ref=v0.6.0` (the published version).
 - **plugin marketplace** — the skills (`/plugin marketplace add RTrentJones/greenlight`).
 
 **Lockstep:** the npm version, the `MODULE_REF` git tag, and the wrapper's module `?ref=` move

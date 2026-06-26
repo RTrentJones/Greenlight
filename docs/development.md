@@ -82,6 +82,13 @@ repo (e.g. `RTrentJones.dev`) depends on `@rtrentjones/greenlight` and updates v
 
 Publishing is **OIDC Trusted Publishing** ([`.github/workflows/release.yml`](../.github/workflows/release.yml)),
 triggered by pushing a **`v*` tag** (or `workflow_dispatch`) — no `NPM_TOKEN`. The npm version, the
-`MODULE_REF` git tag ([`cli/src/version.ts`](../cli/src/version.ts)), and the wrapper's module `?ref=`
-move in **lockstep**. To cut a release: bump `cli/package.json` version + `MODULE_REF`, commit, then
-`git tag -a vX.Y.Z && git push origin vX.Y.Z`.
+`MODULE_REF` ([`cli/src/version.ts`](../cli/src/version.ts)), **every workspace `package.json`**, and
+the wrapper's module `?ref=` move in **lockstep**. To cut a release, run the lockstep bump:
+
+```bash
+node scripts/release.mjs <version>   # writes MODULE_REF + every package version, runs check-all
+```
+
+It does **not** tag or push (the OIDC publish stays gated). Then commit and
+`git tag -a vX.Y.Z && git push origin vX.Y.Z`. A consumer adopts the new line with **`greenlight
+bump`** — it re-pins the wrapper's infra `?ref=` + the npm dep to the installed version.
