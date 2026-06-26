@@ -150,10 +150,18 @@ unattended — use D1/KV or external services).
 | `playwright` | a11y-tree render **and** a real suite (`suite.command`) against the deploy URL (`PLAYWRIGHT_BASE_URL`) |
 | `test` | the tool's own test command |
 | `agent-web` | LLM-driven UI scenarios (lazy-loads `playwright`, degrades to a failing check without the dep / `ANTHROPIC_API_KEY`) |
-| `eval` | LLM-judged MCP quality (lazy-loads `@anthropic-ai/sdk`; same graceful degrade) |
+| `eval` | LLM-judged MCP quality, scored **0..1** (`minScore` default 0.8; lazy-loads `@anthropic-ai/sdk`; same graceful degrade) |
 
 `logsOnFailure` runs a command only on failure with `$GREENLIGHT_VERIFY_URL` injected (telemetry
 into the report — no hard-coded URLs). The same harness runs in CI **and** the agent loop.
+
+**Machine-readable export** — `greenlight verify <name> --json` (or `GREENLIGHT_VERIFY_JSON=1`)
+prints **one** standards-shaped result to **stdout** (OTel-GenAI / OpenInference: `0..1` scores,
+`gen_ai.*` run attributes, per-check `eval.score`/`eval.explanation`) while the human report goes to
+**stderr** — so `verify … --json | jq` is clean. The shape is backend-agnostic: pipe it to an eval
+dashboard's ingest endpoint, **Langfuse** (OSS, self-host), **Phoenix** (OTel-native), or any OTLP
+consumer. Adopters wanting a maintained backend should point this export at Langfuse/Phoenix rather
+than build their own.
 
 ## 9. Secrets & token scoping
 

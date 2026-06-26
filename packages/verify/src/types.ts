@@ -10,6 +10,16 @@ export interface VerifyCheck {
   name: string;
   pass: boolean;
   detail?: string;
+  /** Scored quality in [0,1] (1 = perfect), when a mode produces one (today: `eval`). Other modes
+   * leave it undefined; the `--json` export derives 1.0/0.0 from `pass`. Standards-aligned (0..1,
+   * like OpenInference / autoevals). */
+  score?: number;
+  /** One-line "why" behind the score (the judge rationale) — exported as `eval.explanation`. */
+  explanation?: string;
+  /** Optional case context, surfaced in the `--json` export (e.g. an eval case's prompt/result). */
+  input?: string;
+  expected?: string;
+  output?: string;
 }
 
 export interface VerifyReport {
@@ -20,6 +30,13 @@ export interface VerifyReport {
   /** Recent platform logs, attached ONLY on a failing report when the spec set `logsOnFailure`
    * (telemetry-into-verify — gives the agent/CI the "why" without leaving the loop). */
   logs?: string;
+  /** Optional run-level metadata for the `--json` export (OTel-GenAI attributes). Set best-effort by
+   * the LLM-driven modes (`eval` judge, `agent-web` driver); omitted by the others. */
+  model?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number;
+  durationMs?: number;
 }
 
 /** Fields every spec shares. */
@@ -182,7 +199,7 @@ export interface EvalCase {
   args?: Record<string, unknown>;
   /** Natural-language rubric the judge scores the tool's result against. */
   rubric: string;
-  /** Minimum score [1-5] to pass (default 4). */
+  /** Minimum score in [0,1] to pass (default 0.8). (Was a 1–5 scale + default 4 before v0.6.0.) */
   minScore?: number;
 }
 
@@ -199,9 +216,14 @@ export interface JudgeInput {
   result: string;
 }
 export interface JudgeResult {
-  score: number; // 1–5
+  score: number; // 0..1 (1 = fully satisfies). Was 1–5 before v0.6.0.
   pass: boolean;
+  /** One-line justification. `reason` is the deprecated alias kept for one release. */
+  rationale?: string;
   reason?: string;
+  /** Best-effort judge token usage (for the `--json` export); set by the default LLM judge. */
+  tokensIn?: number;
+  tokensOut?: number;
 }
 export type Judge = (input: JudgeInput) => Promise<JudgeResult>;
 

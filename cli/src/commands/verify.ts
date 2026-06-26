@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { type DeployEnv, type Lane, resolveUrl } from '@rtrentjones/greenlight-shared';
 import {
+  type ExportContext,
   type VerifyReport,
   type VerifySpec,
   allPass,
+  toExportResult,
   verifyAll,
 } from '@rtrentjones/greenlight-verify';
 import {
@@ -44,17 +46,34 @@ export function defaultSpec(lane: Lane): VerifySpec {
   }
 }
 
-export function printReport(report: VerifyReport): void {
-  console.log(`verify ${report.mode} ${report.url}\n`);
+export function printReport(report: VerifyReport, log: (s: string) => void = console.log): void {
+  log(`verify ${report.mode} ${report.url}\n`);
   for (const c of report.checks) {
-    console.log(`  ${c.pass ? '✔' : '✘'} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
+    log(`  ${c.pass ? '✔' : '✘'} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`);
   }
-  console.log(`\n${report.pass ? '✔ PASS' : '✘ FAIL'}`);
+  log(`\n${report.pass ? '✔ PASS' : '✘ FAIL'}`);
   // Telemetry-into-verify: surface the platform logs under a failed report so the agent/CI sees
   // the "why" right next to the red gate (no separate dashboard trip).
   if (!report.pass && report.logs) {
-    console.log(`\n--- recent logs (${report.mode}) ---\n${report.logs}\n--- end logs ---`);
+    log(`\n--- recent logs (${report.mode}) ---\n${report.logs}\n--- end logs ---`);
   }
+}
+
+/** Emit the reports + exit. `--json` (or GREENLIGHT_VERIFY_JSON=1) prints the standards-shaped export
+ * to STDOUT and routes the human report to STDERR, so `verify … --json | jq` is clean; otherwise the
+ * human report goes to stdout as before. Exit code is the gate decision either way. */
+function emitReports(reports: VerifyReport[], json: boolean, ctx: ExportContext): never {
+  const log = json ? console.error : console.log;
+  for (const report of reports) printReport(report, log);
+  const pass = allPass(reports);
+  if (reports.length > 1) log(`\n${pass ? '✔ ALL PASS' : '✘ FAIL'} (${reports.length} specs)`);
+  if (json) process.stdout.write(`${JSON.stringify(toExportResult(reports, ctx))}\n`);
+  process.exit(pass ? 0 : 1);
+}
+
+/** The deploy's commit, for the export's `git_sha` (CI provides one; null locally). */
+function gitSha(): string | null {
+  return process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? null;
 }
 
 const LOG_TAIL_LINES = 50;
@@ -121,6 +140,10 @@ function flag(args: string[], name: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+function jsonFlag(args: string[]): boolean {
+  return args.includes('--json') || process.env.GREENLIGHT_VERIFY_JSON === '1';
+}
+
 export async function verifyCommand(args: string[]): Promise<void> {
   // Manifest-free mode: `verify --url <url> --spec <path>` loads the spec directly and skips the
   // manifest entirely. This is how a tool's OWN CI verifies a deployment (e.g. a Vercel tool's
@@ -138,11 +161,13 @@ export async function verifyCommand(args: string[]): Promise<void> {
       toolDir: process.cwd(),
     });
     attachFailureLogs(reports, specs, process.cwd());
-    for (const report of reports) printReport(report);
-    const pass = allPass(reports);
-    if (reports.length > 1)
-      console.log(`\n${pass ? '✔ ALL PASS' : '✘ FAIL'} (${reports.length} specs)`);
-    process.exit(pass ? 0 : 1);
+    // Manifest-free: tool name from --tool, else the spec basename (`<name>.config.ts` → `<name>`).
+    const tool = flag(args, '--tool') ?? basename(specPath).replace(/\.config\.[tj]s$/, '');
+    emitReports(reports, jsonFlag(args), {
+      tool,
+      env: flag(args, '--env') ?? 'preview',
+      gitSha: gitSha(),
+    });
   }
 
   const name = args[0];
@@ -190,9 +215,9 @@ export async function verifyCommand(args: string[]): Promise<void> {
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
   const reports = await verifyAll(url, specs, { reachableTimeoutMs, toolDir });
   attachFailureLogs(reports, specs, toolDir);
-  for (const report of reports) printReport(report);
-  const pass = allPass(reports);
-  if (reports.length > 1)
-    console.log(`\n${pass ? '✔ ALL PASS' : '✘ FAIL'} (${reports.length} specs)`);
-  process.exit(pass ? 0 : 1);
+  emitReports(reports, jsonFlag(args), {
+    tool: entry.name ?? name,
+    env: override ? 'preview' : (flag(args, '--env') ?? 'preview'),
+    gitSha: gitSha(),
+  });
 }

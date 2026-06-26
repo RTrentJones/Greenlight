@@ -157,18 +157,27 @@ async function evalAsserts(page: Page, asserts: AgentWebAssert[]): Promise<Verif
 }
 
 async function runScenario(
-  client: { messages: { create(body: unknown): Promise<{ content: ContentBlock[] }> } },
+  client: {
+    messages: {
+      create(body: unknown): Promise<{
+        content: ContentBlock[];
+        usage?: { input_tokens?: number; output_tokens?: number };
+      }>;
+    };
+  },
   page: Page,
   base: string,
   spec: AgentWebSpec,
   scenario: AgentWebScenario,
-): Promise<VerifyCheck[]> {
+): Promise<{ checks: VerifyCheck[]; tokensIn: number; tokensOut: number }> {
   const tag = `[${scenario.name}]`;
   await page.goto(base + (scenario.start ?? '/'), { waitUntil: 'domcontentloaded' });
 
   const messages: AnthropicMessage[] = [{ role: 'user', content: `Task: ${scenario.task}` }];
   const maxSteps = spec.maxSteps ?? 12;
   let finish: { success?: boolean; summary?: string } | null = null;
+  let tokensIn = 0;
+  let tokensOut = 0;
 
   for (let step = 0; step < maxSteps && !finish; step++) {
     const resp = await client.messages.create({
@@ -178,6 +187,8 @@ async function runScenario(
       tools: TOOLS,
       messages,
     });
+    tokensIn += resp.usage?.input_tokens ?? 0;
+    tokensOut += resp.usage?.output_tokens ?? 0;
     const blocks = resp.content;
     messages.push({ role: 'assistant', content: blocks });
     const toolUses = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use');
@@ -209,7 +220,7 @@ async function runScenario(
   }
   // A scenario with no asserts and a successful finish still needs one passing check.
   if (checks.length === 0) checks.push({ name: `${tag} agent succeeded`, pass: true });
-  return checks;
+  return { checks, tokensIn, tokensOut };
 }
 
 /**
@@ -278,11 +289,17 @@ export async function verifyAgentWeb(baseUrl: string, spec: AgentWebSpec): Promi
   }
 
   const checks: VerifyCheck[] = [];
+  const started = Date.now();
+  let tokensIn = 0;
+  let tokensOut = 0;
   try {
     for (const scenario of spec.scenarios) {
       const page = await browser.newPage();
       try {
-        checks.push(...(await runScenario(client, page, base, spec, scenario)));
+        const r = await runScenario(client, page, base, spec, scenario);
+        checks.push(...r.checks);
+        tokensIn += r.tokensIn;
+        tokensOut += r.tokensOut;
       } catch (e) {
         checks.push({ name: `[${scenario.name}]`, pass: false, detail: msg(e) });
       } finally {
@@ -293,5 +310,11 @@ export async function verifyAgentWeb(baseUrl: string, spec: AgentWebSpec): Promi
     await browser.close();
   }
 
-  return report('agent-web', baseUrl, checks);
+  // Run metadata for the `--json` export: the driver model + its token usage + wall-clock.
+  return {
+    ...report('agent-web', baseUrl, checks),
+    model: spec.model ?? 'claude-sonnet-4-6',
+    durationMs: Date.now() - started,
+    ...(tokensIn || tokensOut ? { tokensIn, tokensOut } : {}),
+  };
 }

@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { verifyEval } from '../eval';
+import { clamp01, verifyEval } from '../eval';
 import type { Judge } from '../types';
 
 function readJson(req: http.IncomingMessage): Promise<unknown> {
@@ -75,15 +75,29 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 }
 
-// Deterministic judge: scores 5 if the result contains the rubric's quoted phrase, else 1.
+// Deterministic judge (0..1 scale): scores 1 if the result contains the rubric's quoted phrase, else 0.
 const fakeJudge: Judge = async ({ rubric, result }) => {
   const want = rubric.match(/"([^"]+)"/)?.[1] ?? '';
   const ok = result.includes(want);
-  return { score: ok ? 5 : 1, pass: ok, reason: ok ? 'match' : 'no match' };
+  return { score: ok ? 1 : 0, pass: ok, rationale: ok ? 'match' : 'no match' };
 };
 
-describe('verifyEval', () => {
-  it('calls an MCP tool and passes when the judge scores >= minScore', async () => {
+/** A judge that always returns a fixed score (for the minScore boundary). */
+const scoreJudge =
+  (score: number): Judge =>
+  async () => ({ score, pass: true });
+
+describe('clamp01', () => {
+  it('clamps into [0,1] and maps non-numbers to 0', () => {
+    expect(clamp01(0.42)).toBe(0.42);
+    expect(clamp01(5)).toBe(1); // a stray legacy 1–5 reply clamps to 1, not silently passing
+    expect(clamp01(-0.2)).toBe(0);
+    expect(clamp01('nope')).toBe(0);
+  });
+});
+
+describe('verifyEval (0..1)', () => {
+  it('passes when the judge scores >= minScore, and exports score/explanation/model', async () => {
     const r = await verifyEval(
       url,
       { mode: 'eval', cases: [{ name: 'greets', tool: 'greeting', rubric: 'says "Hello"' }] },
@@ -91,7 +105,11 @@ describe('verifyEval', () => {
     );
     expect(r.mode).toBe('eval');
     expect(r.pass).toBe(true);
-    expect(r.checks[0]?.detail).toContain('score 5/5');
+    expect(r.checks[0]?.score).toBe(1);
+    expect(r.checks[0]?.explanation).toBe('match');
+    expect(r.checks[0]?.detail).toContain('score 1.00');
+    expect(r.model).toBe('claude-sonnet-4-6'); // run metadata for the --json export
+    expect(typeof r.durationMs).toBe('number');
   });
 
   it('fails when the judge scores below minScore', async () => {
@@ -101,6 +119,21 @@ describe('verifyEval', () => {
       fakeJudge,
     );
     expect(r.pass).toBe(false);
+  });
+
+  it('treats minScore as a 0..1 boundary (default 0.8): 0.8 passes, 0.79 fails', async () => {
+    const at = await verifyEval(
+      url,
+      { mode: 'eval', cases: [{ name: 'x', tool: 'greeting', rubric: 'x' }] },
+      scoreJudge(0.8),
+    );
+    expect(at.pass).toBe(true);
+    const below = await verifyEval(
+      url,
+      { mode: 'eval', cases: [{ name: 'x', tool: 'greeting', rubric: 'x' }] },
+      scoreJudge(0.79),
+    );
+    expect(below.pass).toBe(false);
   });
 
   it('fails honestly on a connection error (no throw)', async () => {
