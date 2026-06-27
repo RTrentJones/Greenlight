@@ -363,10 +363,32 @@ function ociDeployAndVerifySteps(name: string): string {
         run: pnpm exec greenlight verify ${name} --env prod`;
 }
 
-/** Option-B, wrapper side: on the tool's dispatch, restart the OCI container instance (re-pull)
- * via \`greenlight deploy\`, then post a commit status back to the tool repo (so push->result
- * feedback returns there even though the deploy ran here). OCI creds live ONLY here. */
-function deployListenerYml(name: string, toolRepo: string): string {
+/** The docker deploy+verify core (the docker analogue of ociDeployAndVerifySteps): map the per-tool
+ * DOCKER_SSH_* secrets into the env the docker adapter reads, then `greenlight deploy` SSHes the host
+ * (`docker compose pull && up -d`) and verify gates the signal on the new image actually serving.
+ * Far simpler than oci — no CLI, no instance-OCID resolution; the host is user-owned. */
+function dockerDeployAndVerifySteps(name: string): string {
+  const SUF = name.toUpperCase().replace(/-/g, '_');
+  return `      - name: Deploy (SSH \`docker compose pull && up -d\` on the host)
+        env:
+          DOCKER_SSH_HOST: \${{ secrets.DOCKER_SSH_HOST_${SUF} }}
+          DOCKER_SSH_USER: \${{ secrets.DOCKER_SSH_USER_${SUF} }}
+          DOCKER_SSH_KEY: \${{ secrets.DOCKER_SSH_KEY_${SUF} }}
+          DOCKER_SSH_PORT: \${{ secrets.DOCKER_SSH_PORT_${SUF} }}
+        run: pnpm exec greenlight deploy ${name} --env prod
+      - name: Verify prod (gate the signal on real health, not just the restart)
+        run: pnpm exec greenlight verify ${name} --env prod`;
+}
+
+/** Option-B, wrapper side: on the tool's dispatch, run the target's deploy steps (oci: restart the
+ * instance; docker: SSH compose pull/up) via \`greenlight deploy\`, then post a commit status back to
+ * the tool repo (so push->result feedback returns there even though the deploy ran here). The
+ * target's deploy creds live ONLY here. `deploySteps` defaults to the oci flow. */
+function deployListenerYml(
+  name: string,
+  toolRepo: string,
+  deploySteps: string = ociDeployAndVerifySteps(name),
+): string {
   return `name: greenlight-deploy-${name}
 
 # Option B: ${toolRepo} fires repository_dispatch(deploy-${name}) after pushing a new image.
@@ -390,7 +412,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: pnpm install --frozen-lockfile
-${ociDeployAndVerifySteps(name)}
+${deploySteps}
       - name: Report status back to ${toolRepo}
         if: \${{ always() && github.event.client_payload.sha != '' }}
         env:
@@ -458,6 +480,48 @@ jobs:
           # -target pulls in the instance's deps (the ${name}_network module) automatically.
           terraform -chdir=infra apply -input=false -auto-approve -target=module.${name}_instance
 ${ociDeployAndVerifySteps(name)}
+      - name: Escalate if the self-heal failed
+        if: \${{ failure() }}
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo \${{ github.repository }} \\
+            --title "remediate-${name}: self-heal FAILED" \\
+            --body "Automatic remediation for ${name} (reason: \${{ github.event.client_payload.reason }}) did not bring prod back. Manual attention needed." \\
+            --label keepalive || true
+`;
+}
+
+/** Self-heal, wrapper side, for the docker target: the keepalive Worker fires
+ * remediate-${"<name>"} when the host stops responding. Unlike oci there's no Always-Free box to
+ * re-create — the host is user-owned — so remediation is simply re-running the SSH deploy (restart
+ * the compose / re-pull). Shares the deploy concurrency group; a failed heal escalates to an issue. */
+function dockerRemediateYml(name: string): string {
+  return `name: greenlight-remediate-${name}
+
+# Auto-heal: the keepalive Worker dispatches remediate-${name} when ${name} (docker) is unreachable.
+on:
+  repository_dispatch:
+    types: [remediate-${name}]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# Same group as greenlight-deploy-${name}: a self-heal never overlaps a deploy or another heal.
+concurrency:
+  group: deploy-${name}
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+${dockerDeployAndVerifySteps(name)}
       - name: Escalate if the self-heal failed
         if: \${{ failure() }}
         env:
@@ -661,10 +725,10 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     dir: toolRel,
     external: true,
     adopted: true,
-    // oci has no built-in local serve — scaffold a `preview` descriptor so the uniform local gate
-    // (`greenlight preview <name>`) works. Default: a docker `preview` profile matching the prod
-    // transport (the tool adds that profile to its compose). Edit the command/port/path to fit.
-    ...(target === 'oci'
+    // Container targets (oci/docker) have no built-in local serve — scaffold a `preview` descriptor
+    // so the uniform local gate (`greenlight preview <name>`) works. Default: a docker `preview`
+    // profile matching the prod transport (the tool adds that profile to its compose). Edit to fit.
+    ...(target === 'oci' || target === 'docker'
       ? {
           preview: {
             command: 'docker compose --profile preview up',
@@ -712,20 +776,24 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
   materializeAgentKit(dest, { lane, target, data });
   addGreenlightScript(dest);
 
-  // 5) Event-driven deploy (option B) for container-built targets: the tool builds + pushes +
-  // dispatches; the wrapper restarts the instance + reports back. OCI creds stay in the wrapper.
-  if (target === 'oci') {
+  // 5) Event-driven deploy (option B) for container-built targets (oci + docker): the tool builds +
+  // pushes + dispatches; the wrapper deploys (oci: restart the instance; docker: SSH compose pull/up)
+  // + reports back. The target's deploy creds stay in the wrapper.
+  if (target === 'oci' || target === 'docker') {
     const wrapperSlug = parseRepo(safeGit(cwd, ['remote', 'get-url', 'origin'])) ?? 'OWNER/REPO';
+    const deploySteps =
+      target === 'docker' ? dockerDeployAndVerifySteps(name) : ociDeployAndVerifySteps(name);
     writeIfAbsent(
       join(cwd, `.github/workflows/greenlight-deploy-${name}.yml`),
-      deployListenerYml(name, slug),
+      deployListenerYml(name, slug, deploySteps),
       `.github/workflows/greenlight-deploy-${name}.yml (wrapper deploy listener)`,
     );
     // Self-heal listener: the keepalive Worker dispatches remediate-<name> on an outage; this
-    // re-applies + redeploys + verifies (shares the deploy concurrency group). See packages/keepalive.
+    // redeploys + verifies (shares the deploy concurrency group). oci also re-applies the instance
+    // (Always-Free idle-reclaim); docker just re-runs the SSH deploy. See packages/keepalive.
     writeIfAbsent(
       join(cwd, `.github/workflows/greenlight-remediate-${name}.yml`),
-      remediateYml(name),
+      target === 'docker' ? dockerRemediateYml(name) : remediateYml(name),
       `.github/workflows/greenlight-remediate-${name}.yml (wrapper self-heal listener)`,
     );
     writeIfAbsent(
@@ -762,13 +830,19 @@ Next:
   Secrets (guided): greenlight secrets gather ${name} --repo <wrapper>   # TF_VAR_OCI_* + GREENLIGHT_STATUS_TOKEN
                     greenlight secrets gather ${name} --repo ${slug}   # GREENLIGHT_DISPATCH_TOKEN
   The instance OCID is auto-resolved by the deploy workflow (by display name) — nothing to set.`
-        : target === 'vercel'
+        : target === 'docker'
           ? `
+  Secrets (guided): greenlight secrets gather ${name} --repo <wrapper>   # DOCKER_SSH_* + GREENLIGHT_STATUS_TOKEN
+                    greenlight secrets gather ${name} --repo ${slug}   # GREENLIGHT_DISPATCH_TOKEN
+  On the host (one-time): a docker-compose with the GHCR image + a cloudflared service using the
+  ${name}_tunnel_token output; the deploy listener SSHes it and runs \`docker compose pull && up -d\`.`
+          : target === 'vercel'
+            ? `
   Deploy is Vercel's git integration (no wrapper deploy). The tool's greenlight-verify.yml verifies
   each deployment (deployment_status). Optional secrets on ${slug}:
     · VERCEL_AUTOMATION_BYPASS_SECRET_${name.toUpperCase().replace(/-/g, '_')}  (Vercel → project → Deployment Protection → Bypass for Automation) → verify asserts 200, not 401
     · ANTHROPIC_API_KEY → enables the agent-web scenarios in verify/${name}.config.ts (absent → api gate alone)`
-          : ''
+            : ''
     }`);
 }
 

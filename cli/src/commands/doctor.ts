@@ -244,18 +244,21 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
   }
 
   // Keepalive coverage (pure): which tools need a keepalive target — data:supabase (the
-  // 7-day pause) or target:oci (health ping). The wrapper wires these into the keepalive
-  // Worker's KEEPALIVE_TARGETS (infra/modules/keepalive).
-  const needsKeepalive = config.tools.filter((t) => t.data === 'supabase' || t.target === 'oci');
+  // 7-day pause) or a container target (oci/docker: a health ping; oci also self-heals via
+  // remediate). The wrapper wires these into the keepalive Worker's KEEPALIVE_TARGETS
+  // (infra/modules/keepalive).
+  const needsKeepalive = config.tools.filter(
+    (t) => t.data === 'supabase' || t.target === 'oci' || t.target === 'docker',
+  );
   checks.push({
     name: 'keepalive coverage',
     status: needsKeepalive.length > 0 ? 'ok' : 'skip',
     detail:
       needsKeepalive.length > 0
         ? needsKeepalive
-            .map((t) => `${t.name} (${t.data === 'supabase' ? 'supabase' : 'oci'})`)
+            .map((t) => `${t.name} (${t.data === 'supabase' ? 'supabase' : t.target})`)
             .join(', ')
-        : 'no data:supabase / target:oci tools',
+        : 'no data:supabase / target:oci|docker tools',
   });
 
   // Local consistency (no creds): lockstep + submodule drift.

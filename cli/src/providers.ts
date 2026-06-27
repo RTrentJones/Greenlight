@@ -81,7 +81,7 @@ export const PACKS: ProviderPack[] = [
     always: true, // the zone/DNS provider + Workers (keepalive) for every Greenlight setup
     appliesTo: () => true,
     guide:
-      'docs/provider-tokens.md — CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Zone DNS:Edit + Cloudflare Tunnel:Edit for oci tools)',
+      'docs/provider-tokens.md — CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Zone DNS:Edit + Cloudflare Tunnel:Edit for oci/docker tools)',
     setupUrl: 'https://dash.cloudflare.com/profile/api-tokens',
     tokens: [
       {
@@ -92,7 +92,7 @@ export const PACKS: ProviderPack[] = [
           'Account · Workers Scripts · Edit',
           'Zone · DNS · Edit',
           'Account · Account Settings · Read',
-          'Account · Cloudflare Tunnel · Edit (only if a tool uses target: oci)',
+          'Account · Cloudflare Tunnel · Edit (only if a tool uses target: oci or docker)',
         ],
         verify: async (t) => {
           const auth = { Authorization: `Bearer ${t}` };
@@ -331,6 +331,60 @@ export const PACKS: ProviderPack[] = [
     skill: 'provider-oci',
     // DNS + tunnel + network (VCN/subnet) + compute; deploy = restart.
     tfModules: ['tool', 'tunnel', 'oci-network', 'oci-container-instance'],
+  },
+  {
+    id: 'docker',
+    name: 'Docker host (SSH)',
+    appliesTo: (t) => t.target === 'docker',
+    // A host YOU own (VPS / homelab) — a stable alternative to OCI's idle-reclaimed free tier for
+    // stateful tools. Build → GHCR (the tool's own CI, like oci); deploy = SSH `docker compose
+    // pull && up -d`; ingress via the same Cloudflare tunnel (a cloudflared service in the compose).
+    guide:
+      'docs/provider-tokens.md — DOCKER_SSH_* (a host you own; build→GHCR, deploy = ssh docker compose up)',
+    // No web console (SSH to a host you own) — point at the deep guide for how to mint a deploy key.
+    setupUrl: 'https://github.com/RTrentJones/greenlight/blob/main/docs/provider-tokens.md',
+    tokens: [
+      // SSH connection facts. perTool so multiple docker tools can live on DIFFERENT hosts without
+      // colliding (the deploy workflow maps DOCKER_SSH_*_<TOOL> → the unsuffixed env the adapter reads).
+      // No cheap verify — SSH reachability isn't a bearer fetch.
+      {
+        envVar: 'DOCKER_SSH_HOST',
+        label: 'SSH host (hostname or IP of the Docker host)',
+        perTool: true,
+      },
+      {
+        envVar: 'DOCKER_SSH_KEY',
+        label: 'SSH private key (PEM content) for the deploy user',
+        perTool: true,
+      },
+      {
+        envVar: 'DOCKER_SSH_USER',
+        label: 'SSH user (default: root)',
+        optional: true,
+        perTool: true,
+      },
+      { envVar: 'DOCKER_SSH_PORT', label: 'SSH port (default: 22)', optional: true, perTool: true },
+      // Option-B event-driven deploy (same model as oci): the TOOL repo builds→GHCR→dispatches, the
+      // WRAPPER's deploy listener SSHes the host + posts status back. dispatch → on the TOOL repo;
+      // status → on the WRAPPER (per-tool so multiple tools' status tokens don't collide).
+      {
+        envVar: 'GREENLIGHT_DISPATCH_TOKEN',
+        label: 'GitHub PAT, Contents:write on the WRAPPER (TOOL repo fires the deploy dispatch)',
+        optional: true,
+        setupUrl: 'https://github.com/settings/personal-access-tokens/new',
+      },
+      {
+        envVar: 'GREENLIGHT_STATUS_TOKEN',
+        label: 'GitHub PAT, Commit statuses:write on the TOOL (WRAPPER posts deploy status back)',
+        optional: true,
+        perTool: true,
+        setupUrl: 'https://github.com/settings/personal-access-tokens/new',
+      },
+    ],
+    skill: 'provider-docker',
+    // DNS + tunnel only — the host (VM/homelab) is user-owned, so there is NO compute Terraform
+    // (unlike oci). The host runs the GHCR image + a cloudflared sidecar via docker compose.
+    tfModules: ['tool', 'tunnel'],
   },
 ];
 

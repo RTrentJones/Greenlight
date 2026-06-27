@@ -77,12 +77,15 @@ export function emitToolTf(opts: ToolTfOpts): string {
 `;
   }
 
-  const port = opts.port ?? 8000; // container listen port (oci); tunnel routes to localhost:<port>
+  const port = opts.port ?? 8000; // container listen port (oci/docker); tunnel routes to localhost:<port>
   const slug = opts.slug ?? `OWNER/${name}`;
   const useSupabase = data === 'supabase';
   const useNeon = data === 'neon';
   const useVercel = target === 'vercel';
   const useOci = target === 'oci';
+  // A self-hosted Docker box (VPS/homelab): same tunnel + DNS as oci, but the host is user-owned so
+  // there is NO compute Terraform — deploy is an SSH `docker compose up` (see the docker adapter).
+  const useDocker = target === 'docker';
   // Multi-account: a tool that overrides SUPABASE_ACCESS_TOKEN / NEON_API_KEY gets an aliased provider
   // on its own token, selected by the module's providers={} (no module change — selects the config).
   const supabaseOverride = opts.tokenOverrides?.SUPABASE_ACCESS_TOKEN;
@@ -94,6 +97,7 @@ export function emitToolTf(opts: ToolTfOpts): string {
 
   const assumes = ['var.cloudflare_zone_id'];
   if (useOci) assumes.push('var.cloudflare_account_id', 'local.oci_compartment_id');
+  if (useDocker) assumes.push('var.cloudflare_account_id');
   if (useSupabase) assumes.push('var.supabase_organization_id');
   const ghcrOwner = (slug.split('/')[0] ?? 'owner').toLowerCase(); // GHCR namespaces are lowercase
 
@@ -287,7 +291,24 @@ variable "${name}_image" {
 }`);
   }
 
-  blocks.push(`# Subdomain DNS — CNAME ${name}/beta.${name} → ${useVercel ? 'cname.vercel-dns.com' : useOci ? 'the tunnel' : 'the target'}.
+  if (useDocker) {
+    blocks.push(`# Self-hosted Docker target — a host YOU own (VPS/homelab). Only the Cloudflare tunnel + DNS are
+# Terraform here; the COMPUTE is the host (not managed by Greenlight). The tool's own CI builds +
+# pushes the image to GHCR; deploy = SSH \`docker compose pull && up -d\` (the docker adapter), with a
+# cloudflared service in the compose using \`${name}_tunnel_token\`. The tunnel routes ${name}.${domain}
+# → the container at localhost:${port}.
+module "${name}_tunnel" {
+  source = "${moduleSource('tunnel', ref)}"
+
+  account_id = var.cloudflare_account_id
+  name       = "${name}-tunnel"
+  ingress = [
+    { hostname = "${name}.${domain}", service = "http://localhost:${port}" },
+  ]
+}`);
+  }
+
+  blocks.push(`# Subdomain DNS — CNAME ${name}/beta.${name} → ${useVercel ? 'cname.vercel-dns.com' : useOci || useDocker ? 'the tunnel' : 'the target'}.
 module "${name}_dns" {
   source = "${moduleSource('tool', ref)}"
 
@@ -298,7 +319,7 @@ module "${name}_dns" {
   lane        = "${lane}"
   target      = "${target}"
   data        = "${data}"
-  envs        = [${envList}]${useOci ? `\n  cname_target = module.${name}_tunnel.cname_target` : ''}${
+  envs        = [${envList}]${useOci || useDocker ? `\n  cname_target = module.${name}_tunnel.cname_target` : ''}${
     opts.external
       ? '\n  # External repo managed elsewhere; no GitHub envs here so CI stays single-repo.\n  manage_github_environments = false'
       : ''
@@ -315,18 +336,24 @@ module "${name}_dns" {
     ? `output "${name}_prod_url" { value = module.${name}_vercel.prod_url }
 output "${name}_beta_url" { value = module.${name}_vercel.beta_url }`
     : `output "${name}_prod_url" { value = module.${name}_dns.prod_url }`;
+  const tunnelTokenOutput = `output "${name}_tunnel_token" {
+  value     = module.${name}_tunnel.token
+  sensitive = true
+}`;
   blocks.push(
     useOci
       ? `${outputs}
-output "${name}_tunnel_token" {
-  value     = module.${name}_tunnel.token
-  sensitive = true
-}
+${tunnelTokenOutput}
 output "${name}_container_instance_id" {
   value       = module.${name}_instance.container_instance_id
   description = "Set as OCI_CONTAINER_INSTANCE_OCID so \`greenlight deploy ${name}\` restarts it."
 }`
-      : outputs,
+      : useDocker
+        ? // The host's cloudflared needs this token (passed to the compose at deploy time); no
+          // container_instance_id (the host is user-owned, not an OCI instance Greenlight restarts).
+          `${outputs}
+${tunnelTokenOutput}`
+        : outputs,
   );
 
   return `${hcl(blocks.join('\n\n'))}\n`;

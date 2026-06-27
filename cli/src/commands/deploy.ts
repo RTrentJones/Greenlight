@@ -24,11 +24,11 @@ export async function deployCommand(args: string[]): Promise<void> {
 
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
-  // External tools (registry pointers) have no local app code to build here. For target: oci,
-  // "deploy" is an infra restart (re-pull the GHCR image the tool's OWN CI built) — legitimately
-  // run from the wrapper, which owns the OCI instance. For other targets an external tool deploys
-  // from its own repo (e.g. Vercel git integration), so there's nothing to do here.
-  if (entry.external && entry.target !== 'oci') {
+  // External tools (registry pointers) have no local app code to build here. For container targets
+  // (oci: restart the instance; docker: SSH `compose pull && up -d`) "deploy" re-pulls the GHCR image
+  // the tool's OWN CI built — legitimately run from the wrapper, which owns the host/instance. For
+  // other targets an external tool deploys from its own repo (e.g. Vercel git integration).
+  if (entry.external && entry.target !== 'oci' && entry.target !== 'docker') {
     throw new Error(`"${name}" is external (registry pointer) — deploy it from its own repo`);
   }
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });

@@ -78,15 +78,15 @@ apply. Keeping manifest ↔ tool dir ↔ workflow consistent is one of `doctor`'
 
 ## Two orthogonal axes: `lane` × `target`
 
-- **`lane`** = what the tool *is*: `astro | hono | next | mcp | docker` (V1 builds `astro`, `next`,
-  `mcp`).
-- **`target`** = where it *runs*: `workers | vercel | oci` (V1's three).
+- **`lane`** = what the tool *is*: `astro | next | mcp | agent` (`hono` is an aim). Note `docker` is
+  a **target**, not a lane (a container is "where it runs", not "what it is").
+- **`target`** = where it *runs*: `workers | vercel | oci | docker`.
 
 | lane | default target | typical data | verify mode |
 |---|---|---|---|
 | `astro` (blog) | `workers` | `none`/`d1`/`kv` (never Supabase) | `api` |
 | `next` | `vercel` | `supabase` (when bundled auth/storage needed) | `test` + `agent-web` |
-| `mcp` | `workers` (dev) / `oci` (stateful prod) | `none` | `mcp` (+ `eval`) |
+| `mcp` | `workers` (dev) / `oci` or `docker` (stateful prod) | `none` | `mcp` (+ `eval`) |
 
 The blog must **never** use Supabase for state (Supabase pauses; the blog must stay up unattended).
 

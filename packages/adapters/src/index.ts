@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type DeployEnv, type Target, resolveUrl } from '@rtrentjones/greenlight-shared';
 
@@ -127,6 +129,92 @@ function ociAdapter(ctx: AdapterContext): Adapter {
   };
 }
 
+/**
+ * Docker deploy config — a host YOU own (VPS/homelab), reached over SSH. Same build model as oci
+ * (the tool's CI pushes the image to GHCR), but deploy is `docker compose pull && up -d` on the host
+ * (the compose runs the GHCR image + a cloudflared sidecar using the tunnel token, set up once on
+ * the host). A stable alternative to OCI's idle-reclaimed free tier.
+ */
+export interface DockerDeployConfig {
+  host?: string;
+  /** SSH user (default root). */
+  user: string;
+  /** SSH port (default 22). */
+  port: string;
+  /** Remote dir holding the tool's docker-compose (default `greenlight/<name>`). */
+  remoteDir: string;
+  /** SSH private key PEM content (DOCKER_SSH_KEY). */
+  key?: string;
+}
+
+/** Read docker SSH deploy config from a source env (defaults to `process.env`). `name` sets the
+ * default remote compose dir. Pure. */
+export function dockerConfig(
+  name: string | undefined,
+  source: Record<string, string | undefined> = process.env,
+): DockerDeployConfig {
+  return {
+    host: source.DOCKER_SSH_HOST,
+    user: source.DOCKER_SSH_USER || 'root',
+    port: source.DOCKER_SSH_PORT || '22',
+    remoteDir: source.DOCKER_COMPOSE_DIR || `greenlight/${name ?? 'app'}`,
+    key: source.DOCKER_SSH_KEY,
+  };
+}
+
+/** The `ssh` argv that pulls the latest image and restarts the compose on the host. `identityPath`
+ * is the temp file the key was written to. Pure (host presence is validated by the caller). */
+export function sshDeployArgs(cfg: DockerDeployConfig, identityPath: string): string[] {
+  const remoteCmd = `cd ${cfg.remoteDir} && docker compose pull && docker compose up -d`;
+  return [
+    '-i',
+    identityPath,
+    '-p',
+    cfg.port,
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    '-o',
+    'BatchMode=yes',
+    `${cfg.user}@${cfg.host}`,
+    remoteCmd,
+  ];
+}
+
+function dockerAdapter(ctx: AdapterContext): Adapter {
+  const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
+  return {
+    target: 'docker',
+    async build() {
+      // The tool's own CI builds + pushes the container to GHCR (like oci) — nothing to build here.
+      return { artifactDir: '.' };
+    },
+    async deploy(_toolDir, env) {
+      const cfg = dockerConfig(ctx.name);
+      if (!cfg.host) throw new Error('docker deploy needs DOCKER_SSH_HOST (the host you own)');
+      if (!cfg.key) {
+        throw new Error("docker deploy needs DOCKER_SSH_KEY (the deploy user's private key)");
+      }
+      // Write the key to a private temp file for `ssh -i` (never to the repo / a fixed path).
+      const dir = mkdtempSync(join(tmpdir(), 'gl-ssh-'));
+      const keyPath = join(dir, 'id');
+      try {
+        writeFileSync(keyPath, cfg.key.endsWith('\n') ? cfg.key : `${cfg.key}\n`);
+        chmodSync(keyPath, 0o600); // ssh refuses a world-readable key
+        run('ssh', sshDeployArgs(cfg, keyPath), '.');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      return { url: url(env) };
+    },
+    url,
+    async teardown() {
+      throw new Error(
+        'docker teardown is on the host — `ssh … docker compose down` in the tool dir.',
+      );
+    },
+  };
+}
+
 function vercelSkeletonAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
   // Vercel deploys ride the project's git integration (Phase 9 / HeistMind); Greenlight
@@ -152,6 +240,8 @@ export function createAdapter(target: Target, ctx: AdapterContext): Adapter {
       return workersAdapter(ctx);
     case 'oci':
       return ociAdapter(ctx);
+    case 'docker':
+      return dockerAdapter(ctx);
     case 'vercel':
       return vercelSkeletonAdapter(ctx);
   }

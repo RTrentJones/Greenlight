@@ -46,6 +46,22 @@ describe('ConfigSchema', () => {
     expect(r.success).toBe(false);
   });
 
+  it('accepts mcp on docker (a self-hosted container target)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'x', lane: 'mcp', target: 'docker', data: 'none', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects next on docker (out of matrix — docker is mcp-only)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'x', lane: 'next', target: 'docker', data: 'none', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(false);
+  });
+
   it('rejects next not on vercel (out of matrix)', () => {
     const r = ConfigSchema.safeParse({
       ...base,

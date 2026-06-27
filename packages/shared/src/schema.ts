@@ -9,7 +9,7 @@ import { z } from 'zod';
  */
 
 export const LaneEnum = z.enum(['astro', 'next', 'mcp', 'agent']);
-export const TargetEnum = z.enum(['workers', 'vercel', 'oci']);
+export const TargetEnum = z.enum(['workers', 'vercel', 'oci', 'docker']);
 export const DataEnum = z.enum(['none', 'd1', 'kv', 'supabase', 'neon']);
 export const AuthEnum = z.enum(['none', 'bearer', 'oauth']);
 export const AccessEnum = z.enum(['public', 'private']);
@@ -17,7 +17,8 @@ export const EnvEnum = z.enum(['preview', 'beta', 'prod']);
 
 /**
  * V1 lane → allowed targets + allowed data (docs/archive/greenlight-v1.md §4 matrix).
- * `mcp` supports both `workers` (dev/throwaway) and `oci` (BAMCP production).
+ * `mcp` supports `workers` (dev/throwaway), `oci` (BAMCP production), and `docker` (a self-hosted
+ * SSH box / homelab — same container image as oci, a host you own instead of the free tier).
  * `agent` is an autonomous cron-triggered Worker (LLM-backed, Gemini free tier); `kv` holds its
  * last output + run metadata (see docs/agents-plan.md).
  */
@@ -30,7 +31,7 @@ export const MATRIX: Record<
 > = {
   astro: { targets: ['workers'], data: ['none', 'd1', 'kv'] },
   next: { targets: ['vercel'], data: ['none', 'supabase', 'neon'] },
-  mcp: { targets: ['workers', 'oci'], data: ['none'] },
+  mcp: { targets: ['workers', 'oci', 'docker'], data: ['none'] },
   agent: { targets: ['workers'], data: ['none', 'kv'] },
 };
 
@@ -57,9 +58,9 @@ export const ToolSchema = z
     access: AccessEnum.default('public'),
     envs: z.array(EnvEnum).nonempty('a tool needs at least one env'),
     adopted: z.boolean().default(false),
-    // The port the container listens on (target: oci). The tunnel routes to localhost:<port>;
-    // defaults to 8000 (the mcp/FastMCP convention). Set it for a lane:docker tool on a different
-    // port so the oci modules stay generic. Ignored by non-oci targets.
+    // The port the container listens on (target: oci | docker). The Cloudflare tunnel routes to
+    // localhost:<port>; defaults to 8000 (the mcp/FastMCP convention). Set it for a container tool
+    // on a different port so the tunnel/modules stay generic. Ignored by non-container targets.
     port: z.number().int().positive().optional(),
     // Directory the tool builds/deploys from. Defaults to tools/<name>; a standalone
     // (poly-repo) tool sets '.' (the repo root).
@@ -69,7 +70,7 @@ export const ToolSchema = z
     external: z.boolean().default(false),
     // How `greenlight preview` spins the tool up LOCALLY for the pre-deploy gate. Optional — node
     // lanes (astro/next/mcp→workers) use the built-in build+serve path. Set it for targets with no
-    // built-in serve (e.g. oci: a docker command that matches the prod transport). The harness polls
+    // built-in serve (e.g. oci/docker: a docker command that matches the prod transport). The harness polls
     // the local URL (http://localhost:<port><path>), verifies, then runs `teardown`.
     preview: z
       .object({

@@ -18,6 +18,19 @@ async function runKeepalive(targets, fetchFn = fetch) {
 }
 async function alertGithubIssue(sink, failures, fetchFn = fetch) {
   if (failures.length === 0 || !sink.githubRepo || !sink.githubToken) return false;
+  const auth = {
+    Authorization: `Bearer ${sink.githubToken}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "greenlight-keepalive"
+  };
+  const open = await fetchFn(
+    `https://api.github.com/repos/${sink.githubRepo}/issues?state=open&labels=keepalive&per_page=1`,
+    { headers: auth }
+  ).catch(() => null);
+  if (open?.ok) {
+    const issues = await open.json().catch(() => []);
+    if (Array.isArray(issues) && issues.length > 0) return false;
+  }
   const body = [
     "Greenlight keepalive detected unreachable target(s):",
     "",
@@ -25,12 +38,7 @@ async function alertGithubIssue(sink, failures, fetchFn = fetch) {
   ].join("\n");
   const res = await fetchFn(`https://api.github.com/repos/${sink.githubRepo}/issues`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${sink.githubToken}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "User-Agent": "greenlight-keepalive"
-    },
+    headers: { ...auth, "Content-Type": "application/json" },
     body: JSON.stringify({
       title: `keepalive: ${failures.length} target(s) failing`,
       body,
@@ -42,24 +50,28 @@ async function alertGithubIssue(sink, failures, fetchFn = fetch) {
 async function dispatchRemediation(sink, failures, fetchFn = fetch) {
   if (!sink.dispatchRepo || !sink.githubToken) return 0;
   const remediable = failures.filter((f) => f.remediate && f.name);
-  let fired = 0;
-  for (const f of remediable) {
-    const res = await fetchFn(`https://api.github.com/repos/${sink.dispatchRepo}/dispatches`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${sink.githubToken}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "greenlight-keepalive"
-      },
-      body: JSON.stringify({
-        event_type: `remediate-${f.name}`,
-        client_payload: { tool: f.name, env: f.env, reason: f.status ?? f.error ?? "unreachable" }
-      })
-    });
-    if (res.ok) fired++;
-  }
-  return fired;
+  const fired = await Promise.all(
+    remediable.map(
+      (f) => fetchFn(`https://api.github.com/repos/${sink.dispatchRepo}/dispatches`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${sink.githubToken}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "User-Agent": "greenlight-keepalive"
+        },
+        body: JSON.stringify({
+          event_type: `remediate-${f.name}`,
+          client_payload: {
+            tool: f.name,
+            env: f.env,
+            reason: f.status ?? f.error ?? "unreachable"
+          }
+        })
+      }).then((res) => res.ok).catch(() => false)
+    )
+  );
+  return fired.filter(Boolean).length;
 }
 function parseTargets(raw) {
   if (!raw) return [];
@@ -77,14 +89,16 @@ async function sweep(env) {
     console.log(`${r.ok ? "ok  " : "FAIL"} ${r.target}${detail}`);
   }
   const failures = results.filter((r) => !r.ok);
-  await alertGithubIssue(
-    { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
-    failures
-  );
-  const fired = await dispatchRemediation(
-    { dispatchRepo: env.DISPATCH_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
-    failures
-  );
+  const [, fired] = await Promise.all([
+    alertGithubIssue(
+      { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
+      failures
+    ),
+    dispatchRemediation(
+      { dispatchRepo: env.DISPATCH_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
+      failures
+    )
+  ]);
   if (fired > 0) console.log(`dispatched ${fired} remediation(s)`);
   return results;
 }

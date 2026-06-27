@@ -79,7 +79,7 @@ git-mapped envs** standardized to `main`/`develop` (keep to `develop`, never `de
 **keepalive as a Cloudflare Worker Cron Trigger** (immune to repo-inactivity disable). A few
 specifics worth pinning here:
 
-- **Lanes** `astro | next | mcp | agent`; **targets** `workers | vercel | oci`; **data** `none | d1 | kv | supabase | neon`. Source of truth + allowed combinations: the `packages/shared` schema (`greenlight lanes`). Defaults: `next`→vercel; `astro`/`mcp`/`agent`→workers.
+- **Lanes** `astro | next | mcp | agent`; **targets** `workers | vercel | oci | docker`; **data** `none | d1 | kv | supabase | neon`. Source of truth + allowed combinations: the `packages/shared` schema (`greenlight lanes`). Defaults: `next`→vercel; `astro`/`mcp`/`agent`→workers. `mcp` may also target `oci` (free-tier container) or `docker` (a host you own — same image, no idle-reclaim).
 - **Data defaults to Neon** (branch-per-env Postgres, scale-to-zero + auto-resume → **no keepalive**). Supabase only for bundled auth+storage+realtime together (schema-per-env + a keepalive heartbeat, since Supabase pauses after 7 days and branching is paid).
 - **OCI idle-reclaim: stay on the free tier** — restart-policy ALWAYS + keepalive health-check + alert → re-apply/redeploy restores it. PAYG is an optional last resort ([docs/oci-payg-runbook.md](docs/oci-payg-runbook.md)), **not** the fix. Never imply the harness *prevents* reclaim.
 - **The blog must never use Supabase / any pausing store** — D1/KV or external (giscus, Resend) only; it must stay up unattended.
