@@ -245,6 +245,12 @@ two live tools.
 - **Loop depth**: the `agent-web` **subscription driver** (run agent-web on a Claude Code
   subscription via `claude -p` + Playwright MCP) — researched, deferred.
 
+**Known constraints (deliberate, possible future work).** Two couplings are kept on purpose for a
+solo operator and could generalize later — the **GitHub-Actions-only CI / single secret store** (a
+future CI-provider adapter) and **lockstep `MODULE_REF` versioning** (decouple the module tag from
+the npm version). See *Trade-offs & deliberate constraints* in
+[docs/architecture.md](docs/architecture.md).
+
 The V0 design doc ([docs/archive/greenlight-design-doc-v0.md](docs/archive/greenlight-design-doc-v0.md))
 remains the full provider-agnostic north star; anything deferred lives there.
 

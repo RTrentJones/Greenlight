@@ -104,3 +104,8 @@ Terraform state on **HCP Terraform** (free tier, local execution); MCP transport
 HTTP**, `auth: none` only for public read-only; **MIT, public from day one**. Identity: GitHub
 `RTrentJones/greenlight`, npm `@rtrentjones/greenlight` (bin `greenlight`), docs dogfooded at
 `greenlight.rtrentjones.dev`.
+
+**Deliberate trade-offs (personal-use scope, see [docs/architecture.md](docs/architecture.md)
+"Trade-offs & deliberate constraints"):** GitHub Actions is the only CI + the single secret store
+(no CI-provider abstraction); npm version and `MODULE_REF` move in **lockstep** (an infra-only
+hotfix still cuts a CLI release). Both are intentional; each has a noted future-generalization path.
