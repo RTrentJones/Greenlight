@@ -62,6 +62,19 @@ describe('ConfigSchema', () => {
     expect(r.success).toBe(false);
   });
 
+  it('defaults requireMigrationApproval to false and accepts true', () => {
+    const mk = (extra: object) => ({
+      ...base,
+      tools: [
+        { name: 'x', lane: 'next', target: 'vercel', data: 'neon', envs: ['prod'], ...extra },
+      ],
+    });
+    const off = ConfigSchema.safeParse(mk({}));
+    expect(off.success).toBe(true);
+    if (off.success) expect(off.data.tools[0]?.requireMigrationApproval).toBe(false);
+    expect(ConfigSchema.safeParse(mk({ requireMigrationApproval: true })).success).toBe(true);
+  });
+
   it('rejects next not on vercel (out of matrix)', () => {
     const r = ConfigSchema.safeParse({
       ...base,

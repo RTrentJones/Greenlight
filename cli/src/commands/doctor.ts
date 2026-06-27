@@ -146,6 +146,23 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
     }
   }
 
+  // Manual migration approval: when a tool opts in, the gated migrate workflow must exist (it runs
+  // under the <name>-prod environment, whose required reviewers are the human gate). Warn if missing.
+  if (t.requireMigrationApproval) {
+    const migrateWf = `greenlight-migrate-${t.name}.yml`;
+    const hasWf = [
+      join(root, toolDir, '.github/workflows', migrateWf),
+      join(root, '.github/workflows', migrateWf),
+    ].some((p) => existsSync(p));
+    out.push({
+      name: `${t.name}: migration approval`,
+      status: hasWf ? 'ok' : 'warn',
+      detail: hasWf
+        ? `${migrateWf} present — set required reviewers on the ${t.name}-prod environment (prod_reviewers)`
+        : `requireMigrationApproval set but ${migrateWf} is missing — re-run adopt with --require-migration-approval, and set prod_reviewers on the ${t.name}-prod environment`,
+    });
+  }
+
   return out;
 }
 

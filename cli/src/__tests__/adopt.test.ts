@@ -265,5 +265,40 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     expect(existsSync(join(sub, '.claude/skills/provider-supabase/SKILL.md'))).toBe(true);
     // not the oci path — no container build workflow
     expect(existsSync(join(sub, '.github/workflows/greenlight-build.yml'))).toBe(false);
+    // no migration-approval gate without the opt-in flag
+    expect(existsSync(join(sub, '.github/workflows/greenlight-migrate-demo-web.yml'))).toBe(false);
+  });
+
+  it('--require-migration-approval emits the gated migrate workflow + records the manifest flag', async () => {
+    const sub = join(wrapper, 'tools', 'demo-web');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'package.json'), JSON.stringify({ name: 'demo-web', private: true }));
+
+    process.chdir(wrapper);
+    await adoptCommand([
+      'demo-web',
+      '--repo',
+      tool,
+      '--lane',
+      'next',
+      '--target',
+      'vercel',
+      '--data',
+      'neon',
+      '--require-migration-approval',
+    ]);
+    process.chdir(repoRoot);
+
+    // the gated migrate workflow lands in the tool repo, runs under the prod environment + scans
+    const mig = readFileSync(
+      join(sub, '.github/workflows/greenlight-migrate-demo-web.yml'),
+      'utf8',
+    );
+    expect(mig).toContain('environment: demo-web-prod'); // the required-reviewer gate
+    expect(mig).toContain('migrations scan --strict');
+    // the flag is recorded in the wrapper manifest
+    expect(readFileSync(join(wrapper, 'greenlight.config.ts'), 'utf8')).toContain(
+      'requireMigrationApproval: true',
+    );
   });
 });

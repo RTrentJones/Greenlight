@@ -94,6 +94,11 @@ export const ToolSchema = z
     // connection strings. Cross-tool validity (owner exists, same data, no chains) is checked on
     // the whole config below.
     dataShareWith: z.string().optional(),
+    // Gate prod DB migrations behind a human approval. When true, `adopt` emits a dedicated, gated
+    // migrate workflow (run under the `<name>-prod` GitHub Environment → required reviewers pause it)
+    // and the prod environment's `prod_reviewers` should be set in infra. Only meaningful for a data
+    // tool (supabase/neon); a `doctor` check flags it when set but unwired. Default off.
+    requireMigrationApproval: z.boolean().default(false),
   })
   .superRefine((tool, ctx) => {
     const rule = MATRIX[tool.lane];

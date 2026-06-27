@@ -492,6 +492,52 @@ ${ociDeployAndVerifySteps(name)}
 `;
 }
 
+/** The manual-approval DB migration gate (emitted for a data tool with `requireMigrationApproval`).
+ * The job runs under the `<name>-prod` GitHub Environment, so its required reviewers must approve
+ * before prod migrations apply — the human gate. Migrate is moved OUT of the app build into here so
+ * the platform build can't apply migrations unreviewed. The migrate command is a fill-in (the apply
+ * fails until you set it — a no-op exit 0 here would dangerously read as "migrated"). */
+function migrateWorkflowYml(name: string): string {
+  const SUF = name.toUpperCase().replace(/-/g, '_');
+  return `name: greenlight-migrate-${name}
+
+# Manual-approval prod DB migration gate. Set the required reviewers on the \`${name}-prod\`
+# environment (the tool module's \`prod_reviewers\`, or repo Settings → Environments) — GitHub pauses
+# the job below until one approves. Move migrate OUT of the app/platform build into this gated job.
+on:
+  workflow_dispatch:
+  # Tip: gate the prod deploy on this — call it first, or make the deploy \`needs:\` a green run here.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-${name}
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    # Required-reviewer gate: GitHub pauses here until a reviewer approves the ${name}-prod environment.
+    environment: ${name}-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+      - name: Scan migrations (block destructive SQL)
+        run: pnpm exec greenlight migrations scan --strict
+      - name: Apply prod migrations
+        env:
+          # Prod DIRECT (non-pooled) connection — set as a secret. Neon/Supabase expose a DIRECT_URL.
+          DIRECT_URL: \${{ secrets.DIRECT_URL_${SUF} }}
+        # TODO: replace with your migrate command against $DIRECT_URL, e.g.
+        #   pnpm drizzle-kit migrate   |   pnpm prisma migrate deploy
+        run: |
+          echo "::error::set the migrate command in greenlight-migrate-${name}.yml (drizzle-kit migrate / prisma migrate deploy)"
+          exit 1
+`;
+}
+
 /** Self-heal, wrapper side, for the docker target: the keepalive Worker fires
  * remediate-${"<name>"} when the host stops responding. Unlike oci there's no Always-Free box to
  * re-create — the host is user-owned — so remediation is simply re-running the SSH deploy (restart
@@ -640,6 +686,7 @@ interface AdoptCtx {
   auth: string;
   envs: string[];
   domain: string;
+  requireMigrationApproval: boolean;
   reg: Awaited<ReturnType<typeof loadManifest>>['config'];
   regPath: string;
 }
@@ -648,7 +695,7 @@ export async function adoptCommand(args: string[]): Promise<void> {
   const name = args[0];
   if (!name || name.startsWith('-')) {
     throw new Error(
-      'usage: greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--standalone]\n' +
+      'usage: greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--require-migration-approval] [--standalone]\n' +
         '  default: wrap <repo> as a tools/<name> submodule + edit infra in this wrapper + push the loop kit into the tool repo.\n' +
         '  --standalone: scaffold a full self-contained consumer into the tool repo (it owns its whole stack).',
     );
@@ -662,6 +709,9 @@ export async function adoptCommand(args: string[]): Promise<void> {
   const data = flag(args, '--data') ?? 'none';
   const auth = flag(args, '--auth') ?? 'none';
   const envs = flag(args, '--envs')?.split(',') ?? ['beta', 'prod'];
+  // Gate prod DB migrations behind a human approval (emits a gated migrate workflow + sets the
+  // manifest flag; pair with `prod_reviewers` on the tool's infra). Only meaningful for data tools.
+  const requireMigrationApproval = args.includes('--require-migration-approval');
 
   // The cwd is the central registry (the site repo). Must be a real manifest.
   const { path: regPath, config: reg } = await loadManifest();
@@ -678,7 +728,19 @@ export async function adoptCommand(args: string[]): Promise<void> {
   }
   const domain = flag(args, '--domain') ?? reg.domain;
 
-  const ctx: AdoptCtx = { name, repoArg, lane, target, data, auth, envs, domain, reg, regPath };
+  const ctx: AdoptCtx = {
+    name,
+    repoArg,
+    lane,
+    target,
+    data,
+    auth,
+    envs,
+    domain,
+    requireMigrationApproval,
+    reg,
+    regPath,
+  };
   if (args.includes('--standalone')) return adoptStandalone(ctx);
   return adoptWrapper(ctx);
 }
@@ -690,7 +752,19 @@ export async function adoptCommand(args: string[]): Promise<void> {
  * history + deploy; the submodule is dev-unification + the wrapper's infra/verify reference.
  */
 async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
-  const { name, repoArg, lane, target, data, auth, envs, domain, reg, regPath } = ctx;
+  const {
+    name,
+    repoArg,
+    lane,
+    target,
+    data,
+    auth,
+    envs,
+    domain,
+    requireMigrationApproval,
+    reg,
+    regPath,
+  } = ctx;
   const cwd = process.cwd();
   const toolRel = `tools/${name}`;
   const dest = resolve(cwd, toolRel);
@@ -738,6 +812,7 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
           },
         }
       : {}),
+    ...(requireMigrationApproval ? { requireMigrationApproval: true } : {}),
   });
   writeFileSync(regPath, serializeConfig(nextReg));
   console.log(
@@ -818,6 +893,16 @@ async function adoptWrapper(ctx: AdoptCtx): Promise<void> {
     );
   }
 
+  // Manual migration approval: for a data tool that opted in, emit the gated migrate workflow into
+  // the TOOL repo (it owns the DIRECT_URL + the <name>-prod environment the gate runs under).
+  if (requireMigrationApproval && (data === 'supabase' || data === 'neon')) {
+    writeIfAbsent(
+      join(dest, `.github/workflows/greenlight-migrate-${name}.yml`),
+      migrateWorkflowYml(name),
+      `${toolRel}/.github/workflows/greenlight-migrate-${name}.yml (gated prod migration)`,
+    );
+  }
+
   console.log(`
 Next:
   (in the tool repo) commit the Greenlight kit + build workflow so they travel with the submodule:
@@ -853,7 +938,19 @@ Next:
  * pointer in the wrapper. (The pre-publish bootstrap; post-publish the deps come from npm.)
  */
 async function adoptStandalone(ctx: AdoptCtx): Promise<void> {
-  const { name, repoArg, lane, target, data, auth, envs, domain, reg, regPath } = ctx;
+  const {
+    name,
+    repoArg,
+    lane,
+    target,
+    data,
+    auth,
+    envs,
+    domain,
+    requireMigrationApproval,
+    reg,
+    regPath,
+  } = ctx;
   const repo = resolve(process.cwd(), repoArg);
   if (!existsSync(repo)) throw new Error(`no such repo: ${repo} (--standalone needs a local path)`);
 
@@ -869,7 +966,17 @@ async function adoptStandalone(ctx: AdoptCtx): Promise<void> {
   console.log(`adopting "${name}" (${lane}/${target}) into ${repo} (standalone)\n`);
 
   // 1) tool repo greenlight.config.ts (one tool, no blog)
-  const toolEntry: NewTool = { name, lane, target, data, auth, envs, dir: '.', adopted: true };
+  const toolEntry: NewTool = {
+    name,
+    lane,
+    target,
+    data,
+    auth,
+    envs,
+    dir: '.',
+    adopted: true,
+    ...(requireMigrationApproval ? { requireMigrationApproval: true } : {}),
+  };
   const toolConfig = addTool({ domain, alerts: { sink: 'github-issue' }, tools: [] }, toolEntry);
   writeIfAbsent(
     join(repo, 'greenlight.config.ts'),
@@ -916,6 +1023,15 @@ async function adoptStandalone(ctx: AdoptCtx): Promise<void> {
   );
   // 6) verify spec
   writeIfAbsent(join(repo, 'verify.config.ts'), starterVerifyConfig(lane), 'verify.config.ts');
+  // 6b) gated prod migration workflow (opt-in, data tools): a human approves the <name>-prod env
+  // before migrations apply. Move migrate out of the build into this gated job.
+  if (requireMigrationApproval && (data === 'supabase' || data === 'neon')) {
+    writeIfAbsent(
+      join(repo, `.github/workflows/greenlight-migrate-${name}.yml`),
+      migrateWorkflowYml(name),
+      `.github/workflows/greenlight-migrate-${name}.yml (gated prod migration)`,
+    );
+  }
   // 7) agent kit (MCP tailored to the tool's target/data)
   materializeAgentKit(repo, { lane, target, data });
   // 8) toolchain
@@ -932,6 +1048,7 @@ async function adoptStandalone(ctx: AdoptCtx): Promise<void> {
     envs,
     external: true,
     adopted: true,
+    ...(requireMigrationApproval ? { requireMigrationApproval: true } : {}),
   });
   writeFileSync(regPath, serializeConfig(nextReg));
   console.log(`✔ registered "${name}" in ${regPath.replace(`${process.cwd()}/`, '')} (external)`);

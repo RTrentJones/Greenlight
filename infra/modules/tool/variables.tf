@@ -59,3 +59,9 @@ variable "manage_github_environments" {
   default     = true
   description = "Create a GitHub deployment environment per env. Set false for external tools (repo managed elsewhere) to avoid a cross-repo github dependency."
 }
+
+variable "prod_reviewers" {
+  type        = list(string)
+  default     = []
+  description = "GitHub usernames required to approve the `<name>-prod` environment before a job using it runs. The manual gate for prod DB migrations (the gated migrate workflow runs under this env). Empty = no approval required."
+}

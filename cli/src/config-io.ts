@@ -40,6 +40,7 @@ function serializeTool(t: ToolConfig): string {
     parts.push(`tokenOverrides: { ${ov} }`);
   }
   if (t.dataShareWith !== undefined) parts.push(`dataShareWith: ${q(t.dataShareWith)}`);
+  if (t.requireMigrationApproval) parts.push('requireMigrationApproval: true');
   return `    { ${parts.join(', ')} },`;
 }
 
@@ -84,6 +85,7 @@ export interface NewTool {
   tokens?: string[];
   tokenOverrides?: Record<string, string>;
   dataShareWith?: string;
+  requireMigrationApproval?: boolean;
 }
 
 /** Add a tool to the config, validating against the schema (lane × target × data matrix). */
@@ -113,6 +115,7 @@ export function addTool(config: GreenlightConfig, t: NewTool): GreenlightConfig 
           ? { tokenOverrides: t.tokenOverrides }
           : {}),
         ...(t.dataShareWith ? { dataShareWith: t.dataShareWith } : {}),
+        ...(t.requireMigrationApproval ? { requireMigrationApproval: true } : {}),
       },
     ],
   };
@@ -149,6 +152,7 @@ export function upsertTool(config: GreenlightConfig, t: NewTool): GreenlightConf
       ? { tokenOverrides: t.tokenOverrides }
       : {}),
     ...(t.dataShareWith ? { dataShareWith: t.dataShareWith } : {}),
+    ...(t.requireMigrationApproval ? { requireMigrationApproval: true } : {}),
   };
   const tools = config.tools.some((x) => x.name === t.name)
     ? config.tools.map((x) => (x.name === t.name ? entry : x))
