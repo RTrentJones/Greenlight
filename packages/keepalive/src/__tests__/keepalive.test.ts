@@ -128,12 +128,30 @@ describe('alertGithubIssue', () => {
     const { fn, calls } = capturingFetch(201);
     const sent = await alertGithubIssue({ githubRepo: 'o/r', githubToken: 'tok' }, failures, fn);
     expect(sent).toBe(true);
-    expect(calls[0]?.url).toBe('https://api.github.com/repos/o/r/issues');
-    expect(calls[0]?.init.method).toBe('POST');
-    expect(headersOf(calls[0]?.init).Authorization).toBe('Bearer tok');
-    const payload = JSON.parse((calls[0]?.init.body as string) ?? '{}');
+    // First call is the dedup lookup (no open issue → empty body parses as []); then the POST.
+    expect(calls[0]?.url).toBe(
+      'https://api.github.com/repos/o/r/issues?state=open&labels=keepalive&per_page=1',
+    );
+    expect(calls[0]?.init.method).toBeUndefined(); // a GET
+    expect(calls[1]?.url).toBe('https://api.github.com/repos/o/r/issues');
+    expect(calls[1]?.init.method).toBe('POST');
+    expect(headersOf(calls[1]?.init).Authorization).toBe('Bearer tok');
+    const payload = JSON.parse((calls[1]?.init.body as string) ?? '{}');
     expect(payload.title).toContain('1 target(s) failing');
     expect(payload.body).toContain('heistmind:prod');
+  });
+
+  it('debounces — does NOT open a second issue when one is already open', async () => {
+    // The dedup GET returns an existing open keepalive issue → no POST, no spam.
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init: init ?? {} });
+      return new Response(JSON.stringify([{ number: 7 }]), { status: 200 });
+    }) as unknown as typeof fetch;
+    const sent = await alertGithubIssue({ githubRepo: 'o/r', githubToken: 'tok' }, failures, fn);
+    expect(sent).toBe(false);
+    expect(calls).toHaveLength(1); // only the lookup; never the create
+    expect(calls[0]?.url).toContain('state=open&labels=keepalive');
   });
 });
 

@@ -38,6 +38,14 @@ jobs:
         run: |
           if [ -n "$CF" ]; then echo "have=1" >> "$GITHUB_OUTPUT"; else echo "have=0" >> "$GITHUB_OUTPUT"; fi
 
+      # Without creds the beta verify below would skip — but promotion must NEVER fast-forward
+      # develop -> main on an unverified build. Fail loudly instead of silently bypassing the gate.
+      - name: Require verification creds
+        if: steps.creds.outputs.have != '1'
+        run: |
+          echo "::error::promotion requires verification — set the CLOUDFLARE_API_TOKEN secret so the beta gate runs before develop->main."
+          exit 1
+
       - name: Verify beta (gate)
         if: steps.creds.outputs.have == '1'
         env:

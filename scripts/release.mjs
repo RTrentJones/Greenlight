@@ -22,7 +22,11 @@ const tag = `v${version}`;
 // 1) MODULE_REF in cli/src/version.ts (the Terraform module pin that consumers inherit).
 const verTs = join(root, 'cli/src/version.ts');
 const verSrc = readFileSync(verTs, 'utf8');
-const nextVerTs = verSrc.replace(/MODULE_REF = 'v[0-9.]+'/, `MODULE_REF = '${tag}'`);
+// Anchored to the `export const` assignment so a comment mentioning MODULE_REF can't be rewritten.
+const nextVerTs = verSrc.replace(
+  /export const MODULE_REF = 'v[0-9.]+';/,
+  `export const MODULE_REF = '${tag}';`,
+);
 if (nextVerTs === verSrc) {
   console.error(`could not find MODULE_REF in ${verTs}`);
   process.exit(1);
@@ -43,7 +47,12 @@ for (const rel of pkgRels) {
   } catch {
     continue;
   }
-  const next = raw.replace(/("version":\s*")[0-9]+\.[0-9]+\.[0-9]+(-[\w.]+)?(")/, `$1${version}$3`);
+  // Line-anchored to a top-level `"version":` key so a version-like string elsewhere in the JSON
+  // (a dependency range, a comment-ish field) can't be matched instead.
+  const next = raw.replace(
+    /^(\s*"version":\s*")[0-9]+\.[0-9]+\.[0-9]+(-[\w.]+)?(")/m,
+    `$1${version}$3`,
+  );
   if (next !== raw) {
     writeFileSync(p, next);
     bumped++;

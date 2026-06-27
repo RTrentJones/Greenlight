@@ -57,6 +57,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           content: [{ type: 'text', text: 'Hello, world!' }],
         }),
       );
+      mcp.registerTool(
+        'big',
+        { description: 'returns a very large payload', inputSchema: {} },
+        async () => ({ content: [{ type: 'text', text: 'x'.repeat(50_000) }] }),
+      );
       await mcp.connect(transport);
     }
     if (!transport) {
@@ -134,6 +139,22 @@ describe('verifyEval (0..1)', () => {
       scoreJudge(0.79),
     );
     expect(below.pass).toBe(false);
+  });
+
+  it('caps the tool result fed into the judge prompt (bounds judge INPUT tokens)', async () => {
+    let seen = 0;
+    const recordingJudge: Judge = async ({ result }) => {
+      seen = result.length;
+      return { score: 1, pass: true };
+    };
+    await verifyEval(
+      url,
+      { mode: 'eval', cases: [{ name: 'big', tool: 'big', rubric: 'x' }] },
+      recordingJudge,
+    );
+    // The 50k-char payload must be truncated before the judge sees it (cap 8k + a short marker).
+    expect(seen).toBeGreaterThan(0);
+    expect(seen).toBeLessThan(9000);
   });
 
   it('fails honestly on a connection error (no throw)', async () => {

@@ -10,19 +10,27 @@ import {
   report,
 } from './types';
 
-/** Serialize an MCP tool result to text the judge can score. */
+/** Max chars of a tool result fed into the judge prompt. A tool can return an arbitrarily large
+ * payload; without a cap that flows straight into the judge's INPUT tokens (max_tokens only bounds
+ * its output). 8 KB is ample for a rubric judgement; the marker keeps the truncation visible. */
+const MAX_RESULT_CHARS = 8000;
+
+/** Serialize an MCP tool result to text the judge can score (length-capped — see MAX_RESULT_CHARS). */
 function resultText(res: unknown): string {
   const r = res as {
     structuredContent?: unknown;
     content?: Array<{ type?: string; text?: string }>;
   };
-  if (r.structuredContent !== undefined) return JSON.stringify(r.structuredContent);
-  if (Array.isArray(r.content)) {
-    return r.content
+  let text: string;
+  if (r.structuredContent !== undefined) text = JSON.stringify(r.structuredContent);
+  else if (Array.isArray(r.content)) {
+    text = r.content
       .map((c) => (c.type === 'text' ? (c.text ?? '') : JSON.stringify(c)))
       .join('\n');
-  }
-  return JSON.stringify(res);
+  } else text = JSON.stringify(res);
+  return text.length > MAX_RESULT_CHARS
+    ? `${text.slice(0, MAX_RESULT_CHARS)}\n…[truncated ${text.length - MAX_RESULT_CHARS} chars]`
+    : text;
 }
 
 /** Clamp a judge score into the standard [0,1] band (1 = perfect). A stray legacy 1–5 reply clamps

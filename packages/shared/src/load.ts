@@ -11,7 +11,16 @@ import { ConfigSchema, type GreenlightConfig } from './schema';
  */
 export async function loadConfig(path: string): Promise<GreenlightConfig> {
   const jiti = createJiti(import.meta.url);
-  const mod = (await jiti.import(path)) as Record<string, unknown>;
+  let mod: Record<string, unknown>;
+  try {
+    mod = (await jiti.import(path)) as Record<string, unknown>;
+  } catch (e) {
+    // A syntax/import error would otherwise surface as a raw stack with no hint of WHICH file —
+    // schema errors already name the path, so make the load path do the same.
+    throw new Error(
+      `Could not load Greenlight manifest at ${path}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   const raw = 'default' in mod ? mod.default : mod;
 
   const result = ConfigSchema.safeParse(raw);

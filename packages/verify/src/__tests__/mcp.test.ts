@@ -5,6 +5,17 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { verify } from '../index';
+import { withTimeout } from '../mcp';
+
+describe('withTimeout', () => {
+  it('resolves a fast promise', async () => {
+    await expect(withTimeout(Promise.resolve('ok'), 1000, 'op')).resolves.toBe('ok');
+  });
+  it('rejects with the label when the promise outlives the deadline', async () => {
+    const hang = new Promise<string>(() => {}); // never settles
+    await expect(withTimeout(hang, 20, 'tools/list')).rejects.toThrow(/tools\/list timed out/);
+  });
+});
 
 function readJson(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {

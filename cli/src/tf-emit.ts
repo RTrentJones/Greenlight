@@ -35,11 +35,34 @@ export interface ToolTfOpts {
 
 const hcl = (s: string) => s.replace(/\n{3,}/g, '\n\n').trimEnd();
 
+/** Defense-in-depth for the emitted HCL: most inputs are already schema-validated (`name` kebab,
+ * `domain` hostname, lane/target/data enums), but the free-form ones (`slug` from a git remote,
+ * token-override secret names) are interpolated straight into HCL string literals. Reject any value
+ * carrying a `"`, backslash, or newline — which would break or inject into the generated Terraform —
+ * rather than writing a corrupt `.tf`. Throws with the offending field. */
+function assertHclSafe(fields: Record<string, string | undefined>): void {
+  for (const [field, value] of Object.entries(fields)) {
+    if (value && /["\\\n]/.test(value)) {
+      throw new Error(
+        `refusing to emit Terraform: ${field} contains an invalid character ("${value}")`,
+      );
+    }
+  }
+}
+
 /** The per-tool `infra/<name>.tf` — module blocks for the providers this tool uses.
  * Assumes the wrapper's `infra/main.tf` provides the providers + shared variables (the
  * header lists which); never re-declares providers/backend (those are wrapper singletons). */
 export function emitToolTf(opts: ToolTfOpts): string {
   const { name, domain, lane, target, data, envs, ref = MODULE_REF } = opts;
+  assertHclSafe({
+    name,
+    domain,
+    slug: opts.slug,
+    dataShareWith: opts.dataShareWith,
+    'tokenOverrides.SUPABASE_ACCESS_TOKEN': opts.tokenOverrides?.SUPABASE_ACCESS_TOKEN,
+    'tokenOverrides.NEON_API_KEY': opts.tokenOverrides?.NEON_API_KEY,
+  });
 
   // An agent is fully wrangler-managed: the Worker + cron + KV + custom_domain route + the
   // GEMINI_API_KEY/RUN_TOKEN secrets all live in tools/<name>/wrangler.toml, and `wrangler deploy`

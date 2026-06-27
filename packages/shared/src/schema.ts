@@ -141,9 +141,18 @@ export const AlertsSchema = z.object({
   sink: z.enum(['github-issue', 'email']),
 });
 
+/** A DNS hostname: dot-separated alphanumeric/hyphen labels + an alphabetic TLD. Validating this at
+ * load time means a malformed domain (quotes, spaces, shell/HCL metacharacters) is rejected here
+ * rather than producing broken/injectable output when it's interpolated into emitted Terraform,
+ * `curl`, `jq`, or workflow YAML downstream. */
+const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i;
+
 export const ConfigSchema = z
   .object({
-    domain: z.string().min(1, 'domain is required'),
+    domain: z
+      .string()
+      .min(1, 'domain is required')
+      .regex(DOMAIN_RE, 'domain must be a valid hostname, e.g. "example.com"'),
     alerts: AlertsSchema,
     // Optional: a tool-only repo (a poly-repo consumer) has no blog.
     blog: BlogSchema.optional(),

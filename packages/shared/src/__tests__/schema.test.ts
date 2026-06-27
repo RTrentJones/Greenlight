@@ -22,6 +22,14 @@ describe('ConfigSchema', () => {
     }
   });
 
+  it('rejects a malformed domain (quotes/spaces would break emitted HCL/curl/jq)', () => {
+    for (const domain of ['no-tld', 'has space.dev', 'evil".dev', 'http://example.dev']) {
+      expect(ConfigSchema.safeParse({ ...base, domain }).success).toBe(false);
+    }
+    // A normal multi-label hostname is still accepted.
+    expect(ConfigSchema.safeParse({ ...base, domain: 'app.example.dev' }).success).toBe(true);
+  });
+
   it('rejects a blog backed by supabase (it pauses; blog must stay up)', () => {
     const r = ConfigSchema.safeParse({
       ...base,

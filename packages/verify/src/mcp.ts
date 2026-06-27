@@ -2,6 +2,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { type McpSpec, type VerifyCheck, type VerifyReport, msg, report } from './types';
 
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** Reject if `p` doesn't settle within `timeoutMs` — bounds a hung server so the gate fails
+ * instead of blocking forever (the MCP client ops have no built-in deadline here). Exported for
+ * unit testing. */
+export function withTimeout<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs),
+    ),
+  ]);
+}
+
 /**
  * Protocol-level MCP verification (docs/archive/greenlight-v1.md §6):
  *   initialize handshake → tools/list → optional tools/call → optional auth assertion.
@@ -9,6 +23,7 @@ import { type McpSpec, type VerifyCheck, type VerifyReport, msg, report } from '
  */
 export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyReport> {
   const checks: VerifyCheck[] = [];
+  const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const client = new Client({ name: 'greenlight-verify', version: '0.0.0' });
   // spec.headers (e.g. a Bearer token from env) auth the transport so initialize/tools/list/call
   // work against an OAuth-gated server — the functional ("eval") signal beyond a 401 smoke check.
@@ -18,15 +33,16 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
   );
 
   try {
-    await client.connect(transport); // performs the initialize handshake
+    await withTimeout(client.connect(transport), timeoutMs, 'initialize'); // initialize handshake
     checks.push({ name: 'initialize handshake', pass: true });
   } catch (e) {
     checks.push({ name: 'initialize handshake', pass: false, detail: msg(e) });
+    await client.close().catch(() => {}); // release the transport even though connect failed
     return report('mcp', baseUrl, checks); // nothing else is reachable without a session
   }
 
   try {
-    const { tools } = await client.listTools();
+    const { tools } = await withTimeout(client.listTools(), timeoutMs, 'tools/list');
     const names = tools.map((t) => t.name);
     // Always exercise tools/list so the handshake + list are proven even with no expectTools.
     checks.push({ name: `tools/list responded (${names.length} tools)`, pass: true });
@@ -63,10 +79,11 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
   if (spec.call) {
     const label = `tools/call ${spec.call.name}`;
     try {
-      const res = (await client.callTool({
-        name: spec.call.name,
-        arguments: spec.call.args ?? {},
-      })) as { isError?: boolean; structuredContent?: Record<string, unknown> };
+      const res = (await withTimeout(
+        client.callTool({ name: spec.call.name, arguments: spec.call.args ?? {} }),
+        timeoutMs,
+        label,
+      )) as { isError?: boolean; structuredContent?: Record<string, unknown> };
       const reasons: string[] = [];
       if (res.isError) reasons.push('result.isError = true');
       for (const k of spec.call.expectKeys ?? []) {
@@ -86,16 +103,17 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
 
   await client.close();
 
-  if (spec.requireAuthRejection) checks.push(await checkAuthRejection(baseUrl));
+  if (spec.requireAuthRejection) checks.push(await checkAuthRejection(baseUrl, timeoutMs));
 
   return report('mcp', baseUrl, checks);
 }
 
 /** On auth != none servers, a bare unauthenticated initialize must be rejected. */
-async function checkAuthRejection(baseUrl: string): Promise<VerifyCheck> {
+async function checkAuthRejection(baseUrl: string, timeoutMs: number): Promise<VerifyCheck> {
   try {
     const res = await fetch(baseUrl, {
       method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',

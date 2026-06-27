@@ -3,11 +3,33 @@ import { type ApiSpec, type VerifyCheck, type VerifyReport, msg, report } from '
 const trimSlash = (s: string) => s.replace(/\/+$/, '');
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_LINKS = 50;
+/** Cap on how much of a response body we buffer. The `contains`/feed/link checks only need a prefix;
+ * without a cap a huge or cached error body would be read fully into memory. */
+const MAX_BODY_CHARS = 2_000_000;
 
 /** A single fetch, bounded by `timeoutMs` so a hung endpoint fails the check instead of blocking the
  * whole gate forever (the settle loop and CI both depend on this returning). */
 function timedFetch(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
   return fetch(url, { redirect: 'manual', ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+/** Read a response body as text but stop after `max` chars, cancelling the stream — so a giant body
+ * can't be fully buffered. Falls back to `res.text()` (then slices) when the body isn't streamable. */
+async function boundedText(res: Response, max = MAX_BODY_CHARS): Promise<string> {
+  if (!res.body) return (await res.text()).slice(0, max);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (text.length < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return text.slice(0, max);
 }
 
 async function checkRoute(
@@ -23,7 +45,7 @@ async function checkRoute(
       reasons.push(`status ${res.status} != ${c.status}`);
     }
     if (c.contains !== undefined) {
-      const body = await res.text();
+      const body = await boundedText(res);
       if (!body.includes(c.contains)) reasons.push(`body missing "${c.contains}"`);
     }
     if (c.header) {
@@ -50,7 +72,7 @@ async function checkXml(
     try {
       const res = await timedFetch(base + path, timeoutMs);
       if (res.status === 200) {
-        const body = await res.text();
+        const body = await boundedText(res);
         const ok = marker.test(body);
         return {
           name: `${label} (${path})`,
@@ -72,7 +94,7 @@ async function checkInternalLinks(
 ): Promise<VerifyCheck> {
   try {
     const res = await timedFetch(`${base}/`, timeoutMs);
-    const html = await res.text();
+    const html = await boundedText(res);
     const hrefs = new Set<string>();
     let capped = false;
     for (const m of html.matchAll(/href="(\/[^"#?]*)"/g)) {

@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { emitToolTf, emitWrapperMainTf, providersForTool } from '../tf-emit';
 
+describe('emitToolTf — HCL safety guard', () => {
+  it('refuses to emit when a free-form value carries an HCL-breaking character', () => {
+    expect(() =>
+      emitToolTf({
+        name: 'demo',
+        domain: 'example.dev',
+        lane: 'mcp',
+        target: 'oci',
+        data: 'none',
+        envs: ['prod'],
+        slug: 'acme/demo";evil="x', // a quote here would break/inject the generated github_repo
+      }),
+    ).toThrow(/invalid character/);
+  });
+});
+
 describe('emitToolTf', () => {
   it('emits supabase + vercel + dns module blocks for a next/vercel/supabase tool', () => {
     const tf = emitToolTf({

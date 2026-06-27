@@ -123,11 +123,14 @@ async function execTool(
 async function evalAsserts(page: Page, asserts: AgentWebAssert[]): Promise<VerifyCheck[]> {
   const checks: VerifyCheck[] = [];
   let text = '';
+  let textError = ''; // why the body text couldn't be read (e.g. a render timeout)
   if (asserts.some((a) => a.textContains)) {
     try {
       text = await page.locator('body').innerText({ timeout: 3000 });
-    } catch {
-      text = '';
+    } catch (e) {
+      // Surface the cause: an empty `text` here would otherwise make every `textContains` fail as
+      // if the text were merely absent, hiding that the real problem was a render timeout/error.
+      textError = msg(e);
     }
   }
   for (const a of asserts) {
@@ -141,7 +144,11 @@ async function evalAsserts(page: Page, asserts: AgentWebAssert[]): Promise<Verif
     }
     if (a.textContains !== undefined) {
       const ok = text.includes(a.textContains);
-      checks.push({ name: `text contains "${a.textContains}"`, pass: ok });
+      checks.push({
+        name: `text contains "${a.textContains}"`,
+        pass: ok,
+        detail: ok ? undefined : textError ? `could not read page text: ${textError}` : undefined,
+      });
     }
     if (a.selector !== undefined) {
       let count = 0;
@@ -156,7 +163,7 @@ async function evalAsserts(page: Page, asserts: AgentWebAssert[]): Promise<Verif
   return checks;
 }
 
-async function runScenario(
+export async function runScenario(
   client: {
     messages: {
       create(body: unknown): Promise<{
@@ -175,11 +182,22 @@ async function runScenario(
 
   const messages: AnthropicMessage[] = [{ role: 'user', content: `Task: ${scenario.task}` }];
   const maxSteps = spec.maxSteps ?? 12;
+  const historyTurns = spec.historyWindow ?? 6;
+  const maxRepeats = spec.maxRepeats ?? 3;
   let finish: { success?: boolean; summary?: string } | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
+  let budgetExceeded = false;
+  let lastFailSig = ''; // signature of the previous step's tool calls, if they all errored
+  let repeats = 0; // consecutive identical all-failing steps
+  let stuckOn = '';
 
   for (let step = 0; step < maxSteps && !finish; step++) {
+    // Stop before another model call if a token budget is set and already reached.
+    if (spec.maxTokens && tokensIn + tokensOut >= spec.maxTokens) {
+      budgetExceeded = true;
+      break;
+    }
     const resp = await client.messages.create({
       model: spec.model ?? 'claude-sonnet-4-6',
       max_tokens: 1024,
@@ -203,10 +221,41 @@ async function runScenario(
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: out });
     }
     messages.push({ role: 'user', content: results });
+
+    // Stuck-loop guard: if this step's tool calls are identical to the previous step's AND every
+    // result was an error, the agent is retrying a dead action — abort instead of repeating it.
+    const sig = toolUses.map((tu) => `${tu.name}:${JSON.stringify(tu.input)}`).join('|');
+    const allErrored = results.every((r) => r.content.startsWith('error:'));
+    repeats = allErrored && sig === lastFailSig ? repeats + 1 : 0;
+    lastFailSig = allErrored ? sig : '';
+    if (repeats + 1 >= maxRepeats) {
+      stuckOn = toolUses.map((tu) => tu.name).join(', ');
+      break;
+    }
+
+    // Sliding context window: keep the task (messages[0]) + the last `historyTurns` turns. Each
+    // turn is an (assistant, user-tool-result) pair, so we drop whole pairs from the front to keep
+    // every tool_use matched with its tool_result. Stops old page snapshots inflating input tokens.
+    const keep = historyTurns * 2;
+    if (messages.length > keep + 1) {
+      messages.splice(1, messages.length - keep - 1);
+    }
   }
 
   const checks: VerifyCheck[] = [];
-  if (!finish) {
+  if (budgetExceeded) {
+    checks.push({
+      name: `${tag} token budget`,
+      pass: false,
+      detail: `exceeded maxTokens (${spec.maxTokens}) — ${tokensIn + tokensOut} tokens used`,
+    });
+  } else if (stuckOn) {
+    checks.push({
+      name: `${tag} progress`,
+      pass: false,
+      detail: `agent stuck repeating failing action(s): ${stuckOn}`,
+    });
+  } else if (!finish) {
     checks.push({
       name: `${tag} completed`,
       pass: false,
