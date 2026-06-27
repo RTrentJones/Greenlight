@@ -107,7 +107,16 @@ export async function loadVerifySpecAt(relPath: string): Promise<VerifySpec | Ve
   const path = resolve(process.cwd(), relPath);
   if (!existsSync(path)) return null;
   const jiti = createJiti(import.meta.url);
-  const mod = (await jiti.import(path)) as Record<string, unknown>;
+  let mod: Record<string, unknown>;
+  try {
+    mod = (await jiti.import(path)) as Record<string, unknown>;
+  } catch (e) {
+    // The file exists but failed to evaluate (syntax/import error) — name it rather than throwing a
+    // raw stack with no file context (missing-file already returns null above).
+    throw new Error(
+      `Could not load verify spec ${relPath}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   const def = 'default' in mod ? mod.default : mod;
   if (Array.isArray(def)) return def.map((s) => asSpec(relPath, s as { mode?: unknown }));
   return asSpec(relPath, def as { mode?: unknown });

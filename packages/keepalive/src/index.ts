@@ -93,14 +93,31 @@ export async function runKeepalive(
   return Promise.all(targets.map((t) => pingTarget(t, fetchFn)));
 }
 
-/** Open a GitHub issue for the failures. No-op (returns false) when there are no
- * failures or the sink isn't configured. */
+/** Open a GitHub issue for the failures. No-op (returns false) when there are no failures or the
+ * sink isn't configured — OR when a `keepalive`-labelled issue is already open. The cron fires
+ * repeatedly while a target stays down; without the open-issue check it would file a fresh issue
+ * every tick (hundreds over a multi-day outage, and eventual API rate-limiting). */
 export async function alertGithubIssue(
   sink: AlertSink,
   failures: KeepaliveResult[],
   fetchFn: FetchFn = fetch,
 ): Promise<boolean> {
   if (failures.length === 0 || !sink.githubRepo || !sink.githubToken) return false;
+  const auth = {
+    Authorization: `Bearer ${sink.githubToken}`,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'greenlight-keepalive',
+  };
+  // Debounce: skip if an open keepalive issue already exists. If the lookup itself fails (network),
+  // fall through and alert — better a possible duplicate than a silently-dropped outage.
+  const open = await fetchFn(
+    `https://api.github.com/repos/${sink.githubRepo}/issues?state=open&labels=keepalive&per_page=1`,
+    { headers: auth },
+  ).catch(() => null);
+  if (open?.ok) {
+    const issues = (await open.json().catch(() => [])) as unknown[];
+    if (Array.isArray(issues) && issues.length > 0) return false;
+  }
   const body = [
     'Greenlight keepalive detected unreachable target(s):',
     '',
@@ -108,12 +125,7 @@ export async function alertGithubIssue(
   ].join('\n');
   const res = await fetchFn(`https://api.github.com/repos/${sink.githubRepo}/issues`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${sink.githubToken}`,
-      Accept: 'application/vnd.github+json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'greenlight-keepalive',
-    },
+    headers: { ...auth, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title: `keepalive: ${failures.length} target(s) failing`,
       body,
@@ -147,24 +159,32 @@ export async function dispatchRemediation(
 ): Promise<number> {
   if (!sink.dispatchRepo || !sink.githubToken) return 0;
   const remediable = failures.filter((f) => f.remediate && f.name);
-  let fired = 0;
-  for (const f of remediable) {
-    const res = await fetchFn(`https://api.github.com/repos/${sink.dispatchRepo}/dispatches`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${sink.githubToken}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'greenlight-keepalive',
-      },
-      body: JSON.stringify({
-        event_type: `remediate-${f.name}`,
-        client_payload: { tool: f.name, env: f.env, reason: f.status ?? f.error ?? 'unreachable' },
-      }),
-    });
-    if (res.ok) fired++;
-  }
-  return fired;
+  // Fire concurrently — a Worker cron has a tight execution budget, so sequential awaits over many
+  // down targets is wasteful (the pings in runKeepalive are already concurrent).
+  const fired = await Promise.all(
+    remediable.map((f) =>
+      fetchFn(`https://api.github.com/repos/${sink.dispatchRepo}/dispatches`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sink.githubToken}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'greenlight-keepalive',
+        },
+        body: JSON.stringify({
+          event_type: `remediate-${f.name}`,
+          client_payload: {
+            tool: f.name,
+            env: f.env,
+            reason: f.status ?? f.error ?? 'unreachable',
+          },
+        }),
+      })
+        .then((res) => res.ok)
+        .catch(() => false),
+    ),
+  );
+  return fired.filter(Boolean).length;
 }
 
 /** Parse the `KEEPALIVE_TARGETS` var (a JSON array). Bad/empty input → []. */
@@ -206,15 +226,18 @@ async function sweep(env: Env): Promise<KeepaliveResult[]> {
     console.log(`${r.ok ? 'ok  ' : 'FAIL'} ${r.target}${detail}`);
   }
   const failures = results.filter((r) => !r.ok);
-  // Audit trail (always) + self-heal (for opted-in oci targets). Both no-op when unconfigured.
-  await alertGithubIssue(
-    { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
-    failures,
-  );
-  const fired = await dispatchRemediation(
-    { dispatchRepo: env.DISPATCH_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
-    failures,
-  );
+  // Audit trail (always) + self-heal (for opted-in oci targets), in parallel. Both no-op when
+  // unconfigured. Keeps the cron's wall-clock down vs. awaiting them in series.
+  const [, fired] = await Promise.all([
+    alertGithubIssue(
+      { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
+      failures,
+    ),
+    dispatchRemediation(
+      { dispatchRepo: env.DISPATCH_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
+      failures,
+    ),
+  ]);
   if (fired > 0) console.log(`dispatched ${fired} remediation(s)`);
   return results;
 }

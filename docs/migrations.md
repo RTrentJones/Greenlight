@@ -47,6 +47,30 @@ migrations gate as wired if `greenlight migrations scan` appears in the tool's (
 `.github/workflows/*` **or** in the tool's `package.json` scripts. A migrations dir with neither is
 flagged `warn` (`<tool>: migrations gate`).
 
+## Manual approval before prod migrations (`requireMigrationApproval`)
+
+The scan is an automated tripwire, not a human sign-off. For a destructive-but-intentional change you
+may want a person to **approve** before prod migrates. Set `requireMigrationApproval: true` on the
+tool (or pass `--require-migration-approval` to `adopt`); Greenlight then emits a dedicated, gated
+migrate workflow `greenlight-migrate-<name>.yml` that:
+
+1. runs under the **`<name>-prod` GitHub Environment** — so GitHub **pauses the job for a required
+   reviewer to approve** before anything runs;
+2. runs `greenlight migrations scan --strict` (scan still gates, now `warn`s block too);
+3. applies the migration against the prod `DIRECT_URL` (you fill in the migrate command).
+
+Two wiring steps make the gate real:
+
+- **Required reviewers on `<name>-prod`.** If the tool's infra manages its GitHub environments, set
+  `prod_reviewers = ["your-github-username"]` on its `tool` module (it adds an approval rule to the
+  prod environment only). For an **external** tool (the wrapper doesn't manage that repo's
+  environments), add the reviewers in the tool repo's **Settings → Environments → `<name>-prod`**.
+- **Move migrate out of the app build.** A Vercel-git tool that migrates *inside* its build can't be
+  paused by a GitHub Environment (the build runs on Vercel). Move the migrate into this gated Actions
+  job (against `DIRECT_URL`) and drop it from the build, so the only path to prod schema changes is
+  the approved job. `greenlight doctor` warns (`<tool>: migration approval`) if the flag is set but
+  the migrate workflow is missing.
+
 ## Why not a Greenlight migrations runner?
 
 Mature tools (Drizzle/Prisma/Atlas) and the native integrations already do branching + execution well;

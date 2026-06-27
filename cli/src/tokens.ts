@@ -104,6 +104,15 @@ export async function ensureTokensForTool(
             `${key} failed verification${check.detail ? ` (${check.detail})` : ''} — check the token's scopes (${spec.label}).`,
           );
         }
+        // An OPTIONAL token whose verify failed (a required one already threw above): don't push a
+        // known-bad value to the secret store — skip it the same way an unverified `gather` does.
+        if (!check.ok) {
+          console.log(
+            `  · ${key} not pushed (verify failed${check.detail ? `: ${check.detail}` : ''})`,
+          );
+          results.push({ envVar: spec.envVar, outcome: 'skipped', verify: check });
+          continue;
+        }
       }
       setGitHubSecret(repo, opts.env, key, entered);
       results.push({ envVar: spec.envVar, outcome: 'entered', verify: check });

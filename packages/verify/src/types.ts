@@ -107,6 +107,10 @@ export interface McpSpec extends VerifySpecBase {
    * OAuth-gated server. Inject the token from an env var in your verify.config.ts so it never
    * lands in a committed file. Lets `mcp` mode run the authenticated functional/eval checks. */
   headers?: Record<string, string>;
+  /** Per-operation timeout in ms for each protocol step (connect/list/call) and the auth probe
+   * (default 10000). Bounds a hung server so the gate fails instead of blocking forever — matches
+   * `api` mode's timeout discipline. */
+  timeoutMs?: number;
 }
 
 /** playwright mode — a render smoke and/or a real Playwright test suite against the deploy URL.
@@ -184,6 +188,18 @@ export interface AgentWebSpec extends VerifySpecBase {
   model?: string;
   /** Max agent steps per scenario (default 12). */
   maxSteps?: number;
+  /** How many recent turns (assistant+tool-result pairs) to keep in the model context, besides
+   * the initial task message (default 6). Older turns — each carrying a ~6 KB page snapshot — are
+   * dropped so input tokens don't grow quadratically over a long scenario. Pairs are preserved so
+   * a tool_use always keeps its matching tool_result. */
+  historyWindow?: number;
+  /** Optional per-scenario token budget (input+output, summed across steps). When the running
+   * total reaches it, the scenario stops and fails with a "token budget exceeded" check rather
+   * than burning the full `maxSteps`. Absent ⇒ no budget (bounded only by `maxSteps`). */
+  maxTokens?: number;
+  /** Abort a scenario after this many consecutive identical FAILING tool calls (default 3) — a
+   * stuck agent retrying the same dead action shouldn't waste the rest of `maxSteps`. */
+  maxRepeats?: number;
   /** Run a headed browser (default false/headless). */
   headed?: boolean;
 }

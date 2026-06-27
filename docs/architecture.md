@@ -78,15 +78,15 @@ apply. Keeping manifest ↔ tool dir ↔ workflow consistent is one of `doctor`'
 
 ## Two orthogonal axes: `lane` × `target`
 
-- **`lane`** = what the tool *is*: `astro | hono | next | mcp | docker` (V1 builds `astro`, `next`,
-  `mcp`).
-- **`target`** = where it *runs*: `workers | vercel | oci` (V1's three).
+- **`lane`** = what the tool *is*: `astro | next | mcp | agent` (`hono` is an aim). Note `docker` is
+  a **target**, not a lane (a container is "where it runs", not "what it is").
+- **`target`** = where it *runs*: `workers | vercel | oci | docker`.
 
 | lane | default target | typical data | verify mode |
 |---|---|---|---|
 | `astro` (blog) | `workers` | `none`/`d1`/`kv` (never Supabase) | `api` |
 | `next` | `vercel` | `supabase` (when bundled auth/storage needed) | `test` + `agent-web` |
-| `mcp` | `workers` (dev) / `oci` (stateful prod) | `none` | `mcp` (+ `eval`) |
+| `mcp` | `workers` (dev) / `oci` or `docker` (stateful prod) | `none` | `mcp` (+ `eval`) |
 
 The blog must **never** use Supabase for state (Supabase pauses; the blog must stay up unattended).
 
@@ -264,6 +264,32 @@ Three channels, one source of truth per artifact type:
 **Lockstep:** the npm version, the `MODULE_REF` git tag, and the wrapper's module `?ref=` move
 together (e.g. `v0.2.20`). The personal repo is a **thin consumer** that depends on the one package
 and updates via `pnpm update` — no merging framework code.
+
+## Trade-offs & deliberate constraints
+
+Greenlight is built for **one operator running their own infrastructure** (the repo is personal, not
+a product). Two coupling choices follow from that, and are kept on purpose — each buys real
+simplicity now, and each has a clear path to generalize later if the audience widens.
+
+- **GitHub-centric: GitHub Actions is the only CI *and* the single secret store.** Deploys ride
+  push/`workflow_dispatch`, OCI self-heal rides `repository_dispatch`, and every token lives in
+  Actions secrets/environments (`secrets gather`) — there is no CI-provider abstraction. *Why it's
+  right here:* one identity, one place for secrets, OIDC-to-cloud, and zero extra moving parts for a
+  solo setup that already lives on GitHub. *Cost:* porting to GitLab CI / Jenkins / Buildkite would
+  mean reworking the emitted workflows and the secret plumbing. *Future improvement:* a CI-provider
+  adapter layer mirroring the deploy-target adapter contract (`build`/`deploy`/`url`/`teardown`),
+  so the emitted pipeline becomes config, not GitHub-only YAML.
+
+- **Lockstep versioning: the npm CLI version == the `MODULE_REF` Terraform git tag.** A release bumps
+  both together ([`scripts/release.mjs`](../scripts/release.mjs)). *Why it's right here:* a consumer
+  can never end up running CLI logic against a mismatched module — the pin is guaranteed consistent,
+  which is exactly what you want when one person is updating everything via `pnpm update` + `bump`.
+  *Cost:* a fix that touches **only** a Terraform module still forces a full CLI release to move the
+  ref. *Future improvement:* decouple the module tag from the npm version (an independent
+  `MODULE_REF` channel with a compatibility range), so infra-only hotfixes ship without a CLI bump.
+
+Neither is a limitation we've hit in practice; they're noted so the deliberate scope is explicit and
+the generalization path is on record.
 
 ## Repo topology (key dirs)
 

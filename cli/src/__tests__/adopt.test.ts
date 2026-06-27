@@ -187,6 +187,47 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     expect(remediate).toContain('if: ${{ failure() }}');
   });
 
+  it('wrapper-centric docker: SSH deploy listener + preview descriptor, no oci compute', async () => {
+    const sub = join(wrapper, 'tools', 'demo-mcp');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'package.json'), JSON.stringify({ name: 'demo-mcp', private: true }));
+
+    process.chdir(wrapper);
+    await adoptCommand(['demo-mcp', '--repo', tool, '--lane', 'mcp', '--target', 'docker']);
+    process.chdir(repoRoot);
+
+    // infra: tunnel + dns only, no oci compute modules
+    const infra = readFileSync(join(wrapper, 'infra/demo-mcp.tf'), 'utf8');
+    expect(infra).toContain('module "demo-mcp_tunnel"');
+    expect(infra).not.toContain('oci-container-instance');
+
+    // manifest: a docker tool gets the docker-compose preview descriptor
+    const regText = readFileSync(join(wrapper, 'greenlight.config.ts'), 'utf8');
+    expect(regText).toContain('docker compose --profile preview up');
+
+    // tool repo: the same provider-agnostic build→GHCR→dispatch workflow as oci
+    const build = readFileSync(join(sub, '.github/workflows/greenlight-build.yml'), 'utf8');
+    expect(build).toContain('event_type=deploy-demo-mcp');
+
+    // wrapper deploy listener: SSH deploy (not an OCI restart), per-tool SSH secrets
+    const listener = readFileSync(
+      join(wrapper, '.github/workflows/greenlight-deploy-demo-mcp.yml'),
+      'utf8',
+    );
+    expect(listener).toContain('greenlight deploy demo-mcp'); // the adapter does the SSH compose
+    expect(listener).toContain('secrets.DOCKER_SSH_HOST_DEMO_MCP');
+    expect(listener).not.toContain('oci container-instances'); // not the OCI restart flow
+
+    // remediate: re-runs the SSH deploy, with NO terraform re-apply (the host is user-owned)
+    const remediate = readFileSync(
+      join(wrapper, '.github/workflows/greenlight-remediate-demo-mcp.yml'),
+      'utf8',
+    );
+    expect(remediate).toContain('greenlight deploy demo-mcp');
+    expect(remediate).toContain('secrets.DOCKER_SSH_HOST_DEMO_MCP');
+    expect(remediate).not.toContain('-target=module.demo-mcp_instance');
+  });
+
   it('wrapper-centric vercel: verify runs in the TOOL repo (deployment_status), not the wrapper', async () => {
     const sub = join(wrapper, 'tools', 'demo-web');
     mkdirSync(sub, { recursive: true });
@@ -224,5 +265,40 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     expect(existsSync(join(sub, '.claude/skills/provider-supabase/SKILL.md'))).toBe(true);
     // not the oci path — no container build workflow
     expect(existsSync(join(sub, '.github/workflows/greenlight-build.yml'))).toBe(false);
+    // no migration-approval gate without the opt-in flag
+    expect(existsSync(join(sub, '.github/workflows/greenlight-migrate-demo-web.yml'))).toBe(false);
+  });
+
+  it('--require-migration-approval emits the gated migrate workflow + records the manifest flag', async () => {
+    const sub = join(wrapper, 'tools', 'demo-web');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'package.json'), JSON.stringify({ name: 'demo-web', private: true }));
+
+    process.chdir(wrapper);
+    await adoptCommand([
+      'demo-web',
+      '--repo',
+      tool,
+      '--lane',
+      'next',
+      '--target',
+      'vercel',
+      '--data',
+      'neon',
+      '--require-migration-approval',
+    ]);
+    process.chdir(repoRoot);
+
+    // the gated migrate workflow lands in the tool repo, runs under the prod environment + scans
+    const mig = readFileSync(
+      join(sub, '.github/workflows/greenlight-migrate-demo-web.yml'),
+      'utf8',
+    );
+    expect(mig).toContain('environment: demo-web-prod'); // the required-reviewer gate
+    expect(mig).toContain('migrations scan --strict');
+    // the flag is recorded in the wrapper manifest
+    expect(readFileSync(join(wrapper, 'greenlight.config.ts'), 'utf8')).toContain(
+      'requireMigrationApproval: true',
+    );
   });
 });

@@ -22,6 +22,14 @@ describe('ConfigSchema', () => {
     }
   });
 
+  it('rejects a malformed domain (quotes/spaces would break emitted HCL/curl/jq)', () => {
+    for (const domain of ['no-tld', 'has space.dev', 'evil".dev', 'http://example.dev']) {
+      expect(ConfigSchema.safeParse({ ...base, domain }).success).toBe(false);
+    }
+    // A normal multi-label hostname is still accepted.
+    expect(ConfigSchema.safeParse({ ...base, domain: 'app.example.dev' }).success).toBe(true);
+  });
+
   it('rejects a blog backed by supabase (it pauses; blog must stay up)', () => {
     const r = ConfigSchema.safeParse({
       ...base,
@@ -36,6 +44,35 @@ describe('ConfigSchema', () => {
       tools: [{ name: 'x', lane: 'mcp', target: 'vercel', data: 'none', envs: ['prod'] }],
     });
     expect(r.success).toBe(false);
+  });
+
+  it('accepts mcp on docker (a self-hosted container target)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'x', lane: 'mcp', target: 'docker', data: 'none', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects next on docker (out of matrix — docker is mcp-only)', () => {
+    const r = ConfigSchema.safeParse({
+      ...base,
+      tools: [{ name: 'x', lane: 'next', target: 'docker', data: 'none', envs: ['prod'] }],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('defaults requireMigrationApproval to false and accepts true', () => {
+    const mk = (extra: object) => ({
+      ...base,
+      tools: [
+        { name: 'x', lane: 'next', target: 'vercel', data: 'neon', envs: ['prod'], ...extra },
+      ],
+    });
+    const off = ConfigSchema.safeParse(mk({}));
+    expect(off.success).toBe(true);
+    if (off.success) expect(off.data.tools[0]?.requireMigrationApproval).toBe(false);
+    expect(ConfigSchema.safeParse(mk({ requireMigrationApproval: true })).success).toBe(true);
   });
 
   it('rejects next not on vercel (out of matrix)', () => {

@@ -29,8 +29,8 @@ Create one custom token with both scopes:
    - **Account → Workers Scripts → Edit**   (the keepalive worker + cron trigger)
    - **Zone → DNS → Edit**                  (the tool's subdomain CNAMEs)
    - **Account → Account Settings → Read**  (lets tooling resolve the account)
-   - **Account → Cloudflare Tunnel → Edit** (only if a tool uses `target: oci`; without it the
-     cloudflared tunnel fails with **403 Forbidden** on `cfd_tunnel` at apply)
+   - **Account → Cloudflare Tunnel → Edit** (only if a tool uses `target: oci` or `target: docker`;
+     without it the cloudflared tunnel fails with **403 Forbidden** on `cfd_tunnel` at apply)
 3. **Account Resources:** Include → your account.
 4. **Zone Resources:** Include → Specific zone → `<your-domain>`.
 5. Create → copy. This is a superset of a DNS-only token, so it can replace an existing one.
@@ -52,6 +52,27 @@ Verify: `curl -s https://api.supabase.com/v1/projects -H "Authorization: Bearer 
 2. **Scope:** the **team** that owns the project (not "personal"), set an expiration, create, copy.
 
 Verify: `curl -s "https://api.vercel.com/v2/user" -H "Authorization: Bearer $VERCEL_API_TOKEN"` → your user.
+
+---
+
+## `DOCKER_SSH_*` — the host you own (`target: docker`)
+
+A `target: docker` tool deploys over SSH to a host you own (VPS/homelab) — a stable alternative to
+OCI's idle-reclaimed free tier. The connection facts are gathered onto the **wrapper** (they live
+only there), each **per-tool** (`_<TOOL>` suffix) so multiple docker tools can use different hosts:
+
+- **`DOCKER_SSH_HOST`** — hostname or IP of the host (required).
+- **`DOCKER_SSH_KEY`** — the deploy user's **private key** (PEM content; required). Use a dedicated,
+  least-privilege deploy key; rotate on a schedule.
+- **`DOCKER_SSH_USER`** — SSH user (optional, default `root`).
+- **`DOCKER_SSH_PORT`** — SSH port (optional, default `22`).
+
+No fetch-verify (SSH reachability isn't a bearer call). The deploy is
+`ssh … "docker compose pull && docker compose up -d"`; the host's compose runs the GHCR image + a
+cloudflared service using the `<tool>_tunnel_token` Terraform output (set once on the host). Add
+**Cloudflare Tunnel:Edit** to `CLOUDFLARE_API_TOKEN` (as with oci). Like oci, docker also uses the
+option-B PATs (`GREENLIGHT_DISPATCH_TOKEN` on the tool repo, `GREENLIGHT_STATUS_TOKEN` on the
+wrapper). Gather: `greenlight secrets gather <tool> --repo <wrapper>` (+ `--repo <tool>` for dispatch).
 
 ---
 

@@ -30,6 +30,44 @@ describe('runDoctor — conformance to the uniform model', () => {
     expect(find(checks, 'bamcp: in the verify loop')).toBe('warn');
   });
 
+  it('warns when requireMigrationApproval is set but the gated migrate workflow is missing', () => {
+    const checks = runDoctor(
+      cfg([
+        {
+          name: 'web',
+          lane: 'next',
+          target: 'vercel',
+          data: 'neon',
+          external: true,
+          envs: ['prod'],
+          requireMigrationApproval: true,
+        },
+      ]),
+      root,
+    );
+    expect(find(checks, 'web: migration approval')).toBe('warn');
+  });
+
+  it('passes the migration-approval check when the gated migrate workflow exists', () => {
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    writeFileSync(join(root, '.github/workflows/greenlight-migrate-web.yml'), 'name: x\n');
+    const checks = runDoctor(
+      cfg([
+        {
+          name: 'web',
+          lane: 'next',
+          target: 'vercel',
+          data: 'neon',
+          external: true,
+          envs: ['prod'],
+          requireMigrationApproval: true,
+        },
+      ]),
+      root,
+    );
+    expect(find(checks, 'web: migration approval')).toBe('ok');
+  });
+
   it('passes when the external tool has a preview descriptor + a wrapper verify spec', () => {
     mkdirSync(join(root, 'verify'), { recursive: true });
     writeFileSync(

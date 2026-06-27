@@ -146,6 +146,23 @@ function conformanceChecks(t: ToolConfig, root: string): DoctorCheck[] {
     }
   }
 
+  // Manual migration approval: when a tool opts in, the gated migrate workflow must exist (it runs
+  // under the <name>-prod environment, whose required reviewers are the human gate). Warn if missing.
+  if (t.requireMigrationApproval) {
+    const migrateWf = `greenlight-migrate-${t.name}.yml`;
+    const hasWf = [
+      join(root, toolDir, '.github/workflows', migrateWf),
+      join(root, '.github/workflows', migrateWf),
+    ].some((p) => existsSync(p));
+    out.push({
+      name: `${t.name}: migration approval`,
+      status: hasWf ? 'ok' : 'warn',
+      detail: hasWf
+        ? `${migrateWf} present — set required reviewers on the ${t.name}-prod environment (prod_reviewers)`
+        : `requireMigrationApproval set but ${migrateWf} is missing — re-run adopt with --require-migration-approval, and set prod_reviewers on the ${t.name}-prod environment`,
+    });
+  }
+
   return out;
 }
 
@@ -244,18 +261,21 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
   }
 
   // Keepalive coverage (pure): which tools need a keepalive target — data:supabase (the
-  // 7-day pause) or target:oci (health ping). The wrapper wires these into the keepalive
-  // Worker's KEEPALIVE_TARGETS (infra/modules/keepalive).
-  const needsKeepalive = config.tools.filter((t) => t.data === 'supabase' || t.target === 'oci');
+  // 7-day pause) or a container target (oci/docker: a health ping; oci also self-heals via
+  // remediate). The wrapper wires these into the keepalive Worker's KEEPALIVE_TARGETS
+  // (infra/modules/keepalive).
+  const needsKeepalive = config.tools.filter(
+    (t) => t.data === 'supabase' || t.target === 'oci' || t.target === 'docker',
+  );
   checks.push({
     name: 'keepalive coverage',
     status: needsKeepalive.length > 0 ? 'ok' : 'skip',
     detail:
       needsKeepalive.length > 0
         ? needsKeepalive
-            .map((t) => `${t.name} (${t.data === 'supabase' ? 'supabase' : 'oci'})`)
+            .map((t) => `${t.name} (${t.data === 'supabase' ? 'supabase' : t.target})`)
             .join(', ')
-        : 'no data:supabase / target:oci tools',
+        : 'no data:supabase / target:oci|docker tools',
   });
 
   // Local consistency (no creds): lockstep + submodule drift.

@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { emitToolTf, emitWrapperMainTf, providersForTool } from '../tf-emit';
 
+describe('emitToolTf — HCL safety guard', () => {
+  it('refuses to emit when a free-form value carries an HCL-breaking character', () => {
+    expect(() =>
+      emitToolTf({
+        name: 'demo',
+        domain: 'example.dev',
+        lane: 'mcp',
+        target: 'oci',
+        data: 'none',
+        envs: ['prod'],
+        slug: 'acme/demo";evil="x', // a quote here would break/inject the generated github_repo
+      }),
+    ).toThrow(/invalid character/);
+  });
+});
+
 describe('emitToolTf', () => {
   it('emits supabase + vercel + dns module blocks for a next/vercel/supabase tool', () => {
     const tf = emitToolTf({
@@ -143,7 +159,7 @@ describe('emitToolTf', () => {
     expect(tf).toContain('output "bamcp_prod_url"');
   });
 
-  it('routes the tunnel to a custom container port (lane:docker / non-8000 tools)', () => {
+  it('routes the tunnel to a custom container port (target:docker / non-8000 tools)', () => {
     const tf = emitToolTf({
       name: 'svc',
       domain: 'x.dev',
@@ -155,6 +171,32 @@ describe('emitToolTf', () => {
     });
     expect(tf).toContain('service = "http://localhost:3000"');
     expect(tf).not.toContain('localhost:8000');
+  });
+
+  it('emits tunnel + dns ONLY (no compute Terraform) for an mcp/docker tool', () => {
+    const tf = emitToolTf({
+      name: 'bamcp',
+      domain: 'example.dev',
+      lane: 'mcp',
+      target: 'docker',
+      data: 'none',
+      envs: ['prod'],
+      slug: 'RTrentJones/BAMCP',
+    });
+    // tunnel + dns, wired the same as oci
+    expect(tf).toContain('module "bamcp_tunnel"');
+    expect(tf).toContain('module "bamcp_dns"');
+    expect(tf).toContain('hostname = "bamcp.example.dev", service = "http://localhost:8000"');
+    expect(tf).toContain('cname_target = module.bamcp_tunnel.cname_target');
+    // the host's cloudflared needs the tunnel token output
+    expect(tf).toContain('output "bamcp_tunnel_token"');
+    expect(tf).toContain('output "bamcp_prod_url"');
+    // but NO compute: the host is user-owned, so no oci network/instance/image, no instance OCID
+    expect(tf).not.toContain('oci-container-instance');
+    expect(tf).not.toContain('oci-network');
+    expect(tf).not.toContain('module "bamcp_instance"');
+    expect(tf).not.toContain('bamcp_image');
+    expect(tf).not.toContain('output "bamcp_container_instance_id"');
   });
 
   it('local (non-external) tool manages GitHub environments', () => {

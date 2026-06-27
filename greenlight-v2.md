@@ -130,8 +130,8 @@ semi-autonomous changes ship with **objective confidence, not vibes**.
 
 | axis | values | notes |
 |---|---|---|
-| **lane** | `astro` · `next` · `mcp` | what the tool is. `hono` / `docker` are V0/V2 aims. |
-| **target** | `workers` · `vercel` · `oci` | where it runs. `mcp` defaults `workers` (dev/throwaway) but BAMCP runs `oci`. |
+| **lane** | `astro` · `next` · `mcp` · `agent` | what the tool is. `hono` is a V0/V2 aim. |
+| **target** | `workers` · `vercel` · `oci` · `docker` | where it runs. `mcp` defaults `workers` (dev/throwaway); BAMCP runs `oci`; `docker` is a host you own (same image, no idle-reclaim). |
 | **data** | `none` · `d1` · `kv` · `supabase` | the store. `neon` is the next aim (§11). |
 
 Defaults: `next` → `vercel`; `astro` → `workers`; `mcp` → `workers`. The blog is special: `astro` /
@@ -240,10 +240,18 @@ two live tools.
   per env**, scale-to-zero (no keepalive needed). A worked target for §10 / `docs/adding-a-provider.md`.
 - **New tool category — agents**: first-class agentic tools (an `agents` lane/target) beyond MCP
   servers — the same loop, a fitting verify mode (`eval` is the seed).
-- **More lanes/targets**: `hono` lane, `docker` lane, provider-agnostic **target-switching**
-  (Workers↔Vercel↔OCI as config), standalone **eject**. (V0 north-star items, design-doc archive.)
+- **More lanes/targets**: `hono` lane, provider-agnostic **target-switching**
+  (Workers↔Vercel↔OCI↔Docker as config), standalone **eject**. (V0 north-star items, design-doc
+  archive.) *(The `docker` target — a self-hosted SSH host as a stable alternative to OCI's
+  idle-reclaimed free tier — is **built**; see §7.)*
 - **Loop depth**: the `agent-web` **subscription driver** (run agent-web on a Claude Code
   subscription via `claude -p` + Playwright MCP) — researched, deferred.
+
+**Known constraints (deliberate, possible future work).** Two couplings are kept on purpose for a
+solo operator and could generalize later — the **GitHub-Actions-only CI / single secret store** (a
+future CI-provider adapter) and **lockstep `MODULE_REF` versioning** (decouple the module tag from
+the npm version). See *Trade-offs & deliberate constraints* in
+[docs/architecture.md](docs/architecture.md).
 
 The V0 design doc ([docs/archive/greenlight-design-doc-v0.md](docs/archive/greenlight-design-doc-v0.md))
 remains the full provider-agnostic north star; anything deferred lives there.
