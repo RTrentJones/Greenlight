@@ -132,7 +132,7 @@ semi-autonomous changes ship with **objective confidence, not vibes**.
 |---|---|---|
 | **lane** | `astro` · `next` · `mcp` · `agent` | what the tool is. `hono` is a V0/V2 aim. |
 | **target** | `workers` · `vercel` · `oci` · `docker` | where it runs. `mcp` defaults `workers` (dev/throwaway); BAMCP runs `oci`; `docker` is a host you own (same image, no idle-reclaim). |
-| **data** | `none` · `d1` · `kv` · `supabase` | the store. `neon` is the next aim (§11). |
+| **data** | `none` · `d1` · `kv` · `supabase` · `neon` | the store. **Neon** is the default branch-per-env Postgres (scale-to-zero, auto-resume → no keepalive), live on `tracer`; Supabase only when bundled auth/storage/realtime is needed. |
 
 Defaults: `next` → `vercel`; `astro` → `workers`; `mcp` → `workers`. The blog is special: `astro` /
 `workers`, and **never `supabase`** (Supabase pauses after 7 days idle; the blog must stay up
@@ -205,9 +205,11 @@ against `data: supabase` projects (the 7-day pause), health-checks `target: oci`
 outage **auto-heals** `oci` targets by firing `repository_dispatch(remediate-<tool>)` so the wrapper
 re-applies + redeploys + verifies. Alerts go to `alerts.sink` (`github-issue` or Resend `email`).
 
-> OCI Always-Free **idle-reclaim** is solved out-of-band by converting the tenancy to PAYG — Greenlight
-> only health-checks and nags via `doctor`; it never claims to prevent reclaim automatically. The
-> personal aim here is to **stay on the free tier** and recover-on-alert, not run PAYG.
+> OCI Always-Free **idle-reclaim** is recovered out-of-band: keepalive health-checks + a `doctor` nag,
+> and a re-apply/redeploy (restart-policy ALWAYS) restores a reclaimed instance. The aim is to **stay on
+> the free tier** and recover-on-alert; PAYG is an optional last resort
+> ([docs/oci-payg-runbook.md](docs/oci-payg-runbook.md)), **not** the fix. Greenlight never claims to
+> prevent reclaim automatically.
 
 ## 12. CI/CD environments
 
@@ -234,16 +236,17 @@ card; local execution). Per-provider mechanics: the `provider-*` skills + [docs/
 ## 14. Aims (the roadmap)
 
 The framework is built and proven; the forward work is **breadth of provider types** and depth on the
-two live tools.
+live tools.
 
-- **New data backend — Neon** (the design-doc default): one Postgres project, **git-style branches
-  per env**, scale-to-zero (no keepalive needed). A worked target for §10 / `docs/adding-a-provider.md`.
-- **New tool category — agents**: first-class agentic tools (an `agents` lane/target) beyond MCP
-  servers — the same loop, a fitting verify mode (`eval` is the seed).
-- **More lanes/targets**: `hono` lane, provider-agnostic **target-switching**
-  (Workers↔Vercel↔OCI↔Docker as config), standalone **eject**. (V0 north-star items, design-doc
-  archive.) *(The `docker` target — a self-hosted SSH host as a stable alternative to OCI's
-  idle-reclaimed free tier — is **built**; see §7.)*
+**Shipped since the first cut** (now live — no longer forward work): the **Neon** data backend
+(branch-per-env Postgres, scale-to-zero/auto-resume → no keepalive; live on `tracer`), the **`agent`
+lane** (cron-triggered Gemini Workers; live on `muse`), and the **`docker` target** (a self-hosted SSH
+host — a stable alternative to OCI's idle-reclaimed free tier; see §7).
+
+Still open:
+
+- **More lanes/targets**: a `hono` lane, provider-agnostic **target-switching** (Workers↔Vercel↔OCI↔Docker
+  as config, not a rewrite), and a standalone **eject**. (V0 north-star items, design-doc archive.)
 - **Loop depth**: the `agent-web` **subscription driver** (run agent-web on a Claude Code
   subscription via `claude -p` + Playwright MCP) — researched, deferred.
 
