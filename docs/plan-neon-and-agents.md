@@ -1,6 +1,9 @@
 # Plan — Neon (data) + Agents (tool category)
 
-> Forward design for the two §14 aims, planned together because they share one seam (the
+> **SHIPPED** — both aims are built and live: Neon (`data: neon`, on `tracer`) and the `agent` lane
+> (on `muse`). This is the original build plan, kept as the design record.
+>
+> Forward design for the two (then-)§14 aims, planned together because they share one seam (the
 > **provider-pack registry** + [adding-a-provider.md](adding-a-provider.md)) and compose into one
 > dogfood: an **agent** tool that persists its state to **Neon**. Build Neon first (well-defined,
 > unblocks stateful agents); agents second (needs the design pass below).

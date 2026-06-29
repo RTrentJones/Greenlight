@@ -1,7 +1,7 @@
 # The `agent` lane — autonomous tools (Gemini free tier)
 
-Status: **A1 building** (provider pack + matrix landed). A2 (template + deploy) and A3 (live
-dogfood) follow. Ships across **0.3.0**.
+Status: **SHIPPED** — the `agent` lane is built and live (the `muse` tool: `agent`/`workers`/`kv`,
+cron-triggered Gemini). This doc is the original build plan, kept as the design record.
 
 ## What an agent is
 

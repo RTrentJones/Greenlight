@@ -149,7 +149,7 @@ write change ─▶ preview ─▶ VERIFY ─▶ develop/beta ─▶ VERIFY ─�
 [`cli/src/providers.ts`](../cli/src/providers.ts) declares one `ProviderPack` per provider with
 everything onboarding needs in one place: tokens (+ scopes + a fail-fast `verify()`), the
 deep-guide pointer, MCP server(s), the agent skill, and the Terraform module(s) it references. Adding
-a new free-tier backend = write one pack. Six live packs:
+a new free-tier backend = write one pack. Nine live packs:
 
 | pack | applies when | Terraform modules |
 |---|---|---|
@@ -158,7 +158,10 @@ a new free-tier backend = write one pack. Six live packs:
 | **github** | always (secrets + repo/branch) | `repo` |
 | **vercel** | `target: vercel` | `vercel` |
 | **supabase** | `data: supabase` | `supabase` |
+| **neon** | `data: neon` | `neon` |
 | **oci** | `target: oci` | `tool`, `tunnel`, `oci-network`, `oci-container-instance` |
+| **docker** | `target: docker` | `tool`, `tunnel` |
+| **gemini** | `lane: agent` | — (agent Worker deploys via wrangler) |
 
 ### `greenlight add` / `init`
 
@@ -204,9 +207,11 @@ Existing tools are **adopted, not rewritten** (`adopted: true`).
 
 ## Data & liveness
 
-- **Data model** (`data ∈ none | d1 | kv | neon | supabase`): V1 ships `none`/`d1`/`kv` (blog) +
-  `supabase` (HeistMind). Supabase is project-per-env + a keepalive heartbeat (it pauses after 7
-  days idle). Neon (branch-per-env, scale-to-zero) is the V0 default, deferred in V1.
+- **Data model** (`data ∈ none | d1 | kv | neon | supabase`): `none`/`d1`/`kv` (blog) + `supabase`
+  (HeistMind) + `neon` (tracer). **Neon** (branch-per-env, scale-to-zero, auto-resume → no keepalive)
+  is the default Postgres store, live on `tracer` (next/vercel/neon); Supabase (project-per-env + a
+  keepalive heartbeat, since it pauses after 7 days idle) is used only when bundled
+  auth/storage/realtime is needed.
 - **Liveness is a feature.** [`packages/keepalive`](../packages/keepalive) is a **Cloudflare Worker
   Cron Trigger** (not GitHub Actions — immune to repo-inactivity auto-disable). It runs cheap queries
   against `data: supabase` DBs, health-checks `target: oci` services, and alerts via `alerts.sink`
