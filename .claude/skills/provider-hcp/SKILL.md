@@ -32,11 +32,22 @@ terraform {
 }
 ```
 
-## CI apply-on-push
+## CI apply-on-push (gated)
 
-`infra.yml` (on push to `main`, paths `infra/**`): map GH secrets → `TF_TOKEN_app_terraform_io` + the
-provider tokens + `TF_VAR_*`, then setup-terraform (`terraform_wrapper: false`) → init → plan -out →
-apply. The CLI only edits the `.tf`; CI applies.
+`infra.yml` (on push to `main`, paths `infra/**`) maps GH secrets → `TF_TOKEN_app_terraform_io` + the
+provider tokens + `TF_VAR_*` (workflow-level `env`, so both jobs inherit them), then runs **two gated
+jobs**:
+- **`plan`** — setup-terraform (`terraform_wrapper: false`) → init → plan -out → a **destroy plan-guard**
+  (`terraform show -json` + jq) that **fails fast** if the plan would delete/replace a stateful prod
+  store (`supabase_project`/`neon_project`/`neon_branch`/`cloudflare_d1_database`/`cloudflare_r2_bucket`)
+  → uploads the plan artifact.
+- **`apply`** (`needs: plan`, `environment: production`) — waits on the **`production` environment's
+  manual reviewer approval**, then re-inits and applies the **saved** plan.
+
+The CLI only edits the `.tf`; CI plans, a human approves, CI applies. **Arm the gate** at repo Settings →
+Environments → `production` → Required reviewers (free on public repos); until armed, apply runs
+unattended but the destroy plan-guard still protects the data. To intentionally destroy a stateful
+store, remove the guard step or apply locally (the same friction `prevent_destroy` imposes).
 
 ## Gotchas
 - **Migrate local → HCP** with a plain `terraform init` (answer `yes` to copy state). The

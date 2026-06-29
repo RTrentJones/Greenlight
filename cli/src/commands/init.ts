@@ -51,6 +51,13 @@ function wrapperInfraYml(): string {
 # Apply the wrapper's Terraform on push to main (paths: infra/**). State + locking are in HCP
 # Terraform (set the cloud{} block in infra/main.tf); the run happens here with provider creds
 # from GitHub Actions secrets (populate them per tool via \`greenlight secrets gather\`).
+#
+# Two-job gate: \`plan\` runs free and FAILS FAST if the plan would delete/replace a stateful prod
+# store (a prevent_destroy substitute — the stores live inside the Greenlight modules, so the guard
+# lives here in CI). \`apply\` then waits on the \`production\` environment's manual approval, so a
+# human reviews the (visible) plan before anything touches irreplaceable data.
+# ARM THE GATE: repo Settings -> Environments -> production -> Required reviewers (free on public
+# repos). Until it's armed, apply runs unattended — the destroy plan-guard still protects the data.
 on:
   push:
     branches: [main]
@@ -64,28 +71,32 @@ concurrency:
   group: infra
   cancel-in-progress: false # never interrupt an in-flight apply
 
+# Workflow-level so BOTH jobs (plan + apply) inherit the provider creds without duplication.
+env:
+  TF_TOKEN_app_terraform_io: \${{ secrets.TF_API_TOKEN }} # HCP state backend auth
+  GITHUB_TOKEN: \${{ github.token }} # github provider (branch/protection); creates nothing risky
+  CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+  # zone/account ids are enumerable identifiers, not secrets — repo VARIABLES (vars.*)
+  TF_VAR_cloudflare_zone_id: \${{ vars.CLOUDFLARE_ZONE_ID }}
+  TF_VAR_cloudflare_account_id: \${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  # vercel (target: vercel tools)
+  VERCEL_API_TOKEN: \${{ secrets.VERCEL_API_TOKEN }}
+  # supabase (data: supabase tools)
+  SUPABASE_ACCESS_TOKEN: \${{ secrets.SUPABASE_ACCESS_TOKEN }}
+  TF_VAR_supabase_database_password: \${{ secrets.TF_VAR_SUPABASE_DATABASE_PASSWORD }}
+  # neon (data: neon tools) — the neon provider reads NEON_API_KEY natively
+  NEON_API_KEY: \${{ secrets.NEON_API_KEY }}
+  # oci (target: oci tools) — VCN/subnet/AD are IaC; only auth (+ optional compartment) here
+  TF_VAR_oci_tenancy_ocid: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
+  TF_VAR_oci_user_ocid: \${{ secrets.TF_VAR_OCI_USER_OCID }}
+  TF_VAR_oci_fingerprint: \${{ secrets.TF_VAR_OCI_FINGERPRINT }}
+  TF_VAR_oci_private_key: \${{ secrets.TF_VAR_OCI_PRIVATE_KEY }}
+  TF_VAR_oci_region: \${{ secrets.TF_VAR_OCI_REGION }}
+  TF_VAR_oci_compartment_id: \${{ secrets.TF_VAR_OCI_COMPARTMENT_ID }}
+
 jobs:
-  apply:
+  plan:
     runs-on: ubuntu-latest
-    env:
-      TF_TOKEN_app_terraform_io: \${{ secrets.TF_API_TOKEN }} # HCP state backend auth
-      GITHUB_TOKEN: \${{ github.token }} # github provider (branch/protection); creates nothing risky
-      CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
-      # zone/account ids are enumerable identifiers, not secrets — repo VARIABLES (vars.*)
-      TF_VAR_cloudflare_zone_id: \${{ vars.CLOUDFLARE_ZONE_ID }}
-      TF_VAR_cloudflare_account_id: \${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      # vercel (target: vercel tools)
-      VERCEL_API_TOKEN: \${{ secrets.VERCEL_API_TOKEN }}
-      # supabase (data: supabase tools)
-      SUPABASE_ACCESS_TOKEN: \${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      TF_VAR_supabase_database_password: \${{ secrets.TF_VAR_SUPABASE_DATABASE_PASSWORD }}
-      # oci (target: oci tools) — VCN/subnet/AD are IaC; only auth (+ optional compartment) here
-      TF_VAR_oci_tenancy_ocid: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
-      TF_VAR_oci_user_ocid: \${{ secrets.TF_VAR_OCI_USER_OCID }}
-      TF_VAR_oci_fingerprint: \${{ secrets.TF_VAR_OCI_FINGERPRINT }}
-      TF_VAR_oci_private_key: \${{ secrets.TF_VAR_OCI_PRIVATE_KEY }}
-      TF_VAR_oci_region: \${{ secrets.TF_VAR_OCI_REGION }}
-      TF_VAR_oci_compartment_id: \${{ secrets.TF_VAR_OCI_COMPARTMENT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -94,6 +105,46 @@ jobs:
           terraform_wrapper: false
       - run: terraform -chdir=infra init -input=false
       - run: terraform -chdir=infra plan -input=false -out=tf.plan
+      # Data-loss backstop: FAIL — before any approval — if the plan would delete/replace a stateful
+      # prod store. Matches by resource TYPE (robust to address renames). Extend the regex if you add a
+      # Terraform-managed store with irreplaceable data. To intentionally tear one down, remove this
+      # guard or apply locally — the same friction prevent_destroy imposes on purpose.
+      - name: Guard — no destroy of a stateful prod store
+        run: |
+          terraform -chdir=infra show -json tf.plan > tf.plan.json
+          DESTROYS=$(jq -r '[.resource_changes[] | select(.change.actions | index("delete")) | select(.type | test("^(supabase_project|neon_project|neon_branch|cloudflare_d1_database|cloudflare_r2_bucket)$")) | .address] | .[]' tf.plan.json)
+          if [ -n "$DESTROYS" ]; then
+            echo "::error::plan would destroy/replace a stateful prod store — blocking apply:"
+            echo "$DESTROYS"
+            exit 1
+          fi
+          echo "plan-guard: OK (no destroy/replace of a stateful prod store)"
+      - name: Upload the verified plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tf-plan
+          path: infra/tf.plan
+          retention-days: 1
+          if-no-files-found: error
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    # Manual approval gate — arm it via Settings -> Environments -> production -> Required reviewers.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '~1.10'
+          terraform_wrapper: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tf-plan
+          path: infra
+      # Re-init providers (from the committed lock), then apply the SAVED plan (Terraform rejects it
+      # if state drifted since plan; concurrency keeps runs serial).
+      - run: terraform -chdir=infra init -input=false
       - run: terraform -chdir=infra apply -input=false tf.plan
 `;
 }
