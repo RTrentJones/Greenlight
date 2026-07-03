@@ -135,8 +135,7 @@ branch → change → LOCAL GATE (preview) → ADD TO VERIFY LOOP → PUSH (gate
   local gate + ship-gate are the safety).
 
 `doctor` flags any tool drifting from the model (missing verify spec, no local-preview gate, a
-non-scoped secret name, an out-of-sync promote allow-list, a HEAD with no preview receipt — the
-last is local-only, skipped in CI). The `verify` gate — the same code CI runs — is what lets
+non-scoped secret name, a HEAD with no preview receipt — the last is local-only, skipped in CI). The `verify` gate — the same code CI runs — is what lets
 long-running, semi-autonomous changes ship with **objective confidence, not vibes**.
 
 ## 7. Lanes × targets × data

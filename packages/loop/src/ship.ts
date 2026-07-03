@@ -132,7 +132,14 @@ export async function runShip(input: ShipInput): Promise<ShipResult> {
   let rollback: RollbackResult | undefined;
   if (!ok && input.rollbackOnFailure !== false && input.adapter.rollback) {
     const start = Date.now();
-    rollback = await input.adapter.rollback(input.toolDir, input.env, deployResult?.previous);
+    try {
+      rollback = await input.adapter.rollback(input.toolDir, input.env, deployResult?.previous);
+    } catch (e) {
+      // `rollback` is contractually "never throws" — but that's a convention the type system can't
+      // enforce, and a crash HERE would turn a clean failed-ship report into an uncaught rejection
+      // (losing the rollback StageEvent and the structured result). Degrade to a failed reaction.
+      rollback = { ok: false, detail: `rollback threw: ${errMsg(e)}` };
+    }
     await emit('rollback', start, rollback.ok, rollback.detail);
   }
 

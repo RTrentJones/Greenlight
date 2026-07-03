@@ -255,20 +255,23 @@ export async function verifyApi(
   expectedSha?: string,
 ): Promise<VerifyReport> {
   const base = trimSlash(baseUrl);
-  let retries = Math.max(0, spec.settleRetries ?? 0);
+  const settleRetries = Math.max(0, spec.settleRetries ?? 0);
   const delayMs = spec.settleMs ?? 5000;
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // Identity gate FIRST, inside the settle budget: content checks against a not-yet-propagated
+  // Identity gate FIRST, on its OWN settle budget: content checks against a not-yet-propagated
   // (or wrong) deployment are worse than wasted — a green there is a false green for the sha
-  // being gated. Consumes settle retries while waiting for the right artifact to appear; if it
-  // never does, the content checks are SKIPPED (they would validate the wrong deployment).
+  // being gated. The identity probe and the content settle loop each get the full `settleRetries`
+  // independently — `/__version` and the content paths propagate on separate clocks (both are
+  // "some paths" a static host can serve late), so a slow identity match must NOT eat into the
+  // budget the content checks need. If the right artifact never appears, content is SKIPPED.
   const identityChecks: VerifyCheck[] = [];
   if (expectedSha) {
     const task = () => checkDeployedSha(base, expectedSha, timeoutMs);
     let check = await timedAttempt(task, 1);
-    while (!check.pass && retries > 0) {
-      retries -= 1;
+    let identityRetries = settleRetries;
+    while (!check.pass && identityRetries > 0) {
+      identityRetries -= 1;
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       check = await timedAttempt(task, (check.attempts ?? 1) + 1);
     }
@@ -281,11 +284,11 @@ export async function verifyApi(
     buildTasks(base, spec).map(async (task) => ({ task, check: await timedAttempt(task, 1) })),
   );
 
-  // Eventual-consistency settle: re-run ONLY the still-failing checks, up to `retries` more times.
-  // A just-deployed static host can serve some paths before others; this absorbs that lag without
-  // re-hitting passing endpoints and without masking a real failure (which still fails, after the
-  // retries). Each fetch is timeout-bounded, so the total settle window is finite.
-  for (let i = 0; i < retries && !state.every((s) => s.check.pass); i++) {
+  // Eventual-consistency settle: re-run ONLY the still-failing checks, up to `settleRetries` more
+  // times. A just-deployed static host can serve some paths before others; this absorbs that lag
+  // without re-hitting passing endpoints and without masking a real failure (which still fails,
+  // after the retries). Each fetch is timeout-bounded, so the total settle window is finite.
+  for (let i = 0; i < settleRetries && !state.every((s) => s.check.pass); i++) {
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     await Promise.all(
       state

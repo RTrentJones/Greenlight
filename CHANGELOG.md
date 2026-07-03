@@ -52,8 +52,8 @@ pinned to the commit that was verified, and the loop measures itself.
   the explicit alternative to reading `GREENLIGHT_*` env vars at module-eval time.
 - **`preview --no-build`**; a passing preview writes a gitignored `.greenlight/preview-<sha>`
   receipt and emits a `preview` stage event (local-gate compliance becomes measurable).
-- **Doctor**: `promote allow-list ↔ manifest` sync check; local-only "no preview receipt for HEAD"
-  nudge (skipped in CI); loud warning when verify falls back to the lane default smoke spec.
+- **Doctor**: local-only "no preview receipt for HEAD" nudge (skipped in CI); loud warning when
+  verify falls back to the lane default smoke spec.
 - **`readyTimeoutMs`** manifest field — per-tool readiness window override for preview/verify
   waits (replaces three unrelated hardcoded constants).
 

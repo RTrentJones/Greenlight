@@ -22,6 +22,7 @@ interface StubOpts {
   failDeploy?: boolean;
   withRollback?: boolean;
   rollbackOk?: boolean;
+  throwRollback?: boolean;
 }
 
 function stubAdapter(calls: string[], opts: StubOpts = {}): Adapter {
@@ -43,6 +44,7 @@ function stubAdapter(calls: string[], opts: StubOpts = {}): Adapter {
       ? {
           rollback: async (_dir, _env, previous) => {
             calls.push(`rollback:${previous?.versionId}`);
+            if (opts.throwRollback) throw new Error('rollback exploded');
             return {
               ok: opts.rollbackOk ?? true,
               detail: opts.rollbackOk === false ? 'no can do' : 'restored prev-1',
@@ -191,6 +193,25 @@ describe('runShip', () => {
     });
     expect(r.rollback).toMatchObject({ ok: false, detail: 'no can do' });
     expect(events.find((e) => e.stage === 'rollback')).toMatchObject({ passed: false });
+  });
+
+  it('a THROWING rollback degrades to a failed reaction, not a crashed ship', async () => {
+    const calls: string[] = [];
+    const events: StageEvent[] = [];
+    const r = await runShip({
+      ...base(stubAdapter(calls, { withRollback: true, throwRollback: true }), async (url) => [
+        failReport(url),
+      ]),
+      onStage: (e) => {
+        events.push(e);
+      },
+    });
+    expect(r.ok).toBe(false);
+    // The rollback threw, but runShip must still return a structured result + emit the event.
+    expect(r.rollback).toMatchObject({ ok: false });
+    expect(r.rollback?.detail).toMatch(/rollback threw: .*rollback exploded/);
+    expect(events.find((e) => e.stage === 'rollback')).toMatchObject({ passed: false });
+    expect(events.map((e) => e.stage)).toEqual(['build', 'deploy', 'verify', 'rollback']);
   });
 
   it('stamps skillVersion on events when provided', async () => {

@@ -206,6 +206,13 @@ on:
 permissions:
   contents: write
 
+# Serialize promotes of this tool: the job runs a full prod ship (build -> deploy -> verify ->
+# rollback-on-failure), so two overlapping dispatches could race (the slower run's rollback could
+# stomp the faster run's just-verified deploy). Never cancel an in-flight promote.
+concurrency:
+  group: promote-${name}
+  cancel-in-progress: false
+
 jobs:
   promote:
     runs-on: ubuntu-latest

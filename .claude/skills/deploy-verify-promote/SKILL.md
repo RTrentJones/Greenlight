@@ -74,7 +74,7 @@ Two axes cause all the variation:
   the verify config + infra are the **wrapper's** to edit.
 - Connect URL for MCP tools is the tool URL + `/mcp`; `verify`/`ship` handle this by lane.
 - `greenlight doctor` flags drift from this model (missing verify spec, no local preview gate,
-  version-ref drift, an out-of-sync promote allow-list, a HEAD with no preview receipt).
+  version-ref drift, a HEAD with no preview receipt).
 
 ## Cross-repo note
 In adopted/standalone repos (BAMCP, ejected tools) this skill is delivered by the **Greenlight

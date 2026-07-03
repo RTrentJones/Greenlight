@@ -264,4 +264,55 @@ describe('promote', () => {
       rmSync(ci, { recursive: true, force: true });
     }
   });
+
+  it('--push + --commit (the exact CI path): pushes origin/main to the VERIFIED sha, not the newer tip', () => {
+    // The real workflow runs `promote --perform --push --commit "$SHA"` from a CI checkout with only
+    // `main` local (develop is a remote-tracking ref). This exercises the one combination CI uses
+    // and no other test covers: the server-side push path with a PINNED fromCommit while develop has
+    // already advanced. origin/main must land on the verified commit; the push must not re-resolve
+    // the branch tip.
+    const origin = mkdtempSync(join(tmpdir(), 'gl-origin-'));
+    const ci = mkdtempSync(join(tmpdir(), 'gl-ci-'));
+    try {
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+      git('remote', 'add', 'origin', origin);
+      git('push', '-q', 'origin', 'main');
+      git('checkout', '-q', '-b', 'develop');
+      git('commit', '-q', '--allow-empty', '-m', 'feature-1 (verified)');
+      git('push', '-q', 'origin', 'develop');
+      const verified = execFileSync('git', ['rev-parse', 'develop'], {
+        cwd: dir,
+        encoding: 'utf8',
+      }).trim();
+
+      // develop advances to feature-2 on origin AFTER the beta verify pinned feature-1.
+      git('commit', '-q', '--allow-empty', '-m', 'feature-2 (unverified)');
+      git('push', '-q', 'origin', 'develop');
+      const unverifiedTip = execFileSync('git', ['rev-parse', 'develop'], {
+        cwd: dir,
+        encoding: 'utf8',
+      }).trim();
+
+      // CI checkout: only main local, develop fetched as a remote-tracking ref.
+      execFileSync('git', ['clone', '-q', '--branch', 'main', origin, ci]);
+      const cgit = (...a: string[]) => execFileSync('git', ['-C', ci, ...a], { stdio: 'ignore' });
+      const cout = (...a: string[]) =>
+        execFileSync('git', ['-C', ci, ...a], { encoding: 'utf8' }).trim();
+      cgit('config', 'user.email', 't@e.dev');
+      cgit('config', 'user.name', 't');
+      cgit('fetch', '-q', '--no-tags', 'origin', 'main', 'develop');
+
+      const r = promote(ci, { push: true, commit: verified });
+      expect(r.promoted).toBe(true);
+      expect(r.warnings?.some((w) => /moved past the verified commit/.test(w))).toBe(true);
+
+      cgit('fetch', '-q', 'origin', 'main', 'develop');
+      const originMain = cout('rev-parse', 'origin/main');
+      expect(originMain).toBe(verified); // the VERIFIED commit reached origin/main
+      expect(originMain).not.toBe(unverifiedTip); // not the newer, unverified develop tip
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(ci, { recursive: true, force: true });
+    }
+  });
 });

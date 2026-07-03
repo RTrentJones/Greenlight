@@ -11,6 +11,10 @@ let versionMode: 'match' | 'stale-then-match' | 'mismatch' | 'absent' | 'null-sh
   'match';
 let staleHits = 0;
 let contentHits = 0;
+// A content path that 503s until its `flakyContentUntil`-th hit — models a static host serving
+// some paths late, independent of the /__version propagation clock.
+let flakyHits = 0;
+let flakyContentUntil = 0;
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -33,6 +37,10 @@ beforeAll(async () => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ sha: versionMode === 'match' ? SHA : OLD }));
       }
+    } else if (url === '/flaky') {
+      flakyHits += 1;
+      res.writeHead(flakyHits >= flakyContentUntil ? 200 : 503);
+      res.end('flaky');
     } else {
       contentHits += 1;
       res.writeHead(200);
@@ -71,6 +79,30 @@ describe('E3 artifact-identity probe (expectedSha)', () => {
     expect(r.pass).toBe(true);
     expect(r.checks[0]?.pass).toBe(true);
     expect(r.checks[0]?.attempts).toBe(3); // stale, stale, match
+  });
+
+  it('gives the content settle loop its OWN retry budget, not what the identity probe left over', async () => {
+    // Regression: /__version and the content paths propagate on separate clocks. Here identity
+    // needs 2 retries (stale, stale, match) AND /flaky needs 2 of its own (503, 503, 200).
+    // settleRetries:3 is enough for EACH independently, so both must pass. Before the fix the two
+    // shared one decrementing counter — the identity probe drained it to 1 and starved /flaky.
+    versionMode = 'stale-then-match';
+    staleHits = 0;
+    flakyHits = 0;
+    flakyContentUntil = 3;
+    const flakySpec = { mode: 'api' as const, checks: [{ path: '/flaky', status: 200 }] };
+    const r = await verify(
+      base,
+      { ...flakySpec, settleRetries: 3, settleMs: 10 },
+      { expectedSha: SHA },
+    );
+    expect(r.checks[0]?.name).toBe('deployed sha matches expected');
+    expect(r.checks[0]?.pass).toBe(true);
+    expect(r.checks[0]?.attempts).toBe(3); // identity consumed 2 of its own retries
+    const content = r.checks.find((c) => c.name === 'GET /flaky');
+    expect(content?.pass).toBe(true);
+    expect(content?.attempts).toBe(3); // content still had its full budget for its 2 retries
+    expect(r.pass).toBe(true);
   });
 
   it('fails hard on a mismatch and SKIPS content checks (they would validate the wrong artifact)', async () => {

@@ -180,7 +180,11 @@ async function previewViaBuiltIn(
  * lets `doctor` warn locally when HEAD was never locally gated; the `preview` stage event shares
  * ship's vocabulary so tracer can JOIN preview↔deploy on git_sha — skill-compliance ("did the
  * local gate run before this ship?") becomes a query, not an honor system. Best-effort. */
-function recordPreviewOutcome(name: string, pass: boolean, durationMs: number): void {
+async function recordPreviewOutcome(
+  name: string,
+  pass: boolean,
+  durationMs: number,
+): Promise<void> {
   let sha: string | undefined;
   try {
     sha = execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -201,7 +205,10 @@ function recordPreviewOutcome(name: string, pass: boolean, durationMs: number): 
       // receipt is advisory
     }
   }
-  void stageEventSink()({
+  // AWAIT the sink: bin.ts calls process.exit() the moment previewCommand resolves, and a
+  // fire-and-forget POST is killed before its socket even flushes. stageEventSink is best-effort
+  // (own timeout + never throws), so awaiting it can't fail or hang the preview.
+  await stageEventSink()({
     stage: 'preview',
     tool: name,
     env: 'preview',
@@ -241,6 +248,6 @@ export async function previewCommand(args: string[]): Promise<number> {
   } else {
     pass = await previewViaBuiltIn(entry, name, port, parsed.flags.has('--no-build'));
   }
-  recordPreviewOutcome(name, pass, Date.now() - started);
+  await recordPreviewOutcome(name, pass, Date.now() - started);
   return pass ? 0 : 1;
 }
