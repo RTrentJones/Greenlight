@@ -90,20 +90,37 @@ export async function verify(
 
 /**
  * Run a list of specs against the same URL (a `verify.config.ts` may export an array to
- * combine modes — e.g. `[test, api, agent-web]`). Returns one report per spec; aggregate
- * pass = every spec passed. The reachable wait runs once, before the first spec.
+ * combine modes — e.g. `[test, api, agent-web]`). Returns one report per spec, in spec order;
+ * aggregate pass = every spec passed. The reachable wait runs once, up front.
+ *
+ * Scheduling: specs run serially by default. ADJACENT specs marked `concurrency: 'parallel'`
+ * run as one overlapped batch — right for network-bound modes (api/mcp) where serial execution
+ * just sums the waits. CPU-bound (`test`) and LLM/browser modes should stay serial.
  */
 export async function verifyAll(
   baseUrl: string,
   specs: VerifySpec[],
   opts?: VerifyOptions,
 ): Promise<VerifyReport[]> {
-  const reports: VerifyReport[] = [];
-  let waited = false;
-  for (const spec of specs) {
-    const perSpec = waited ? { ...opts, reachableTimeoutMs: 0 } : opts;
-    reports.push(await verify(baseUrl, spec, perSpec));
-    waited = true;
+  if (opts?.reachableTimeoutMs) await waitForReachable(baseUrl, opts.reachableTimeoutMs);
+  const perSpec: VerifyOptions = { ...opts, reachableTimeoutMs: 0 };
+
+  const reports: VerifyReport[] = new Array(specs.length);
+  let i = 0;
+  while (i < specs.length) {
+    if (specs[i]?.concurrency === 'parallel') {
+      const start = i;
+      while (i < specs.length && specs[i]?.concurrency === 'parallel') i++;
+      const batch = await Promise.all(
+        specs.slice(start, i).map((spec) => verify(baseUrl, spec, perSpec)),
+      );
+      batch.forEach((r, j) => {
+        reports[start + j] = r;
+      });
+    } else {
+      reports[i] = await verify(baseUrl, specs[i] as VerifySpec, perSpec);
+      i++;
+    }
   }
   return reports;
 }

@@ -3,6 +3,27 @@ import { type ApiSpec, type VerifyCheck, type VerifyReport, msg, report } from '
 const trimSlash = (s: string) => s.replace(/\/+$/, '');
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_LINKS = 50;
+/** Concurrent fetches for the internal-link crawl. Serial was the gate's slowest path: 50 links
+ * × a 10s timeout each is minutes of wall time per settle attempt when an origin is degraded. */
+const LINK_POOL_SIZE = 6;
+
+/** Run tasks with at most `limit` in flight; results keep task order. Exported for unit tests. */
+export async function pool<T>(
+  tasks: Array<() => Promise<T>>,
+  limit = LINK_POOL_SIZE,
+): Promise<T[]> {
+  const results = new Array<T>(tasks.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      results[i] = await (tasks[i] as () => Promise<T>)();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
 /** Cap on how much of a response body we buffer. The `contains`/feed/link checks only need a prefix;
  * without a cap a huge or cached error body would be read fully into memory. */
 const MAX_BODY_CHARS = 2_000_000;
@@ -114,15 +135,17 @@ async function checkInternalLinks(
         detail: `no internal links found on ${base}/ (status ${res.status}) — page empty or unparseable`,
       };
     }
-    const broken: string[] = [];
-    for (const href of hrefs) {
-      try {
-        const r = await timedFetch(base + href, timeoutMs);
-        if (r.status >= 400) broken.push(`${href} (${r.status})`);
-      } catch {
-        broken.push(`${href} (unreachable)`);
-      }
-    }
+    const results = await pool(
+      [...hrefs].map((href) => async () => {
+        try {
+          const r = await timedFetch(base + href, timeoutMs);
+          return r.status >= 400 ? `${href} (${r.status})` : null;
+        } catch {
+          return `${href} (unreachable)`;
+        }
+      }),
+    );
+    const broken = results.filter((r): r is string => r !== null);
     const capNote = capped ? `; capped at first ${max} — raise maxLinks to check more` : '';
     return {
       name: `no broken internal links (${hrefs.size} checked${capped ? `, capped at ${max}` : ''})`,
@@ -168,6 +191,20 @@ function buildTasks(base: string, spec: ApiSpec): Array<() => Promise<VerifyChec
   return tasks;
 }
 
+/** Run a task and stamp the check with its wall time + how many attempts it has had so far —
+ * the raw per-check signal for gate-latency trends and the flake burndown (a fail-then-pass at
+ * attempts>1 is eventual consistency, measured instead of guessed). */
+async function timedAttempt(
+  task: () => Promise<VerifyCheck>,
+  attempt: number,
+): Promise<VerifyCheck> {
+  const start = Date.now();
+  const check = await task();
+  check.durationMs = Date.now() - start;
+  check.attempts = attempt;
+  return check;
+}
+
 export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyReport> {
   const base = trimSlash(baseUrl);
   const retries = Math.max(0, spec.settleRetries ?? 0);
@@ -175,7 +212,7 @@ export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyR
 
   // Pair each task with its latest result so the settle loop can re-run ONLY the still-failing ones.
   const state = await Promise.all(
-    buildTasks(base, spec).map(async (task) => ({ task, check: await task() })),
+    buildTasks(base, spec).map(async (task) => ({ task, check: await timedAttempt(task, 1) })),
   );
 
   // Eventual-consistency settle: re-run ONLY the still-failing checks, up to `retries` more times.
@@ -188,7 +225,7 @@ export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyR
       state
         .filter((s) => !s.check.pass)
         .map(async (s) => {
-          s.check = await s.task();
+          s.check = await timedAttempt(s.task, (s.check.attempts ?? 1) + 1);
         }),
     );
   }

@@ -2,7 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Lane } from '@rtrentjones/greenlight-shared';
-import { allPass, verifyAll } from '@rtrentjones/greenlight-verify';
+import { allPass } from '@rtrentjones/greenlight-verify';
 import { parseFlags } from '../args';
 import {
   type ResolvedEntry,
@@ -12,7 +12,7 @@ import {
   resolveEntry,
 } from '../manifest';
 import { BUILTIN_READY_MS, DESCRIPTOR_READY_MS, readyTimeout } from '../timeouts';
-import { defaultSpec, printReport } from './verify';
+import { defaultSpec, printReport, runVerify, warnDefaultSpec } from './verify';
 
 /**
  * `greenlight preview <name>` — spin the tool up LOCALLY → wait for ready → verify → tear down, in
@@ -61,10 +61,12 @@ async function waitForServer(url: string, timeoutMs = BUILTIN_READY_MS): Promise
 /** Load the tool's spec (external → wrapper's verify/<name>.config.ts; local → <dir>/verify.config.ts). */
 async function loadSpecs(entry: ResolvedEntry) {
   const loaded =
-    (entry.external && entry.name
+    entry.external && entry.name
       ? await loadExternalVerifySpec(entry.name)
-      : await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
-  return Array.isArray(loaded) ? loaded : [loaded];
+      : await loadVerifySpec(entry.dir);
+  if (!loaded) warnDefaultSpec(entry.name ?? 'blog', entry.lane);
+  const resolved = loaded ?? defaultSpec(entry.lane);
+  return Array.isArray(resolved) ? resolved : [resolved];
 }
 
 /** Run verify against a local URL, printing each report; returns the aggregate pass. */
@@ -74,7 +76,7 @@ async function verifyLocal(entry: ResolvedEntry, url: string): Promise<boolean> 
   process.env.GREENLIGHT_VERIFY_URL = url;
   const specs = await loadSpecs(entry);
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
-  const reports = await verifyAll(url, specs, { toolDir });
+  const reports = await runVerify(specs, url, { toolDir, reachableTimeoutMs: 0 });
   for (const report of reports) printReport(report);
   return allPass(reports);
 }

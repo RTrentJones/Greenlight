@@ -143,6 +143,29 @@ const VERIFY_FLAGS = {
   boolean: ['--json'],
 };
 
+/** The one verify tail both command paths (and `preview`) share: run the harness, then attach
+ * failure logs. Printing/exit stay with the callers. */
+export async function runVerify(
+  specs: VerifySpec[],
+  url: string,
+  opts: { toolDir: string; reachableTimeoutMs: number },
+): Promise<VerifyReport[]> {
+  const reports = await verifyAll(url, specs, {
+    reachableTimeoutMs: opts.reachableTimeoutMs,
+    toolDir: opts.toolDir,
+  });
+  attachFailureLogs(reports, specs, opts.toolDir);
+  return reports;
+}
+
+/** E5: a missing verify config silently weakening the gate to a smoke spec was the finding —
+ * fall back loudly so "verify passed" can't quietly mean "the default smoke test passed". */
+export function warnDefaultSpec(name: string, lane: Lane): void {
+  console.warn(
+    `⚠ ${name}: no verify config found — using the ${lane} lane default smoke spec. Add a verify.config.ts so the gate asserts this tool's real contract.`,
+  );
+}
+
 export async function verifyCommand(args: string[]): Promise<number> {
   const parsed = parseFlags('verify', args, VERIFY_FLAGS);
   const json = parsed.flags.has('--json') || process.env.GREENLIGHT_VERIFY_JSON === '1';
@@ -159,11 +182,10 @@ export async function verifyCommand(args: string[]): Promise<number> {
     const specs = Array.isArray(loaded) ? loaded : [loaded];
     const waitFlag = parsed.values['--wait'];
     const waitMs = (waitFlag !== undefined ? Number(waitFlag) : 0) * 1000;
-    const reports = await verifyAll(url, specs, {
+    const reports = await runVerify(specs, url, {
       reachableTimeoutMs: waitMs,
       toolDir: process.cwd(),
     });
-    attachFailureLogs(reports, specs, process.cwd());
     // Manifest-free: tool name from --tool, else the spec basename (`<name>.config.ts` → `<name>`).
     const tool = parsed.values['--tool'] ?? basename(specPath).replace(/\.config\.[tj]s$/, '');
     return emitReports(reports, json, {
@@ -201,10 +223,12 @@ export async function verifyCommand(args: string[]): Promise<number> {
   // Prefer a per-tool verify spec — which may be a single spec OR an array (combine modes,
   // e.g. [test, api, agent-web]); otherwise a lane default smoke spec. An external (registry)
   // tool's spec lives in the wrapper at verify/<name>.config.ts; a local tool's at <dir>/verify.config.ts.
-  const loaded =
-    (entry.external ? await loadExternalVerifySpec(name) : await loadVerifySpec(entry.dir)) ??
-    defaultSpec(entry.lane);
-  const specs = Array.isArray(loaded) ? loaded : [loaded];
+  const loaded = entry.external
+    ? await loadExternalVerifySpec(name)
+    : await loadVerifySpec(entry.dir);
+  if (!loaded) warnDefaultSpec(name, entry.lane);
+  const resolved = loaded ?? defaultSpec(entry.lane);
+  const specs = Array.isArray(resolved) ? resolved : [resolved];
 
   // Absorb the first-deploy TLS/DNS window: a remote env waits for the URL to become reachable
   // (retry on connection error only); --url (local) waits 0. `--wait <sec>` overrides; the tool's
@@ -222,8 +246,7 @@ export async function verifyCommand(args: string[]): Promise<number> {
 
   // `test` mode runs in the tool's dir; resolve it for the harness.
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
-  const reports = await verifyAll(url, specs, { reachableTimeoutMs, toolDir });
-  attachFailureLogs(reports, specs, toolDir);
+  const reports = await runVerify(specs, url, { reachableTimeoutMs, toolDir });
   return emitReports(reports, json, {
     tool: entry.name ?? name,
     env: override ? 'preview' : (parsed.values['--env'] ?? 'preview'),

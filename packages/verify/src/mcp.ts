@@ -55,8 +55,10 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
       });
     }
     // Drift guard: the live tool set must match expectTools exactly — catches a capability added in
-    // code but not in the verify loop (extra), or a removed/renamed one (missing).
-    if (spec.exactTools) {
+    // code but not in the verify loop (extra), or a removed/renamed one (missing). Default ON when
+    // expectTools is non-empty (v0.8.0): the guard is the point of listing tools. `exactTools:
+    // false` opts out; an empty expectTools (lane default smoke) keeps it off.
+    if (spec.exactTools ?? spec.expectTools.length > 0) {
       const expected = new Set(spec.expectTools);
       const extra = names.filter((n) => !expected.has(n));
       const missing = spec.expectTools.filter((t) => !names.includes(t));
