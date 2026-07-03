@@ -9,6 +9,7 @@ import {
   toExportResult,
   verifyAll,
 } from '@rtrentjones/greenlight-verify';
+import { parseFlags } from '../args';
 import {
   loadExternalVerifySpec,
   loadManifest,
@@ -16,6 +17,7 @@ import {
   loadVerifySpecAt,
   resolveEntry,
 } from '../manifest';
+import { REMOTE_REACHABLE_MS, readyTimeout } from '../timeouts';
 
 /** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
 export function defaultSpec(lane: Lane): VerifySpec {
@@ -59,16 +61,17 @@ export function printReport(report: VerifyReport, log: (s: string) => void = con
   }
 }
 
-/** Emit the reports + exit. `--json` (or GREENLIGHT_VERIFY_JSON=1) prints the standards-shaped export
- * to STDOUT and routes the human report to STDERR, so `verify … --json | jq` is clean; otherwise the
- * human report goes to stdout as before. Exit code is the gate decision either way. */
-function emitReports(reports: VerifyReport[], json: boolean, ctx: ExportContext): never {
+/** Emit the reports + return the gate decision as an exit code. `--json` (or
+ * GREENLIGHT_VERIFY_JSON=1) prints the standards-shaped export to STDOUT and routes the human
+ * report to STDERR, so `verify … --json | jq` is clean; otherwise the human report goes to
+ * stdout as before. */
+function emitReports(reports: VerifyReport[], json: boolean, ctx: ExportContext): number {
   const log = json ? console.error : console.log;
   for (const report of reports) printReport(report, log);
   const pass = allPass(reports);
   if (reports.length > 1) log(`\n${pass ? '✔ ALL PASS' : '✘ FAIL'} (${reports.length} specs)`);
   if (json) process.stdout.write(`${JSON.stringify(toExportResult(reports, ctx))}\n`);
-  process.exit(pass ? 0 : 1);
+  return pass ? 0 : 1;
 }
 
 /** The deploy's commit, for the export's `git_sha` (CI provides one; null locally). */
@@ -135,43 +138,43 @@ export function attachFailureLogs(
   });
 }
 
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+const VERIFY_FLAGS = {
+  value: ['--spec', '--url', '--wait', '--tool', '--env'],
+  boolean: ['--json'],
+};
 
-function jsonFlag(args: string[]): boolean {
-  return args.includes('--json') || process.env.GREENLIGHT_VERIFY_JSON === '1';
-}
+export async function verifyCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('verify', args, VERIFY_FLAGS);
+  const json = parsed.flags.has('--json') || process.env.GREENLIGHT_VERIFY_JSON === '1';
 
-export async function verifyCommand(args: string[]): Promise<void> {
   // Manifest-free mode: `verify --url <url> --spec <path>` loads the spec directly and skips the
   // manifest entirely. This is how a tool's OWN CI verifies a deployment (e.g. a Vercel tool's
   // greenlight-verify.yml on deployment_status) without carrying the wrapper's greenlight.config.ts.
-  const specPath = flag(args, '--spec');
+  const specPath = parsed.values['--spec'];
   if (specPath) {
-    const url = flag(args, '--url');
+    const url = parsed.values['--url'];
     if (!url) throw new Error('verify --spec needs --url <deployed-url>');
     const loaded = await loadVerifySpecAt(specPath);
     if (!loaded) throw new Error(`no verify spec at ${specPath}`);
     const specs = Array.isArray(loaded) ? loaded : [loaded];
-    const waitMs = (flag(args, '--wait') !== undefined ? Number(flag(args, '--wait')) : 0) * 1000;
+    const waitFlag = parsed.values['--wait'];
+    const waitMs = (waitFlag !== undefined ? Number(waitFlag) : 0) * 1000;
     const reports = await verifyAll(url, specs, {
       reachableTimeoutMs: waitMs,
       toolDir: process.cwd(),
     });
     attachFailureLogs(reports, specs, process.cwd());
     // Manifest-free: tool name from --tool, else the spec basename (`<name>.config.ts` → `<name>`).
-    const tool = flag(args, '--tool') ?? basename(specPath).replace(/\.config\.[tj]s$/, '');
-    emitReports(reports, jsonFlag(args), {
+    const tool = parsed.values['--tool'] ?? basename(specPath).replace(/\.config\.[tj]s$/, '');
+    return emitReports(reports, json, {
       tool,
-      env: flag(args, '--env') ?? 'preview',
+      env: parsed.values['--env'] ?? 'preview',
       gitSha: gitSha(),
     });
   }
 
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
+  const name = parsed.positional[0];
+  if (!name) {
     throw new Error(
       'usage: greenlight verify <name> [--env <beta|prod> | --url <url>] | verify --url <url> --spec <path>',
     );
@@ -181,12 +184,12 @@ export async function verifyCommand(args: string[]): Promise<void> {
   const entry = resolveEntry(config, name);
 
   // --url points at a local/preview server (skips manifest URL resolution).
-  const override = flag(args, '--url');
+  const override = parsed.values['--url'];
   let url: string;
   if (override) {
     url = entry.lane === 'mcp' && !override.endsWith('/mcp') ? `${override}/mcp` : override;
   } else {
-    const env = flag(args, '--env') as DeployEnv | undefined;
+    const env = parsed.values['--env'] as DeployEnv | undefined;
     if (env !== 'beta' && env !== 'prod') {
       throw new Error(
         'verify needs --env beta|prod (or --url <url>). preview URLs come from the adapter deploy.',
@@ -203,10 +206,16 @@ export async function verifyCommand(args: string[]): Promise<void> {
     defaultSpec(entry.lane);
   const specs = Array.isArray(loaded) ? loaded : [loaded];
 
-  // Absorb the first-deploy TLS/DNS window: a remote env waits ~90s for the URL to
-  // become reachable (retry on connection error only); --url (local) waits 0. `--wait <sec>` overrides.
-  const waitFlag = flag(args, '--wait');
-  const reachableTimeoutMs = (waitFlag !== undefined ? Number(waitFlag) : override ? 0 : 90) * 1000;
+  // Absorb the first-deploy TLS/DNS window: a remote env waits for the URL to become reachable
+  // (retry on connection error only); --url (local) waits 0. `--wait <sec>` overrides; the tool's
+  // manifest `readyTimeoutMs` overrides the built-in default.
+  const waitFlag = parsed.values['--wait'];
+  const reachableTimeoutMs =
+    waitFlag !== undefined
+      ? Number(waitFlag) * 1000
+      : override
+        ? 0
+        : readyTimeout(entry.readyTimeoutMs, REMOTE_REACHABLE_MS);
   if (reachableTimeoutMs > 0) {
     console.log(`waiting up to ${reachableTimeoutMs / 1000}s for ${url} to become reachable…`);
   }
@@ -215,9 +224,9 @@ export async function verifyCommand(args: string[]): Promise<void> {
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
   const reports = await verifyAll(url, specs, { reachableTimeoutMs, toolDir });
   attachFailureLogs(reports, specs, toolDir);
-  emitReports(reports, jsonFlag(args), {
+  return emitReports(reports, json, {
     tool: entry.name ?? name,
-    env: override ? 'preview' : (flag(args, '--env') ?? 'preview'),
+    env: override ? 'preview' : (parsed.values['--env'] ?? 'preview'),
     gitSha: gitSha(),
   });
 }

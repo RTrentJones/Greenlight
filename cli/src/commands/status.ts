@@ -89,7 +89,7 @@ function lastRun(repo: string, workflow: string): string {
   }
 }
 
-export async function statusCommand(args: string[]): Promise<void> {
+export async function statusCommand(args: string[]): Promise<number> {
   const name = args[0];
   if (!name || name.startsWith('-')) throw new Error('usage: greenlight status <name>');
   const { config } = await loadManifest();
@@ -102,4 +102,5 @@ export async function statusCommand(args: string[]): Promise<void> {
     console.log(`  ${w.label}  [${w.repo} · ${w.workflow}]`);
     console.log(`    ${lastRun(w.repo, w.workflow)}\n`);
   }
+  return 0;
 }

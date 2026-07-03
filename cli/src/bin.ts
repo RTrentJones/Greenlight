@@ -37,7 +37,9 @@ const HELP = `greenlight <command>
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
 
-async function main(): Promise<void> {
+/** Every command returns its exit code; this switch just routes. The ONLY process.exit lives
+ * below — commands stay composable in-process (ship runs deploy→verify→rollback as one flow). */
+async function main(): Promise<number> {
   const [cmd, ...args] = process.argv.slice(2);
 
   switch (cmd) {
@@ -46,14 +48,14 @@ async function main(): Promise<void> {
     case '--help':
     case '-h':
       console.log(HELP);
-      return;
+      return 0;
     case 'init':
       return initCommand(args);
     case 'add':
       return addCommand(args);
     case 'lanes':
       console.log(`Valid lane × target × data combinations:\n${describeMatrix()}`);
-      return;
+      return 0;
     case 'config':
       return configCommand();
     case 'deploy':
@@ -83,7 +85,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// process.exit (not just exitCode) — preview leaves detached child handles that would
+// otherwise keep the event loop alive after the command has decided its outcome.
+main().then(
+  (code) => process.exit(code),
+  (err: unknown) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  },
+);

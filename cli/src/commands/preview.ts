@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Lane } from '@rtrentjones/greenlight-shared';
 import { allPass, verifyAll } from '@rtrentjones/greenlight-verify';
+import { parseFlags } from '../args';
 import {
   type ResolvedEntry,
   loadExternalVerifySpec,
@@ -10,6 +11,7 @@ import {
   loadVerifySpec,
   resolveEntry,
 } from '../manifest';
+import { BUILTIN_READY_MS, DESCRIPTOR_READY_MS, readyTimeout } from '../timeouts';
 import { defaultSpec, printReport } from './verify';
 
 /**
@@ -42,13 +44,8 @@ export function servePlan(lane: Lane, port?: number): ServePlan {
   }
 }
 
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
 /** Poll until the server accepts a connection (any HTTP response), or time out. */
-async function waitForServer(url: string, timeoutMs = 30_000): Promise<boolean> {
+async function waitForServer(url: string, timeoutMs = BUILTIN_READY_MS): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -105,7 +102,7 @@ async function previewViaDescriptor(
   });
 
   try {
-    if (!(await waitForServer(url, 120_000))) {
+    if (!(await waitForServer(url, readyTimeout(entry.readyTimeoutMs, DESCRIPTOR_READY_MS)))) {
       throw new Error(`preview server did not become reachable at ${url} (check: ${pv.command})`);
     }
     return await verifyLocal(entry, url);
@@ -152,7 +149,7 @@ async function previewViaBuiltIn(
 
   try {
     const base = `http://localhost:${plan.port}`;
-    if (!(await waitForServer(base))) {
+    if (!(await waitForServer(base, readyTimeout(entry.readyTimeoutMs, BUILTIN_READY_MS)))) {
       throw new Error(
         `server did not start on :${plan.port} (check the tool's ${plan.script} script)`,
       );
@@ -169,12 +166,13 @@ async function previewViaBuiltIn(
   }
 }
 
-export async function previewCommand(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
+export async function previewCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('preview', args, { value: ['--port'] });
+  const name = parsed.positional[0];
+  if (!name) {
     throw new Error('usage: greenlight preview <name> [--port <n>]');
   }
-  const portArg = flag(args, '--port');
+  const portArg = parsed.values['--port'];
   const port = portArg ? Number(portArg) : undefined;
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
@@ -196,5 +194,5 @@ export async function previewCommand(args: string[]): Promise<void> {
   } else {
     pass = await previewViaBuiltIn(entry, name, port);
   }
-  process.exit(pass ? 0 : 1);
+  return pass ? 0 : 1;
 }

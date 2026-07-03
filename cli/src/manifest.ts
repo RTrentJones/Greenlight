@@ -50,6 +50,8 @@ export interface ResolvedEntry {
   external: boolean;
   /** Container port (target: oci); also the default local preview port. */
   port?: number;
+  /** Per-tool readiness window override (ms) for preview/verify waits. */
+  readyTimeoutMs?: number;
   /** How `greenlight preview` spins this tool up locally (target with no built-in serve). */
   preview?: PreviewDescriptor;
   /** Project-scoped secret names this tool needs (conformance/docs). */
@@ -84,6 +86,7 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
     dir: tool.dir ?? `tools/${tool.name}`,
     external: tool.external,
     port: tool.port,
+    readyTimeoutMs: tool.readyTimeoutMs,
     preview: tool.preview,
     tokens: tool.tokens,
     tokenOverrides: tool.tokenOverrides,

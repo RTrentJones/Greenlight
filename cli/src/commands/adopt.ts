@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { parseFlags } from '../args';
 import { type NewTool, addTool, serializeConfig, upsertTool } from '../config-io';
 import { loadManifest, resolveEntry } from '../manifest';
 import { emitToolTf, providersForTool } from '../tf-emit';
@@ -9,11 +10,6 @@ import { materializeAgentKit } from './agent';
 import { parseRepo } from './secrets';
 
 const REF = MODULE_REF; // framework git ref the generated infra pins (centralized in version.ts)
-
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 // --- pure-ish generators (the personal site repo's files are the template) ---
 
@@ -691,27 +687,31 @@ interface AdoptCtx {
   regPath: string;
 }
 
-export async function adoptCommand(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
+export async function adoptCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('adopt', args, {
+    value: ['--repo', '--lane', '--target', '--data', '--auth', '--envs', '--domain'],
+    boolean: ['--standalone', '--require-migration-approval'],
+  });
+  const name = parsed.positional[0];
+  if (!name) {
     throw new Error(
       'usage: greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--require-migration-approval] [--standalone]\n' +
         '  default: wrap <repo> as a tools/<name> submodule + edit infra in this wrapper + push the loop kit into the tool repo.\n' +
         '  --standalone: scaffold a full self-contained consumer into the tool repo (it owns its whole stack).',
     );
   }
-  const repoArg = flag(args, '--repo');
+  const repoArg = parsed.values['--repo'];
   if (!repoArg) throw new Error('adopt needs --repo <url|path> (the existing tool repo to adopt)');
 
-  const lane = flag(args, '--lane');
-  const target = flag(args, '--target');
+  const lane = parsed.values['--lane'];
+  const target = parsed.values['--target'];
   if (!lane || !target) throw new Error('adopt needs --lane and --target');
-  const data = flag(args, '--data') ?? 'none';
-  const auth = flag(args, '--auth') ?? 'none';
-  const envs = flag(args, '--envs')?.split(',') ?? ['beta', 'prod'];
+  const data = parsed.values['--data'] ?? 'none';
+  const auth = parsed.values['--auth'] ?? 'none';
+  const envs = parsed.values['--envs']?.split(',') ?? ['beta', 'prod'];
   // Gate prod DB migrations behind a human approval (emits a gated migrate workflow + sets the
   // manifest flag; pair with `prod_reviewers` on the tool's infra). Only meaningful for data tools.
-  const requireMigrationApproval = args.includes('--require-migration-approval');
+  const requireMigrationApproval = parsed.flags.has('--require-migration-approval');
 
   // The cwd is the central registry (the site repo). Must be a real manifest.
   const { path: regPath, config: reg } = await loadManifest();
@@ -726,7 +726,7 @@ export async function adoptCommand(args: string[]): Promise<void> {
   if (name === 'blog') {
     throw new Error('"blog" is the apex site, not an adopted tool');
   }
-  const domain = flag(args, '--domain') ?? reg.domain;
+  const domain = parsed.values['--domain'] ?? reg.domain;
 
   const ctx: AdoptCtx = {
     name,
@@ -741,8 +741,12 @@ export async function adoptCommand(args: string[]): Promise<void> {
     reg,
     regPath,
   };
-  if (args.includes('--standalone')) return adoptStandalone(ctx);
-  return adoptWrapper(ctx);
+  if (parsed.flags.has('--standalone')) {
+    await adoptStandalone(ctx);
+  } else {
+    await adoptWrapper(ctx);
+  }
+  return 0;
 }
 
 /**

@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
+import { parseFlags } from '../args';
 import { loadManifest } from '../manifest';
 import { infraRefs, installedVersion } from '../refs';
 import { resolveMigrationsDir } from './migrations';
@@ -343,18 +344,19 @@ export async function runDoctorLive(config: GreenlightConfig): Promise<DoctorChe
 
 const ICON = { ok: '✔', warn: '!', fail: '✘', skip: '·' } as const;
 
-export async function doctorCommand(args: string[] = []): Promise<void> {
+export async function doctorCommand(args: string[] = []): Promise<number> {
+  const parsed = parseFlags('doctor', args, { boolean: ['--live', '--strict'] });
   let config: GreenlightConfig;
   try {
     ({ config } = await loadManifest());
     console.log('✔ manifest: loaded & valid\n');
   } catch (e) {
     console.error(`✘ manifest: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
+    return 1;
   }
 
-  const live = args.includes('--live');
-  const strict = args.includes('--strict');
+  const live = parsed.flags.has('--live');
+  const strict = parsed.flags.has('--strict');
   const checks = runDoctor(config, process.cwd());
   if (live) {
     console.log('  (probing live prod URLs…)');
@@ -371,5 +373,5 @@ export async function doctorCommand(args: string[] = []): Promise<void> {
   if (!live) console.log('· run `greenlight doctor --live` for DNS + reachability probes');
   if (!strict && warned) console.log('· run `greenlight doctor --strict` to fail on warnings (CI)');
   // Failures always gate; --strict makes warnings (drift) gate too — the CI-enforceable mode.
-  process.exit(failed > 0 || (strict && warned > 0) ? 1 : 0);
+  return failed > 0 || (strict && warned > 0) ? 1 : 0;
 }
