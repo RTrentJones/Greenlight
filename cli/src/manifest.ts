@@ -95,6 +95,36 @@ export function resolveEntry(config: GreenlightConfig, name: string): ResolvedEn
 
 const VERIFY_MODES = new Set(['api', 'mcp', 'playwright', 'test', 'agent-web', 'eval']);
 
+/** What a FUNCTION-shaped verify config receives (S3). Object configs that branch on env state
+ * had to read `GREENLIGHT_PREVIEW`/`GREENLIGHT_VERIFY_URL` at module-eval time — which made a
+ * spec's meaning depend on ambient process state and import ordering ("set BEFORE loading the
+ * spec"). Export a function instead and the context arrives explicitly:
+ *
+ *   export default ({ preview }: VerifyConfigContext) => [
+ *     { mode: 'mcp', expectTools: [...], requireAuthRejection: !preview },
+ *   ];
+ */
+export interface VerifyConfigContext {
+  /** The env this verify targets ('preview' for local/preview URLs). */
+  env: 'preview' | 'beta' | 'prod';
+  /** The URL being verified, when known at load time. */
+  url?: string;
+  /** True under `greenlight preview` (local run — e.g. skip an auth-rejection a local no-auth
+   * server can't satisfy). */
+  preview: boolean;
+}
+
+/** Back-compat default: derive the context from the env vars the harness already sets, so a
+ * function config loaded through an older call path still gets a truthful ctx. */
+function ctxFromEnv(): VerifyConfigContext {
+  const preview = process.env.GREENLIGHT_PREVIEW === '1';
+  return {
+    env: preview ? 'preview' : ((process.env.GREENLIGHT_VERIFY_ENV as 'beta' | 'prod') ?? 'prod'),
+    url: process.env.GREENLIGHT_VERIFY_URL,
+    preview,
+  };
+}
+
 function asSpec(relPath: string, spec: { mode?: unknown }): VerifySpec {
   if (typeof spec?.mode !== 'string' || !VERIFY_MODES.has(spec.mode)) {
     throw new Error(
@@ -105,8 +135,13 @@ function asSpec(relPath: string, spec: { mode?: unknown }): VerifySpec {
 }
 
 /** Load a verify spec — or an ARRAY of specs (to combine modes, e.g. `[test, api]`) — from
- * a specific file (default export), or null if it doesn't exist. */
-export async function loadVerifySpecAt(relPath: string): Promise<VerifySpec | VerifySpec[] | null> {
+ * a specific file (default export), or null if it doesn't exist. The default export may also be
+ * a FUNCTION `(ctx: VerifyConfigContext) => spec | spec[]` (sync or async) — the explicit
+ * alternative to reading GREENLIGHT_* env vars at module-eval time. */
+export async function loadVerifySpecAt(
+  relPath: string,
+  ctx?: VerifyConfigContext,
+): Promise<VerifySpec | VerifySpec[] | null> {
   const path = resolve(process.cwd(), relPath);
   if (!existsSync(path)) return null;
   const jiti = createJiti(import.meta.url);
@@ -120,18 +155,33 @@ export async function loadVerifySpecAt(relPath: string): Promise<VerifySpec | Ve
       `Could not load verify spec ${relPath}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  const def = 'default' in mod ? mod.default : mod;
+  let def = 'default' in mod ? mod.default : mod;
+  if (typeof def === 'function') {
+    try {
+      def = await (def as (c: VerifyConfigContext) => unknown)(ctx ?? ctxFromEnv());
+    } catch (e) {
+      throw new Error(
+        `Verify config function ${relPath} threw: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
   if (Array.isArray(def)) return def.map((s) => asSpec(relPath, s as { mode?: unknown }));
   return asSpec(relPath, def as { mode?: unknown });
 }
 
 /** Load a local tool's `<dir>/verify.config.ts` if present. */
-export function loadVerifySpec(dir: string): Promise<VerifySpec | VerifySpec[] | null> {
-  return loadVerifySpecAt(`${dir}/verify.config.ts`);
+export function loadVerifySpec(
+  dir: string,
+  ctx?: VerifyConfigContext,
+): Promise<VerifySpec | VerifySpec[] | null> {
+  return loadVerifySpecAt(`${dir}/verify.config.ts`, ctx);
 }
 
 /** Load an external (registry) tool's spec, which lives in the wrapper at
  * `verify/<name>.config.ts` (the tool's code is in another repo). */
-export function loadExternalVerifySpec(name: string): Promise<VerifySpec | VerifySpec[] | null> {
-  return loadVerifySpecAt(`verify/${name}.config.ts`);
+export function loadExternalVerifySpec(
+  name: string,
+  ctx?: VerifyConfigContext,
+): Promise<VerifySpec | VerifySpec[] | null> {
+  return loadVerifySpecAt(`verify/${name}.config.ts`, ctx);
 }

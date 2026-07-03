@@ -14,3 +14,6 @@ export type { ResolveUrlOptions } from '@rtrentjones/greenlight-shared';
 // also be plain objects with no import.)
 export { defineVerify } from '@rtrentjones/greenlight-verify';
 export type { VerifySpec } from '@rtrentjones/greenlight-verify';
+// A verify.config.ts may default-export a FUNCTION `(ctx) => spec | spec[]` — the explicit
+// alternative to reading GREENLIGHT_* env vars at module-eval time. This is that ctx's type.
+export type { VerifyConfigContext } from './manifest';

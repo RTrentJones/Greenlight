@@ -58,12 +58,14 @@ async function waitForServer(url: string, timeoutMs = BUILTIN_READY_MS): Promise
   return false;
 }
 
-/** Load the tool's spec (external → wrapper's verify/<name>.config.ts; local → <dir>/verify.config.ts). */
-async function loadSpecs(entry: ResolvedEntry) {
+/** Load the tool's spec (external → wrapper's verify/<name>.config.ts; local → <dir>/verify.config.ts).
+ * A function-shaped config receives the preview ctx explicitly (S3). */
+async function loadSpecs(entry: ResolvedEntry, url: string) {
+  const ctx = { env: 'preview' as const, url, preview: true };
   const loaded =
     entry.external && entry.name
-      ? await loadExternalVerifySpec(entry.name)
-      : await loadVerifySpec(entry.dir);
+      ? await loadExternalVerifySpec(entry.name, ctx)
+      : await loadVerifySpec(entry.dir, ctx);
   if (!loaded) warnDefaultSpec(entry.name ?? 'blog', entry.lane);
   const resolved = loaded ?? defaultSpec(entry.lane);
   return Array.isArray(resolved) ? resolved : [resolved];
@@ -71,10 +73,11 @@ async function loadSpecs(entry: ResolvedEntry) {
 
 /** Run verify against a local URL, printing each report; returns the aggregate pass. */
 async function verifyLocal(entry: ResolvedEntry, url: string): Promise<boolean> {
-  // Set BEFORE loading the spec — configs read these at module-eval time (jiti).
+  // Back-compat for OBJECT configs that still read these at module-eval time (jiti) — function
+  // configs get the ctx argument instead and should prefer it.
   process.env.GREENLIGHT_PREVIEW = '1';
   process.env.GREENLIGHT_VERIFY_URL = url;
-  const specs = await loadSpecs(entry);
+  const specs = await loadSpecs(entry, url);
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
   const reports = await runVerify(specs, url, { toolDir, reachableTimeoutMs: 0 });
   for (const report of reports) printReport(report);

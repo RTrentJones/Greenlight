@@ -11,6 +11,7 @@ import {
 } from '@rtrentjones/greenlight-verify';
 import { parseFlags } from '../args';
 import {
+  type VerifyConfigContext,
   loadExternalVerifySpec,
   loadManifest,
   loadVerifySpec,
@@ -181,7 +182,11 @@ export async function verifyCommand(args: string[]): Promise<number> {
   if (specPath) {
     const url = parsed.values['--url'];
     if (!url) throw new Error('verify --spec needs --url <deployed-url>');
-    const loaded = await loadVerifySpecAt(specPath);
+    const loaded = await loadVerifySpecAt(specPath, {
+      env: (parsed.values['--env'] as 'beta' | 'prod' | undefined) ?? 'preview',
+      url,
+      preview: process.env.GREENLIGHT_PREVIEW === '1',
+    });
     if (!loaded) throw new Error(`no verify spec at ${specPath}`);
     const specs = Array.isArray(loaded) ? loaded : [loaded];
     const waitFlag = parsed.values['--wait'];
@@ -228,9 +233,15 @@ export async function verifyCommand(args: string[]): Promise<number> {
   // Prefer a per-tool verify spec — which may be a single spec OR an array (combine modes,
   // e.g. [test, api, agent-web]); otherwise a lane default smoke spec. An external (registry)
   // tool's spec lives in the wrapper at verify/<name>.config.ts; a local tool's at <dir>/verify.config.ts.
+  // A function-shaped config receives this ctx explicitly (S3) instead of reading env vars at eval.
+  const ctx: VerifyConfigContext = {
+    env: override ? 'preview' : (parsed.values['--env'] as 'beta' | 'prod'),
+    url,
+    preview: process.env.GREENLIGHT_PREVIEW === '1',
+  };
   const loaded = entry.external
-    ? await loadExternalVerifySpec(name)
-    : await loadVerifySpec(entry.dir);
+    ? await loadExternalVerifySpec(name, ctx)
+    : await loadVerifySpec(entry.dir, ctx);
   if (!loaded) warnDefaultSpec(name, entry.lane);
   const resolved = loaded ?? defaultSpec(entry.lane);
   const specs = Array.isArray(resolved) ? resolved : [resolved];
