@@ -1,23 +1,20 @@
 import { createAdapter } from '@rtrentjones/greenlight-adapters';
 import type { DeployEnv } from '@rtrentjones/greenlight-shared';
+import { parseFlags } from '../args';
 import { loadManifest, resolveEntry } from '../manifest';
-
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 /**
  * Build + deploy a manifest entry to an env via its target adapter, printing the
  * deterministic URL. The real cloud deploy needs the target's creds (e.g.
  * CLOUDFLARE_API_TOKEN); the build step runs regardless.
  */
-export async function deployCommand(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
+export async function deployCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('deploy', args, { value: ['--env'] });
+  const name = parsed.positional[0];
+  if (!name) {
     throw new Error('usage: greenlight deploy <name> --env <preview|beta|prod>');
   }
-  const env = flag(args, '--env') as DeployEnv | undefined;
+  const env = parsed.values['--env'] as DeployEnv | undefined;
   if (env !== 'preview' && env !== 'beta' && env !== 'prod') {
     throw new Error('deploy needs --env preview|beta|prod');
   }
@@ -33,10 +30,20 @@ export async function deployCommand(args: string[]): Promise<void> {
   }
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });
 
+  // Git-integration targets (vercel) deploy on push to THEIR repo — branch on the contract's
+  // deployStyle instead of catching the adapter's backstop throw.
+  if (adapter.deployStyle === 'git') {
+    console.log(
+      `"${name}" deploys via ${entry.target}'s git integration — push to its repo to deploy; Greenlight manages its infra and verifies the deployment (greenlight verify ${name} --env ${env}).`,
+    );
+    return 0;
+  }
+
   console.log(`build ${name} (${entry.lane}/${entry.target}) in ${entry.dir}`);
   await adapter.build(entry.dir, env);
   console.log(`deploy ${name} → ${env}`);
   const { url } = await adapter.deploy(entry.dir, env);
   console.log(`✔ deployed: ${url}`);
   if (entry.lane === 'mcp') console.log(`  connect: ${url}/mcp`);
+  return 0;
 }

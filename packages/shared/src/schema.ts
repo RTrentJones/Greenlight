@@ -65,6 +65,10 @@ export const ToolSchema = z
     // Directory the tool builds/deploys from. Defaults to tools/<name>; a standalone
     // (poly-repo) tool sets '.' (the repo root).
     dir: z.string().optional(),
+    // How long preview/verify wait for this tool to accept connections (ms). Overrides the
+    // built-in defaults (cli timeouts: 120s descriptor preview, 30s built-in serve, 90s remote
+    // reachable) for a tool that legitimately starts slower.
+    readyTimeoutMs: z.number().int().positive().optional(),
     // The tool's code lives in another repo — this entry is a registry pointer only,
     // not built/deployed here (docs/archive/greenlight-v1.md §15.5 poly-repo).
     external: z.boolean().default(false),

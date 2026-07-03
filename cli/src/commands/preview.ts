@@ -1,8 +1,10 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Lane } from '@rtrentjones/greenlight-shared';
-import { allPass, verifyAll } from '@rtrentjones/greenlight-verify';
+import { allPass } from '@rtrentjones/greenlight-verify';
+import { parseFlags } from '../args';
 import {
   type ResolvedEntry,
   loadExternalVerifySpec,
@@ -10,7 +12,9 @@ import {
   loadVerifySpec,
   resolveEntry,
 } from '../manifest';
-import { defaultSpec, printReport } from './verify';
+import { BUILTIN_READY_MS, DESCRIPTOR_READY_MS, readyTimeout } from '../timeouts';
+import { skillVersion, stageEventSink } from './ship';
+import { defaultSpec, printReport, runVerify, warnDefaultSpec } from './verify';
 
 /**
  * `greenlight preview <name>` — spin the tool up LOCALLY → wait for ready → verify → tear down, in
@@ -42,13 +46,8 @@ export function servePlan(lane: Lane, port?: number): ServePlan {
   }
 }
 
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
 /** Poll until the server accepts a connection (any HTTP response), or time out. */
-async function waitForServer(url: string, timeoutMs = 30_000): Promise<boolean> {
+async function waitForServer(url: string, timeoutMs = BUILTIN_READY_MS): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -61,23 +60,28 @@ async function waitForServer(url: string, timeoutMs = 30_000): Promise<boolean> 
   return false;
 }
 
-/** Load the tool's spec (external → wrapper's verify/<name>.config.ts; local → <dir>/verify.config.ts). */
-async function loadSpecs(entry: ResolvedEntry) {
+/** Load the tool's spec (external → wrapper's verify/<name>.config.ts; local → <dir>/verify.config.ts).
+ * A function-shaped config receives the preview ctx explicitly (S3). */
+async function loadSpecs(entry: ResolvedEntry, url: string) {
+  const ctx = { env: 'preview' as const, url, preview: true };
   const loaded =
-    (entry.external && entry.name
-      ? await loadExternalVerifySpec(entry.name)
-      : await loadVerifySpec(entry.dir)) ?? defaultSpec(entry.lane);
-  return Array.isArray(loaded) ? loaded : [loaded];
+    entry.external && entry.name
+      ? await loadExternalVerifySpec(entry.name, ctx)
+      : await loadVerifySpec(entry.dir, ctx);
+  if (!loaded) warnDefaultSpec(entry.name ?? 'blog', entry.lane);
+  const resolved = loaded ?? defaultSpec(entry.lane);
+  return Array.isArray(resolved) ? resolved : [resolved];
 }
 
 /** Run verify against a local URL, printing each report; returns the aggregate pass. */
 async function verifyLocal(entry: ResolvedEntry, url: string): Promise<boolean> {
-  // Set BEFORE loading the spec — configs read these at module-eval time (jiti).
+  // Back-compat for OBJECT configs that still read these at module-eval time (jiti) — function
+  // configs get the ctx argument instead and should prefer it.
   process.env.GREENLIGHT_PREVIEW = '1';
   process.env.GREENLIGHT_VERIFY_URL = url;
-  const specs = await loadSpecs(entry);
+  const specs = await loadSpecs(entry, url);
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
-  const reports = await verifyAll(url, specs, { toolDir });
+  const reports = await runVerify(specs, url, { toolDir, reachableTimeoutMs: 0 });
   for (const report of reports) printReport(report);
   return allPass(reports);
 }
@@ -105,7 +109,7 @@ async function previewViaDescriptor(
   });
 
   try {
-    if (!(await waitForServer(url, 120_000))) {
+    if (!(await waitForServer(url, readyTimeout(entry.readyTimeoutMs, DESCRIPTOR_READY_MS)))) {
       throw new Error(`preview server did not become reachable at ${url} (check: ${pv.command})`);
     }
     return await verifyLocal(entry, url);
@@ -132,12 +136,15 @@ async function previewViaBuiltIn(
   entry: ResolvedEntry,
   name: string,
   portOverride?: number,
+  skipBuild = false,
 ): Promise<boolean> {
   const plan = servePlan(entry.lane, portOverride);
 
-  if (plan.build) {
+  if (plan.build && !skipBuild) {
     console.log(`build ${name} (${entry.dir})`);
     execFileSync('pnpm', ['-C', entry.dir, 'run', 'build'], { stdio: 'inherit' });
+  } else if (skipBuild) {
+    console.log(`serve ${name} from the existing build (--no-build)`);
   }
 
   console.log(`serve ${name} on :${plan.port}`);
@@ -152,7 +159,7 @@ async function previewViaBuiltIn(
 
   try {
     const base = `http://localhost:${plan.port}`;
-    if (!(await waitForServer(base))) {
+    if (!(await waitForServer(base, readyTimeout(entry.readyTimeoutMs, BUILTIN_READY_MS)))) {
       throw new Error(
         `server did not start on :${plan.port} (check the tool's ${plan.script} script)`,
       );
@@ -169,15 +176,60 @@ async function previewViaBuiltIn(
   }
 }
 
-export async function previewCommand(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
-    throw new Error('usage: greenlight preview <name> [--port <n>]');
+/** M3: the preview receipt + stage event. The receipt (`.greenlight/preview-<sha>`, gitignored)
+ * lets `doctor` warn locally when HEAD was never locally gated; the `preview` stage event shares
+ * ship's vocabulary so tracer can JOIN preview↔deploy on git_sha — skill-compliance ("did the
+ * local gate run before this ship?") becomes a query, not an honor system. Best-effort. */
+async function recordPreviewOutcome(
+  name: string,
+  pass: boolean,
+  durationMs: number,
+): Promise<void> {
+  let sha: string | undefined;
+  try {
+    sha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return; // not a git repo — nothing to attest
   }
-  const portArg = flag(args, '--port');
+  if (pass) {
+    try {
+      mkdirSync('.greenlight', { recursive: true });
+      writeFileSync(
+        join('.greenlight', `preview-${sha}`),
+        `${JSON.stringify({ tool: name, at: new Date().toISOString(), pass })}\n`,
+      );
+    } catch {
+      // receipt is advisory
+    }
+  }
+  // AWAIT the sink: bin.ts calls process.exit() the moment previewCommand resolves, and a
+  // fire-and-forget POST is killed before its socket even flushes. stageEventSink is best-effort
+  // (own timeout + never throws), so awaiting it can't fail or hang the preview.
+  await stageEventSink()({
+    stage: 'preview',
+    tool: name,
+    env: 'preview',
+    gitSha: sha,
+    durationMs,
+    passed: pass,
+    skillVersion: skillVersion(),
+  });
+}
+
+export async function previewCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('preview', args, { value: ['--port'], boolean: ['--no-build'] });
+  const name = parsed.positional[0];
+  if (!name) {
+    throw new Error('usage: greenlight preview <name> [--port <n>] [--no-build]');
+  }
+  const portArg = parsed.values['--port'];
   const port = portArg ? Number(portArg) : undefined;
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
+  const started = Date.now();
 
   // A preview descriptor handles any target (incl. oci/docker) AND external tools (their code is a
   // submodule here; the descriptor knows how to run it locally). Otherwise fall back to the built-in
@@ -194,7 +246,8 @@ export async function previewCommand(args: string[]): Promise<void> {
       `"${name}" is external and has no preview descriptor — add preview:{ command, … } to its manifest entry (e.g. a docker command), or preview it from its own repo`,
     );
   } else {
-    pass = await previewViaBuiltIn(entry, name, port);
+    pass = await previewViaBuiltIn(entry, name, port, parsed.flags.has('--no-build'));
   }
-  process.exit(pass ? 0 : 1);
+  await recordPreviewOutcome(name, pass, Date.now() - started);
+  return pass ? 0 : 1;
 }

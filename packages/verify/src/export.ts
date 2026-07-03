@@ -17,6 +17,10 @@ export interface VerifyExportCheck {
   input?: string | null;
   expected?: string | null;
   output?: string | null;
+  /** Wall time of the check's last attempt, ms (api mode) — gate-latency raw signal. */
+  duration_ms?: number | null;
+  /** Attempts the check took (>1 ⇒ the settle loop re-ran it — the flakiness raw signal). */
+  attempts?: number | null;
   'eval.score'?: number | null; // 0..1
   'eval.explanation'?: string | null;
 }
@@ -70,6 +74,8 @@ export function toExportResult(reports: VerifyReport[], ctx: ExportContext): Ver
         input: c.input ?? null,
         expected: c.expected ?? null,
         output: c.output ?? null,
+        duration_ms: c.durationMs ?? null,
+        attempts: c.attempts ?? null,
         'eval.score': c.score != null ? clamp01(c.score) : c.pass ? 1 : 0,
         'eval.explanation': c.explanation ?? null,
       });

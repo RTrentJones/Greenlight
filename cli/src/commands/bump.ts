@@ -6,7 +6,7 @@ import { infraRefs, installedVersion, rewriteInfraRefs } from '../refs';
  * to the installed `@rtrentjones/greenlight` version, restoring lockstep in one command. Idempotent:
  * a no-op once aligned. The cure for the "framework version drift" doctor warning (which it then
  * clears). Run after `pnpm update @rtrentjones/greenlight`. */
-export function bumpCommand(_args: string[]): void {
+export function bumpCommand(_args: string[]): number {
   const root = process.cwd();
   const version = installedVersion(root);
   if (!version) {
@@ -35,4 +35,5 @@ export function bumpCommand(_args: string[]): void {
     }
   }
   console.log('\nNext: pnpm install && pnpm greenlight doctor --strict, then commit + push.');
+  return 0;
 }

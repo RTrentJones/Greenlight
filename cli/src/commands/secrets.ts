@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { parseFlags } from '../args';
 import { type ResolvedEntry, loadManifest, resolveEntry } from '../manifest';
 import { type ProviderPack, packsForTool, secretKeyFor } from '../providers';
 
@@ -61,11 +62,6 @@ export function ociPrefill(configPath: string, keyPath?: string): Map<string, st
 export function parseRepo(remoteUrl: string): string | null {
   const m = remoteUrl.trim().match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?$/);
   return m ? `${m[1]}/${m[2]}` : null;
-}
-
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
 }
 
 export function detectRepo(cwd: string): string | null {
@@ -269,7 +265,7 @@ export async function gatherSecrets(
  * needs (the required tokens from its provider packs + the agent RUN_TOKEN + its manifest `tokens`)
  * and flag any that are MISSING. Best-effort: it can't see secret VALUES, so it catches the
  * missing-secret class (the most common deploy footgun); expiry/scope stay a `verify()` concern. */
-async function secretsCheck(name: string | undefined, repo: string): Promise<void> {
+async function secretsCheck(name: string | undefined, repo: string): Promise<number> {
   const { config } = await loadManifest();
   const tools = name ? config.tools.filter((t) => t.name === name) : config.tools;
   if (name && tools.length === 0) throw new Error(`no tool "${name}" in the manifest`);
@@ -303,34 +299,36 @@ async function secretsCheck(name: string | undefined, repo: string): Promise<voi
   }
   if (present)
     console.log(`\n${missing === 0 ? '✔ all required secrets present' : `✘ ${missing} missing`}`);
-  process.exit(missing > 0 ? 1 : 0);
+  return missing > 0 ? 1 : 0;
 }
 
-export async function secretsCommand(args: string[]): Promise<void> {
-  const sub = args[0];
+export async function secretsCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('secrets', args, {
+    value: ['--repo', '--env', '--oci-config', '--oci-key'],
+  });
+  const sub = parsed.positional[0];
 
   if (sub === 'check') {
-    const name = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
-    const repo = flag(args, '--repo') ?? detectRepo(process.cwd());
+    const name = parsed.positional[1];
+    const repo = parsed.values['--repo'] ?? detectRepo(process.cwd());
     if (!repo) throw new Error('could not determine the repo — pass --repo owner/repo');
-    await secretsCheck(name, repo);
-    return;
+    return secretsCheck(name, repo);
   }
 
   if (sub === 'gather') {
-    const name = args[1];
-    if (!name || name.startsWith('-')) {
+    const name = parsed.positional[1];
+    if (!name) {
       throw new Error('usage: greenlight secrets gather <name> [--repo owner/repo] [--env <env>]');
     }
-    const repo = flag(args, '--repo') ?? detectRepo(process.cwd());
+    const repo = parsed.values['--repo'] ?? detectRepo(process.cwd());
     if (!repo) throw new Error('could not determine the repo — pass --repo owner/repo');
-    const ociConfig = flag(args, '--oci-config');
-    const ociKey = flag(args, '--oci-key');
+    const ociConfig = parsed.values['--oci-config'];
+    const ociKey = parsed.values['--oci-key'];
     const prefill = ociConfig
       ? ociPrefill(resolve(process.cwd(), ociConfig), ociKey && resolve(process.cwd(), ociKey))
       : undefined;
-    await gatherSecrets(name, repo, flag(args, '--env'), prefill);
-    return;
+    await gatherSecrets(name, repo, parsed.values['--env'], prefill);
+    return 0;
   }
 
   console.log(
@@ -338,5 +336,5 @@ export async function secretsCommand(args: string[]): Promise<void> {
       '  greenlight secrets gather <name> [--repo owner/repo] [--env <env>]   # guided, link-first, straight to GitHub (no disk/logs)\n' +
       '    [--oci-config <path>] [--oci-key <path>]                           # auto-fill OCI auth from the API-key config preview + .pem',
   );
-  process.exit(sub ? 1 : 0);
+  return sub ? 1 : 0;
 }

@@ -22,10 +22,10 @@ afterAll(() => new Promise<void>((r) => server.close(() => r())));
 function fakeAdapter(deployUrl: string): Adapter {
   return {
     target: 'workers',
+    deployStyle: 'push',
     build: async () => ({ artifactDir: '/tmp/stub' }),
     deploy: async () => ({ url: deployUrl }),
     url: () => deployUrl,
-    teardown: async () => {},
   };
 }
 

@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones/greenlight-shared';
+import { parseFlags } from '../args';
 import { loadManifest } from '../manifest';
 import { infraRefs, installedVersion } from '../refs';
 import { resolveMigrationsDir } from './migrations';
@@ -200,6 +201,33 @@ export function versionDriftCheck(root: string): DoctorCheck {
     : { name, status: 'warn', detail: `infra ?ref pins not uniform: ${refList.join(', ')}` };
 }
 
+/** M3 (local only): has `greenlight preview` passed for HEAD? The receipt is gitignored, so this
+ * is a pre-push nudge on the dev machine — CI skips it (receipts never exist there), keeping
+ * `doctor --strict` CI-safe. The cross-environment version of this signal is the `preview` stage
+ * event joined to deploy events on git_sha in the metrics store. */
+export function previewReceiptCheck(root: string): DoctorCheck {
+  const name = 'local gate ran for HEAD';
+  if (process.env.CI)
+    return { name, status: 'skip', detail: 'CI — preview receipts are local-only' };
+  let head: string;
+  try {
+    head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return { name, status: 'skip', detail: 'not a git repo' };
+  }
+  return existsSync(join(root, '.greenlight', `preview-${head}`))
+    ? { name, status: 'ok', detail: `preview receipt for ${head.slice(0, 7)}` }
+    : {
+        name,
+        status: 'warn',
+        detail: `no preview receipt for HEAD (${head.slice(0, 7)}) — run \`greenlight preview <name>\` before pushing`,
+      };
+}
+
 /** Submodule drift: `git submodule status` prefixes a line with `+` (checked-out ≠ recorded),
  * `-` (uninitialized), or `U` (conflicts). Any of those means a `git status`-dirty pointer that
  * can pin an unexpected revision in a commit / CI checkout. Warn (don't fail) — a drifted submodule
@@ -278,9 +306,11 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
         : 'no data:supabase / target:oci|docker tools',
   });
 
-  // Local consistency (no creds): lockstep + submodule drift.
+  // Local consistency (no creds): lockstep + submodule drift + workflow/manifest sync + the
+  // local-gate nudge.
   checks.push(versionDriftCheck(root));
   checks.push(submoduleDriftCheck(root));
+  checks.push(previewReceiptCheck(root));
   // Live operational health (DNS + reachability + the cred-bound checks) runs under `--live` —
   // see runDoctorLive. Kept out of the default so a transient outage never gates CI.
   return checks;
@@ -343,18 +373,19 @@ export async function runDoctorLive(config: GreenlightConfig): Promise<DoctorChe
 
 const ICON = { ok: '✔', warn: '!', fail: '✘', skip: '·' } as const;
 
-export async function doctorCommand(args: string[] = []): Promise<void> {
+export async function doctorCommand(args: string[] = []): Promise<number> {
+  const parsed = parseFlags('doctor', args, { boolean: ['--live', '--strict'] });
   let config: GreenlightConfig;
   try {
     ({ config } = await loadManifest());
     console.log('✔ manifest: loaded & valid\n');
   } catch (e) {
     console.error(`✘ manifest: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
+    return 1;
   }
 
-  const live = args.includes('--live');
-  const strict = args.includes('--strict');
+  const live = parsed.flags.has('--live');
+  const strict = parsed.flags.has('--strict');
   const checks = runDoctor(config, process.cwd());
   if (live) {
     console.log('  (probing live prod URLs…)');
@@ -371,5 +402,5 @@ export async function doctorCommand(args: string[] = []): Promise<void> {
   if (!live) console.log('· run `greenlight doctor --live` for DNS + reachability probes');
   if (!strict && warned) console.log('· run `greenlight doctor --strict` to fail on warnings (CI)');
   // Failures always gate; --strict makes warnings (drift) gate too — the CI-enforceable mode.
-  process.exit(failed > 0 || (strict && warned > 0) ? 1 : 0);
+  return failed > 0 || (strict && warned > 0) ? 1 : 0;
 }

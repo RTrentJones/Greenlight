@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAdapter, dockerConfig, ociConfig, ociRestartArgs, sshDeployArgs } from '../index';
+import {
+  createAdapter,
+  dockerConfig,
+  ociConfig,
+  ociRestartArgs,
+  sshDeployArgs,
+  wranglerRollbackArgs,
+} from '../index';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -101,5 +108,54 @@ describe('createAdapter(oci)', () => {
   it('vercel stays a skeleton (deploy rides git-integration)', async () => {
     const a = createAdapter('vercel', { domain: 'example.dev', name: 'app' });
     await expect(a.deploy('.', 'prod')).rejects.toThrow(/git-integration/);
+  });
+});
+
+describe('deployStyle (S7 — contract-level, not throw-discovery)', () => {
+  it('push targets declare push; vercel declares git', () => {
+    const ctx = { domain: 'example.dev', name: 'x' };
+    expect(createAdapter('workers', ctx).deployStyle).toBe('push');
+    expect(createAdapter('oci', ctx).deployStyle).toBe('push');
+    expect(createAdapter('docker', ctx).deployStyle).toBe('push');
+    expect(createAdapter('vercel', ctx).deployStyle).toBe('git');
+  });
+});
+
+describe('rollback (S2 — replaces the throw-only teardown)', () => {
+  it('oci/docker return a typed no with the heal path (mutable :prod tag)', async () => {
+    const ctx = { domain: 'example.dev', name: 'bamcp' };
+    for (const target of ['oci', 'docker'] as const) {
+      const r = await createAdapter(target, ctx).rollback?.('.', 'prod');
+      expect(r?.ok).toBe(false);
+      expect(r?.detail).toMatch(/mutable :prod/);
+      expect(r?.detail).toMatch(/follow-up/);
+    }
+  });
+
+  it('workers without a captured previous version returns the manual path, never throws', async () => {
+    const a = createAdapter('workers', { domain: 'example.dev', name: 'x' });
+    const r = await a.rollback?.('.', 'prod', undefined);
+    expect(r?.ok).toBe(false);
+    expect(r?.detail).toMatch(/wrangler rollback/);
+  });
+
+  it('vercel has no rollback (git-integration owns its deploys)', () => {
+    const a = createAdapter('vercel', { domain: 'example.dev', name: 'x' });
+    expect(a.rollback).toBeUndefined();
+  });
+});
+
+describe('wranglerRollbackArgs', () => {
+  it('builds the non-interactive rollback invocation', () => {
+    expect(wranglerRollbackArgs('ver-123', 'prod')).toEqual([
+      'exec',
+      'wrangler',
+      'rollback',
+      'ver-123',
+      '--env',
+      'prod',
+      '--message',
+      'greenlight auto-rollback (post-deploy verify failed)',
+    ]);
   });
 });

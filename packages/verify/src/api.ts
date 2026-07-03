@@ -3,6 +3,27 @@ import { type ApiSpec, type VerifyCheck, type VerifyReport, msg, report } from '
 const trimSlash = (s: string) => s.replace(/\/+$/, '');
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_LINKS = 50;
+/** Concurrent fetches for the internal-link crawl. Serial was the gate's slowest path: 50 links
+ * × a 10s timeout each is minutes of wall time per settle attempt when an origin is degraded. */
+const LINK_POOL_SIZE = 6;
+
+/** Run tasks with at most `limit` in flight; results keep task order. Exported for unit tests. */
+export async function pool<T>(
+  tasks: Array<() => Promise<T>>,
+  limit = LINK_POOL_SIZE,
+): Promise<T[]> {
+  const results = new Array<T>(tasks.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      results[i] = await (tasks[i] as () => Promise<T>)();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
 /** Cap on how much of a response body we buffer. The `contains`/feed/link checks only need a prefix;
  * without a cap a huge or cached error body would be read fully into memory. */
 const MAX_BODY_CHARS = 2_000_000;
@@ -114,15 +135,17 @@ async function checkInternalLinks(
         detail: `no internal links found on ${base}/ (status ${res.status}) — page empty or unparseable`,
       };
     }
-    const broken: string[] = [];
-    for (const href of hrefs) {
-      try {
-        const r = await timedFetch(base + href, timeoutMs);
-        if (r.status >= 400) broken.push(`${href} (${r.status})`);
-      } catch {
-        broken.push(`${href} (unreachable)`);
-      }
-    }
+    const results = await pool(
+      [...hrefs].map((href) => async () => {
+        try {
+          const r = await timedFetch(base + href, timeoutMs);
+          return r.status >= 400 ? `${href} (${r.status})` : null;
+        } catch {
+          return `${href} (unreachable)`;
+        }
+      }),
+    );
+    const broken = results.filter((r): r is string => r !== null);
     const capNote = capped ? `; capped at first ${max} — raise maxLinks to check more` : '';
     return {
       name: `no broken internal links (${hrefs.size} checked${capped ? `, capped at ${max}` : ''})`,
@@ -168,34 +191,113 @@ function buildTasks(base: string, spec: ApiSpec): Array<() => Promise<VerifyChec
   return tasks;
 }
 
-export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyReport> {
+/** Run a task and stamp the check with its wall time + how many attempts it has had so far —
+ * the raw per-check signal for gate-latency trends and the flake burndown (a fail-then-pass at
+ * attempts>1 is eventual consistency, measured instead of guessed). */
+async function timedAttempt(
+  task: () => Promise<VerifyCheck>,
+  attempt: number,
+): Promise<VerifyCheck> {
+  const start = Date.now();
+  const check = await task();
+  check.durationMs = Date.now() - start;
+  check.attempts = attempt;
+  return check;
+}
+
+/** E3 artifact identity: probe `<base>/__version` for `{ sha }` and compare to the sha this
+ * verify is gating. Graceful adoption path — a tool that doesn't expose the endpoint (404 /
+ * non-JSON) or was built without a sha (`sha: null`) gets a PASSING "sha unverified" check, so
+ * enforcement turns on per-tool by exposing the route. A present-but-DIFFERENT sha fails hard:
+ * the URL is serving a different artifact than the one being gated. Prefix comparison so a
+ * short sha on either side still matches. */
+async function checkDeployedSha(
+  base: string,
+  expectedSha: string,
+  timeoutMs: number,
+): Promise<VerifyCheck> {
+  const name = 'deployed sha matches expected';
+  const unverified = (why: string): VerifyCheck => ({
+    name,
+    pass: true,
+    detail: `${why} — sha unverified (serve { sha } at /__version to enforce artifact identity)`,
+  });
+  try {
+    const res = await timedFetch(`${base}/__version`, timeoutMs);
+    if (res.status !== 200) return unverified(`/__version → ${res.status}`);
+    const body = await boundedText(res, 10_000);
+    let sha: unknown;
+    try {
+      sha = (JSON.parse(body) as { sha?: unknown }).sha;
+    } catch {
+      return unverified('/__version is not JSON');
+    }
+    if (sha == null || sha === '') return unverified('/__version has no sha (built without one)');
+    if (typeof sha !== 'string') {
+      return { name, pass: false, detail: `/__version sha is not a string: ${String(sha)}` };
+    }
+    const match = sha.startsWith(expectedSha) || expectedSha.startsWith(sha);
+    return {
+      name,
+      pass: match,
+      detail: match
+        ? `sha ${sha.slice(0, 12)}`
+        : `deployed ${sha.slice(0, 12)} != expected ${expectedSha.slice(0, 12)} — this URL is serving a DIFFERENT artifact than the one being gated`,
+    };
+  } catch (e) {
+    return { name, pass: false, detail: msg(e) };
+  }
+}
+
+export async function verifyApi(
+  baseUrl: string,
+  spec: ApiSpec,
+  expectedSha?: string,
+): Promise<VerifyReport> {
   const base = trimSlash(baseUrl);
-  const retries = Math.max(0, spec.settleRetries ?? 0);
+  const settleRetries = Math.max(0, spec.settleRetries ?? 0);
   const delayMs = spec.settleMs ?? 5000;
+  const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // Identity gate FIRST, on its OWN settle budget: content checks against a not-yet-propagated
+  // (or wrong) deployment are worse than wasted — a green there is a false green for the sha
+  // being gated. The identity probe and the content settle loop each get the full `settleRetries`
+  // independently — `/__version` and the content paths propagate on separate clocks (both are
+  // "some paths" a static host can serve late), so a slow identity match must NOT eat into the
+  // budget the content checks need. If the right artifact never appears, content is SKIPPED.
+  const identityChecks: VerifyCheck[] = [];
+  if (expectedSha) {
+    const task = () => checkDeployedSha(base, expectedSha, timeoutMs);
+    let check = await timedAttempt(task, 1);
+    let identityRetries = settleRetries;
+    while (!check.pass && identityRetries > 0) {
+      identityRetries -= 1;
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      check = await timedAttempt(task, (check.attempts ?? 1) + 1);
+    }
+    identityChecks.push(check);
+    if (!check.pass) return report('api', baseUrl, identityChecks);
+  }
 
   // Pair each task with its latest result so the settle loop can re-run ONLY the still-failing ones.
   const state = await Promise.all(
-    buildTasks(base, spec).map(async (task) => ({ task, check: await task() })),
+    buildTasks(base, spec).map(async (task) => ({ task, check: await timedAttempt(task, 1) })),
   );
 
-  // Eventual-consistency settle: re-run ONLY the still-failing checks, up to `retries` more times.
-  // A just-deployed static host can serve some paths before others; this absorbs that lag without
-  // re-hitting passing endpoints and without masking a real failure (which still fails, after the
-  // retries). Each fetch is timeout-bounded, so the total settle window is finite.
-  for (let i = 0; i < retries && !state.every((s) => s.check.pass); i++) {
+  // Eventual-consistency settle: re-run ONLY the still-failing checks, up to `settleRetries` more
+  // times. A just-deployed static host can serve some paths before others; this absorbs that lag
+  // without re-hitting passing endpoints and without masking a real failure (which still fails,
+  // after the retries). Each fetch is timeout-bounded, so the total settle window is finite.
+  for (let i = 0; i < settleRetries && !state.every((s) => s.check.pass); i++) {
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     await Promise.all(
       state
         .filter((s) => !s.check.pass)
         .map(async (s) => {
-          s.check = await s.task();
+          s.check = await timedAttempt(s.task, (s.check.attempts ?? 1) + 1);
         }),
     );
   }
 
-  return report(
-    'api',
-    baseUrl,
-    state.map((s) => s.check),
-  );
+  return report('api', baseUrl, [...identityChecks, ...state.map((s) => s.check)]);
 }

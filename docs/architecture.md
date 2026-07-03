@@ -93,12 +93,18 @@ The blog must **never** use Supabase for state (Supabase pauses; the blog must s
 ## The deploy-target adapter contract
 
 The product is the contract; frameworks are swappable. Every target
-([`packages/adapters`](../packages/adapters)) implements the same four hooks:
+([`packages/adapters`](../packages/adapters)) implements the same hooks:
 
-- `build()`
-- `deploy(toolDir, env) -> { url }`
+- `deployStyle: 'push' | 'git'` — Greenlight builds+deploys directly, or the platform's git
+  integration does (vercel); callers branch on this instead of catching a not-wired throw
+- `build()` — env-aware; bakes `SITE_URL` and `GREENLIGHT_SHA` (artifact identity) into the build
+- `deploy(toolDir, env) -> { url, previous }` — `previous` captures the version that was live
+  BEFORE the deploy (the rollback target)
 - `url(toolName, env) -> string` — **deterministic**, so verification targets it without scraping logs
-- `teardown()`
+- `rollback?(toolDir, env, previous)` — restore the previously-live version after a failed
+  post-deploy verify (`ship`'s reaction path). workers: real (wrangler versions); oci/docker: a
+  typed `{ ok: false }` with the heal path until image digest-pinning lands. (Replaced `teardown`,
+  which every adapter only ever threw from.)
 
 Switching a tool between Workers / Vercel / OCI is config, not a rewrite.
 
@@ -282,7 +288,7 @@ simplicity now, and each has a clear path to generalize later if the audience wi
   right here:* one identity, one place for secrets, OIDC-to-cloud, and zero extra moving parts for a
   solo setup that already lives on GitHub. *Cost:* porting to GitLab CI / Jenkins / Buildkite would
   mean reworking the emitted workflows and the secret plumbing. *Future improvement:* a CI-provider
-  adapter layer mirroring the deploy-target adapter contract (`build`/`deploy`/`url`/`teardown`),
+  adapter layer mirroring the deploy-target adapter contract (`build`/`deploy`/`url`/`rollback`),
   so the emitted pipeline becomes config, not GitHub-only YAML.
 
 - **Lockstep versioning: the npm CLI version == the `MODULE_REF` Terraform git tag.** A release bumps

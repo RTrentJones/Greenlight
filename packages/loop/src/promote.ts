@@ -10,8 +10,18 @@ import { execFileSync } from 'node:child_process';
 export interface PromoteCheck {
   canPromote: boolean;
   reason: string;
+  /** The exact commit promotion will advance `to` to — resolved from `opts.commit` (the verified
+   * sha) when given, else the from-branch tip. Set only when `canPromote` is true. */
+  fromCommit?: string;
   /** Non-fatal advisories — e.g. a stale local branch that differs from its `origin/` ref. */
   warnings?: string[];
+}
+
+/** Pin promotion to a specific verified commit (E1): `commit` is the sha the beta verify ran
+ * against. Without it, promote advances `to` to whatever the from-branch tip is AT PROMOTE TIME —
+ * a push landing between "verify beta" and "promote" would fast-forward an unverified commit. */
+export interface CanPromoteOptions {
+  commit?: string;
 }
 
 export interface PromoteResult {
@@ -94,7 +104,12 @@ function staleLocalWarnings(repoDir: string, branches: string[]): string[] {
   return warnings;
 }
 
-export function canPromote(repoDir: string, from = 'develop', to = 'main'): PromoteCheck {
+export function canPromote(
+  repoDir: string,
+  from = 'develop',
+  to = 'main',
+  opts: CanPromoteOptions = {},
+): PromoteCheck {
   // Reason about the verified *remote* state — refresh tracking refs before resolving (best-effort).
   const warnings: string[] = [];
   const fetched = fetchRefs(repoDir, [from, to]);
@@ -116,10 +131,51 @@ export function canPromote(repoDir: string, from = 'develop', to = 'main'): Prom
 
   warnings.push(...staleLocalWarnings(repoDir, [from, to]));
 
+  // Resolve the exact commit promotion advances `to` to. With `opts.commit` (the sha the beta
+  // verify ran against) the gate is IDENTITY-pinned: a push landing on `from` after verification
+  // can no longer ride an unverified commit into prod — we promote the verified commit itself,
+  // and the newer tip stays unpromoted until it verifies.
+  let fromCommit: string;
+  if (opts.commit) {
+    const resolved = tryRev(repoDir, `${opts.commit}^{commit}`);
+    if (!resolved) {
+      return {
+        canPromote: false,
+        reason: `commit "${opts.commit}" not found in ${repoDir} — fetch first, or check the sha`,
+        warnings,
+      };
+    }
+    fromCommit = resolved;
+    const tip = gitOut(repoDir, ['rev-parse', fromRef]);
+    if (tip !== fromCommit) {
+      try {
+        // The verified commit must actually be (or have been) the from-branch state.
+        git(repoDir, ['merge-base', '--is-ancestor', fromCommit, fromRef]);
+        warnings.push(
+          `"${from}" (${tip.slice(0, 7)}) has moved past the verified commit ${fromCommit.slice(0, 7)} — ` +
+            `promoting ONLY the verified commit; the newer ${from} commit(s) stay unpromoted until they verify.`,
+        );
+      } catch {
+        return {
+          canPromote: false,
+          reason: `commit ${fromCommit.slice(0, 7)} is not on "${fromRef}" — it was never the verified ${from} state (or history was rewritten). Re-verify before promoting.`,
+          warnings,
+        };
+      }
+    }
+  } else {
+    fromCommit = gitOut(repoDir, ['rev-parse', fromRef]);
+  }
+
   try {
-    // exits 0 iff `to` is an ancestor of `from` (fast-forward is possible)
-    git(repoDir, ['merge-base', '--is-ancestor', toRef, fromRef]);
-    return { canPromote: true, reason: `"${to}" can fast-forward to "${from}"`, warnings };
+    // exits 0 iff `to` is an ancestor of the target commit (fast-forward is possible)
+    git(repoDir, ['merge-base', '--is-ancestor', toRef, fromCommit]);
+    return {
+      canPromote: true,
+      reason: `"${to}" can fast-forward to ${opts.commit ? `verified commit ${fromCommit.slice(0, 7)}` : `"${from}"`}`,
+      fromCommit,
+      warnings,
+    };
   } catch {
     return {
       canPromote: false,
@@ -137,20 +193,20 @@ export function canPromote(repoDir: string, from = 'develop', to = 'main'): Prom
  */
 export function promote(
   repoDir: string,
-  opts: { from?: string; to?: string; push?: boolean } = {},
+  opts: { from?: string; to?: string; push?: boolean; commit?: string } = {},
 ): PromoteResult {
   const from = opts.from ?? 'develop';
   const to = opts.to ?? 'main';
 
-  const check = canPromote(repoDir, from, to);
-  if (!check.canPromote) {
+  const check = canPromote(repoDir, from, to, { commit: opts.commit });
+  if (!check.canPromote || !check.fromCommit) {
     return { promoted: false, from, to, reason: check.reason, warnings: check.warnings };
   }
   const warnings = check.warnings;
 
-  // canPromote confirmed both refs resolve + `to` is an ancestor of `from` (a true fast-forward).
-  const fromRef = resolveRef(repoDir, from) as string;
-  const fromCommit = gitOut(repoDir, ['rev-parse', fromRef]);
+  // Use the EXACT commit canPromote resolved (the verified sha under --commit) — re-resolving the
+  // branch here would reopen the verify→promote race a pinned promotion exists to close.
+  const fromCommit = check.fromCommit;
   const current = gitOut(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
 
   if (opts.push) {
@@ -176,10 +232,10 @@ export function promote(
     };
   }
 
-  // Local-only fast-forward (developer machine). Move the local <to> ref to <from>'s commit without
-  // a full checkout: `merge --ff-only` when <to> is checked out, else update the ref directly.
+  // Local-only fast-forward (developer machine). Move the local <to> ref to the target commit
+  // without a full checkout: `merge --ff-only` when <to> is checked out, else update the ref.
   if (current === to) {
-    git(repoDir, ['merge', '--ff-only', fromRef]);
+    git(repoDir, ['merge', '--ff-only', fromCommit]);
   } else {
     git(repoDir, ['update-ref', `refs/heads/${to}`, fromCommit]);
   }

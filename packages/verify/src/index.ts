@@ -29,6 +29,13 @@ export interface VerifyOptions {
   /** Working dir for command-running modes (`test`, and a `playwright` suite): the tool dir the
    * CLI resolves. Default cwd. */
   toolDir?: string;
+  /** The git sha this verify is gating (E3 artifact identity). `api` mode probes `/__version`
+   * FIRST and retries within the settle budget until the deployed sha matches — otherwise the
+   * settle loop can green-light the PREVIOUS deployment while the new one is still propagating,
+   * and the content checks validate the wrong artifact. Graceful where the endpoint is absent or
+   * reports no sha (a passing "sha unverified" check); a MISMATCH after the retries is a hard
+   * fail. Ignored by the non-api modes. */
+  expectedSha?: string;
 }
 
 /**
@@ -64,7 +71,7 @@ export async function verify(
   if (opts?.reachableTimeoutMs) await waitForReachable(baseUrl, opts.reachableTimeoutMs);
   switch (spec.mode) {
     case 'api':
-      return verifyApi(baseUrl, spec);
+      return verifyApi(baseUrl, spec, opts?.expectedSha);
     case 'mcp': {
       const { verifyMcp } = await import('./mcp');
       return verifyMcp(baseUrl, spec);
@@ -90,20 +97,37 @@ export async function verify(
 
 /**
  * Run a list of specs against the same URL (a `verify.config.ts` may export an array to
- * combine modes — e.g. `[test, api, agent-web]`). Returns one report per spec; aggregate
- * pass = every spec passed. The reachable wait runs once, before the first spec.
+ * combine modes — e.g. `[test, api, agent-web]`). Returns one report per spec, in spec order;
+ * aggregate pass = every spec passed. The reachable wait runs once, up front.
+ *
+ * Scheduling: specs run serially by default. ADJACENT specs marked `concurrency: 'parallel'`
+ * run as one overlapped batch — right for network-bound modes (api/mcp) where serial execution
+ * just sums the waits. CPU-bound (`test`) and LLM/browser modes should stay serial.
  */
 export async function verifyAll(
   baseUrl: string,
   specs: VerifySpec[],
   opts?: VerifyOptions,
 ): Promise<VerifyReport[]> {
-  const reports: VerifyReport[] = [];
-  let waited = false;
-  for (const spec of specs) {
-    const perSpec = waited ? { ...opts, reachableTimeoutMs: 0 } : opts;
-    reports.push(await verify(baseUrl, spec, perSpec));
-    waited = true;
+  if (opts?.reachableTimeoutMs) await waitForReachable(baseUrl, opts.reachableTimeoutMs);
+  const perSpec: VerifyOptions = { ...opts, reachableTimeoutMs: 0 };
+
+  const reports: VerifyReport[] = new Array(specs.length);
+  let i = 0;
+  while (i < specs.length) {
+    if (specs[i]?.concurrency === 'parallel') {
+      const start = i;
+      while (i < specs.length && specs[i]?.concurrency === 'parallel') i++;
+      const batch = await Promise.all(
+        specs.slice(start, i).map((spec) => verify(baseUrl, spec, perSpec)),
+      );
+      batch.forEach((r, j) => {
+        reports[start + j] = r;
+      });
+    } else {
+      reports[i] = await verify(baseUrl, specs[i] as VerifySpec, perSpec);
+      i++;
+    }
   }
   return reports;
 }

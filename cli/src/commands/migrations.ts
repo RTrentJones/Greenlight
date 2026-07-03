@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanSqlFiles } from '@rtrentjones/greenlight-shared';
+import { parseFlags } from '../args';
 
 // Common migration dirs, in precedence order — `migrations scan` (no <dir>) uses the first that
 // exists, so the gate wires into a supabase OR a neon/Drizzle/Prisma tool with no path argument.
@@ -26,18 +27,19 @@ export function resolveMigrationsDir(explicit?: string, root: string = process.c
  * `--strict` also fails on `warn`s. Wire it into a data tool's CI before `supabase db push` / the
  * apply step. Acknowledge an intentional op with an inline `-- greenlight:allow`.
  */
-export async function migrationsCommand(args: string[]): Promise<void> {
+export async function migrationsCommand(args: string[]): Promise<number> {
   if (args[0] !== 'scan') {
     console.log(
       `usage: greenlight migrations scan [<dir>] [--strict]
   scan SQL migrations for data-destroying / lock-heavy statements (the pre-apply gate).
   no <dir> → auto-detects ${CANDIDATE_DIRS.join(' | ')}. Acknowledge an intentional op with \`-- greenlight:allow\`.`,
     );
-    process.exit(args[0] ? 1 : 0);
+    return args[0] ? 1 : 0;
   }
 
-  const dir = resolveMigrationsDir(args.slice(1).find((a) => !a.startsWith('-')));
-  const strict = args.includes('--strict');
+  const parsed = parseFlags('migrations scan', args.slice(1), { boolean: ['--strict'] });
+  const dir = resolveMigrationsDir(parsed.positional[0]);
+  const strict = parsed.flags.has('--strict');
 
   let names: string[];
   try {
@@ -46,11 +48,11 @@ export async function migrationsCommand(args: string[]): Promise<void> {
       .sort();
   } catch {
     console.log(`· no migrations dir at ${dir} — nothing to scan`);
-    process.exit(0);
+    return 0;
   }
   if (names.length === 0) {
     console.log(`· no .sql files in ${dir} — nothing to scan`);
-    process.exit(0);
+    return 0;
   }
 
   const files = names.map((f) => ({
@@ -61,7 +63,7 @@ export async function migrationsCommand(args: string[]): Promise<void> {
 
   if (findings.length === 0) {
     console.log(`✔ migrations scan: ${names.length} file(s) clean (${dir})`);
-    process.exit(0);
+    return 0;
   }
 
   for (const f of findings) {
@@ -76,5 +78,5 @@ export async function migrationsCommand(args: string[]): Promise<void> {
   console.log(
     `\n${verdict} (${dangers.length} danger, ${findings.length - dangers.length} warn). Acknowledge an intentional op with \`-- greenlight:allow\`.`,
   );
-  process.exit(blocking.length === 0 ? 0 : 1);
+  return blocking.length === 0 ? 0 : 1;
 }

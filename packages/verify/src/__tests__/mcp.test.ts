@@ -115,6 +115,25 @@ describe('verify mcp', () => {
     expect(r.pass).toBe(false);
   });
 
+  it('exactTools is ON by default when expectTools is non-empty (v0.8.0 drift-guard flip)', async () => {
+    // The stub serves exactly ['ping'] — a spec expecting a subset now fails without opting out.
+    const r = await verify(url, { mode: 'mcp', expectTools: ['ping'] });
+    const drift = r.checks.find((c) => c.name.includes('matches expectTools exactly'));
+    expect(drift).toBeDefined();
+    expect(drift?.pass).toBe(true);
+  });
+
+  it('exactTools: false opts out of the default drift guard', async () => {
+    const r = await verify(url, { mode: 'mcp', expectTools: ['ping'], exactTools: false });
+    expect(r.checks.some((c) => c.name.includes('matches expectTools exactly'))).toBe(false);
+    expect(r.pass).toBe(true);
+  });
+
+  it('the empty-expectTools lane default keeps the drift guard off', async () => {
+    const r = await verify(url, { mode: 'mcp', expectTools: [] });
+    expect(r.checks.some((c) => c.name.includes('matches expectTools exactly'))).toBe(false);
+  });
+
   it('passes spec.headers (e.g. a Bearer token) through the transport — the authed/eval signal', async () => {
     const r = await verify(url, {
       mode: 'mcp',

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { parseFlags } from '../args';
 import { type NewTool, addTool, serializeConfig, upsertTool } from '../config-io';
 import { loadManifest, resolveEntry } from '../manifest';
 import { emitToolTf, providersForTool } from '../tf-emit';
@@ -9,11 +10,6 @@ import { materializeAgentKit } from './agent';
 import { parseRepo } from './secrets';
 
 const REF = MODULE_REF; // framework git ref the generated infra pins (centralized in version.ts)
-
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 // --- pure-ish generators (the personal site repo's files are the template) ---
 
@@ -166,9 +162,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: pnpm install --frozen-lockfile
+      - name: Doctor (consistency gate — no creds needed)
+        run: pnpm exec greenlight doctor --strict
       - name: Resolve target env
         id: env
         run: |
@@ -182,61 +180,81 @@ jobs:
         env:
           CF: \${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: if [ -n "$CF" ]; then echo "have=1" >> "$GITHUB_OUTPUT"; else echo "have=0" >> "$GITHUB_OUTPUT"; fi
-      - name: Deploy + verify
+      - name: Ship (build -> deploy -> SHA-gated verify -> rollback on failure)
         if: steps.creds.outputs.have == '1'
         env:
           CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          pnpm exec greenlight deploy ${name} --env "\${{ steps.env.outputs.env }}"
-          pnpm exec greenlight verify ${name} --env "\${{ steps.env.outputs.env }}"
+        run: pnpm exec greenlight ship ${name} --env "\${{ steps.env.outputs.env }}"
       - name: Skip notice
         if: steps.creds.outputs.have != '1'
-        run: echo "No CLOUDFLARE_API_TOKEN secret — deploy/verify skipped."
+        run: echo "No CLOUDFLARE_API_TOKEN secret — ship skipped."
 `;
 }
 
 function promoteYml(name: string): string {
   return `name: promote
 
-# Gated develop -> main fast-forward: verify beta -> FF -> deploy + verify prod.
+# Gated develop -> main fast-forward, pinned to the VERIFIED sha: capture origin/develop ->
+# verify beta AS that sha -> promote --commit that sha -> check the promoted commit out ->
+# ship prod --expect-sha. Pinning closes the verify->promote race (a push landing on develop
+# mid-run can no longer ride an unverified commit into prod), and the explicit checkout fixes
+# the working-tree trap: the FF moves origin/main, but the CI checkout still holds the DISPATCH
+# ref — building prod from it would ship pre-promotion code.
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Serialize promotes of this tool: the job runs a full prod ship (build -> deploy -> verify ->
+# rollback-on-failure), so two overlapping dispatches could race (the slower run's rollback could
+# stomp the faster run's just-verified deploy). Never cancel an in-flight promote.
+concurrency:
+  group: promote-${name}
+  cancel-in-progress: false
+
 jobs:
   promote:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: pnpm install --frozen-lockfile
       - run: git fetch --no-tags origin main develop
+      - name: Capture the verified sha (what beta gates = what gets promoted)
+        id: sha
+        run: echo "sha=$(git rev-parse origin/develop)" >> "$GITHUB_OUTPUT"
       - name: Check Cloudflare creds
         id: creds
         env:
           CF: \${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: if [ -n "$CF" ]; then echo "have=1" >> "$GITHUB_OUTPUT"; else echo "have=0" >> "$GITHUB_OUTPUT"; fi
-      - name: Verify beta (gate)
-        if: steps.creds.outputs.have == '1'
+      # A missing cred may skip an ACTION, never a CHECK: without creds the beta verify below
+      # would skip — promotion must NEVER fast-forward on an unverified build. Fail loudly.
+      - name: Require verification creds
+        if: steps.creds.outputs.have != '1'
+        run: |
+          echo "::error::promotion requires verification — set CLOUDFLARE_API_TOKEN so the beta gate runs before develop->main."
+          exit 1
+      - name: Verify beta (gate, identity-checked)
         env:
           CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm exec greenlight verify ${name} --env beta
-      - name: Promote (gated fast-forward)
+        run: pnpm exec greenlight verify ${name} --env beta --expect-sha "\${{ steps.sha.outputs.sha }}"
+      - name: Promote (fast-forward pinned to the verified sha)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          pnpm exec greenlight promote ${name} --perform --push
-      - name: Deploy + verify prod
-        if: steps.creds.outputs.have == '1'
+          pnpm exec greenlight promote ${name} --perform --push --commit "\${{ steps.sha.outputs.sha }}"
+      - name: Check out the promoted commit
+        run: |
+          git checkout --detach "\${{ steps.sha.outputs.sha }}"
+          pnpm install --frozen-lockfile
+      - name: Ship prod (build -> deploy -> SHA-gated verify -> rollback on failure)
         env:
           CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          pnpm exec greenlight deploy ${name} --env prod
-          pnpm exec greenlight verify ${name} --env prod
+        run: pnpm exec greenlight ship ${name} --env prod --expect-sha "\${{ steps.sha.outputs.sha }}"
 `;
 }
 
@@ -282,7 +300,7 @@ jobs:
     # command + add the toolchain setup your tests need (setup-node / setup-python / mise) here.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - run: ${testCommand}
 
   build:
@@ -290,17 +308,17 @@ jobs:
     # Native arm64 runner — builds the arm64 image directly (no QEMU emulation, much faster).
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Resolve image ref (GHCR namespaces are lowercase)
         id: img
         run: echo "base=ghcr.io/\${GITHUB_REPOSITORY_OWNER,,}/${name}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: \${{ github.actor }}
           password: \${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
         with:
           context: .
           platforms: linux/arm64
@@ -355,12 +373,11 @@ function ociDeployAndVerifySteps(name: string): string {
             exit 1
           fi
           echo "Resolved ${name} instance: \$OCID"
-          OCI_CONTAINER_INSTANCE_OCID="\$OCID" pnpm exec greenlight deploy ${name} --env prod
-      - name: Verify prod (gate the signal on real health, not just the restart)
-        # The deploy "succeeds" only if the NEW image is actually serving. verify has a built-in
-        # readiness wait (re-pull + container start). A failure here fails the job → the status
-        # posted back is red. oci is verify-gated direct-to-prod (no cheap standing beta on free A1).
-        run: pnpm exec greenlight verify ${name} --env prod`;
+          # ship = deploy (restart -> re-pull) + verify in ONE in-process turn, with stage events.
+          # The ship "succeeds" only if the NEW image is actually serving (verify has a built-in
+          # readiness wait). A failure fails the job → the status posted back is red. oci is
+          # verify-gated direct-to-prod (no cheap standing beta on free A1).
+          OCI_CONTAINER_INSTANCE_OCID="\$OCID" pnpm exec greenlight ship ${name} --env prod`;
 }
 
 /** The docker deploy+verify core (the docker analogue of ociDeployAndVerifySteps): map the per-tool
@@ -369,15 +386,13 @@ function ociDeployAndVerifySteps(name: string): string {
  * Far simpler than oci — no CLI, no instance-OCID resolution; the host is user-owned. */
 function dockerDeployAndVerifySteps(name: string): string {
   const SUF = name.toUpperCase().replace(/-/g, '_');
-  return `      - name: Deploy (SSH \`docker compose pull && up -d\` on the host)
+  return `      - name: Ship (SSH \`docker compose pull && up -d\` -> verify the new image is serving)
         env:
           DOCKER_SSH_HOST: \${{ secrets.DOCKER_SSH_HOST_${SUF} }}
           DOCKER_SSH_USER: \${{ secrets.DOCKER_SSH_USER_${SUF} }}
           DOCKER_SSH_KEY: \${{ secrets.DOCKER_SSH_KEY_${SUF} }}
           DOCKER_SSH_PORT: \${{ secrets.DOCKER_SSH_PORT_${SUF} }}
-        run: pnpm exec greenlight deploy ${name} --env prod
-      - name: Verify prod (gate the signal on real health, not just the restart)
-        run: pnpm exec greenlight verify ${name} --env prod`;
+        run: pnpm exec greenlight ship ${name} --env prod`;
 }
 
 /** Option-B, wrapper side: on the tool's dispatch, run the target's deploy steps (oci: restart the
@@ -409,8 +424,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: pnpm install --frozen-lockfile
 ${deploySteps}
       - name: Report status back to ${toolRepo}
@@ -455,14 +470,18 @@ jobs:
   remediate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: pnpm install --frozen-lockfile
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: '~1.10'
           terraform_wrapper: false
-      - name: Re-apply the instance (recreate it if OCI idle-reclaimed the Always-Free box)
+      # This is the ONE unattended auto-approved apply path (an idle-reclaimed box must heal with
+      # no human awake), so it carries its own safety: plan -> destroy-guard -> apply THE PLAN.
+      # Even a -target'ed heal must never destroy a stateful store — the same backstop the main
+      # infra apply enforces, kept here because this path bypasses that workflow's approval gate.
+      - name: Plan the heal (recreate the instance if OCI idle-reclaimed the Always-Free box)
         env:
           TF_TOKEN_app_terraform_io: \${{ secrets.TF_API_TOKEN }} # HCP state backend auth
           TF_VAR_oci_tenancy_ocid: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
@@ -478,7 +497,15 @@ jobs:
           fi
           terraform -chdir=infra init -input=false
           # -target pulls in the instance's deps (the ${name}_network module) automatically.
-          terraform -chdir=infra apply -input=false -auto-approve -target=module.${name}_instance
+          terraform -chdir=infra plan -input=false -out=tf.plan -target=module.${name}_instance
+          # Destroy-guard: fail if the heal plan would delete/replace any stateful data store.
+          terraform -chdir=infra show -json tf.plan > plan.json
+          BAD=\$(jq '[.resource_changes[]? | select((.change.actions | index("delete")) and (.type | test("supabase_project|neon_project|neon_branch")))] | length' plan.json)
+          if [ "\$BAD" != "0" ]; then
+            echo "::error::heal plan would destroy \$BAD stateful store resource(s) — refusing to auto-apply. Run the gated infra workflow instead."
+            exit 1
+          fi
+          terraform -chdir=infra apply -input=false tf.plan
 ${ociDeployAndVerifySteps(name)}
       - name: Escalate if the self-heal failed
         if: \${{ failure() }}
@@ -521,8 +548,8 @@ jobs:
     # Required-reviewer gate: GitHub pauses here until a reviewer approves the ${name}-prod environment.
     environment: ${name}-prod
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: pnpm install --frozen-lockfile
       - name: Scan migrations (block destructive SQL)
         run: pnpm exec greenlight migrations scan --strict
@@ -564,8 +591,8 @@ jobs:
   remediate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: pnpm install --frozen-lockfile
 ${dockerDeployAndVerifySteps(name)}
       - name: Escalate if the self-heal failed
@@ -602,8 +629,8 @@ jobs:
     if: \${{ github.event.deployment_status.state == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
       # agent-web needs browsers: add \`- run: npx -y playwright install --with-deps chromium\` when
@@ -691,27 +718,31 @@ interface AdoptCtx {
   regPath: string;
 }
 
-export async function adoptCommand(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
+export async function adoptCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('adopt', args, {
+    value: ['--repo', '--lane', '--target', '--data', '--auth', '--envs', '--domain'],
+    boolean: ['--standalone', '--require-migration-approval'],
+  });
+  const name = parsed.positional[0];
+  if (!name) {
     throw new Error(
       'usage: greenlight adopt <name> --repo <url|path> --lane <l> --target <t> [--data --auth --envs] [--require-migration-approval] [--standalone]\n' +
         '  default: wrap <repo> as a tools/<name> submodule + edit infra in this wrapper + push the loop kit into the tool repo.\n' +
         '  --standalone: scaffold a full self-contained consumer into the tool repo (it owns its whole stack).',
     );
   }
-  const repoArg = flag(args, '--repo');
+  const repoArg = parsed.values['--repo'];
   if (!repoArg) throw new Error('adopt needs --repo <url|path> (the existing tool repo to adopt)');
 
-  const lane = flag(args, '--lane');
-  const target = flag(args, '--target');
+  const lane = parsed.values['--lane'];
+  const target = parsed.values['--target'];
   if (!lane || !target) throw new Error('adopt needs --lane and --target');
-  const data = flag(args, '--data') ?? 'none';
-  const auth = flag(args, '--auth') ?? 'none';
-  const envs = flag(args, '--envs')?.split(',') ?? ['beta', 'prod'];
+  const data = parsed.values['--data'] ?? 'none';
+  const auth = parsed.values['--auth'] ?? 'none';
+  const envs = parsed.values['--envs']?.split(',') ?? ['beta', 'prod'];
   // Gate prod DB migrations behind a human approval (emits a gated migrate workflow + sets the
   // manifest flag; pair with `prod_reviewers` on the tool's infra). Only meaningful for data tools.
-  const requireMigrationApproval = args.includes('--require-migration-approval');
+  const requireMigrationApproval = parsed.flags.has('--require-migration-approval');
 
   // The cwd is the central registry (the site repo). Must be a real manifest.
   const { path: regPath, config: reg } = await loadManifest();
@@ -726,7 +757,7 @@ export async function adoptCommand(args: string[]): Promise<void> {
   if (name === 'blog') {
     throw new Error('"blog" is the apex site, not an adopted tool');
   }
-  const domain = flag(args, '--domain') ?? reg.domain;
+  const domain = parsed.values['--domain'] ?? reg.domain;
 
   const ctx: AdoptCtx = {
     name,
@@ -741,8 +772,12 @@ export async function adoptCommand(args: string[]): Promise<void> {
     reg,
     regPath,
   };
-  if (args.includes('--standalone')) return adoptStandalone(ctx);
-  return adoptWrapper(ctx);
+  if (parsed.flags.has('--standalone')) {
+    await adoptStandalone(ctx);
+  } else {
+    await adoptWrapper(ctx);
+  }
+  return 0;
 }
 
 /**

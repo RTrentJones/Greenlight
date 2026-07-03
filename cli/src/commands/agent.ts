@@ -72,7 +72,7 @@ export function materializeAgentKit(dir: string, tool?: ToolKitInfo): void {
  * `greenlight agent sync` — materialize the kit into the current repo (the §15.7
  * fallback for environments not using the Greenlight Claude Code plugin).
  */
-export async function agentCommand(args: string[]): Promise<void> {
+export async function agentCommand(args: string[]): Promise<number> {
   if (args[0] !== 'sync') {
     console.log(
       'usage: greenlight agent sync [<name>]\n' +
@@ -80,7 +80,7 @@ export async function agentCommand(args: string[]): Promise<void> {
         "  <name>     load the manifest and sync that tool's kit into its dir, with the\n" +
         '             target-specific provider skills (oci/vercel/supabase), not just the always-on ones',
     );
-    process.exit(args[0] ? 1 : 0);
+    return args[0] ? 1 : 0;
   }
 
   // Tool-aware sync: a named tool gets its target/data from the manifest so `packsForTool` includes
@@ -95,11 +95,12 @@ export async function agentCommand(args: string[]): Promise<void> {
     console.log(
       `\nSynced the kit for "${name}" → ${entry.dir ?? '.'} (lane=${entry.lane}, target=${entry.target}, data=${entry.data}).`,
     );
-    return;
+    return 0;
   }
 
   materializeAgentKit(process.cwd());
   console.log(
     '\nNote: the Greenlight Claude Code plugin (user scope) is the preferred path; this sync is the fallback.\nRun `/mcp` to authenticate the MCP servers.',
   );
+  return 0;
 }

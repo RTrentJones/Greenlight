@@ -10,6 +10,13 @@ export interface VerifyCheck {
   name: string;
   pass: boolean;
   detail?: string;
+  /** Wall time of the LAST attempt of this check, in ms (set by `api` mode). Exported as
+   * `duration_ms` — the raw signal for gate-latency trends. */
+  durationMs?: number;
+  /** How many times this check ran (1 = passed/failed first try). >1 means the settle loop
+   * re-ran it — a fail-then-pass check at attempts>1 is FLAKY/eventually-consistent, the raw
+   * signal for a flake burndown and for tuning settleRetries/settleMs from data. */
+  attempts?: number;
   /** Scored quality in [0,1] (1 = perfect), when a mode produces one (today: `eval`). Other modes
    * leave it undefined; the `--json` export derives 1.0/0.0 from `pass`. Standards-aligned (0..1,
    * like OpenInference / autoevals). */
@@ -48,6 +55,12 @@ export interface VerifySpecBase {
    * command needs no hard-coded URL. Runs in the tool dir, output bounded, best-effort (never fails
    * the verify). */
   logsOnFailure?: string;
+  /** How `verifyAll` schedules this spec relative to its neighbors in a multi-spec config.
+   * `'parallel'`: may overlap with ADJACENT parallel-marked specs (right for the network-bound
+   * `api`/`mcp` modes — they just await responses). Default `'serial'`: runs alone (right for
+   * `test` — a CPU-bound subprocess — and the LLM/browser modes, whose token/browser contention
+   * makes overlap counterproductive). Report order is preserved either way. */
+  concurrency?: 'serial' | 'parallel';
 }
 
 /** api mode — HTTP assertions (docs/archive/greenlight-v1.md §9/§11). */
@@ -95,9 +108,11 @@ export interface McpSpec extends VerifySpecBase {
   mode: 'mcp';
   /** Tool names that `tools/list` must include. */
   expectTools: string[];
-  /** Drift guard: require `tools/list` to equal `expectTools` EXACTLY — no missing, no extras. Use
-   * this to enforce that a capability added in code is also added to the verify loop (an unexpected
-   * tool, or a renamed/removed one, fails the gate). Default false (subset check via expectTools). */
+  /** Drift guard: require `tools/list` to equal `expectTools` EXACTLY — no missing, no extras.
+   * Enforces that a capability added in code is also added to the verify loop (an unexpected
+   * tool, or a renamed/removed one, fails the gate). DEFAULT ON when `expectTools` is non-empty
+   * (v0.8.0 — the guard is the point of listing tools); set `exactTools: false` to allow extras.
+   * An empty `expectTools` (the lane default smoke spec) keeps it off. */
   exactTools?: boolean;
   /** Optionally call one tool and assert the result is non-error / has keys. */
   call?: { name: string; args?: Record<string, unknown>; expectKeys?: string[] };

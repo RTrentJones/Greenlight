@@ -12,6 +12,7 @@ import { migrationsCommand } from './commands/migrations';
 import { previewCommand } from './commands/preview';
 import { promoteCommand } from './commands/promote';
 import { secretsCommand } from './commands/secrets';
+import { shipCommand } from './commands/ship';
 import { statusCommand } from './commands/status';
 import { verifyCommand } from './commands/verify';
 
@@ -22,9 +23,13 @@ const HELP = `greenlight <command>
   lanes                                         list the valid lane × target × data combinations
   config                                        load & validate the manifest, then print it
   deploy <name> --env <env>                     build + deploy an entry via its target adapter
+  ship <name> --env <beta|prod> [--expect-sha <sha>] [--events <f>] [--no-rollback]
+                                                one loop turn: build -> deploy -> SHA-gated verify
+                                                -> rollback on failure (+ stage events)
   preview <name> [--port <n>]                   build + serve locally + verify (one command)
-  verify <name> [--env <env> | --url <url>] [--json]  run the verify harness (--json: standards-shaped result to stdout)
-  promote <name> [--perform] [--push]           gated develop -> main fast-forward
+  verify <name> [--env <env> | --url <url>] [--json] [--expect-sha <sha>]  run the verify harness
+  promote <name> [--perform] [--push] [--commit <sha>]  gated develop -> main fast-forward
+                                                (--commit pins to the verified sha)
   status <name>                                 last ship/deploy/verify run for a tool (via gh)
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
   secrets check [<name>] [--repo o/r]           list the GitHub secrets a tool's deploy needs + flag missing
@@ -37,7 +42,9 @@ const HELP = `greenlight <command>
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
 
-async function main(): Promise<void> {
+/** Every command returns its exit code; this switch just routes. The ONLY process.exit lives
+ * below — commands stay composable in-process (ship runs deploy→verify→rollback as one flow). */
+async function main(): Promise<number> {
   const [cmd, ...args] = process.argv.slice(2);
 
   switch (cmd) {
@@ -46,18 +53,20 @@ async function main(): Promise<void> {
     case '--help':
     case '-h':
       console.log(HELP);
-      return;
+      return 0;
     case 'init':
       return initCommand(args);
     case 'add':
       return addCommand(args);
     case 'lanes':
       console.log(`Valid lane × target × data combinations:\n${describeMatrix()}`);
-      return;
+      return 0;
     case 'config':
       return configCommand();
     case 'deploy':
       return deployCommand(args);
+    case 'ship':
+      return shipCommand(args);
     case 'preview':
       return previewCommand(args);
     case 'verify':
@@ -83,7 +92,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// process.exit (not just exitCode) — preview leaves detached child handles that would
+// otherwise keep the event loop alive after the command has decided its outcome.
+main().then(
+  (code) => process.exit(code),
+  (err: unknown) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  },
+);

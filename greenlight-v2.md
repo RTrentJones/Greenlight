@@ -110,21 +110,33 @@ discipline. The shape is identical for all; only the lane × target matrix cells
 [deploy-verify-promote skill](.claude/skills/deploy-verify-promote/SKILL.md) carries the matrix.
 
 ```
-branch → change → LOCAL GATE (preview) → ADD TO VERIFY LOOP → SHIP (gated on the tool's tests)
-       → DEPLOY → VERIFY PROD
+branch → change → LOCAL GATE (preview) → ADD TO VERIFY LOOP → PUSH (gated on the tool's tests)
+       → SHIP (build → deploy → SHA-gated verify → rollback on failure) → PROMOTE --commit
 ```
 
-- **Local gate** = `greenlight preview <name>` (spin up locally + verify). The vercel cell uses
-  Vercel's per-PR preview instead; `doctor` accepts it.
+- **Local gate** = `greenlight preview <name>` (spin up locally + verify; `--no-build` to iterate).
+  A passing preview writes a gitignored receipt for HEAD and emits a `preview` stage event, so
+  "did the local gate run for this commit" is measured, not assumed. The vercel cell uses Vercel's
+  per-PR preview instead; `doctor` accepts it.
 - **Add to verify loop** = put the change in the tool's `verify.config.ts` so the gate covers it.
+  A config may export a **function** `(ctx: { env, url, preview }) => spec(s)` instead of reading
+  `GREENLIGHT_*` env vars at module-eval time.
 - **Ship gate** = the tool's **own tests** must pass (oci: build `needs: [test]`; vercel: branch
-  protection requiring the CI check; workers: deploy → verify).
-- **Web tools** also get beta + `promote` (a gated `develop → main` fast-forward after beta verify).
-  **OCI is direct-to-prod** (no beta on the free tier — the local gate + ship-gate are the safety).
+  protection requiring the CI check), then **`greenlight ship <name> --env …`** runs one in-process
+  loop turn: build → deploy → verify **as the shipped sha** → `adapter.rollback` when the
+  post-deploy verify fails (workers restore the previously-live version; oci/docker report the heal
+  path — digest-pinned rollback is a roadmap item). Every stage emits a **StageEvent** (stderr
+  JSON, `--events <file>`, best-effort ingest POST) — the loop's own telemetry: push→healthy
+  latency, first-pass gate rate, settle-retry counts, rollback MTTR.
+- **Web tools** also get beta + `promote` — pinned to the verified sha: the workflow captures
+  `origin/develop`, verifies beta **as that sha** (`--expect-sha`), fast-forwards with
+  `promote --commit <sha>` (refuses/limits to it if develop moved after verification), checks the
+  promoted commit out, and ships prod. **OCI is direct-to-prod** (no beta on the free tier — the
+  local gate + ship-gate are the safety).
 
 `doctor` flags any tool drifting from the model (missing verify spec, no local-preview gate, a
-non-scoped secret name). The `verify` gate — the same code CI runs — is what lets long-running,
-semi-autonomous changes ship with **objective confidence, not vibes**.
+non-scoped secret name, a HEAD with no preview receipt — the last is local-only, skipped in CI). The `verify` gate — the same code CI runs — is what lets
+long-running, semi-autonomous changes ship with **objective confidence, not vibes**.
 
 ## 7. Lanes × targets × data
 
@@ -145,8 +157,8 @@ unattended — use D1/KV or external services).
 
 | mode | what it asserts |
 |---|---|
-| `api` | URL smoke — status codes, headers, no broken internal links |
-| `mcp` | MCP protocol — initialize → `tools/list` → call a tool & assert shape → assert auth rejection; `exactTools` drift-guard |
+| `api` | URL smoke — status codes, headers, no broken internal links (crawled through a bounded pool); with an expected sha, an **artifact-identity probe** of `/__version` gates the settle loop before any content check |
+| `mcp` | MCP protocol — initialize → `tools/list` → call a tool & assert shape → assert auth rejection; `exactTools` drift-guard (**default ON** when `expectTools` is non-empty; `exactTools: false` opts out) |
 | `playwright` | a11y-tree render **and** a real suite (`suite.command`) against the deploy URL (`PLAYWRIGHT_BASE_URL`) |
 | `test` | the tool's own test command |
 | `agent-web` | LLM-driven UI scenarios (lazy-loads `playwright`, degrades to a failing check without the dep / `ANTHROPIC_API_KEY`) |
@@ -154,6 +166,15 @@ unattended — use D1/KV or external services).
 
 `logsOnFailure` runs a command only on failure with `$GREENLIGHT_VERIFY_URL` injected (telemetry
 into the report — no hard-coded URLs). The same harness runs in CI **and** the agent loop.
+
+Every `api` check records `durationMs` and `attempts` (how many settle re-runs it took — the raw
+flakiness signal; both ride the `--json` export), and adjacent specs marked
+`concurrency: 'parallel'` overlap (network-bound `api`/`mcp`; `test`/LLM modes stay serial).
+**Artifact identity:** the workers adapter bakes `GREENLIGHT_SHA` into builds; a tool serves it at
+`/__version`, and `verify --expect-sha <sha>` (or `ship`, which defaults it to the commit being
+shipped) fails hard when the URL serves a **different** artifact — the settle loop can no longer
+green-light the previous deployment. Tools without the endpoint get a passing "sha unverified"
+check, so enforcement turns on per-tool by exposing the route.
 
 **Machine-readable export** — `greenlight verify <name> --json` (or `GREENLIGHT_VERIFY_JSON=1`)
 prints **one** standards-shaped result to **stdout** (OTel-GenAI / OpenInference: `0..1` scores,

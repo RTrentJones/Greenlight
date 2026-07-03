@@ -1,15 +1,11 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { parseFlags } from '../args';
 import { scaffoldConfig } from '../config-io';
 import { ensureTokensForTool } from '../tokens';
 import { MODULE_REF } from '../version';
 import { detectRepo, setGitHubSecret } from './secrets';
-
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 /** Published npm range matching the module tag, e.g. v0.2.9 → ^0.2.9. */
 const NPM_DEP = `^${MODULE_REF.replace(/^v/, '')}`;
@@ -87,8 +83,8 @@ jobs:
       TF_VAR_oci_region: \${{ secrets.TF_VAR_OCI_REGION }}
       TF_VAR_oci_compartment_id: \${{ secrets.TF_VAR_OCI_COMPARTMENT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: '~1.10'
           terraform_wrapper: false
@@ -118,9 +114,13 @@ const TOKEN_FLAGS: Record<string, string> = {
   '--supabase-key': 'SUPABASE_SERVICE_ROLE_KEY',
 };
 
-export async function initCommand(args: string[]): Promise<void> {
-  const force = args.includes('--force');
-  let domain = flag(args, '--domain');
+export async function initCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('init', args, {
+    value: ['--domain', '--repo', ...Object.keys(TOKEN_FLAGS)],
+    boolean: ['--force', '--no-push', '--no-tokens', '--no-verify'],
+  });
+  const force = parsed.flags.has('--force');
+  let domain = parsed.values['--domain'];
   if (!domain) {
     if (!process.stdin.isTTY) throw new Error('init needs --domain <domain> (no TTY for prompts)');
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -152,15 +152,15 @@ export async function initCommand(args: string[]): Promise<void> {
   // The wrapper's GitHub repo — the single secret store. Tokens are pushed STRAIGHT to GitHub
   // Actions (never written to disk). Without a repo yet (fresh dir / no remote), token-setting is
   // deferred with guidance.
-  const repo = flag(args, '--repo') ?? detectRepo(cwd);
+  const repo = parsed.values['--repo'] ?? detectRepo(cwd);
 
   // Non-interactive seeding: every `--*-token` flag is pushed straight to GitHub Actions (value
   // never on disk). GITHUB_* names are reserved by Actions (and the built-in token covers it), so
   // they're skipped. Needs a repo + an authenticated `gh`.
   let pushed = 0;
-  if (repo && !args.includes('--no-push')) {
+  if (repo && !parsed.flags.has('--no-push')) {
     for (const [f, key] of Object.entries(TOKEN_FLAGS)) {
-      const v = flag(args, f);
+      const v = parsed.values[f];
       if (!v || key.startsWith('GITHUB_')) continue;
       try {
         setGitHubSecret(repo, undefined, key, v);
@@ -174,14 +174,14 @@ export async function initCommand(args: string[]): Promise<void> {
 
   // Interactive: gather + fail-fast verify the always-on base tokens (Cloudflare / HCP Terraform)
   // straight to GitHub Actions. TTY only; CI uses the --*-token flags above. `--no-tokens` skips.
-  if (process.stdin.isTTY && !args.includes('--no-tokens')) {
+  if (process.stdin.isTTY && !parsed.flags.has('--no-tokens')) {
     if (repo) {
       try {
         const results = await ensureTokensForTool(
           repo,
           {},
           {
-            verify: !args.includes('--no-verify'),
+            verify: !parsed.flags.has('--no-verify'),
           },
         );
         pushed += results.filter((r) => r.outcome === 'entered').length;
@@ -207,4 +207,5 @@ Next:
   2. set the HCP backend (cloud{} org + workspace) in infra/main.tf   # docs/terraform-state.md
   3. commit + push → CI (.github/workflows/infra.yml) runs \`terraform apply\`
   4. greenlight verify <name> --env prod   |   greenlight doctor`);
+  return 0;
 }

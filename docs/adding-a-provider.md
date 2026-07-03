@@ -134,7 +134,7 @@ new module ref. See [docs/development.md](development.md).
 A new **category** (not just a backend) touches more axes — it's the case that exercises every step:
 
 1. **Schema** — add an `agents` lane (and/or target) + its `MATRIX` row.
-2. **Adapter** — the deploy-target contract (`build`/`deploy`/`url`/`teardown`) for where agents run.
+2. **Adapter** — the deploy-target contract (`deployStyle` + `build`/`deploy`/`url`/`rollback`) for where agents run.
 3. **Verify mode** — agents need behavioural verification: extend `eval` (LLM-judged) or add an
    `agent-eval` mode that drives the agent and judges transcripts, with `exactTools`-style
    drift-guards.

@@ -16,20 +16,35 @@ permissions:
   contents: write
   issues: write
 
+# Serialize promotes of the SAME target: this job now runs a full prod ship (build -> deploy ->
+# verify -> rollback-on-failure), so two overlapping dispatches for one tool could race — the
+# slower run's rollback could stomp the faster run's just-verified-healthy deploy. Never cancel an
+# in-flight promote (a half-applied ff + prod deploy is worse than waiting).
+concurrency:
+  group: promote-${{ inputs.name }}
+  cancel-in-progress: false
+
 jobs:
   promote:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
 
       - run: pnpm install --frozen-lockfile
 
       - name: Fetch branches
         run: git fetch --no-tags origin main develop
+
+      # E1: everything downstream is pinned to THIS sha — the beta verify gates it, promote
+      # fast-forwards to exactly it, and the prod ship builds + identity-checks it. A push landing
+      # on develop mid-run stays unpromoted until it verifies.
+      - name: Capture the verified sha
+        id: sha
+        run: echo "sha=$(git rev-parse origin/develop)" >> "$GITHUB_OUTPUT"
 
       - name: Check Cloudflare creds
         id: creds
@@ -46,25 +61,30 @@ jobs:
           echo "::error::promotion requires verification — set the CLOUDFLARE_API_TOKEN secret so the beta gate runs before develop->main."
           exit 1
 
-      - name: Verify beta (gate)
+      - name: Verify beta (gate, identity-checked)
         if: steps.creds.outputs.have == '1'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm greenlight verify "${{ inputs.name }}" --env beta
+        run: pnpm greenlight verify "${{ inputs.name }}" --env beta --expect-sha "${{ steps.sha.outputs.sha }}"
 
-      - name: Promote (gated fast-forward develop -> main)
+      - name: Promote (fast-forward pinned to the verified sha)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          pnpm greenlight promote "${{ inputs.name }}" --perform --push
+          pnpm greenlight promote "${{ inputs.name }}" --perform --push --commit "${{ steps.sha.outputs.sha }}"
 
-      - name: Deploy + verify prod
+      # The FF moved origin/main, but this job's working tree still holds the DISPATCH ref —
+      # building prod from it would ship the PRE-promotion code. Check out the promoted commit.
+      - name: Check out the promoted commit
+        run: |
+          git checkout --detach "${{ steps.sha.outputs.sha }}"
+          pnpm install --frozen-lockfile
+
+      - name: Ship prod (build -> deploy -> SHA-gated verify -> rollback on failure)
         if: steps.creds.outputs.have == '1'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          pnpm greenlight deploy "${{ inputs.name }}" --env prod
-          pnpm greenlight verify "${{ inputs.name }}" --env prod
+        run: pnpm greenlight ship "${{ inputs.name }}" --env prod --expect-sha "${{ steps.sha.outputs.sha }}"
 
   alert:
     needs: promote

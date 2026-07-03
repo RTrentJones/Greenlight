@@ -2,17 +2,13 @@ import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync 
 import { join, resolve } from 'node:path';
 import { MATRIX, describeMatrix } from '@rtrentjones/greenlight-shared';
 import { emitAgentDeployWorkflow } from '../agent-deploy';
+import { parseFlags } from '../args';
 import { templatesRoot } from '../asset-paths';
 import { addTool, serializeConfig } from '../config-io';
 import { loadManifest } from '../manifest';
 import { emitToolTf, emitWrapperMainTf, providersForTool } from '../tf-emit';
 import { materializeAgentKit } from './agent';
 import { detectRepo, gatherSecrets } from './secrets';
-
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 /** Lane template dir (bundled in the CLI package, or the repo in dev); mcp has oci|workers subdirs. */
 function templateDir(lane: string, target: string): string {
@@ -42,15 +38,29 @@ export function registerWorkspaceMember(cwd: string, member: string): void {
   console.log(`✔ registered ${member} in pnpm-workspace.yaml`);
 }
 
-export async function addCommand(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name || name.startsWith('-')) {
+export async function addCommand(args: string[]): Promise<number> {
+  const parsed = parseFlags('add', args, {
+    value: [
+      '--lane',
+      '--target',
+      '--data',
+      '--auth',
+      '--envs',
+      '--port',
+      '--share',
+      '--repo',
+      '--env',
+    ],
+    boolean: ['--no-tokens'],
+  });
+  const name = parsed.positional[0];
+  if (!name) {
     throw new Error(
       'usage: greenlight add <name> --lane <lane> --target <target> [--data <d>] [--auth <a>] [--envs beta,prod] [--port 8000] [--share <owner>]',
     );
   }
-  const lane = flag(args, '--lane');
-  const target = flag(args, '--target');
+  const lane = parsed.values['--lane'];
+  const target = parsed.values['--target'];
   if (!lane || !target) {
     throw new Error(
       `add needs --lane and --target. Valid combinations:\n${describeMatrix()}\n  (defaults: next→vercel; astro/mcp/agent→workers)`,
@@ -72,17 +82,17 @@ export async function addCommand(args: string[]): Promise<void> {
   }
 
   // Validates the lane × target × data matrix via the schema.
-  const portFlag = flag(args, '--port');
+  const portFlag = parsed.values['--port'];
   const next = addTool(config, {
     name,
     lane,
     target,
-    data: flag(args, '--data'),
-    auth: flag(args, '--auth'),
-    envs: flag(args, '--envs')?.split(','),
+    data: parsed.values['--data'],
+    auth: parsed.values['--auth'],
+    envs: parsed.values['--envs']?.split(','),
     port: portFlag ? Number(portFlag) : undefined,
     // --share <owner>: this tool reads the owner's Neon DB instead of creating its own (one DB, many services).
-    dataShareWith: flag(args, '--share'),
+    dataShareWith: parsed.values['--share'],
   });
   const entry = next.tools.find((t) => t.name === name);
   const data = entry?.data ?? 'none';
@@ -184,12 +194,12 @@ export async function addCommand(args: string[]): Promise<void> {
   // verified, no disk). Already-set base tokens show [already set] (Enter to keep). Interactive
   // only; CI/non-TTY (or --no-tokens) prints the command instead. So adding a tool includes getting
   // exactly the keys that tool needs.
-  const repo = flag(args, '--repo') ?? detectRepo(cwd) ?? '';
-  const gather = !args.includes('--no-tokens') && process.stdin.isTTY && repo !== '';
+  const repo = parsed.values['--repo'] ?? detectRepo(cwd) ?? '';
+  const gather = !parsed.flags.has('--no-tokens') && process.stdin.isTTY && repo !== '';
   if (gather) {
     console.log(`\nGathering ${name}'s provider keys${repo ? ` → ${repo}` : ''}:`);
     try {
-      await gatherSecrets(name, repo, flag(args, '--env'));
+      await gatherSecrets(name, repo, parsed.values['--env']);
     } catch (e) {
       console.log(`✖ secrets gather: ${e instanceof Error ? e.message : String(e)}`);
       console.log(`  retry: greenlight secrets gather ${name}${repo ? ` --repo ${repo}` : ''}`);
@@ -204,4 +214,5 @@ Next:${
   }
   review infra/${name}.tf, then commit + push → CI (infra.yml) runs \`terraform apply\`
   greenlight preview ${name}        # local build + serve + verify`);
+  return 0;
 }
