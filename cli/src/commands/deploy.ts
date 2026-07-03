@@ -30,6 +30,15 @@ export async function deployCommand(args: string[]): Promise<number> {
   }
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });
 
+  // Git-integration targets (vercel) deploy on push to THEIR repo — branch on the contract's
+  // deployStyle instead of catching the adapter's backstop throw.
+  if (adapter.deployStyle === 'git') {
+    console.log(
+      `"${name}" deploys via ${entry.target}'s git integration — push to its repo to deploy; Greenlight manages its infra and verifies the deployment (greenlight verify ${name} --env ${env}).`,
+    );
+    return 0;
+  }
+
   console.log(`build ${name} (${entry.lane}/${entry.target}) in ${entry.dir}`);
   await adapter.build(entry.dir, env);
   console.log(`deploy ${name} → ${env}`);

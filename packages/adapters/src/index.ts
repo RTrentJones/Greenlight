@@ -17,6 +17,15 @@ export interface BuildResult {
 
 export interface DeployResult {
   url: string;
+  /** The previously-live version, captured BEFORE this deploy — the rollback target `ship`
+   * hands back to `rollback()` when the post-deploy verify fails. Absent when the target has no
+   * addressable versions (oci/docker mutable-tag restarts) or the capture failed. */
+  previous?: { versionId?: string };
+}
+
+export interface RollbackResult {
+  ok: boolean;
+  detail: string;
 }
 
 export interface AdapterContext {
@@ -27,15 +36,28 @@ export interface AdapterContext {
 
 export interface Adapter {
   readonly target: Target;
+  /** How deployments reach this target: `'push'` — Greenlight builds+deploys directly (workers/
+   * oci/docker); `'git'` — the platform's git integration deploys on push (vercel), so `deploy`/
+   * `ship` skip the push-deploy and callers must NOT treat build/deploy as callable. Branch on
+   * this instead of catching a not-wired throw. */
+  readonly deployStyle: 'push' | 'git';
   /** Build is env-aware so the adapter can inject env-correct config (e.g. SITE_URL). */
   build(toolDir: string, env: DeployEnv): Promise<BuildResult>;
   deploy(toolDir: string, env: DeployEnv): Promise<DeployResult>;
   /** Deterministic for beta/prod; throws for `preview` (get it from `deploy()`). */
   url(env: DeployEnv): string;
-  teardown(env: DeployEnv): Promise<void>;
+  /** Restore the previously-live version after a failed post-deploy verify (`ship`'s reaction
+   * path). Optional: targets without an addressable previous version return `{ ok: false }` with
+   * the manual heal path in `detail` — never throw. (Replaces `teardown`, which every adapter
+   * only ever threw from — a contract nobody implements is documentation, not a contract.) */
+  rollback?(
+    toolDir: string,
+    env: DeployEnv,
+    previous?: DeployResult['previous'],
+  ): Promise<RollbackResult>;
   /** Fetch the last `lines` of platform logs for this env (telemetry-into-verify fallback when a
-   * spec sets no `logsOnFailure`). Optional + typed-but-unwired for now, like `teardown` — each
-   * target's native log fetch (oci logging-search / vercel logs / wrangler tail) lands later. */
+   * spec sets no `logsOnFailure`). Optional + typed-but-unwired for now — each target's native
+   * log fetch (oci logging-search / vercel logs / wrangler tail) lands later. */
   logs?(env: DeployEnv, lines: number): Promise<string>;
 }
 
@@ -59,11 +81,47 @@ export function buildSha(cwd: string): string | undefined {
   }
 }
 
+/** Best-effort: the currently-live Workers version id for this env — captured BEFORE a deploy so
+ * it can be the rollback target. Undefined when wrangler/the JSON shape is unavailable (older
+ * wrangler, first deploy, no creds); rollback then degrades to a manual-path message. */
+export function currentWorkersVersionId(toolDir: string, env: DeployEnv): string | undefined {
+  try {
+    const out = execFileSync(
+      'pnpm',
+      ['exec', 'wrangler', 'versions', 'list', '--env', env, '--json'],
+      { cwd: toolDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const versions = JSON.parse(out) as Array<{ id?: string; metadata?: { created_on?: string } }>;
+    if (!Array.isArray(versions) || versions.length === 0) return undefined;
+    const latest = [...versions].sort((a, b) =>
+      (b.metadata?.created_on ?? '').localeCompare(a.metadata?.created_on ?? ''),
+    )[0];
+    return latest?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The wrangler argv that restores a previous version. Pure (exported for unit tests). */
+export function wranglerRollbackArgs(versionId: string, env: DeployEnv): string[] {
+  return [
+    'exec',
+    'wrangler',
+    'rollback',
+    versionId,
+    '--env',
+    env,
+    '--message',
+    'greenlight auto-rollback (post-deploy verify failed)',
+  ];
+}
+
 /** Cloudflare Workers (Static Assets + room for a future dynamic Worker). */
 function workersAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
   return {
     target: 'workers',
+    deployStyle: 'push',
     async build(toolDir, env) {
       // Inject the env-correct site URL so sitemap/RSS/canonicals match (beta vs prod).
       // preview URLs aren't deterministic (resolveUrl throws) — let the tool's default stand.
@@ -81,13 +139,30 @@ function workersAdapter(ctx: AdapterContext): Adapter {
       return { artifactDir: join(toolDir, 'dist') };
     },
     async deploy(toolDir, env) {
+      // Capture the live version FIRST — it's the rollback target if the post-deploy verify fails.
+      const previousVersionId = currentWorkersVersionId(toolDir, env);
       // Requires Cloudflare creds (CLOUDFLARE_API_TOKEN); DNS/custom domains via Terraform (Phase 5).
       run('pnpm', ['exec', 'wrangler', 'deploy', '--env', env], toolDir);
-      return { url: url(env) };
+      return { url: url(env), previous: { versionId: previousVersionId } };
     },
     url,
-    async teardown() {
-      throw new Error('workers teardown is not wired yet (later phase).');
+    async rollback(toolDir, env, previous) {
+      if (!previous?.versionId) {
+        return {
+          ok: false,
+          detail:
+            'no previous version id was captured before the deploy — roll back manually: `wrangler versions list` then `wrangler rollback <version-id>` (or the Cloudflare dashboard).',
+        };
+      }
+      try {
+        run('pnpm', wranglerRollbackArgs(previous.versionId, env), toolDir);
+        return { ok: true, detail: `rolled back to version ${previous.versionId}` };
+      } catch (e) {
+        return {
+          ok: false,
+          detail: `wrangler rollback failed: ${e instanceof Error ? e.message : String(e)} — roll back via the Cloudflare dashboard.`,
+        };
+      }
     },
   };
 }
@@ -124,10 +199,22 @@ export function ociRestartArgs(containerInstanceId: string): string[] {
   ];
 }
 
+/** oci/docker share a rollback story: "deploy" restarts against the mutable `:prod` GHCR tag, so
+ * there is no addressable previous version to restore — a true rollback needs the instance pinned
+ * to an image DIGEST (a Terraform-plane change, planned follow-up). Until then the honest answer
+ * is a typed no with the heal path, not a throw. */
+function mutableTagRollback(target: string, healPath: string): Adapter['rollback'] {
+  return async () => ({
+    ok: false,
+    detail: `${target} rollback is not possible with the mutable :prod image tag — ${healPath}. Digest-pinned rollback is a planned follow-up.`,
+  });
+}
+
 function ociAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
   return {
     target: 'oci',
+    deployStyle: 'push',
     async build() {
       // The tool's own CI builds + pushes the container to GHCR (provider-agnostic). Nothing
       // to build here — the image is already published.
@@ -143,9 +230,10 @@ function ociAdapter(ctx: AdapterContext): Adapter {
       return { url: url(env) };
     },
     url,
-    async teardown() {
-      throw new Error('oci teardown is Terraform — `terraform destroy` the oci-instance module.');
-    },
+    rollback: mutableTagRollback(
+      'oci',
+      'push a revert commit (the tool CI rebuilds :prod) or re-run the remediate workflow after re-tagging',
+    ),
   };
 }
 
@@ -204,6 +292,7 @@ function dockerAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
   return {
     target: 'docker',
+    deployStyle: 'push',
     async build() {
       // The tool's own CI builds + pushes the container to GHCR (like oci) — nothing to build here.
       return { artifactDir: '.' };
@@ -227,29 +316,29 @@ function dockerAdapter(ctx: AdapterContext): Adapter {
       return { url: url(env) };
     },
     url,
-    async teardown() {
-      throw new Error(
-        'docker teardown is on the host — `ssh … docker compose down` in the tool dir.',
-      );
-    },
+    rollback: mutableTagRollback(
+      'docker',
+      'push a revert commit (the tool CI rebuilds :prod) or `ssh … docker compose pull && up -d` after re-tagging',
+    ),
   };
 }
 
 function vercelSkeletonAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
   // Vercel deploys ride the project's git integration (Phase 9 / HeistMind); Greenlight
-  // configures the project via Terraform, not a push-deploy here.
+  // configures the project via Terraform, not a push-deploy here. deployStyle:'git' is the
+  // contract-level signal — callers branch on it instead of catching these backstop throws.
   const notWired = (): never => {
     throw new Error(
-      'vercel deploy rides Vercel git-integration — Greenlight manages its infra, not a push-deploy.',
+      'vercel deploy rides Vercel git-integration — Greenlight manages its infra, not a push-deploy. (Callers should branch on deployStyle === "git", not reach this.)',
     );
   };
   return {
     target: 'vercel',
+    deployStyle: 'git',
     build: async () => notWired(),
     deploy: async () => notWired(),
     url,
-    teardown: async () => notWired(),
   };
 }
 
