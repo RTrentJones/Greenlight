@@ -201,6 +201,63 @@ export function versionDriftCheck(root: string): DoctorCheck {
     : { name, status: 'warn', detail: `infra ?ref pins not uniform: ${refList.join(', ')}` };
 }
 
+/** E7: the promote workflow's shell allow-list (`case "$NAME" in blog | tool | …)`) exists as
+ * injection defense-in-depth, but it's hand-mirrored from the manifest — the classic drift pair.
+ * Self-defend it like the plugin mirror: compare the case arm to the manifest names. Regex, not a
+ * YAML parser — the list lives INSIDE a shell `run:` string a YAML parser can't interpret. */
+export function promoteAllowListCheck(config: GreenlightConfig, root: string): DoctorCheck {
+  const name = 'promote allow-list ↔ manifest';
+  const wfPath = join(root, '.github/workflows/promote.yml');
+  if (!existsSync(wfPath)) return { name, status: 'skip', detail: 'no promote.yml' };
+  const text = readFileSync(wfPath, 'utf8');
+  const m = text.match(/case\s+"\$NAME"\s+in\s*\n\s*([^)\n]*)\)/);
+  if (!m?.[1]) {
+    return { name, status: 'skip', detail: 'promote.yml has no case "$NAME" allow-list' };
+  }
+  const listed = m[1]
+    .split('|')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const expected = [...(config.blog ? ['blog'] : []), ...config.tools.map((t) => t.name)];
+  const missing = expected.filter((t) => !listed.includes(t));
+  const extra = listed.filter((t) => !expected.includes(t));
+  if (missing.length === 0 && extra.length === 0) {
+    return { name, status: 'ok', detail: `${listed.length} name(s) in sync` };
+  }
+  const parts = [
+    missing.length ? `missing from allow-list: ${missing.join(', ')}` : '',
+    extra.length ? `not in manifest: ${extra.join(', ')}` : '',
+  ].filter(Boolean);
+  return { name, status: 'warn', detail: `${parts.join('; ')} — update promote.yml's case arm` };
+}
+
+/** M3 (local only): has `greenlight preview` passed for HEAD? The receipt is gitignored, so this
+ * is a pre-push nudge on the dev machine — CI skips it (receipts never exist there), keeping
+ * `doctor --strict` CI-safe. The cross-environment version of this signal is the `preview` stage
+ * event joined to deploy events on git_sha in the metrics store. */
+export function previewReceiptCheck(root: string): DoctorCheck {
+  const name = 'local gate ran for HEAD';
+  if (process.env.CI)
+    return { name, status: 'skip', detail: 'CI — preview receipts are local-only' };
+  let head: string;
+  try {
+    head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return { name, status: 'skip', detail: 'not a git repo' };
+  }
+  return existsSync(join(root, '.greenlight', `preview-${head}`))
+    ? { name, status: 'ok', detail: `preview receipt for ${head.slice(0, 7)}` }
+    : {
+        name,
+        status: 'warn',
+        detail: `no preview receipt for HEAD (${head.slice(0, 7)}) — run \`greenlight preview <name>\` before pushing`,
+      };
+}
+
 /** Submodule drift: `git submodule status` prefixes a line with `+` (checked-out ≠ recorded),
  * `-` (uninitialized), or `U` (conflicts). Any of those means a `git status`-dirty pointer that
  * can pin an unexpected revision in a commit / CI checkout. Warn (don't fail) — a drifted submodule
@@ -279,9 +336,12 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
         : 'no data:supabase / target:oci|docker tools',
   });
 
-  // Local consistency (no creds): lockstep + submodule drift.
+  // Local consistency (no creds): lockstep + submodule drift + workflow/manifest sync + the
+  // local-gate nudge.
   checks.push(versionDriftCheck(root));
   checks.push(submoduleDriftCheck(root));
+  checks.push(promoteAllowListCheck(config, root));
+  checks.push(previewReceiptCheck(root));
   // Live operational health (DNS + reachability + the cred-bound checks) runs under `--live` —
   // see runDoctorLive. Kept out of the default so a transient outage never gates CI.
   return checks;

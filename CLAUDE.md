@@ -35,7 +35,8 @@ CLI surface (`pnpm greenlight …`, or `npx @rtrentjones/greenlight` in a consum
 - `secrets gather <name> [--repo o/r] [--env e]` — guided, hidden-input token prompts straight to GitHub Actions secrets (no disk/argv/logs). `secrets check [<name>]` flags missing ones. **GitHub Actions is the single secret store** — no local secret file.
 - `adopt <name> --repo <url|path> --lane --target [--standalone]` — poly-repo onboarding: wrapper-centric (`tools/<name>` submodule + infra in the wrapper) or `--standalone` (self-contained consumer). App code untouched. See [greenlight-v2.md](greenlight-v2.md) + [docs/architecture.md](docs/architecture.md).
 - `agent sync [<name>]` — materialize the agentic dev loop kit (deploy-verify-promote skill + per-provider skills + `.mcp.json` + CLAUDE.md block) into a repo. Cross-repo via the Claude Code plugin: `/plugin marketplace add RTrentJones/greenlight`.
-- `preview | verify | promote | status | deploy | migrations scan | doctor [--live] [--strict] | config` — the rest of the loop.
+- `ship <name> --env <beta|prod>` — **one loop turn**: build → deploy → **SHA-gated verify** (`/__version` must match the shipped commit) → **rollback on failure**; emits per-stage events (stderr JSON / `--events <file>` / best-effort ingest POST). The workflows' paved road — `deploy`+`verify` remain as the debugging decomposition.
+- `preview [--no-build] | verify [--expect-sha] | promote [--commit <sha>] | status | deploy | migrations scan | doctor [--live] [--strict] | config` — the rest of the loop. `promote --commit` pins the FF to the verified sha (closes the verify→promote race).
 
 ## Development loop (deploy → verify → promote)
 
@@ -71,8 +72,8 @@ Read [greenlight-v2.md](greenlight-v2.md) §3–§14 (or design-doc-v0 §4–§1
 [docs/architecture.md](docs/architecture.md) before non-trivial work. The ideas that drive most
 decisions: the **manifest as single source of truth** (`greenlight.config.ts` drives both the CLI
 and Terraform — keep manifest ↔ tool dir ↔ workflow consistent, a `doctor` check); the orthogonal
-**`lane` × `target`** axes + matrix; the **deploy-target adapter contract** (`build`/`deploy`/
-`url`/`teardown` — switching targets is config, not a rewrite); **MCP servers as a first-class
+**`lane` × `target`** axes + matrix; the **deploy-target adapter contract** (`deployStyle`/`build`/
+`deploy`/`url`/`rollback` — switching targets is config, not a rewrite); **MCP servers as a first-class
 lane** (protocol-level verify, connect at `<name>.<domain>/mcp`); **verification wired to
 promotion** (one `verify(baseUrl, spec)` harness, same code in CI and the agent loop); **three
 git-mapped envs** standardized to `main`/`develop` (keep to `develop`, never `development`); and

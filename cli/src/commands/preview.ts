@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Lane } from '@rtrentjones/greenlight-shared';
 import { allPass } from '@rtrentjones/greenlight-verify';
@@ -12,6 +13,7 @@ import {
   resolveEntry,
 } from '../manifest';
 import { BUILTIN_READY_MS, DESCRIPTOR_READY_MS, readyTimeout } from '../timeouts';
+import { skillVersion, stageEventSink } from './ship';
 import { defaultSpec, printReport, runVerify, warnDefaultSpec } from './verify';
 
 /**
@@ -134,12 +136,15 @@ async function previewViaBuiltIn(
   entry: ResolvedEntry,
   name: string,
   portOverride?: number,
+  skipBuild = false,
 ): Promise<boolean> {
   const plan = servePlan(entry.lane, portOverride);
 
-  if (plan.build) {
+  if (plan.build && !skipBuild) {
     console.log(`build ${name} (${entry.dir})`);
     execFileSync('pnpm', ['-C', entry.dir, 'run', 'build'], { stdio: 'inherit' });
+  } else if (skipBuild) {
+    console.log(`serve ${name} from the existing build (--no-build)`);
   }
 
   console.log(`serve ${name} on :${plan.port}`);
@@ -171,16 +176,53 @@ async function previewViaBuiltIn(
   }
 }
 
+/** M3: the preview receipt + stage event. The receipt (`.greenlight/preview-<sha>`, gitignored)
+ * lets `doctor` warn locally when HEAD was never locally gated; the `preview` stage event shares
+ * ship's vocabulary so tracer can JOIN preview↔deploy on git_sha — skill-compliance ("did the
+ * local gate run before this ship?") becomes a query, not an honor system. Best-effort. */
+function recordPreviewOutcome(name: string, pass: boolean, durationMs: number): void {
+  let sha: string | undefined;
+  try {
+    sha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return; // not a git repo — nothing to attest
+  }
+  if (pass) {
+    try {
+      mkdirSync('.greenlight', { recursive: true });
+      writeFileSync(
+        join('.greenlight', `preview-${sha}`),
+        `${JSON.stringify({ tool: name, at: new Date().toISOString(), pass })}\n`,
+      );
+    } catch {
+      // receipt is advisory
+    }
+  }
+  void stageEventSink()({
+    stage: 'preview',
+    tool: name,
+    env: 'preview',
+    gitSha: sha,
+    durationMs,
+    passed: pass,
+    skillVersion: skillVersion(),
+  });
+}
+
 export async function previewCommand(args: string[]): Promise<number> {
-  const parsed = parseFlags('preview', args, { value: ['--port'] });
+  const parsed = parseFlags('preview', args, { value: ['--port'], boolean: ['--no-build'] });
   const name = parsed.positional[0];
   if (!name) {
-    throw new Error('usage: greenlight preview <name> [--port <n>]');
+    throw new Error('usage: greenlight preview <name> [--port <n>] [--no-build]');
   }
   const portArg = parsed.values['--port'];
   const port = portArg ? Number(portArg) : undefined;
   const { config } = await loadManifest();
   const entry = resolveEntry(config, name);
+  const started = Date.now();
 
   // A preview descriptor handles any target (incl. oci/docker) AND external tools (their code is a
   // submodule here; the descriptor knows how to run it locally). Otherwise fall back to the built-in
@@ -197,7 +239,8 @@ export async function previewCommand(args: string[]): Promise<number> {
       `"${name}" is external and has no preview descriptor — add preview:{ command, … } to its manifest entry (e.g. a docker command), or preview it from its own repo`,
     );
   } else {
-    pass = await previewViaBuiltIn(entry, name, port);
+    pass = await previewViaBuiltIn(entry, name, port, parsed.flags.has('--no-build'));
   }
+  recordPreviewOutcome(name, pass, Date.now() - started);
   return pass ? 0 : 1;
 }

@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildSha, createAdapter } from '@rtrentjones/greenlight-adapters';
 import { type StageEvent, runShip } from '@rtrentjones/greenlight-loop';
@@ -59,7 +59,23 @@ async function postStageEvent(e: StageEvent): Promise<void> {
   }
 }
 
-function stageEventSink(eventsFile?: string): (e: StageEvent) => Promise<void> {
+/** The deploy-verify-promote skill version driving this run: explicit env override, else the
+ * `version:` frontmatter of the repo's installed skill. Stamped on stage events so skill-text
+ * changes can be compared against gate outcomes (first-pass rate per skill version). */
+export function skillVersion(cwd: string = process.cwd()): string | undefined {
+  if (process.env.GREENLIGHT_SKILL_VERSION) return process.env.GREENLIGHT_SKILL_VERSION;
+  try {
+    const text = readFileSync(
+      resolve(cwd, '.claude/skills/deploy-verify-promote/SKILL.md'),
+      'utf8',
+    );
+    return text.match(/^version:\s*["']?([\w.-]+)/m)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+export function stageEventSink(eventsFile?: string): (e: StageEvent) => Promise<void> {
   return async (e) => {
     const line = JSON.stringify({ type: 'greenlight.stage', ...e });
     console.error(line);
@@ -123,7 +139,7 @@ export async function shipCommand(args: string[]): Promise<number> {
     env,
     connectPath: entry.lane === 'mcp' ? '/mcp' : undefined,
     gitSha,
-    skillVersion: process.env.GREENLIGHT_SKILL_VERSION,
+    skillVersion: skillVersion(),
     rollbackOnFailure: !parsed.flags.has('--no-rollback'),
     onStage: stageEventSink(parsed.values['--events']),
     verify: (url) =>

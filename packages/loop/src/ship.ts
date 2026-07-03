@@ -14,7 +14,9 @@ import { type VerifyReport, allPass } from '@rtrentjones/greenlight-verify';
  *    raw feed for push→healthy-in-prod latency, first-pass gate rate, and rollback MTTR.
  */
 
-export type ShipStage = 'build' | 'deploy' | 'verify' | 'rollback';
+/** 'preview' is emitted by the local gate (`greenlight preview`), not by runShip — one event
+ * vocabulary so preview↔deploy events join on gitSha (did the local gate run for this commit?). */
+export type ShipStage = 'preview' | 'build' | 'deploy' | 'verify' | 'rollback';
 
 export interface StageEvent {
   stage: ShipStage;
