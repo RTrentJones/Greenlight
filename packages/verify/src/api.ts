@@ -205,10 +205,76 @@ async function timedAttempt(
   return check;
 }
 
-export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyReport> {
+/** E3 artifact identity: probe `<base>/__version` for `{ sha }` and compare to the sha this
+ * verify is gating. Graceful adoption path — a tool that doesn't expose the endpoint (404 /
+ * non-JSON) or was built without a sha (`sha: null`) gets a PASSING "sha unverified" check, so
+ * enforcement turns on per-tool by exposing the route. A present-but-DIFFERENT sha fails hard:
+ * the URL is serving a different artifact than the one being gated. Prefix comparison so a
+ * short sha on either side still matches. */
+async function checkDeployedSha(
+  base: string,
+  expectedSha: string,
+  timeoutMs: number,
+): Promise<VerifyCheck> {
+  const name = 'deployed sha matches expected';
+  const unverified = (why: string): VerifyCheck => ({
+    name,
+    pass: true,
+    detail: `${why} — sha unverified (serve { sha } at /__version to enforce artifact identity)`,
+  });
+  try {
+    const res = await timedFetch(`${base}/__version`, timeoutMs);
+    if (res.status !== 200) return unverified(`/__version → ${res.status}`);
+    const body = await boundedText(res, 10_000);
+    let sha: unknown;
+    try {
+      sha = (JSON.parse(body) as { sha?: unknown }).sha;
+    } catch {
+      return unverified('/__version is not JSON');
+    }
+    if (sha == null || sha === '') return unverified('/__version has no sha (built without one)');
+    if (typeof sha !== 'string') {
+      return { name, pass: false, detail: `/__version sha is not a string: ${String(sha)}` };
+    }
+    const match = sha.startsWith(expectedSha) || expectedSha.startsWith(sha);
+    return {
+      name,
+      pass: match,
+      detail: match
+        ? `sha ${sha.slice(0, 12)}`
+        : `deployed ${sha.slice(0, 12)} != expected ${expectedSha.slice(0, 12)} — this URL is serving a DIFFERENT artifact than the one being gated`,
+    };
+  } catch (e) {
+    return { name, pass: false, detail: msg(e) };
+  }
+}
+
+export async function verifyApi(
+  baseUrl: string,
+  spec: ApiSpec,
+  expectedSha?: string,
+): Promise<VerifyReport> {
   const base = trimSlash(baseUrl);
-  const retries = Math.max(0, spec.settleRetries ?? 0);
+  let retries = Math.max(0, spec.settleRetries ?? 0);
   const delayMs = spec.settleMs ?? 5000;
+  const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // Identity gate FIRST, inside the settle budget: content checks against a not-yet-propagated
+  // (or wrong) deployment are worse than wasted — a green there is a false green for the sha
+  // being gated. Consumes settle retries while waiting for the right artifact to appear; if it
+  // never does, the content checks are SKIPPED (they would validate the wrong deployment).
+  const identityChecks: VerifyCheck[] = [];
+  if (expectedSha) {
+    const task = () => checkDeployedSha(base, expectedSha, timeoutMs);
+    let check = await timedAttempt(task, 1);
+    while (!check.pass && retries > 0) {
+      retries -= 1;
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      check = await timedAttempt(task, (check.attempts ?? 1) + 1);
+    }
+    identityChecks.push(check);
+    if (!check.pass) return report('api', baseUrl, identityChecks);
+  }
 
   // Pair each task with its latest result so the settle loop can re-run ONLY the still-failing ones.
   const state = await Promise.all(
@@ -230,9 +296,5 @@ export async function verifyApi(baseUrl: string, spec: ApiSpec): Promise<VerifyR
     );
   }
 
-  return report(
-    'api',
-    baseUrl,
-    state.map((s) => s.check),
-  );
+  return report('api', baseUrl, [...identityChecks, ...state.map((s) => s.check)]);
 }

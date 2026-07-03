@@ -156,6 +156,75 @@ describe('promote', () => {
     }
   });
 
+  it('--commit pins promotion to the verified sha when develop matches it', () => {
+    git('checkout', '-q', '-b', 'develop');
+    git('commit', '-q', '--allow-empty', '-m', 'feature');
+    const verified = execFileSync('git', ['rev-parse', 'develop'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+
+    const r = promote(dir, { commit: verified });
+    expect(r.promoted).toBe(true);
+    const mainTip = execFileSync('git', ['rev-parse', 'main'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+    expect(mainTip).toBe(verified);
+  });
+
+  it('--commit promotes ONLY the verified commit when develop moved past it (the verify→promote race)', () => {
+    // The E1 scenario: beta verified feature-1, then feature-2 landed on develop before promote
+    // ran. An unpinned promote would fast-forward main to the UNVERIFIED feature-2; the pinned
+    // promote advances main to exactly the verified commit and warns about the newer tip.
+    git('checkout', '-q', '-b', 'develop');
+    git('commit', '-q', '--allow-empty', '-m', 'feature-1');
+    const verified = execFileSync('git', ['rev-parse', 'develop'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+    git('commit', '-q', '--allow-empty', '-m', 'feature-2 (unverified)');
+    const unverifiedTip = execFileSync('git', ['rev-parse', 'develop'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+
+    const r = promote(dir, { commit: verified });
+    expect(r.promoted).toBe(true);
+    expect(r.warnings?.some((w) => /moved past the verified commit/.test(w))).toBe(true);
+
+    const mainTip = execFileSync('git', ['rev-parse', 'main'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+    expect(mainTip).toBe(verified); // the verified commit — NOT the unverified tip
+    expect(mainTip).not.toBe(unverifiedTip);
+  });
+
+  it('--commit refuses a sha that is not on develop (never the verified state)', () => {
+    git('checkout', '-q', '-b', 'develop');
+    git('commit', '-q', '--allow-empty', '-m', 'feature');
+    // A commit on a side branch — resolvable, but never the develop state.
+    git('checkout', '-q', '-b', 'rogue', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'rogue work');
+    const rogue = execFileSync('git', ['rev-parse', 'rogue'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+
+    const r = promote(dir, { commit: rogue });
+    expect(r.promoted).toBe(false);
+    expect(r.reason).toMatch(/not on/);
+  });
+
+  it('--commit refuses an unknown sha', () => {
+    git('checkout', '-q', '-b', 'develop');
+    git('commit', '-q', '--allow-empty', '-m', 'feature');
+    const r = promote(dir, { commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+    expect(r.promoted).toBe(false);
+    expect(r.reason).toMatch(/not found/);
+  });
+
   it('promotes when develop exists only as a remote-tracking ref (the CI checkout case)', () => {
     // Build a bare origin with main + develop, then a fresh clone with ONLY main checked out —
     // exactly what actions/checkout gives the promote workflow (no local `develop`).

@@ -29,6 +29,13 @@ export interface VerifyOptions {
   /** Working dir for command-running modes (`test`, and a `playwright` suite): the tool dir the
    * CLI resolves. Default cwd. */
   toolDir?: string;
+  /** The git sha this verify is gating (E3 artifact identity). `api` mode probes `/__version`
+   * FIRST and retries within the settle budget until the deployed sha matches — otherwise the
+   * settle loop can green-light the PREVIOUS deployment while the new one is still propagating,
+   * and the content checks validate the wrong artifact. Graceful where the endpoint is absent or
+   * reports no sha (a passing "sha unverified" check); a MISMATCH after the retries is a hard
+   * fail. Ignored by the non-api modes. */
+  expectedSha?: string;
 }
 
 /**
@@ -64,7 +71,7 @@ export async function verify(
   if (opts?.reachableTimeoutMs) await waitForReachable(baseUrl, opts.reachableTimeoutMs);
   switch (spec.mode) {
     case 'api':
-      return verifyApi(baseUrl, spec);
+      return verifyApi(baseUrl, spec, opts?.expectedSha);
     case 'mcp': {
       const { verifyMcp } = await import('./mcp');
       return verifyMcp(baseUrl, spec);

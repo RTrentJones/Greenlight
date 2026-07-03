@@ -139,20 +139,24 @@ export function attachFailureLogs(
 }
 
 const VERIFY_FLAGS = {
-  value: ['--spec', '--url', '--wait', '--tool', '--env'],
+  value: ['--spec', '--url', '--wait', '--tool', '--env', '--expect-sha'],
   boolean: ['--json'],
 };
 
 /** The one verify tail both command paths (and `preview`) share: run the harness, then attach
- * failure logs. Printing/exit stay with the callers. */
+ * failure logs. Printing/exit stay with the callers. `expectedSha` is deliberately explicit
+ * (--expect-sha, or ship's default) — NOT inferred from GITHUB_SHA here, because standalone
+ * verify often gates a DIFFERENT commit than the workflow's (promote verifies beta=develop
+ * while dispatched from main). */
 export async function runVerify(
   specs: VerifySpec[],
   url: string,
-  opts: { toolDir: string; reachableTimeoutMs: number },
+  opts: { toolDir: string; reachableTimeoutMs: number; expectedSha?: string },
 ): Promise<VerifyReport[]> {
   const reports = await verifyAll(url, specs, {
     reachableTimeoutMs: opts.reachableTimeoutMs,
     toolDir: opts.toolDir,
+    expectedSha: opts.expectedSha,
   });
   attachFailureLogs(reports, specs, opts.toolDir);
   return reports;
@@ -185,6 +189,7 @@ export async function verifyCommand(args: string[]): Promise<number> {
     const reports = await runVerify(specs, url, {
       reachableTimeoutMs: waitMs,
       toolDir: process.cwd(),
+      expectedSha: parsed.values['--expect-sha'],
     });
     // Manifest-free: tool name from --tool, else the spec basename (`<name>.config.ts` → `<name>`).
     const tool = parsed.values['--tool'] ?? basename(specPath).replace(/\.config\.[tj]s$/, '');
@@ -246,7 +251,11 @@ export async function verifyCommand(args: string[]): Promise<number> {
 
   // `test` mode runs in the tool's dir; resolve it for the harness.
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
-  const reports = await runVerify(specs, url, { reachableTimeoutMs, toolDir });
+  const reports = await runVerify(specs, url, {
+    reachableTimeoutMs,
+    toolDir,
+    expectedSha: parsed.values['--expect-sha'],
+  });
   return emitReports(reports, json, {
     tool: entry.name ?? name,
     env: override ? 'preview' : (parsed.values['--env'] ?? 'preview'),

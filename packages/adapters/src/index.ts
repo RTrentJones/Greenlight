@@ -43,6 +43,22 @@ function run(cmd: string, args: string[], cwd: string, extraEnv?: Record<string,
   execFileSync(cmd, args, { cwd, stdio: 'inherit', env: { ...process.env, ...extraEnv } });
 }
 
+/** The commit being deployed (E3 artifact identity): CI's GITHUB_SHA, else the local HEAD.
+ * Injected into builds as GREENLIGHT_SHA so a tool can expose it at `/__version` and verify
+ * can assert "this URL serves the artifact I'm gating". Best-effort — undefined outside git. */
+export function buildSha(cwd: string): string | undefined {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA;
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
 /** Cloudflare Workers (Static Assets + room for a future dynamic Worker). */
 function workersAdapter(ctx: AdapterContext): Adapter {
   const url = (env: DeployEnv) => resolveUrl({ domain: ctx.domain, name: ctx.name, env });
@@ -51,12 +67,16 @@ function workersAdapter(ctx: AdapterContext): Adapter {
     async build(toolDir, env) {
       // Inject the env-correct site URL so sitemap/RSS/canonicals match (beta vs prod).
       // preview URLs aren't deterministic (resolveUrl throws) — let the tool's default stand.
-      let siteEnv: Record<string, string> | undefined;
+      let siteEnv: Record<string, string> = {};
       try {
         siteEnv = { SITE_URL: url(env) };
       } catch {
-        siteEnv = undefined;
+        // preview — no deterministic URL
       }
+      // Bake the deployed commit into the build (same seam as SITE_URL) so the tool can serve it
+      // at /__version and `verify --expect-sha` can assert artifact identity, not just URL health.
+      const sha = buildSha(toolDir);
+      if (sha) siteEnv.GREENLIGHT_SHA = sha;
       run('pnpm', ['run', 'build'], toolDir, siteEnv);
       return { artifactDir: join(toolDir, 'dist') };
     },
