@@ -163,7 +163,7 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
       'utf8',
     );
     expect(listener).toContain('types: [deploy-demo-mcp]');
-    expect(listener).toContain('greenlight deploy demo-mcp');
+    expect(listener).toContain('greenlight ship demo-mcp'); // one turn: deploy -> verify (+ events)
     // the instance OCID is resolved by display-name at deploy time — not a manually-set secret
     expect(listener).toContain('--display-name demo-mcp');
     expect(listener).not.toContain('secrets.OCI_CONTAINER_INSTANCE_OCID');
@@ -181,8 +181,11 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     expect(remediate).toContain('group: deploy-demo-mcp'); // same group as the deploy listener
     // re-applies the instance (recreate an idle-reclaimed box) before redeploying + verifying
     expect(remediate).toContain('-target=module.demo-mcp_instance');
-    expect(remediate).toContain('greenlight deploy demo-mcp');
-    expect(remediate).toContain('greenlight verify demo-mcp --env prod');
+    expect(remediate).toContain('greenlight ship demo-mcp');
+    // E8: the unattended heal apply carries its own destroy-guard (plan -> guard -> apply the plan)
+    expect(remediate).toContain('terraform -chdir=infra plan -input=false -out=tf.plan');
+    expect(remediate).toContain('supabase_project|neon_project|neon_branch');
+    expect(remediate).not.toContain('-auto-approve');
     // a failed self-heal escalates
     expect(remediate).toContain('if: ${{ failure() }}');
   });
@@ -214,7 +217,7 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
       join(wrapper, '.github/workflows/greenlight-deploy-demo-mcp.yml'),
       'utf8',
     );
-    expect(listener).toContain('greenlight deploy demo-mcp'); // the adapter does the SSH compose
+    expect(listener).toContain('greenlight ship demo-mcp'); // the adapter does the SSH compose
     expect(listener).toContain('secrets.DOCKER_SSH_HOST_DEMO_MCP');
     expect(listener).not.toContain('oci container-instances'); // not the OCI restart flow
 
@@ -223,7 +226,7 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
       join(wrapper, '.github/workflows/greenlight-remediate-demo-mcp.yml'),
       'utf8',
     );
-    expect(remediate).toContain('greenlight deploy demo-mcp');
+    expect(remediate).toContain('greenlight ship demo-mcp');
     expect(remediate).toContain('secrets.DOCKER_SSH_HOST_DEMO_MCP');
     expect(remediate).not.toContain('-target=module.demo-mcp_instance');
   });

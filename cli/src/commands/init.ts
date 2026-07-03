@@ -83,8 +83,8 @@ jobs:
       TF_VAR_oci_region: \${{ secrets.TF_VAR_OCI_REGION }}
       TF_VAR_oci_compartment_id: \${{ secrets.TF_VAR_OCI_COMPARTMENT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: '~1.10'
           terraform_wrapper: false
