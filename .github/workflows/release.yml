@@ -20,8 +20,8 @@ jobs:
     # To gate publishes behind a GitHub Environment (approval), add `environment: <name>` here
     # AND set the SAME name in npm's trusted-publisher config (they must match, or both omit it).
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2 # Node 24 (>= 22.14) + pnpm per mise.toml
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4 — Node 24 (>= 22.14) + pnpm per mise.toml
       - name: Ensure npm >= 11.5.1 (trusted publishing)
         run: npm install -g npm@latest && npm --version
       - run: pnpm install --frozen-lockfile
