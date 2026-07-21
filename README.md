@@ -43,10 +43,11 @@ reliability and a one-command setup:
 - **The agent kit is Claude Code** — skills + MCP recommendations shipped as a plugin. A human or an
   agent commit ships through the *identical* loop; Greenlight doesn't execute the agent, it gives one
   a safe, gated road to drive.
-- **Artifact-identity enforcement is opt-in per tool.** The `api`-mode gate asserts that the deployed
-  commit matches the one being gated — *when the tool serves `{ sha }` at `/__version`* (bake
-  `GREENLIGHT_SHA` into the build). A tool that doesn't expose it still passes, health-checked but
-  identity-unverified.
+- **Artifact-identity enforcement is opt-in and two-sided.** For the `api` gate to assert the
+  deployed commit matches the one being shipped, *both* must hold: the tool serves `{ sha }` at
+  `/__version` (bake in `GREENLIGHT_SHA`) **and** the run supplies the expected sha — automatic in
+  `greenlight ship` and the generated promotion workflow, but a bare `greenlight verify` skips the
+  check unless you pass `--expect-sha`. Otherwise the deploy is health-checked but identity-unverified.
 
 If you want a broad, multi-provider IaC engine, reach for **SST** or **Pulumi**. Greenlight's bet is
 the opposite: one taste-driven assembly of a zero-/near-zero-cost topology, with the verify gate
