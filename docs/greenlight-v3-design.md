@@ -187,7 +187,7 @@ Greenlight service in the release path.
 | Build/test execution | `Runner` (`ProcessRunner` first; Dagger evaluated in P1) |
 | Infrastructure source | Project-owned OpenTofu/Terraform |
 | Workload identity and approvals | GitHub Actions environments and OIDC |
-| Canonical secret values and access policy | External secret source (`Infisical` in P0) |
+| Canonical secret values and access policy | External secret source (Google Secret Manager in P0) |
 | Secret retrieval and provider mutations | Isolated jobs in the pinned reusable workflow |
 | Artifact upload, routing, rollback | Provider driver |
 | Gate result and promotion authorization | Greenlight receipt policy |
@@ -434,26 +434,27 @@ The locator is non-secret metadata. Greenlight validates that a release requests
 declared by its project and policy. Secret values never appear in project descriptors, generated
 workflow inputs, plans, receipts, events, or agent responses.
 
-P0 uses [Infisical](https://infisical.com/docs/integrations/cicd/githubactions) as the first
-`SecretSource` integration. Its GitHub Action exchanges a GitHub-issued OIDC token for short-lived
-access, so the workflow commits only a public identity ID and does not retain an
-`INFISICAL_TOKEN`, Cloudflare token, or equivalent long-lived credential in GitHub. One Infisical
-project supplies `development`, `beta`, and `production` environments, with folders for shared
-provider credentials and project-specific runtime secrets. Secret references/imports avoid
-duplicating a shared value inside that project.
+P0 uses [Google Secret Manager](https://cloud.google.com/secret-manager/docs/authentication) as the
+first `SecretSource` integration. A Google Workload Identity Federation provider exchanges the
+GitHub-issued OIDC token for short-lived Google credentials; no Google service-account key,
+secret-manager token, Cloudflare token, or equivalent long-lived credential is retained in GitHub.
+One small Google Cloud control-plane project holds versioned secrets. Multiple repositories refer
+to the same Secret Manager resource name, so rotating a shared provider credential updates one
+canonical value.
 
-Machine identities are divided by trust class rather than created indiscriminately per repository:
+Workload trust is divided by class rather than giving one owner-wide principal uniform access:
 
-- `greenlight-beta` may read beta deployment paths.
-- `greenlight-production` may read production deployment paths only from an approved GitHub
+- `greenlight-beta` may read beta deployment secrets.
+- `greenlight-production` may read production deployment secrets only from an approved GitHub
   production environment.
 - `greenlight-infra` may read provisioning credentials only from an explicitly approved IaC job.
 
-Each identity is bound as narrowly as the provider permits to the repository owner, GitHub
-environment, and pinned Greenlight reusable workflow (`job_workflow_ref`). The P0 spike must prove
-the actual OIDC claims and fail closed before the integration becomes authoritative. Broad
-repository wildcards are acceptable only when the exact reusable workflow and environment claims
-also match.
+Google Workload Identity Federation can map claims from the GitHub token. The provider and Secret
+Manager IAM policies must bind numeric `repository_owner_id`/`repository_id` values, the GitHub
+environment or subject, and the pinned Greenlight reusable workflow (`job_workflow_ref`). Numeric
+IDs avoid repository-name reuse attacks. Direct workload identity is preferred over service-account
+impersonation where Secret Manager supports the principal. The P0 spike must prove the actual claims,
+including cross-repository reusable-workflow calls, and fail closed before becoming authoritative.
 
 Secret retrieval happens in a separate mutation job:
 
@@ -476,17 +477,23 @@ Two secret classes have different release semantics:
 | Runtime | OAuth client secret, third-party API key | Delivered through the narrowest provider binding available; its opaque source version is included in configuration identity, never its value. Rotation creates a new configuration revision that must be deployed and verified. |
 
 Local preflight is secretless by default. A human can explicitly run a secret-requiring command
-through an interactive Infisical CLI session, but Greenlight never makes that authenticated session
-available to a coding-agent subprocess. `greenlight secrets doctor` checks references, identity
+through an interactive `gcloud` Application Default Credentials session, but Greenlight never makes
+that authenticated session available to a coding-agent subprocess. `greenlight secrets doctor`
+checks references, workload identity configuration, IAM bindings, secret versions, and missing names
+using metadata-only access. Secret values require a separate explicit human-authenticated command;
+metadata inspection alone cannot retrieve them.
+
+`greenlight secrets doctor` checks references, identity
 configuration, and missing names using metadata-only access.
 
 ### Alternatives considered
 
 | Option | Strength | Why it is not the P0 default |
 |---|---|---|
-| [Infisical Cloud or self-hosted](https://infisical.com/docs/documentation/platform/secrets-mgmt/overview) | GitHub OIDC, environments, folders, CLI/local development, open-source self-hosting, and a free tier covering up to five identities and three projects. | Selected. It adds an external control-plane dependency; free-tier identity/environment limits must be validated against the trust-class design. |
+| [Google Secret Manager](https://cloud.google.com/secret-manager/docs/authentication) | Direct Workload Identity Federation, versioned shared secrets, precise IAM, audit logs, and no service-account key. GitHub claims can be mapped into Google attributes. | Selected. It introduces a small GCP control-plane dependency, but the first six active versions and 10,000 monthly access operations are free; additional active versions are currently $0.06/month. |
+| [Infisical Cloud or self-hosted](https://infisical.com/docs/integrations/cicd/githubactions) | Excellent multi-environment/local UX, GitHub OIDC, folders, imports/references, open-source self-hosting, and broad integrations. | Closest productized alternative. Built-in Free roles read an entire project; scoped path/environment privileges and versioning must be checked against paid-plan limits, whose per-identity cost can exceed this personal-project use case. |
 | [Vault](https://developer.hashicorp.com/well-architected-framework/secure-systems/secure-applications/ci-cd-secrets/github-actions) or OpenBao | Strong JWT/OIDC policies, dynamic credentials, and provider neutrality. | Excellent later backend, but operating a highly available secrets system is unjustified for personal projects; managed Vault is comparatively heavy. |
-| [AWS Secrets Manager](https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_github.html) | Mature IAM, rotation, GitHub OIDC through an AWS role, and precise resource policies. | Good if AWS becomes the control plane; otherwise it introduces provider coupling and per-secret usage cost into a Cloudflare-first path. |
+| [AWS Secrets Manager](https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_github.html) | Mature IAM, rotation, GitHub OIDC through an AWS role, and precise resource policies. | Strong runner-up, but AWS cannot enforce GitHub custom OIDC claims such as `job_workflow_ref`; trust is primarily repository/environment subject-based. |
 | [1Password](https://developer.1password.com/docs/ci-cd/github-actions/) | Excellent human/local UX and convenient shared vaults. | Its documented GitHub flow stores an `OP_SERVICE_ACCOUNT_TOKEN` or Connect token in GitHub, preserving a long-lived bootstrap secret. |
 | [Bitwarden Secrets Manager](https://bitwarden.com/help/access-tokens/) | Familiar UX, projects, machine accounts, CLI, and self-hosting. | Its GitHub integration similarly begins with a stored `BWS_ACCESS_TOKEN`. |
 | [Doppler](https://docs.doppler.com/docs/github-actions) | Polished environment/config model and broad sync integrations. | Standard CI delivery relies on a long-lived `DOPPLER_TOKEN` or syncs values back into GitHub. |
@@ -495,8 +502,9 @@ configuration, and missing names using metadata-only access.
 | SOPS plus a cloud KMS | Encrypted GitOps, reviewable ciphertext, and possible OIDC-based KMS access. | Viable low-dependency fallback, but cross-repository reuse, rotation rollout, metadata queries, and interactive local access require more Greenlight-owned machinery. |
 
 The `SecretSource` seam remains deliberately small: authenticate, validate metadata, and resolve an
-allowlisted set inside the trusted job. Supporting alternate backends is P2. Greenlight does not
-become a secrets manager.
+allowlisted set inside the trusted job. P0 implements only Google Secret Manager and a fake source
+used by contract tests. Supporting alternate backends is P2. Greenlight does not become a secrets
+manager.
 
 ## 8. Phased implementation
 
@@ -520,16 +528,17 @@ Suggested pull-request slices:
    - Extend `doctor` and the sync check to cover both clients.
 
 3. **Shared secrets and job isolation**
-   - Create one Infisical project with development, beta, and production environments plus shared
-     and project-specific folders.
-   - Implement trust-class GitHub OIDC identities for beta, production, and infrastructure; bind
-     them to the pinned reusable workflow and GitHub environment claims.
+   - Create one minimal Google Cloud control-plane project with Secret Manager and a GitHub Workload
+     Identity Federation pool; store shared and project-specific values as versioned resources.
+   - Implement beta, production, and infrastructure trust classes with mapped numeric owner/repo,
+     GitHub environment, and pinned `job_workflow_ref` claims plus least-privilege Secret Manager IAM.
    - Replace duplicated GitHub deployment secrets with typed `SecretRef` locators and runtime
      retrieval in isolated mutation jobs.
    - Prove the same shared Cloudflare credential can be referenced from the personal-site and canary
      repositories without copying its value into either GitHub repository.
-   - Add metadata-only `greenlight secrets doctor`, redaction tests, and an emergency break-glass
-     procedure; pin every secret-handling action by commit SHA.
+   - Add metadata-only `greenlight secrets doctor`, redaction tests, local human ADC flow, cost
+     budget/alerts, and an emergency break-glass procedure; pin every secret-handling action by
+     commit SHA and test direct federation without a service account.
 
 4. **Cloudflare immutable candidate driver**
    - Build once, hash outputs, upload a version without routing it, and obtain a version-specific
@@ -629,8 +638,8 @@ P2 begins only after P0/P1 have been dogfooded successfully. It includes:
 - Additional providers and dependencies, including AWS, Supabase, and Neon lifecycle work.
 - Generalized provisioner selection (`opentofu | terraform | sst`) with explicit capability
   negotiation; no promise that every plan renders through every backend.
-- Alternate `SecretSource` integrations such as Vault/OpenBao, AWS Secrets Manager, 1Password, or
-  SOPS/KMS after the Infisical/OIDC contract is proven; Cloudflare Secrets Store may be a runtime
+- Alternate `SecretSource` integrations such as Infisical, Vault/OpenBao, AWS Secrets Manager,
+  1Password, or SOPS/KMS after the Google WIF contract is proven; Cloudflare Secrets Store may be a runtime
   delivery sink but not Greenlight's canonical source.
 - Cross-repository release groups after same-repository groups are reliable.
 - OCI/in-toto receipt storage, signing/attestation, richer policy distribution, and optional external
@@ -693,10 +702,10 @@ Secrets, prompts, full model transcripts, and sensitive provider responses are n
 ## 11. Security and authorization
 
 - GitHub environments remain the approval boundary for production and destructive infrastructure.
-- Infisical is the P0 canonical secret source; GitHub OIDC is the only normal CI authentication
-  path, and GitHub stores only public locators and identity IDs.
-- Use separate beta, production, and infrastructure identities bound to the exact reusable workflow
-  and environment claims. Avoid an owner-wide wildcard without those additional claim checks.
+- Google Secret Manager is the P0 canonical secret source; direct Workload Identity Federation is
+  the only normal CI authentication path, and GitHub stores only public resource/provider locators.
+- Use separate beta, production, and infrastructure trust policies bound to numeric owner/repository
+  IDs, the exact reusable workflow, and environment claims. Avoid name-only or owner-wide trust.
 - Secret-bearing mutation jobs do not check out or execute agent-authored repository code. Build,
   test, and ordinary verification jobs remain secretless.
 - Pin third-party Actions and reusable workflows that can observe secrets by full commit SHA.
@@ -736,8 +745,9 @@ P0/P1 are successful when:
 - Permanent beta remains a first-class default.
 - GitHub Actions stays the trusted coordinator and approval/execution boundary; it is not the
   canonical secret store.
-- Infisical is the P0 shared secret source, accessed from isolated jobs using short-lived GitHub
-  OIDC. Secret values are referenced once across repositories through typed `SecretRef` metadata.
+- Google Secret Manager is the P0 shared secret source, accessed from isolated jobs using direct
+  Workload Identity Federation. Secret values are referenced once across repositories through typed
+  `SecretRef` metadata; no service-account key is created.
 - OpenTofu/Terraform remains the first provisioning backend.
 - Cloudflare is the only new V3 target implementation in P0/P1.
 - SST and broader provider support are P2.
@@ -757,10 +767,12 @@ P0/P1 are successful when:
    site rather than advisory?
 5. Is GitHub Actions artifact retention sufficient for P0 promotion history, or should receipts be
    placed in an OCI registry earlier?
-6. Do Infisical OIDC policies reliably bind the caller repository, GitHub environment, and pinned
-   reusable workflow claims together, including when the workflow is called cross-repository?
-7. Can opaque secret-version metadata be recorded for runtime configuration identity on the free
-   tier without exposing a value, and what rollout is required when that version changes?
+6. Do Google Workload Identity Federation attribute conditions reliably bind numeric caller
+   repository/owner IDs, GitHub environment, and pinned `job_workflow_ref` together when the
+   reusable workflow is called cross-repository?
+7. Can Secret Manager be accessed through direct federation in the isolated job without service
+   account impersonation, and can its version resource name be recorded for runtime configuration
+   identity without exposing a value?
 8. Should Cloudflare Secrets Store remain a P2 runtime sink while it is in open beta, or does its
    binding model materially reduce secret exposure for the P1 Worker north-star slice?
 
