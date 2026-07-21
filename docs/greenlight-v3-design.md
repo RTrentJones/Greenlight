@@ -465,9 +465,11 @@ approved deploy job -> OIDC -> secret source -> pinned target driver -> provider
 ```
 
 The deploy job downloads the artifact but does not check out or execute agent-authored repository
-code after secrets are loaded. A secret injected into an ordinary job is readable by every later
-step in that job; central storage alone is therefore not an adequate boundary. Actions and reusable
-workflows that handle secrets are pinned by commit SHA.
+code after secrets are loaded. If an authentication action requires a workspace, the job may check
+out only the exact pinned Greenlight release into an isolated directory—not the caller repository.
+A secret injected into an ordinary job is readable by every later step in that job; central storage
+alone is therefore not an adequate boundary. Actions and reusable workflows that handle secrets are
+pinned by commit SHA, and temporary credential files are deleted before artifact or cache steps.
 
 Two secret classes have different release semantics:
 
@@ -482,9 +484,6 @@ that authenticated session available to a coding-agent subprocess. `greenlight s
 checks references, workload identity configuration, IAM bindings, secret versions, and missing names
 using metadata-only access. Secret values require a separate explicit human-authenticated command;
 metadata inspection alone cannot retrieve them.
-
-`greenlight secrets doctor` checks references, identity
-configuration, and missing names using metadata-only access.
 
 ### Alternatives considered
 
