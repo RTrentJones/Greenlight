@@ -4,16 +4,21 @@
 [![npm](https://img.shields.io/npm/v/@rtrentjones/greenlight)](https://www.npmjs.com/package/@rtrentjones/greenlight)
 [![license](https://img.shields.io/npm/l/@rtrentjones/greenlight)](LICENSE)
 
-A reproducible **deploy + verification harness for AI-built tools** — every change ships through
-objective gates. Turn a domain plus API tokens into a live personal site and a self-verifying
-agentic deploy loop, with plug-and-play subdomain tools — **web apps or MCP servers**.
-Provider-agnostic and free-tier-first: the blog and each tool target Cloudflare Workers or Vercel,
-with OCI as the origin lane for stateful services.
+An **opinionated, free-tier-first paved road** for deploying and verifying the personal tools you
+build with a coding agent — a blog plus plug-and-play subdomain tools, **web apps or MCP servers** —
+each shipped through one gated loop. A single TypeScript manifest turns a domain plus API tokens into
+readable Terraform, wired CI, onboarded secrets, and a commit-aware verify harness, **pre-assembled**
+for a specific near-zero-cost stack (Cloudflare Workers · Vercel · OCI · Neon/Supabase) so you don't
+have to integrate those pieces yourself.
+
+There's no new cloud primitive here and no PaaS in the middle. The value is the **assembly**: the
+infra editor, secret onboarding, agent kit, and verification gate are generated *together*, and the
+Terraform + workflows land in a repo **you own** — nothing hidden behind a control plane.
 
 **You don't fork this repo — you install the CLI.** `greenlight init` scaffolds a thin **wrapper repo
 you own** (your manifest + content) that depends on the published `@rtrentjones/greenlight` package
 and updates via `pnpm update`. The CLI **edits** declarative infra-as-code (Terraform you can read);
-your **CI/CD applies it**. Nothing is welded to one cloud, and there's no PaaS in the middle.
+your **CI/CD applies it**.
 
 ## Quick start
 
@@ -25,6 +30,27 @@ pnpm greenlight verify notes --env prod                # the shared harness prov
 ```
 
 Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**.
+
+## Scope, honestly
+
+Greenlight is a **paved road, not a general platform** — deliberately narrow where that buys
+reliability and a one-command setup:
+
+- **Targets are a fixed, curated matrix**, not "any provider": Astro→Workers, Next→Vercel,
+  MCP→Workers/OCI/Docker, agent→Workers, with `d1`/`kv`/`supabase`/`neon` for data. The adapter seam
+  is extensible, but you pick from that set.
+- **CI is GitHub Actions.** The workflows Greenlight emits are GitHub-Actions-specific.
+- **The agent kit is Claude Code** — skills + MCP recommendations shipped as a plugin. A human or an
+  agent commit ships through the *identical* loop; Greenlight doesn't execute the agent, it gives one
+  a safe, gated road to drive.
+- **Artifact-identity enforcement is opt-in per tool.** The `api`-mode gate asserts that the deployed
+  commit matches the one being gated — *when the tool serves `{ sha }` at `/__version`* (bake
+  `GREENLIGHT_SHA` into the build). A tool that doesn't expose it still passes, health-checked but
+  identity-unverified.
+
+If you want a broad, multi-provider IaC engine, reach for **SST** or **Pulumi**. Greenlight's bet is
+the opposite: one taste-driven assembly of a zero-/near-zero-cost topology, with the verify gate
+wired straight to promotion — the integration you'd otherwise build and maintain yourself.
 
 ## Reviewer path (5 minutes)
 
@@ -47,7 +73,8 @@ Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**.
 ## The loop
 
 Every tool (and the blog) ships through the same gated loop — **deploy → verify → promote**. The
-`verify` gate is the same code CI **and** the agent run, so changes ship with objective confidence:
+`verify` gate is the same code CI **and** the agent run, so changes ship against objective checks
+rather than a hand-run smoke test:
 
 ```
 branch → change → preview → verify → develop/beta → verify → promote (gated develop→main) → prod → verify
@@ -63,8 +90,9 @@ The manifest (`greenlight.config.ts`) + the CLI + the agent kit drive two relate
 - **Plane 1 — the infra editor.** `greenlight add`/`adopt`: one manifest entry → emitted Terraform +
   gathered/verified tokens (`secrets gather`, straight to GitHub, never to disk/logs) + a wired agent
   kit. It edits IaC; CI/CD applies it.
-- **Plane 2 — the validation gate.** One `verify(baseUrl, spec)` harness, six modes, combinable via an
-  array — wired to promotion, not just test-writing.
+- **Plane 2 — the validation gate.** One `verify(baseUrl, spec)` harness, six modes (`api`, `mcp`,
+  `playwright`, `test`, `agent-web`, `eval`), combinable via an array — wired to promotion, not just
+  test-writing.
 
 ## How you consume it
 
