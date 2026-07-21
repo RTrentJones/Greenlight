@@ -26,9 +26,10 @@ The second outcome extends the same loop to agent-created tools:
 > returns the URL plus machine-readable evidence.
 
 V3 retains the strongest pieces of the current system—verification modes, provider knowledge,
-Terraform/OpenTofu output, `doctor`, secret scoping, permanent beta, and GitHub Actions as the trust
-boundary—but replaces the lane matrix and branch-as-deployment model with explicit artifacts,
-deployments, environments, release groups, policies, and receipts.
+Terraform/OpenTofu output, `doctor`, permanent beta, and GitHub Actions as the approval/execution
+boundary. It moves secret values into one shared external source authenticated through GitHub OIDC,
+then replaces the lane matrix and branch-as-deployment model with explicit artifacts, deployments,
+environments, release groups, policies, and receipts.
 
 ## 2. Why redesign
 
@@ -58,6 +59,10 @@ measure of success.
 - Build once and bind all evidence to the immutable artifact and environment-specific deployment.
 - Run deterministic verification outside the coding agent and produce a durable receipt.
 - Make the same project policy discoverable by Codex, Claude, a human CLI session, and CI.
+- Store secret values once outside GitHub and let multiple repositories reference them by logical,
+  typed `SecretRef` objects rather than copying values into repository or organization secrets.
+- Authenticate trusted CI to the secret source with short-lived GitHub OIDC credentials; keep
+  long-lived bootstrap tokens and deployment credentials out of GitHub Actions.
 - Support safe, agent-created Cloudflare static sites, Workers APIs/MCP servers, KV, and D1.
 - Support multi-component release groups whose compatible versions advance together.
 - Preserve readable IaC and the rule: the CLI edits/plans; trusted CI applies.
@@ -101,11 +106,15 @@ measure of success.
    any member is promoted. Partial promotion triggers compensating rollback and a `degraded` result.
 7. **Agents propose; policy and trusted CI authorize.** Agents receive no production credentials and
    cannot directly call `terraform apply`, route production traffic, or bypass a failed check.
-8. **Unsupported is a valid answer.** The planner returns an explainable rejection rather than
+8. **Secrets are referenced, never copied.** Repositories contain non-secret locators and access
+   intent. A trusted, isolated job exchanges GitHub OIDC for short-lived access and fetches only the
+   declared values; agent, build, and verification jobs remain secretless unless a check explicitly
+   requires a scoped runtime secret.
+9. **Unsupported is a valid answer.** The planner returns an explainable rejection rather than
    improvising an unmodeled provider combination.
-9. **Deterministic checks are authoritative.** Agent browsing and LLM evals are advisory unless a
+10. **Deterministic checks are authoritative.** Agent browsing and LLM evals are advisory unless a
    project explicitly opts into them as additional required signals.
-10. **No big-bang migration.** V2 and V3 descriptors can coexist until each project has passed the
+11. **No big-bang migration.** V2 and V3 descriptors can coexist until each project has passed the
     V3 conformance suite.
 
 ## 6. User journeys
@@ -157,7 +166,9 @@ flowchart TD
     A["Human or coding agent"] --> B["Greenlight CLI + MCP"]
     B --> C["Project policy + capability registry"]
     C --> D["Trusted GitHub Actions workflow"]
+    D --> S["External secrets via OIDC"]
     D --> E["Artifact + environment candidate"]
+    S --> E
     E --> F["Independent verification"]
     F --> G["Receipt store"]
     G --> H["Promote + live verify"]
@@ -175,7 +186,9 @@ Greenlight service in the release path.
 | Source, environment, release-group, and verification policy | Project repository |
 | Build/test execution | `Runner` (`ProcessRunner` first; Dagger evaluated in P1) |
 | Infrastructure source | Project-owned OpenTofu/Terraform |
-| Credentials, approvals, mutations | GitHub Actions environments and OIDC/scoped secrets |
+| Workload identity and approvals | GitHub Actions environments and OIDC |
+| Canonical secret values and access policy | External secret source (`Infisical` in P0) |
+| Secret retrieval and provider mutations | Isolated jobs in the pinned reusable workflow |
 | Artifact upload, routing, rollback | Provider driver |
 | Gate result and promotion authorization | Greenlight receipt policy |
 | Status UI/read model | GitHub Checks initially; Tracer may ingest events but is not authoritative |
@@ -213,6 +226,14 @@ export default defineProject({
     site: releaseGroup(['site']),
   },
 
+  secrets: {
+    cloudflareDeploy: secretRef({
+      id: 'shared/cloudflare/deploy',
+      class: 'control-plane',
+      consumers: ['prepare', 'route', 'rollback'],
+    }),
+  },
+
   policy: standardPersonalSite(),
 });
 ```
@@ -224,6 +245,13 @@ for V3-generated projects.
 ### 7.3 Domain model
 
 ```ts
+interface SecretRef {
+  id: string;
+  class: 'control-plane' | 'runtime';
+  environments?: string[];
+  consumers: Array<'build' | 'verify' | 'prepare' | 'route' | 'rollback' | 'runtime'>;
+}
+
 interface ArtifactRef {
   digest: `sha256:${string}`;
   sourceSha: string;
@@ -380,7 +408,7 @@ support, estimated cost class, and provisioner coverage. The resulting `ChangeSe
 - source/scaffold changes;
 - project descriptor and verification-policy changes;
 - readable IaC changes;
-- required secret names and scopes, never values;
+- required `SecretRef` objects, consumers, and scopes, never values;
 - expected resources, domains, and release groups;
 - risk classification and unsupported decisions.
 
@@ -388,6 +416,87 @@ support, estimated cost class, and provisioner coverage. The resulting `ChangeSe
 exact reviewed plan only when it is additive, beta-scoped, uses approved resource kinds, introduces
 no new secret material, contains no destroy/replace action, and remains in the configured cost
 class. Production infrastructure always requires explicit approval.
+
+## 7.9 Shared secret source and delivery
+
+Greenlight must distinguish **where a secret is stored** from **where it is allowed to be used**.
+Repositories declare only logical references:
+
+```ts
+secretRef({
+  id: 'shared/cloudflare/deploy',
+  class: 'control-plane',
+  consumers: ['prepare', 'route', 'rollback'],
+});
+```
+
+The locator is non-secret metadata. Greenlight validates that a release requests only references
+declared by its project and policy. Secret values never appear in project descriptors, generated
+workflow inputs, plans, receipts, events, or agent responses.
+
+P0 uses [Infisical](https://infisical.com/docs/integrations/cicd/githubactions) as the first
+`SecretSource` integration. Its GitHub Action exchanges a GitHub-issued OIDC token for short-lived
+access, so the workflow commits only a public identity ID and does not retain an
+`INFISICAL_TOKEN`, Cloudflare token, or equivalent long-lived credential in GitHub. One Infisical
+project supplies `development`, `beta`, and `production` environments, with folders for shared
+provider credentials and project-specific runtime secrets. Secret references/imports avoid
+duplicating a shared value inside that project.
+
+Machine identities are divided by trust class rather than created indiscriminately per repository:
+
+- `greenlight-beta` may read beta deployment paths.
+- `greenlight-production` may read production deployment paths only from an approved GitHub
+  production environment.
+- `greenlight-infra` may read provisioning credentials only from an explicitly approved IaC job.
+
+Each identity is bound as narrowly as the provider permits to the repository owner, GitHub
+environment, and pinned Greenlight reusable workflow (`job_workflow_ref`). The P0 spike must prove
+the actual OIDC claims and fail closed before the integration becomes authoritative. Broad
+repository wildcards are acceptable only when the exact reusable workflow and environment claims
+also match.
+
+Secret retrieval happens in a separate mutation job:
+
+```text
+agent or PR code -> secretless build/test -> immutable artifact
+                                           |
+approved deploy job -> OIDC -> secret source -> pinned target driver -> provider
+```
+
+The deploy job downloads the artifact but does not check out or execute agent-authored repository
+code after secrets are loaded. A secret injected into an ordinary job is readable by every later
+step in that job; central storage alone is therefore not an adequate boundary. Actions and reusable
+workflows that handle secrets are pinned by commit SHA.
+
+Two secret classes have different release semantics:
+
+| Class | Examples | Rule |
+|---|---|---|
+| Control plane | Cloudflare API token, registry credential | Exists only in the isolated mutation job and is not part of deployment identity. |
+| Runtime | OAuth client secret, third-party API key | Delivered through the narrowest provider binding available; its opaque source version is included in configuration identity, never its value. Rotation creates a new configuration revision that must be deployed and verified. |
+
+Local preflight is secretless by default. A human can explicitly run a secret-requiring command
+through an interactive Infisical CLI session, but Greenlight never makes that authenticated session
+available to a coding-agent subprocess. `greenlight secrets doctor` checks references, identity
+configuration, and missing names using metadata-only access.
+
+### Alternatives considered
+
+| Option | Strength | Why it is not the P0 default |
+|---|---|---|
+| [Infisical Cloud or self-hosted](https://infisical.com/docs/documentation/platform/secrets-mgmt/overview) | GitHub OIDC, environments, folders, CLI/local development, open-source self-hosting, and a free tier covering up to five identities and three projects. | Selected. It adds an external control-plane dependency; free-tier identity/environment limits must be validated against the trust-class design. |
+| [Vault](https://developer.hashicorp.com/well-architected-framework/secure-systems/secure-applications/ci-cd-secrets/github-actions) or OpenBao | Strong JWT/OIDC policies, dynamic credentials, and provider neutrality. | Excellent later backend, but operating a highly available secrets system is unjustified for personal projects; managed Vault is comparatively heavy. |
+| [AWS Secrets Manager](https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_github.html) | Mature IAM, rotation, GitHub OIDC through an AWS role, and precise resource policies. | Good if AWS becomes the control plane; otherwise it introduces provider coupling and per-secret usage cost into a Cloudflare-first path. |
+| [1Password](https://developer.1password.com/docs/ci-cd/github-actions/) | Excellent human/local UX and convenient shared vaults. | Its documented GitHub flow stores an `OP_SERVICE_ACCOUNT_TOKEN` or Connect token in GitHub, preserving a long-lived bootstrap secret. |
+| [Bitwarden Secrets Manager](https://bitwarden.com/help/access-tokens/) | Familiar UX, projects, machine accounts, CLI, and self-hosting. | Its GitHub integration similarly begins with a stored `BWS_ACCESS_TOKEN`. |
+| [Doppler](https://docs.doppler.com/docs/github-actions) | Polished environment/config model and broad sync integrations. | Standard CI delivery relies on a long-lived `DOPPLER_TOKEN` or syncs values back into GitHub. |
+| GitHub organization secrets | Very low migration effort and values can be shared with selected repositories. | Does not move the source of truth out of GitHub, does not serve local development cleanly, and broadens the impact of workflow compromise. |
+| [Cloudflare Secrets Store](https://developers.cloudflare.com/secrets-store/access-control/) | Account-level runtime secret reuse for Workers and AI Gateway. | Useful as a later delivery sink, not a universal source: it is still open beta, currently supports only Cloudflare consumers, and CI needs a Cloudflare API token with Secrets Store Edit to bind values. |
+| SOPS plus a cloud KMS | Encrypted GitOps, reviewable ciphertext, and possible OIDC-based KMS access. | Viable low-dependency fallback, but cross-repository reuse, rotation rollout, metadata queries, and interactive local access require more Greenlight-owned machinery. |
+
+The `SecretSource` seam remains deliberately small: authenticate, validate metadata, and resolve an
+allowlisted set inside the trusted job. Supporting alternate backends is P2. Greenlight does not
+become a secrets manager.
 
 ## 8. Phased implementation
 
@@ -410,7 +519,19 @@ Suggested pull-request slices:
    - Add `AGENTS.md`, `.agents/skills`, and the Codex plugin manifest.
    - Extend `doctor` and the sync check to cover both clients.
 
-3. **Cloudflare immutable candidate driver**
+3. **Shared secrets and job isolation**
+   - Create one Infisical project with development, beta, and production environments plus shared
+     and project-specific folders.
+   - Implement trust-class GitHub OIDC identities for beta, production, and infrastructure; bind
+     them to the pinned reusable workflow and GitHub environment claims.
+   - Replace duplicated GitHub deployment secrets with typed `SecretRef` locators and runtime
+     retrieval in isolated mutation jobs.
+   - Prove the same shared Cloudflare credential can be referenced from the personal-site and canary
+     repositories without copying its value into either GitHub repository.
+   - Add metadata-only `greenlight secrets doctor`, redaction tests, and an emergency break-glass
+     procedure; pin every secret-handling action by commit SHA.
+
+4. **Cloudflare immutable candidate driver**
    - Build once, hash outputs, upload a version without routing it, and obtain a version-specific
      candidate URL.
    - Inspect provider metadata and fail closed when identity cannot be established.
@@ -418,14 +539,14 @@ Suggested pull-request slices:
    - Resolve with a spike whether Workers Static Assets are faithfully testable at the version URL;
      if not, use a dedicated pre-route canary service while preserving artifact identity.
 
-4. **Receipts and promotion policy**
+5. **Receipts and promotion policy**
    - Make `/__version` defense-in-depth rather than the primary identity proof.
    - Add `--json-file` while closing issue #15, canonical policy digests, receipt persistence, and
      `greenlight release inspect`.
    - Reject missing identity, stale policy, expired evidence, mismatched artifact, or mismatched
      deployment.
 
-5. **Reusable workflow and dogfood migration**
+6. **Reusable workflow and dogfood migration**
    - Publish one pinned reusable workflow instead of generating large workflow copies.
    - Migrate only the `RTrentJones.dev` site first, preserving `develop -> beta` and explicit
      production promotion.
@@ -441,6 +562,10 @@ Suggested pull-request slices:
   all fail closed.
 - A forced live-check failure restores the previous production version and records the incident.
 - No production provider credential is available to the coding-agent process.
+- No long-lived deployment or secret-manager credential is stored in GitHub; secret-bearing jobs
+  authenticate with OIDC, do not execute repository code, and retrieve only declared references.
+- The personal-site and canary repositories consume one centrally rotated Cloudflare credential
+  without duplicating its value.
 - Three consecutive real site changes complete without manual provider-console work.
 
 ### P1 — agent-created Cloudflare tools
@@ -481,6 +606,8 @@ Suggested pull-request slices:
    - Represent existing external tools as references rather than forcing repository moves.
    - Migrate one small existing tool after the two reference journeys pass.
    - Keep HeistMind/BAMCP/OCI/Vercel on the V2 path until their V3 target drivers exist in P2.
+   - Add secret-dependency edges to the catalog so rotating a runtime secret can identify affected
+     projects and request verified beta rollouts; rotation never silently mutates production.
 
 **P1 acceptance criteria**
 
@@ -502,6 +629,9 @@ P2 begins only after P0/P1 have been dogfooded successfully. It includes:
 - Additional providers and dependencies, including AWS, Supabase, and Neon lifecycle work.
 - Generalized provisioner selection (`opentofu | terraform | sst`) with explicit capability
   negotiation; no promise that every plan renders through every backend.
+- Alternate `SecretSource` integrations such as Vault/OpenBao, AWS Secrets Manager, 1Password, or
+  SOPS/KMS after the Infisical/OIDC contract is proven; Cloudflare Secrets Store may be a runtime
+  delivery sink but not Greenlight's canonical source.
 - Cross-repository release groups after same-repository groups are reliable.
 - OCI/in-toto receipt storage, signing/attestation, richer policy distribution, and optional external
   deployment protection rules.
@@ -563,8 +693,16 @@ Secrets, prompts, full model transcripts, and sensitive provider responses are n
 ## 11. Security and authorization
 
 - GitHub environments remain the approval boundary for production and destructive infrastructure.
-- Prefer GitHub OIDC to cloud providers; otherwise use least-privilege, environment-scoped secrets.
+- Infisical is the P0 canonical secret source; GitHub OIDC is the only normal CI authentication
+  path, and GitHub stores only public locators and identity IDs.
+- Use separate beta, production, and infrastructure identities bound to the exact reusable workflow
+  and environment claims. Avoid an owner-wide wildcard without those additional claim checks.
+- Secret-bearing mutation jobs do not check out or execute agent-authored repository code. Build,
+  test, and ordinary verification jobs remain secretless.
+- Pin third-party Actions and reusable workflows that can observe secrets by full commit SHA.
 - Agent subprocesses receive a clean allowlisted environment with no production credentials.
+- Runtime-secret rotation creates a new configuration revision and verified rollout; control-plane
+  credential rotation updates the shared source without changing application identity.
 - IaC is scanned for destroy/replace actions, shared-resource mutations, dangerous migrations, and
   policy escape hatches before apply.
 - A plan approval authorizes the exact plan digest; changed source/config requires a new plan.
@@ -578,6 +716,8 @@ Secrets, prompts, full model transcripts, and sensitive provider responses are n
 P0/P1 are successful when:
 
 - 100% of V3 production routes have a matching, current verification receipt.
+- Zero long-lived deployment or secret-manager credentials remain in GitHub Actions secrets for V3
+  repositories, and one rotation updates the shared source without per-repository value changes.
 - No promotion rebuilds source.
 - Median site change to verified beta is under 10 minutes after merge.
 - At least 95% of normal site beta releases pass without manual infrastructure intervention.
@@ -594,7 +734,10 @@ P0/P1 are successful when:
 ### Decisions
 
 - Permanent beta remains a first-class default.
-- GitHub Actions stays the trusted coordinator and secret/approval boundary.
+- GitHub Actions stays the trusted coordinator and approval/execution boundary; it is not the
+  canonical secret store.
+- Infisical is the P0 shared secret source, accessed from isolated jobs using short-lived GitHub
+  OIDC. Secret values are referenced once across repositories through typed `SecretRef` metadata.
 - OpenTofu/Terraform remains the first provisioning backend.
 - Cloudflare is the only new V3 target implementation in P0/P1.
 - SST and broader provider support are P2.
@@ -614,5 +757,11 @@ P0/P1 are successful when:
    site rather than advisory?
 5. Is GitHub Actions artifact retention sufficient for P0 promotion history, or should receipts be
    placed in an OCI registry earlier?
+6. Do Infisical OIDC policies reliably bind the caller repository, GitHub environment, and pinned
+   reusable workflow claims together, including when the workflow is called cross-repository?
+7. Can opaque secret-version metadata be recorded for runtime configuration identity on the free
+   tier without exposing a value, and what rollout is required when that version changes?
+8. Should Cloudflare Secrets Store remain a P2 runtime sink while it is in open beta, or does its
+   binding model materially reduce secret exposure for the P1 Worker north-star slice?
 
 These are spike outputs with recorded ADRs, not reasons to generalize the architecture prematurely.
