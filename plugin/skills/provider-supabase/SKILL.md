@@ -29,8 +29,21 @@ first: `terraform import module.<name>_supabase.supabase_project.this <ref>`.
 
 Supabase **pauses a free project after ~7 days idle** — this is what takes tools down. The
 **keepalive** Worker (cloudflare) pings the project on a cron. Add the tool to the aggregated
-`module.keepalive.targets_json`: `{ name, env, url = module.<name>_supabase.url, anonKey = … }`.
-The ping counts any HTTP response (even 401 on `/rest/v1/`) as alive.
+`module.keepalive.targets_json`: `{ name, env, url = module.<name>_supabase.url, anonKey = …,
+probeTable = "<table>" }`.
+
+**`probeTable` is required, and the choice matters.** Supabase measures *database* activity, not
+HTTP traffic, so the probe has to run a query that reaches Postgres — it issues
+`GET /rest/v1/<probeTable>?select=*&limit=1`. Pinging the PostgREST root (`/rest/v1/`) does **not**
+work: PostgREST answers it from its in-memory schema cache without touching the database, so the
+idle timer keeps running. (That is exactly how heistmind-db was paused in 2026-07 while keepalive
+reported healthy.) Pick a table the `anon` role can `SELECT`; RLS returning zero rows is fine — the
+query still executed. Add `probeSchema` when the table lives outside `public` (schema-per-env), and
+`probeSelect` to keep row data off the wire.
+
+Only a **2xx** counts as alive for supabase targets: a 401/403/404 means the key is dead or the
+table is wrong, i.e. no query ran, so it alerts instead of passing silently. (`oci` targets keep the
+lenient rule — a 401 from an auth-gated endpoint still proves the service is serving.)
 
 ## MCP
 `.mcp.json` wires `supabase` (hosted, **read-only**): needs `SUPABASE_ACCESS_TOKEN` +

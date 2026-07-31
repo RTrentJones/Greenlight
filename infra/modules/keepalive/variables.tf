@@ -22,7 +22,15 @@ variable "compatibility_date" {
 
 variable "targets_json" {
   type        = string
-  description = "KEEPALIVE_TARGETS — JSON array of { name, env, url, anonKey, probePath? } for every data:supabase project."
+  description = <<-EOT
+    KEEPALIVE_TARGETS — JSON array of targets.
+    supabase: { name, env, url, anonKey, probeTable, probeSchema?, probeSelect?, probePath? }.
+      probeTable is REQUIRED (or an explicit probePath): the probe must SELECT from a real table
+      so a query actually reaches Postgres. Supabase counts DATABASE activity, and the PostgREST
+      root (/rest/v1/) is answered from the schema cache — pinging it does NOT reset the 7-day
+      idle timer. Pick a table the `anon` role can SELECT; RLS returning zero rows is fine.
+    oci: { name, env, url, kind = "oci", probePath?, remediate? }.
+  EOT
 }
 
 variable "alert_github_repo" {

@@ -14,6 +14,8 @@ const target: KeepaliveTarget = {
   env: 'prod',
   url: 'https://abc.supabase.co',
   anonKey: 'anon-key',
+  probeTable: 'profiles',
+  probeSelect: 'id',
 };
 
 /** A fetch double that records each call's url + init and returns the given status. */
@@ -40,9 +42,21 @@ describe('pingTarget', () => {
       ok: true,
       status: 200,
     });
-    expect(calls[0]?.url).toBe('https://abc.supabase.co/rest/v1/');
+    // A real table SELECT, not the PostgREST root: only a query that reaches Postgres resets
+    // Supabase's 7-day idle timer (the root is answered from the schema cache).
+    expect(calls[0]?.url).toBe('https://abc.supabase.co/rest/v1/profiles?select=id&limit=1');
     expect(headersOf(calls[0]?.init).apikey).toBe('anon-key');
     expect(headersOf(calls[0]?.init).Authorization).toBe('Bearer anon-key');
+  });
+
+  it('sends Accept-Profile for a schema-per-env table, and defaults select to *', async () => {
+    const { fn, calls } = capturingFetch(200);
+    await pingTarget(
+      { ...target, probeTable: 'games', probeSelect: undefined, probeSchema: 'production' },
+      fn,
+    );
+    expect(calls[0]?.url).toBe('https://abc.supabase.co/rest/v1/games?select=*&limit=1');
+    expect(headersOf(calls[0]?.init)['Accept-Profile']).toBe('production');
   });
 
   it('keeps the supabase probe READ-ONLY — a plain GET, no method/body (invariant)', async () => {
@@ -60,10 +74,35 @@ describe('pingTarget', () => {
     expect(r.status).toBe(503);
   });
 
-  it('treats a 401 as alive (the project responded = pause reset)', async () => {
+  // Regression (2026-07 heistmind-db pause): a 401 from a dead/rotated anon key used to count as
+  // "alive", so the probe never ran a query, never reset the idle timer, and never alerted.
+  it('is not ok on a 401 — a rejected key means no query reached the database', async () => {
     const r = await pingTarget(target, capturingFetch(401).fn);
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
     expect(r.status).toBe(401);
+  });
+
+  it.each([403, 404, 400])(
+    'is not ok on a %i (bad grant / wrong table / bad select)',
+    async (s) => {
+      expect((await pingTarget(target, capturingFetch(s).fn)).ok).toBe(false);
+    },
+  );
+
+  it('fails loudly when a supabase target has no probeTable (misconfiguration, not "healthy")', async () => {
+    const { fn, calls } = capturingFetch(200);
+    const r = await pingTarget({ ...target, probeTable: undefined }, fn);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('probeTable');
+    expect(calls).toHaveLength(0); // never pretend a root ping is a keepalive
+  });
+
+  it('fails loudly when a supabase target has no anonKey', async () => {
+    const { fn, calls } = capturingFetch(200);
+    const r = await pingTarget({ ...target, anonKey: undefined }, fn);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('anonKey');
+    expect(calls).toHaveLength(0);
   });
 
   it('is not ok (captures error) when fetch throws', async () => {
@@ -93,6 +132,22 @@ describe('pingTarget', () => {
     expect(r.ok).toBe(true);
     expect(calls[0]?.url).toBe('https://bamcp.example.dev/');
     expect(calls[0]?.init.headers).toBeUndefined();
+  });
+
+  // Deliberately NOT the supabase rule: an auth-gated oci service answering 401 proves the
+  // tunnel + container are serving, which is all this probe claims to check.
+  it('oci kind still treats a 401 as reachable (auth-gated /mcp is healthy)', async () => {
+    const r = await pingTarget(
+      {
+        name: 'bamcp',
+        env: 'prod',
+        url: 'https://bamcp.example.dev',
+        kind: 'oci',
+        probePath: '/mcp',
+      },
+      capturingFetch(401).fn,
+    );
+    expect(r.ok).toBe(true);
   });
 });
 

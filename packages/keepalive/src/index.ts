@@ -24,7 +24,16 @@ export interface KeepaliveTarget {
   kind?: 'supabase' | 'oci';
   /** anon (publishable) key for the Supabase REST request. Omit for `oci`. */
   anonKey?: string;
-  /** Probe path; defaults to `/rest/v1/` (supabase) or `/` (oci). */
+  /** Table the supabase probe SELECTs from, e.g. "profiles". REQUIRED for `supabase` unless an
+   * explicit `probePath` is given: the probe has to run a real query (see pingTarget). */
+  probeTable?: string;
+  /** Postgres schema holding `probeTable`, sent as `Accept-Profile`. Omit for `public` — needed
+   * when a tool keeps its tables in per-env schemas (schema-per-env). */
+  probeSchema?: string;
+  /** Columns for the probe's `select=`. Defaults to `*`; narrow it (e.g. "id") to keep row data
+   * off the wire. */
+  probeSelect?: string;
+  /** Probe path; overrides the `probeTable` query for supabase, defaults to `/` for oci. */
   probePath?: string;
   /** Opt this (oci) target into AUTO-remediation: on failure, fire a repository_dispatch so the
    * wrapper re-applies + redeploys it (vs only alerting). See dispatchRemediation. */
@@ -56,9 +65,20 @@ export interface AlertSink {
 
 type FetchFn = typeof fetch;
 
-/** Ping one target. For supabase, an authed REST request that counts as activity (resets
- * the 7-day pause); for oci, a plain health GET. A 2xx means alive; anything else (or a
- * thrown network error / a paused project returning 5xx) is a failure. */
+/** Ping one target. For supabase, an authed REST request that SELECTs from a real table; for
+ * oci, a plain health GET.
+ *
+ * WHY A TABLE READ (the 2026-07 HeistMind pause): Supabase measures inactivity as *database*
+ * activity, not HTTP traffic. This probe used to GET the PostgREST root (`/rest/v1/`), which
+ * PostgREST answers from its in-memory schema cache — no SQL reaches Postgres, so the ping
+ * never reset the idle timer and heistmind-db was paused anyway. The probe must issue a query
+ * that actually executes against the database; `?select=…&limit=1` on a real table does.
+ *
+ * WHY SUPABASE IS STRICT ABOUT STATUS: the same incident was invisible because any response
+ * under 500 counted as "alive" — a 401 from a dead anon key looked healthy and never alerted.
+ * For supabase only a 2xx proves the query ran, so anything else is a failure. `oci` keeps the
+ * lenient reachability rule on purpose: an auth-gated service answering 401 (BAMCP's `/mcp`)
+ * proves the tunnel + container are serving, which is exactly what that probe is asking. */
 export async function pingTarget(
   t: KeepaliveTarget,
   fetchFn: FetchFn = fetch,
@@ -66,20 +86,44 @@ export async function pingTarget(
   const target = `${t.name}:${t.env}`;
   const base = { target, name: t.name, env: t.env, remediate: t.remediate };
   const kind = t.kind ?? 'supabase';
-  const path = t.probePath ?? (kind === 'oci' ? '/' : '/rest/v1/');
+  let headers: Record<string, string> | undefined;
+  let path: string | undefined = t.probePath;
+
+  if (kind === 'oci') {
+    path ??= '/';
+  } else {
+    // Fail loudly on misconfiguration rather than pinging something that can't keep the project
+    // alive: a silent "ok" here is precisely the failure mode that let heistmind-db pause.
+    if (!t.anonKey) {
+      return { ...base, ok: false, error: 'supabase target has no anonKey — cannot probe' };
+    }
+    if (!path) {
+      if (!t.probeTable) {
+        return {
+          ...base,
+          ok: false,
+          error:
+            'supabase target needs probeTable (or probePath) — a root ping does not reset the idle timer',
+        };
+      }
+      const select = encodeURIComponent(t.probeSelect ?? '*');
+      path = `/rest/v1/${encodeURIComponent(t.probeTable)}?select=${select}&limit=1`;
+    }
+    headers = { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` };
+    // Schema-per-env tools keep their tables outside `public`; PostgREST selects the schema by
+    // Accept-Profile on reads.
+    if (t.probeSchema) headers['Accept-Profile'] = t.probeSchema;
+  }
+
   const url = `${t.url.replace(/\/+$/, '')}${path}`;
-  // Supabase needs the key to authenticate the REST ping; OCI health is unauthenticated.
-  const headers = t.anonKey
-    ? { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` }
-    : undefined;
   try {
     // INVARIANT (locked by a test): this is a READ-ONLY probe — no `method`/`body`, so it's a plain
     // GET. The supabase ping must never write/INSERT; resetting the 7-day idle timer only needs a
     // read. A regression that adds a body/write here would mutate the user's DB on every cron tick.
     const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(10_000) });
-    // Any HTTP response means the project is awake (the request reset the idle timer) — even
-    // a 401 from the PostgREST root. Only a 5xx (paused/broken) or a thrown error is "down".
-    return { ...base, ok: res.status > 0 && res.status < 500, status: res.status };
+    const ok =
+      kind === 'oci' ? res.status > 0 && res.status < 500 : res.status >= 200 && res.status < 300;
+    return { ...base, ok, status: res.status };
   } catch (e) {
     return { ...base, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
