@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.9.0
+
+The keepalive-actually-works release. Supabase paused `heistmind-db` on 2026-07 while keepalive
+reported every target healthy — the probe had never once created database activity, and the
+scoring made that undetectable. Both are fixed, and the fix is loud where the old one was quiet.
+
+### Breaking
+
+- **`supabase` keepalive targets now require `probeTable`** (or an explicit `probePath`). The probe
+  GET the PostgREST root (`/rest/v1/`), which PostgREST answers from its in-memory schema cache
+  without issuing any SQL. Supabase measures *database* activity, not HTTP traffic, so the ping
+  never reset the 7-day idle timer — the "table/schema-agnostic, survives schema changes" property
+  that made the root attractive is exactly what made it useless. Targets now issue
+  `GET /rest/v1/<probeTable>?select=*&limit=1`, a query that actually executes.
+  **Consumers: add `probeTable` to every supabase target in `targets_json`.** Pick a table the
+  `anon` role can `SELECT`; RLS returning zero rows is fine — what matters is that the query ran.
+  A target without one now reports a failure instead of a false pass.
+- **A `supabase` target is alive only on a 2xx.** Previously any status under 500 counted as alive,
+  so a 401 from a dead or rotated key looked healthy and never opened an alert issue — which is how
+  the pause above went unnoticed. A missing `anonKey` now fails without a request rather than
+  falling through to an unauthenticated ping that "passes".
+  `oci` targets keep the lenient rule deliberately: a 401 from an auth-gated endpoint (BAMCP's
+  `/mcp`) still proves the tunnel and container are serving, which is all that probe claims.
+
+### Added
+
+- **`probeSchema`** on a keepalive target — sent as `Accept-Profile`, for tools whose tables live
+  outside `public` (schema-per-env).
+- **`probeSelect`** — narrows the probe's `select=` (default `*`) to keep row data off the wire.
+
+### Follow-ups (deliberate, not forgotten)
+
+- **The Worker has no route**, so its `fetch` handler — which returns a full sweep as JSON — is
+  unreachable and a sweep can only be observed via `wrangler tail`.
+- **Nothing catches "the Worker stopped running."** Alerts fire only when it runs *and* observes a
+  failure; a cron that stops firing is still silent. A dead-man's-switch on an independent platform
+  closes it.
+- **`doctor` does not check that a `data: supabase` tool has a `probeTable`**, so this class of
+  misconfiguration is still caught at pause time rather than at check time.
+
 ## v0.8.0
 
 The gate-identity release: verification now asserts *which artifact* is serving, promotion is
