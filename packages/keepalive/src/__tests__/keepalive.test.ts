@@ -74,8 +74,9 @@ describe('pingTarget', () => {
     expect(r.status).toBe(503);
   });
 
-  // Regression (2026-07 heistmind-db pause): a 401 from a dead/rotated anon key used to count as
-  // "alive", so the probe never ran a query, never reset the idle timer, and never alerted.
+  // Regression guard (2026-08 heistmind-db pause): a 401 from a dead/rotated anon key used to
+  // count as "alive" — no query ran and the idle timer kept going, with nothing failing until
+  // the project had already paused.
   it('is not ok on a 401 — a rejected key means no query reached the database', async () => {
     const r = await pingTarget(target, capturingFetch(401).fn);
     expect(r.ok).toBe(false);

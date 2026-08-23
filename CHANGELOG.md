@@ -2,9 +2,10 @@
 
 ## v0.9.0
 
-The keepalive-actually-works release. Supabase paused `heistmind-db` on 2026-07 while keepalive
-reported every target healthy — the probe had never once created database activity, and the
-scoring made that undetectable. Both are fixed, and the fix is loud where the old one was quiet.
+The keepalive-actually-works release. Supabase paused `heistmind-db` on 2026-08. Keepalive
+noticed — the paused project returned 530 and the alert issue was filed the same day — but it had
+never done anything to *prevent* the pause: the probe had not once created database activity in
+the two months it ran. Detection was fine; the thing it existed to do was not happening.
 
 ### Breaking
 
@@ -18,9 +19,10 @@ scoring made that undetectable. Both are fixed, and the fix is loud where the ol
   `anon` role can `SELECT`; RLS returning zero rows is fine — what matters is that the query ran.
   A target without one now reports a failure instead of a false pass.
 - **A `supabase` target is alive only on a 2xx.** Previously any status under 500 counted as alive,
-  so a 401 from a dead or rotated key looked healthy and never opened an alert issue — which is how
-  the pause above went unnoticed. A missing `anonKey` now fails without a request rather than
-  falling through to an unauthenticated ping that "passes".
+  which conflates "the host answered" with "a query ran". It catches a pause (a 5xx) but not a dead
+  or rotated key: a 401 scored healthy while the idle timer kept running. Requiring a 2xx is how
+  a pause goes from "drifted into" to "reported". A missing `anonKey` now fails without a request
+  rather than falling through to an unauthenticated ping that "passes".
   `oci` targets keep the lenient rule deliberately: a 401 from an auth-gated endpoint (BAMCP's
   `/mcp`) still proves the tunnel and container are serving, which is all that probe claims.
 
@@ -39,6 +41,11 @@ scoring made that undetectable. Both are fixed, and the fix is loud where the ol
   closes it.
 - **`doctor` does not check that a `data: supabase` tool has a `probeTable`**, so this class of
   misconfiguration is still caught at pause time rather than at check time.
+- **The alert debounce is global, not per-target.** `alertGithubIssue` skips when *any*
+  `keepalive`-labelled issue is open, so one unresolved alert silences every other target until a
+  human closes it. Fine for the stated purpose (not filing hundreds of issues over a multi-day
+  outage), wrong at the boundary: while heistmind sat paused, a bamcp or polyphony outage would
+  have gone unreported. Should dedupe per `name:env`.
 
 ## v0.8.0
 

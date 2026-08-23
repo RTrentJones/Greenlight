@@ -68,15 +68,19 @@ type FetchFn = typeof fetch;
 /** Ping one target. For supabase, an authed REST request that SELECTs from a real table; for
  * oci, a plain health GET.
  *
- * WHY A TABLE READ (the 2026-07 HeistMind pause): Supabase measures inactivity as *database*
+ * WHY A TABLE READ (the 2026-08 HeistMind pause): Supabase measures inactivity as *database*
  * activity, not HTTP traffic. This probe used to GET the PostgREST root (`/rest/v1/`), which
  * PostgREST answers from its in-memory schema cache — no SQL reaches Postgres, so the ping
- * never reset the idle timer and heistmind-db was paused anyway. The probe must issue a query
- * that actually executes against the database; `?select=…&limit=1` on a real table does.
+ * never reset the idle timer and heistmind-db was paused anyway. Detection was never the
+ * problem: the paused project returned 530 and keepalive filed an alert the same day.
+ * Prevention was — the probe had never once created database activity. The probe must issue a
+ * query that actually executes; `?select=…&limit=1` on a real table does.
  *
- * WHY SUPABASE IS STRICT ABOUT STATUS: the same incident was invisible because any response
- * under 500 counted as "alive" — a 401 from a dead anon key looked healthy and never alerted.
- * For supabase only a 2xx proves the query ran, so anything else is a failure. `oci` keeps the
+ * WHY SUPABASE IS STRICT ABOUT STATUS: "alive" used to mean any response under 500, which
+ * conflates "the host answered" with "a query ran". That catches a pause (a 5xx) but not a dead
+ * or rotated anon key: a 401 scored as healthy while the idle timer kept running — the same
+ * silent drift into a pause, by a different route. For supabase only a 2xx proves the query
+ * executed, so anything else is a failure. `oci` keeps the
  * lenient reachability rule on purpose: an auth-gated service answering 401 (BAMCP's `/mcp`)
  * proves the tunnel + container are serving, which is exactly what that probe is asking. */
 export async function pingTarget(

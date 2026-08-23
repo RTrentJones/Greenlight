@@ -36,8 +36,8 @@ probeTable = "<table>" }`.
 HTTP traffic, so the probe has to run a query that reaches Postgres — it issues
 `GET /rest/v1/<probeTable>?select=*&limit=1`. Pinging the PostgREST root (`/rest/v1/`) does **not**
 work: PostgREST answers it from its in-memory schema cache without touching the database, so the
-idle timer keeps running. (That is exactly how heistmind-db was paused in 2026-07 while keepalive
-reported healthy.) Pick a table the `anon` role can `SELECT`; RLS returning zero rows is fine — the
+idle timer keeps running. (That is exactly how heistmind-db was paused in 2026-08: keepalive
+alerted correctly once the project was already down, but had never done anything to keep it up.) Pick a table the `anon` role can `SELECT`; RLS returning zero rows is fine — the
 query still executed. Add `probeSchema` when the table lives outside `public` (schema-per-env), and
 `probeSelect` to keep row data off the wire.
 
