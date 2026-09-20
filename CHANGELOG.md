@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.10.0
+
+The probe-actually-lands release. v0.9.0 made the keepalive probe query a real table — and
+heistmind-db paused again on 2026-08-31 regardless, exactly 7 days after being unpaused, with two
+sweeps inside that window reporting a clean 200. Both defects below explain that, and neither was
+visible from outside.
+
+### Breaking
+
+- **The probe is no longer cacheable.** A Worker's `fetch()` runs GET subrequests through
+  Cloudflare's cache. Nothing in the probe opted out, so a cached 200 could be returned at the edge
+  without the request ever reaching Supabase — the probe scored healthy while creating no database
+  activity at all. Supabase's rule is 7 days of complete *Postgres* inactivity; API-gateway traffic
+  and, worse, a response that never left Cloudflare are not database interaction. The probe now
+  sends `cache: 'no-store'` and `cf: { cacheTtl: 0, cacheEverything: false }`, locked by a test.
+  This is a behaviour change for every target, supabase and oci alike.
+  (Cache-busting via a query param is deliberately NOT used: PostgREST reads unknown params as
+  column filters and answers 400.)
+- **`alertGithubIssue` returns `number` (issues filed), not `boolean`, and files one issue per
+  failing target** titled `keepalive: <name>:<env> failing`. The debounce was global — it skipped
+  when *any* `keepalive`-labelled issue was open — so a single unresolved alert silenced every
+  other target. With heistmind's 2026-08-31 issue left open, bamcp and polyphony could not have
+  reported an outage for three weeks. Dedupe is now per `name:env`, which keeps the anti-spam
+  property without letting one target gag the rest. Programmatic callers must update.
+
+### Fixed
+
+- The sweep log now reports how many alert issues were filed, not only remediation dispatches.
+
+### Follow-ups (deliberate, not forgotten)
+
+- **The Worker still has no route**, so its `fetch` handler — a full sweep as JSON — is unreachable
+  and a sweep can still only be observed via `wrangler tail`. This cost real time diagnosing the
+  above: there was no way to ask the Worker what it saw.
+- **Nothing catches "the Worker stopped running."** Alerts fire only when it runs *and* observes a
+  failure, so a silent cron is indistinguishable from a healthy one — exactly the ambiguity that
+  made the 2026-08-31 pause hard to attribute.
+- **`doctor` does not check that a `data: supabase` tool has a `probeTable`.**
+
 ## v0.9.0
 
 The keepalive-actually-works release. Supabase paused `heistmind-db` on 2026-08. Keepalive

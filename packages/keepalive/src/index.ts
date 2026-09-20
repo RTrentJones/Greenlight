@@ -124,7 +124,23 @@ export async function pingTarget(
     // INVARIANT (locked by a test): this is a READ-ONLY probe — no `method`/`body`, so it's a plain
     // GET. The supabase ping must never write/INSERT; resetting the 7-day idle timer only needs a
     // read. A regression that adds a body/write here would mutate the user's DB on every cron tick.
-    const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(10_000) });
+    //
+    // INVARIANT (locked by a test): the probe MUST NOT be cached. A Worker's `fetch()` puts GET
+    // subrequests through Cloudflare's cache, and a cached 200 returns instantly, scores healthy,
+    // and NEVER REACHES POSTGRES — the probe silently stops being a keepalive while still
+    // reporting green. That is how heistmind-db paused on 2026-08-31 with two "successful" sweeps
+    // inside the window: Supabase's rule is 7 days of complete *Postgres* inactivity, and a cached
+    // response is not database activity. (The 530 that did alert was never cached — errors aren't.)
+    // `cf.cacheTtl: 0` is the Workers control; `cache: 'no-store'` covers other runtimes.
+    // NB: cache-busting via a query param is NOT available here — PostgREST reads unknown params
+    // as column filters and answers 400.
+    const init = {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+      cache: 'no-store',
+      cf: { cacheTtl: 0, cacheEverything: false },
+    } as RequestInit;
+    const res = await fetchFn(url, init);
     const ok =
       kind === 'oci' ? res.status > 0 && res.status < 500 : res.status >= 200 && res.status < 300;
     return { ...base, ok, status: res.status };
@@ -141,46 +157,58 @@ export async function runKeepalive(
   return Promise.all(targets.map((t) => pingTarget(t, fetchFn)));
 }
 
-/** Open a GitHub issue for the failures. No-op (returns false) when there are no failures or the
- * sink isn't configured — OR when a `keepalive`-labelled issue is already open. The cron fires
- * repeatedly while a target stays down; without the open-issue check it would file a fresh issue
- * every tick (hundreds over a multi-day outage, and eventual API rate-limiting). */
+/** The issue title for one failing target — also the dedupe key. */
+export const alertTitle = (target: string) => `keepalive: ${target} failing`;
+
+/** Open one GitHub issue PER FAILING TARGET, skipping targets that already have an open issue.
+ * Returns the number of issues filed. No-op (0) with no failures or an unconfigured sink.
+ *
+ * The debounce used to be GLOBAL — it skipped when ANY `keepalive`-labelled issue was open. One
+ * unresolved alert therefore silenced every other target: while heistmind sat paused from
+ * 2026-08-31, bamcp and polyphony could not have reported an outage at all, for three weeks.
+ * Deduping per `name:env` keeps the property that matters (no fresh issue every tick over a
+ * multi-day outage) without letting one target gag the others.
+ *
+ * If the lookup itself fails (network), fall through and alert — better a possible duplicate than
+ * a silently-dropped outage. */
 export async function alertGithubIssue(
   sink: AlertSink,
   failures: KeepaliveResult[],
   fetchFn: FetchFn = fetch,
-): Promise<boolean> {
-  if (failures.length === 0 || !sink.githubRepo || !sink.githubToken) return false;
+): Promise<number> {
+  if (failures.length === 0 || !sink.githubRepo || !sink.githubToken) return 0;
   const auth = {
     Authorization: `Bearer ${sink.githubToken}`,
     Accept: 'application/vnd.github+json',
     'User-Agent': 'greenlight-keepalive',
   };
-  // Debounce: skip if an open keepalive issue already exists. If the lookup itself fails (network),
-  // fall through and alert — better a possible duplicate than a silently-dropped outage.
   const open = await fetchFn(
-    `https://api.github.com/repos/${sink.githubRepo}/issues?state=open&labels=keepalive&per_page=1`,
+    `https://api.github.com/repos/${sink.githubRepo}/issues?state=open&labels=keepalive&per_page=100`,
     { headers: auth },
   ).catch(() => null);
+  const alreadyOpen = new Set<string>();
   if (open?.ok) {
-    const issues = (await open.json().catch(() => [])) as unknown[];
-    if (Array.isArray(issues) && issues.length > 0) return false;
+    const issues = (await open.json().catch(() => [])) as Array<{ title?: string }>;
+    if (Array.isArray(issues)) for (const i of issues) if (i?.title) alreadyOpen.add(i.title);
   }
-  const body = [
-    'Greenlight keepalive detected unreachable target(s):',
-    '',
-    ...failures.map((f) => `- \`${f.target}\` — ${f.status ?? f.error ?? 'unknown'}`),
-  ].join('\n');
-  const res = await fetchFn(`https://api.github.com/repos/${sink.githubRepo}/issues`, {
-    method: 'POST',
-    headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      title: `keepalive: ${failures.length} target(s) failing`,
-      body,
-      labels: ['keepalive'],
-    }),
-  });
-  return res.ok;
+  const filed = await Promise.all(
+    failures
+      .filter((f) => !alreadyOpen.has(alertTitle(f.target)))
+      .map((f) =>
+        fetchFn(`https://api.github.com/repos/${sink.githubRepo}/issues`, {
+          method: 'POST',
+          headers: { ...auth, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: alertTitle(f.target),
+            body: `Greenlight keepalive could not reach \`${f.target}\` — ${f.status ?? f.error ?? 'unknown'}`,
+            labels: ['keepalive'],
+          }),
+        })
+          .then((r) => r.ok)
+          .catch(() => false),
+      ),
+  );
+  return filed.filter(Boolean).length;
 }
 
 export interface RemediateSink {
@@ -276,7 +304,7 @@ async function sweep(env: Env): Promise<KeepaliveResult[]> {
   const failures = results.filter((r) => !r.ok);
   // Audit trail (always) + self-heal (for opted-in oci targets), in parallel. Both no-op when
   // unconfigured. Keeps the cron's wall-clock down vs. awaiting them in series.
-  const [, fired] = await Promise.all([
+  const [alerted, fired] = await Promise.all([
     alertGithubIssue(
       { githubRepo: env.ALERT_GITHUB_REPO, githubToken: env.GITHUB_TOKEN },
       failures,
@@ -286,6 +314,7 @@ async function sweep(env: Env): Promise<KeepaliveResult[]> {
       failures,
     ),
   ]);
+  if (alerted > 0) console.log(`filed ${alerted} alert issue(s)`);
   if (fired > 0) console.log(`dispatched ${fired} remediation(s)`);
   return results;
 }

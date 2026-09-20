@@ -68,6 +68,25 @@ describe('pingTarget', () => {
     expect(calls[0]?.init.body).toBeUndefined();
   });
 
+  // Regression (2026-08-31 pause): a Worker's fetch() runs GET subrequests through Cloudflare's
+  // cache. A cached 200 never reaches Postgres, so the probe scores healthy while the idle timer
+  // runs — two "successful" sweeps sat inside the window that paused heistmind-db.
+  it('never lets the probe be served from cache (invariant)', async () => {
+    const { fn, calls } = capturingFetch(200);
+    await pingTarget(target, fn);
+    const init = calls[0]?.init as { cache?: string; cf?: { cacheTtl?: number } };
+    expect(init.cache).toBe('no-store');
+    expect(init.cf?.cacheTtl).toBe(0);
+  });
+
+  it('sends the no-cache directives on oci probes too', async () => {
+    const { fn, calls } = capturingFetch(200);
+    await pingTarget({ name: 'bamcp', env: 'prod', url: 'https://b.example.dev', kind: 'oci' }, fn);
+    const init = calls[0]?.init as { cache?: string; cf?: { cacheTtl?: number } };
+    expect(init.cache).toBe('no-store');
+    expect(init.cf?.cacheTtl).toBe(0);
+  });
+
   it('is not ok on a 5xx (a paused/broken project)', async () => {
     const r = await pingTarget(target, capturingFetch(503).fn);
     expect(r.ok).toBe(false);
@@ -165,49 +184,81 @@ describe('runKeepalive', () => {
 
 describe('alertGithubIssue', () => {
   const failures: KeepaliveResult[] = [{ target: 'heistmind:prod', ok: false, status: 503 }];
+  const noOpenIssues = (status = 201) => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init: init ?? {} });
+      const isLookup = !init?.method;
+      return new Response(isLookup ? '[]' : '', { status: isLookup ? 200 : status });
+    }) as unknown as typeof fetch;
+    return { fn, calls };
+  };
 
   it('no-ops when there are no failures', async () => {
-    const { fn, calls } = capturingFetch();
-    const sent = await alertGithubIssue({ githubRepo: 'o/r', githubToken: 't' }, [], fn);
-    expect(sent).toBe(false);
+    const { fn, calls } = noOpenIssues();
+    expect(await alertGithubIssue({ githubRepo: 'o/r', githubToken: 't' }, [], fn)).toBe(0);
     expect(calls).toHaveLength(0);
   });
 
   it('no-ops when the sink is not configured', async () => {
-    const { fn, calls } = capturingFetch();
-    const sent = await alertGithubIssue({}, failures, fn);
-    expect(sent).toBe(false);
+    const { fn, calls } = noOpenIssues();
+    expect(await alertGithubIssue({}, failures, fn)).toBe(0);
     expect(calls).toHaveLength(0);
   });
 
-  it('opens an issue on the right repo with the failures in the body', async () => {
-    const { fn, calls } = capturingFetch(201);
-    const sent = await alertGithubIssue({ githubRepo: 'o/r', githubToken: 'tok' }, failures, fn);
-    expect(sent).toBe(true);
-    // First call is the dedup lookup (no open issue → empty body parses as []); then the POST.
+  it('opens one issue per failing target, titled with that target', async () => {
+    const { fn, calls } = noOpenIssues();
+    const filed = await alertGithubIssue({ githubRepo: 'o/r', githubToken: 'tok' }, failures, fn);
+    expect(filed).toBe(1);
     expect(calls[0]?.url).toBe(
-      'https://api.github.com/repos/o/r/issues?state=open&labels=keepalive&per_page=1',
+      'https://api.github.com/repos/o/r/issues?state=open&labels=keepalive&per_page=100',
     );
     expect(calls[0]?.init.method).toBeUndefined(); // a GET
-    expect(calls[1]?.url).toBe('https://api.github.com/repos/o/r/issues');
     expect(calls[1]?.init.method).toBe('POST');
     expect(headersOf(calls[1]?.init).Authorization).toBe('Bearer tok');
     const payload = JSON.parse((calls[1]?.init.body as string) ?? '{}');
-    expect(payload.title).toContain('1 target(s) failing');
-    expect(payload.body).toContain('heistmind:prod');
+    expect(payload.title).toBe('keepalive: heistmind:prod failing');
+    expect(payload.labels).toEqual(['keepalive']);
   });
 
-  it('debounces — does NOT open a second issue when one is already open', async () => {
-    // The dedup GET returns an existing open keepalive issue → no POST, no spam.
+  it('debounces PER TARGET — skips the one already open, still files the others', async () => {
+    // The 3-week blind spot: an open heistmind issue used to silence bamcp and polyphony too.
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fn = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init: init ?? {} });
-      return new Response(JSON.stringify([{ number: 7 }]), { status: 200 });
+      if (!init?.method) {
+        return new Response(JSON.stringify([{ title: 'keepalive: heistmind:prod failing' }]), {
+          status: 200,
+        });
+      }
+      return new Response('', { status: 201 });
     }) as unknown as typeof fetch;
-    const sent = await alertGithubIssue({ githubRepo: 'o/r', githubToken: 'tok' }, failures, fn);
-    expect(sent).toBe(false);
-    expect(calls).toHaveLength(1); // only the lookup; never the create
-    expect(calls[0]?.url).toContain('state=open&labels=keepalive');
+
+    const filed = await alertGithubIssue(
+      { githubRepo: 'o/r', githubToken: 'tok' },
+      [
+        { target: 'heistmind:prod', ok: false, status: 530 },
+        { target: 'bamcp:prod', ok: false, status: 502 },
+      ],
+      fn,
+    );
+
+    expect(filed).toBe(1); // bamcp only
+    const posted = calls.filter((c) => c.init.method === 'POST');
+    expect(posted).toHaveLength(1);
+    expect(JSON.parse((posted[0]?.init.body as string) ?? '{}').title).toBe(
+      'keepalive: bamcp:prod failing',
+    );
+  });
+
+  it('still alerts when the dedupe lookup itself fails (duplicate beats a dropped outage)', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fn = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init: init ?? {} });
+      if (!init?.method) throw new Error('network down');
+      return new Response('', { status: 201 });
+    }) as unknown as typeof fetch;
+    expect(await alertGithubIssue({ githubRepo: 'o/r', githubToken: 'tok' }, failures, fn)).toBe(1);
   });
 });
 
