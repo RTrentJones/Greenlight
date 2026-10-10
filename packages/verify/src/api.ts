@@ -62,17 +62,19 @@ async function checkRoute(
   const method = c.method ?? 'GET';
   const name = `${method} ${c.path}`;
   const headers: Record<string, string> = { ...c.requestHeaders };
-  let body: string | undefined;
-  if (c.body !== undefined) {
-    if (typeof c.body === 'string') body = c.body;
-    else {
-      body = JSON.stringify(c.body);
-      if (!Object.keys(headers).some((h) => h.toLowerCase() === 'content-type')) {
-        headers['content-type'] = 'application/json';
+  try {
+    // Serialize inside the guard: an unserializable body (BigInt, a cycle) fails this check
+    // instead of rejecting out of verifyApi's Promise.all and crashing the whole verify.
+    let body: string | undefined;
+    if (c.body !== undefined) {
+      if (typeof c.body === 'string') body = c.body;
+      else {
+        body = JSON.stringify(c.body);
+        if (!Object.keys(headers).some((h) => h.toLowerCase() === 'content-type')) {
+          headers['content-type'] = 'application/json';
+        }
       }
     }
-  }
-  try {
     const start = Date.now();
     const res = await timedFetch(base + c.path, timeoutMs, { method, headers, body });
     const reasons: string[] = [];

@@ -20,9 +20,14 @@ export function getPath(root: unknown, path: string): unknown {
   return cur;
 }
 
-/** A timestamp as epoch ms: an ISO/RFC date string, or a number (seconds below 1e12, else ms). */
+/** Below this a number is epoch SECONDS, at or above it epoch MILLISECONDS. 1e11 s is the year
+ * 5138 and 1e11 ms is March 1973, so every plausible timestamp of either unit lands on the right
+ * side (a 1e12 cutoff misread 1973–2001 milliseconds as seconds — a far-future, "fresh" date). */
+const EPOCH_SECONDS_BELOW = 1e11;
+
+/** A timestamp as epoch ms: an ISO/RFC date string, or a number (seconds or ms, see above). */
 function toEpochMs(v: unknown): number | undefined {
-  if (typeof v === 'number' && Number.isFinite(v)) return v < 1e12 ? v * 1000 : v;
+  if (typeof v === 'number' && Number.isFinite(v)) return v < EPOCH_SECONDS_BELOW ? v * 1000 : v;
   if (typeof v === 'string' && v.trim() !== '') {
     const t = Date.parse(v);
     return Number.isNaN(t) ? undefined : t;
@@ -30,7 +35,15 @@ function toEpochMs(v: unknown): number | undefined {
   return undefined;
 }
 
-const show = (v: unknown) => (typeof v === 'string' ? `"${v}"` : JSON.stringify(v));
+/** Format a value for a failure message. Never throws (BigInt, cycles), so a report is always built. */
+export function show(v: unknown): string {
+  if (typeof v === 'string') return `"${v}"`;
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return String(v);
+  }
+}
 
 /** Evaluate one value against its assertions; returns the failure reasons (empty = pass). `label`
  * names the value in messages (the JSON path or the regex). `now` is injectable for tests. */

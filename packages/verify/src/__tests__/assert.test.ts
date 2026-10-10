@@ -70,6 +70,10 @@ describe('evalValue', () => {
     expect(evalValue('t', Math.floor(oneHourAgo / 1000), { maxAgeHours: 2 }, NOW)).toEqual([]);
     expect(evalValue('t', 'yesterday-ish', { maxAgeHours: 2 }, NOW)[0]).toMatch(/not a timestamp/);
   });
+  it('reads 1973–2001 epoch milliseconds as ms, not seconds (no far-future "fresh" date)', () => {
+    expect(evalValue('t', 946684800000, { maxAgeHours: 26 }, NOW)[0]).toMatch(/stale/); // 2000-01-01
+    expect(evalValue('t', 946684800000, { minFutureDays: 1 }, NOW)[0]).toMatch(/need ≥ 1d/);
+  });
   it('minFutureDays catches an approaching expiry', () => {
     expect(evalValue('Expires', '2027-07-20T00:00:00Z', { minFutureDays: 30 }, NOW)).toEqual([]);
     expect(evalValue('Expires', '2026-10-20T00:00:00Z', { minFutureDays: 30 }, NOW)[0]).toMatch(
@@ -174,6 +178,15 @@ describe('validateSpec', () => {
     expect(validateSpec({ mode: 'test', timeoutMs: Number.NaN })).toEqual([
       'test spec.timeoutMs must be a finite number',
     ]);
+  });
+
+  it('formats unserializable values without throwing', () => {
+    expect(validateSpec({ mode: 1n })[0]).toMatch(/unknown mode 1/);
+    const cyc: Record<string, unknown> = {};
+    cyc.self = cyc;
+    expect(validateSpec({ mode: 'api', concurrency: cyc })[0]).toMatch(
+      /concurrency must be one of/,
+    );
   });
 
   it('returns a named failure (never throws) for inherited Object.prototype mode names', () => {

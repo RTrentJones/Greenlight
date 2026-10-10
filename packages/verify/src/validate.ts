@@ -6,6 +6,8 @@
  * required key, wrong type, out-of-set enum value and uncompilable regex is a hard, named failure.
  */
 
+import { show } from './assert';
+
 type Kind =
   | 'string'
   | 'number'
@@ -181,7 +183,7 @@ function regexOk(where: string, src: unknown, flags: unknown, out: string[]): vo
 function checkValue(where: string, v: unknown, f: Field, out: string[]): void {
   if (f.oneOf) {
     if (typeof v !== 'string' || !f.oneOf.includes(v)) {
-      out.push(`${where} must be one of ${f.oneOf.join(', ')}, got ${JSON.stringify(v)}`);
+      out.push(`${where} must be one of ${f.oneOf.join(', ')}, got ${show(v)}`);
     }
     return;
   }
@@ -237,9 +239,7 @@ export function validateSpec(spec: unknown): string[] {
   if (!isObj(spec)) return ['spec must be an object'];
   const mode = spec.mode;
   if (typeof mode !== 'string' || !own(MODES, mode)) {
-    return [
-      `unknown mode ${JSON.stringify(mode)} (expected one of ${Object.keys(MODES).join(', ')})`,
-    ];
+    return [`unknown mode ${show(mode)} (expected one of ${Object.keys(MODES).join(', ')})`];
   }
   const out: string[] = [];
   checkObject(`${mode} spec`, spec, { ...BASE, ...(MODES[mode] as Schema) }, out);

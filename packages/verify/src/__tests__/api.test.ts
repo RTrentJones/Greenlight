@@ -230,6 +230,21 @@ describe('verify api', () => {
     expect(get.pass).toBe(true);
   });
 
+  it('an unserializable body fails its check instead of crashing verify', async () => {
+    const { verifyApi } = await import('../api');
+    // Called directly (validation would accept the object shape; serialization is what throws).
+    const r = await verifyApi(base, {
+      mode: 'api',
+      checks: [
+        { path: '/ingest', method: 'POST', body: { n: 1n } as unknown as Record<string, unknown> },
+        { path: '/about', status: 200 },
+      ],
+    });
+    expect(r.checks[0]?.pass).toBe(false);
+    expect(r.checks[0]?.detail).toMatch(/BigInt/);
+    expect(r.checks[1]?.pass).toBe(true);
+  });
+
   it('notContains fails when a forbidden marker is present', async () => {
     const r = await verify(base, {
       mode: 'api',
