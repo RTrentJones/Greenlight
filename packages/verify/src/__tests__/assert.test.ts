@@ -173,7 +173,7 @@ describe('validateSpec', () => {
   });
   it('type-checks every accepted field, so a wrong-typed value cannot silently never fail', () => {
     expect(validateSpec({ mode: 'api', checks: [{ path: '/', maxMs: 'slow' }] })).toEqual([
-      'api spec.checks[0].maxMs must be a finite number',
+      'api spec.checks[0].maxMs must be a finite number >= 0',
     ]);
     expect(
       validateSpec({ mode: 'api', checks: [{ path: '/', json: [{ path: 'n', gte: 'bad' }] }] }),
@@ -186,14 +186,26 @@ describe('validateSpec', () => {
     ]);
     expect(validateSpec({ mode: 'api', settleRetries: '3', concurrency: 'both' })).toEqual([
       'api spec.concurrency must be one of serial, parallel, got "both"',
-      'api spec.settleRetries must be a finite number',
+      'api spec.settleRetries must be a finite number >= 0',
     ]);
     expect(validateSpec({ mode: 'mcp', expectTools: ['a', 1] })).toEqual([
       'mcp spec.expectTools[1] must be a string',
     ]);
     expect(validateSpec({ mode: 'test', timeoutMs: Number.NaN })).toEqual([
-      'test spec.timeoutMs must be a finite number',
+      'test spec.timeoutMs must be a finite number >= 0',
     ]);
+  });
+
+  it('rejects a negative threshold (a sign error must not invert a guard)', () => {
+    expect(
+      validateSpec({
+        mode: 'api',
+        checks: [{ path: '/', text: [{ regex: 'E: (.+)', minFutureDays: -1 }] }],
+      }),
+    ).toEqual(['api spec.checks[0].text[0].minFutureDays must be a finite number >= 0']);
+    expect(validateSpec({ mode: 'api', settleRetries: -2 })[0]).toMatch(
+      /must be a finite number >= 0/,
+    );
   });
 
   it('rejects a null request body', () => {

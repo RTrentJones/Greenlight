@@ -11,6 +11,7 @@ import { show } from './assert';
 type Kind =
   | 'string'
   | 'number'
+  | 'nonneg' // a finite number >= 0 (thresholds, budgets, counts — a sign error must not invert a guard)
   | 'boolean'
   | 'scalar' // string | number | boolean | null
   | 'regex' // a string that must compile
@@ -33,6 +34,7 @@ interface Field {
 type Schema = Record<string, Field>;
 
 const NUM: Field = { kind: 'number' };
+const NONNEG: Field = { kind: 'nonneg' };
 const BOOL: Field = { kind: 'boolean' };
 const STR: Field = { kind: 'string' };
 
@@ -42,8 +44,8 @@ const VALUE: Schema = {
   matches: { kind: 'regex' },
   gte: NUM,
   lte: NUM,
-  maxAgeHours: NUM,
-  minFutureDays: NUM,
+  maxAgeHours: NONNEG,
+  minFutureDays: NONNEG,
 };
 
 const API_CHECK: Schema = {
@@ -57,7 +59,7 @@ const API_CHECK: Schema = {
   json: { array: true, of: { path: { ...STR, required: true }, ...VALUE } },
   // `regex` compiles with `flags`; checked specially below so the flags participate.
   text: { array: true, of: { regex: { ...STR, required: true }, flags: STR, ...VALUE } },
-  maxMs: NUM,
+  maxMs: NONNEG,
   requestHeaders: { kind: 'record' },
 };
 
@@ -73,10 +75,10 @@ const MODES: Record<string, Schema> = {
     rssValid: BOOL,
     sitemapValid: BOOL,
     noBrokenInternalLinks: BOOL,
-    maxLinks: NUM,
-    timeoutMs: NUM,
-    settleRetries: NUM,
-    settleMs: NUM,
+    maxLinks: NONNEG,
+    timeoutMs: NONNEG,
+    settleRetries: NONNEG,
+    settleMs: NONNEG,
     requireIdentity: BOOL,
   },
   mcp: {
@@ -92,13 +94,13 @@ const MODES: Record<string, Schema> = {
     },
     requireAuthRejection: BOOL,
     headers: { kind: 'record' },
-    timeoutMs: NUM,
+    timeoutMs: NONNEG,
   },
   playwright: {
     renders: { array: true, items: 'string' },
-    suite: { obj: { command: STR, cwd: STR, timeoutMs: NUM, env: { kind: 'record' } } },
+    suite: { obj: { command: STR, cwd: STR, timeoutMs: NONNEG, env: { kind: 'record' } } },
   },
-  test: { command: STR, cwd: STR, timeoutMs: NUM },
+  test: { command: STR, cwd: STR, timeoutMs: NONNEG },
   'agent-web': {
     scenarios: {
       array: true,
@@ -114,10 +116,10 @@ const MODES: Record<string, Schema> = {
       },
     },
     model: STR,
-    maxSteps: NUM,
-    historyWindow: NUM,
-    maxTokens: NUM,
-    maxRepeats: NUM,
+    maxSteps: NONNEG,
+    historyWindow: NONNEG,
+    maxTokens: NONNEG,
+    maxRepeats: NONNEG,
     headed: BOOL,
   },
   eval: {
@@ -129,7 +131,7 @@ const MODES: Record<string, Schema> = {
         tool: { ...STR, required: true },
         args: { kind: 'any-object' },
         rubric: { ...STR, required: true },
-        minScore: NUM,
+        minScore: NONNEG,
       },
     },
     model: STR,
@@ -147,6 +149,8 @@ function kindOk(kind: Kind, v: unknown): boolean {
       return typeof v === 'string';
     case 'number':
       return typeof v === 'number' && Number.isFinite(v);
+    case 'nonneg':
+      return typeof v === 'number' && Number.isFinite(v) && v >= 0;
     case 'boolean':
       return typeof v === 'boolean';
     case 'scalar':
@@ -164,6 +168,7 @@ const KIND_NAME: Record<Kind, string> = {
   string: 'a string',
   regex: 'a regex string',
   number: 'a finite number',
+  nonneg: 'a finite number >= 0',
   boolean: 'a boolean',
   scalar: 'a string, number, boolean or null',
   record: 'an object of strings',
