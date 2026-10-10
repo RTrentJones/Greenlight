@@ -100,11 +100,12 @@ export function evalJson(body: string, asserts: JsonAssert[], now = Date.now()):
 }
 
 /** Text assertions: each regex runs against the body, and its first capture group (or the whole
- * match when it has none) is the value asserted. No match ⇒ the value is missing. */
+ * match when the regex has NO groups) is the value asserted. No match — or a match where an
+ * optional first group did not participate — ⇒ the value is missing. */
 export function evalText(body: string, asserts: TextAssert[], now = Date.now()): string[] {
   return asserts.flatMap(({ regex, flags, ...a }) => {
     const m = new RegExp(regex, flags).exec(body);
-    const value = m ? (m[1] ?? m[0]) : undefined;
+    const value = m ? (m.length > 1 ? m[1] : m[0]) : undefined;
     return evalValue(`/${regex}/`, value, a, now);
   });
 }

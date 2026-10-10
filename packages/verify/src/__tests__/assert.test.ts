@@ -75,6 +75,14 @@ describe('evalJson / evalText', () => {
       ]),
     ).toEqual(['checks.database = "down", expected "healthy"']);
   });
+  it('an optional capture group that did not participate is missing, not the whole match', () => {
+    expect(evalText('Expires', [{ regex: '^Expires(?:: (.+))?$', exists: true }])).toEqual([
+      '/^Expires(?:: (.+))?$/ missing',
+    ]);
+    // A regex with no groups still asserts on the whole match.
+    expect(evalText('ok: yes', [{ regex: 'ok: \\w+', equals: 'ok: yes' }])).toEqual([]);
+  });
+
   it('asserts on a regex capture (security.txt Expires)', () => {
     const body = 'Contact: x\nExpires: 2027-07-20T00:00:00.000Z\n';
     expect(
@@ -113,18 +121,48 @@ describe('validateSpec', () => {
   });
   it('names an unsupported field instead of ignoring it (typo or newer-Greenlight field)', () => {
     expect(validateSpec({ mode: 'api', checks: [{ path: '/', statsu: 200 }] })).toEqual([
-      'checks[0]: unsupported field "statsu"',
+      'api spec.checks[0]: unsupported field "statsu"',
     ]);
     expect(validateSpec({ mode: 'api', settleRetry: 3 })).toEqual([
       'api spec: unsupported field "settleRetry"',
     ]);
     expect(
       validateSpec({ mode: 'api', checks: [{ path: '/', json: [{ path: 'a', eq: 1 }] }] }),
-    ).toEqual(['checks[0].json[0]: unsupported field "eq"']);
+    ).toEqual(['api spec.checks[0].json[0]: unsupported field "eq"']);
     expect(validateSpec({ mode: 'mcp', expectTools: [], call: { name: 'x', text: 'y' } })).toEqual([
-      'call: unsupported field "text"',
+      'mcp spec.call: unsupported field "text"',
     ]);
   });
+  it('type-checks every accepted field, so a wrong-typed value cannot silently never fail', () => {
+    expect(validateSpec({ mode: 'api', checks: [{ path: '/', maxMs: 'slow' }] })).toEqual([
+      'api spec.checks[0].maxMs must be a finite number',
+    ]);
+    expect(
+      validateSpec({ mode: 'api', checks: [{ path: '/', json: [{ path: 'n', gte: 'bad' }] }] }),
+    ).toEqual(['api spec.checks[0].json[0].gte must be a finite number']);
+    expect(validateSpec({ mode: 'api', checks: [{ path: '/', method: 'FETCH' }] })[0]).toMatch(
+      /method must be one of GET/,
+    );
+    expect(validateSpec({ mode: 'api', checks: [{ status: 200 }] })).toEqual([
+      'api spec.checks[0]: missing required field "path"',
+    ]);
+    expect(validateSpec({ mode: 'api', settleRetries: '3', concurrency: 'both' })).toEqual([
+      'api spec.concurrency must be one of serial, parallel, got "both"',
+      'api spec.settleRetries must be a finite number',
+    ]);
+    expect(validateSpec({ mode: 'mcp', expectTools: ['a', 1] })).toEqual([
+      'mcp spec.expectTools[1] must be a string',
+    ]);
+    expect(validateSpec({ mode: 'test', timeoutMs: Number.NaN })).toEqual([
+      'test spec.timeoutMs must be a finite number',
+    ]);
+  });
+
+  it('returns a named failure (never throws) for inherited Object.prototype mode names', () => {
+    expect(validateSpec({ mode: 'constructor' })[0]).toMatch(/unknown mode "constructor"/);
+    expect(validateSpec({ mode: 'toString' })[0]).toMatch(/unknown mode "toString"/);
+  });
+
   it('rejects an uncompilable regex and an unknown mode', () => {
     expect(
       validateSpec({ mode: 'api', checks: [{ path: '/', text: [{ regex: '(' }] }] })[0],

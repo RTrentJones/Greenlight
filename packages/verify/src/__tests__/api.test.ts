@@ -261,7 +261,11 @@ describe('verify api', () => {
     });
     expect(r.pass).toBe(false);
     expect(r.checks).toEqual([
-      { name: 'spec is valid', pass: false, detail: 'checks[0]: unsupported field "containz"' },
+      {
+        name: 'spec is valid',
+        pass: false,
+        detail: 'api spec.checks[0]: unsupported field "containz"',
+      },
     ]);
   });
 
