@@ -230,8 +230,16 @@ function checkObject(where: string, v: unknown, schema: Schema, out: string[]): 
     if (!own(schema, k)) out.push(`${where}: unsupported field "${k}"`);
   }
   for (const [k, f] of Object.entries(schema)) {
-    if (!own(v, k) || v[k] === undefined) {
+    if (!own(v, k)) {
       if (f.required) out.push(`${where}: missing required field "${k}"`);
+      continue;
+    }
+    // Present but undefined is almost always an unset env var (`contains: process.env.MARKER`):
+    // treating it as omitted would silently disable the assertion, so it is an error.
+    if (v[k] === undefined) {
+      out.push(
+        `${where}.${k} is undefined (an unset env var?) — omit the field or give it a value`,
+      );
       continue;
     }
     checkValue(`${where}.${k}`, v[k], f, out);

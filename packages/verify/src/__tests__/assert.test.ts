@@ -208,6 +208,12 @@ describe('validateSpec', () => {
     );
   });
 
+  it('rejects an explicitly undefined field (an unset env var) instead of skipping it', () => {
+    expect(validateSpec({ mode: 'api', checks: [{ path: '/', contains: undefined }] })).toEqual([
+      'api spec.checks[0].contains is undefined (an unset env var?) — omit the field or give it a value',
+    ]);
+  });
+
   it('rejects a null request body', () => {
     expect(
       validateSpec({ mode: 'api', checks: [{ path: '/', method: 'POST', body: null }] }),
