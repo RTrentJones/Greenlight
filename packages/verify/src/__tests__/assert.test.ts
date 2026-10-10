@@ -74,6 +74,11 @@ describe('evalValue', () => {
     expect(evalValue('t', 946684800000, { maxAgeHours: 26 }, NOW)[0]).toMatch(/stale/); // 2000-01-01
     expect(evalValue('t', 946684800000, { minFutureDays: 1 }, NOW)[0]).toMatch(/need ≥ 1d/);
   });
+  it('a numeric epoch with no plausible reading is rejected, not guessed', () => {
+    // 1972-01-01 in ms reads as ~3968 in seconds: neither lands in 1990..2200.
+    expect(evalValue('t', 63072000000, { maxAgeHours: 26 }, NOW)[0]).toMatch(/not a timestamp/);
+    expect(evalValue('t', 0, { maxAgeHours: 26 }, NOW)[0]).toMatch(/not a timestamp/);
+  });
   it('a number outside the Date range is not a timestamp (no infinite-age pass)', () => {
     expect(evalValue('t', 1e100, { maxAgeHours: 26 }, NOW)[0]).toMatch(/not a timestamp/);
     expect(evalValue('t', -1e100, { minFutureDays: 1 }, NOW)[0]).toMatch(/not a timestamp/);
@@ -181,6 +186,16 @@ describe('validateSpec', () => {
     ]);
     expect(validateSpec({ mode: 'test', timeoutMs: Number.NaN })).toEqual([
       'test spec.timeoutMs must be a finite number',
+    ]);
+  });
+
+  it('rejects holes in a sparse array instead of validating and crashing later', () => {
+    // biome-ignore lint/suspicious/noSparseArray: the sparse array is the case under test
+    expect(validateSpec({ mode: 'api', checks: [, { path: '/' }] })).toEqual([
+      'api spec.checks[0] is missing (sparse array)',
+    ]);
+    expect(validateSpec({ mode: 'mcp', expectTools: new Array(1) })).toEqual([
+      'mcp spec.expectTools[0] is missing (sparse array)',
     ]);
   });
 

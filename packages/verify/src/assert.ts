@@ -20,20 +20,21 @@ export function getPath(root: unknown, path: string): unknown {
   return cur;
 }
 
-/** Below this a number is epoch SECONDS, at or above it epoch MILLISECONDS. 1e11 s is the year
- * 5138 and 1e11 ms is March 1973, so every plausible timestamp of either unit lands on the right
- * side (a 1e12 cutoff misread 1973–2001 milliseconds as seconds — a far-future, "fresh" date). */
-const EPOCH_SECONDS_BELOW = 1e11;
-/** The ECMAScript Date range, in ms from the epoch. */
-const MAX_DATE_MS = 8.64e15;
+/** The window a numeric epoch must land in to count as a timestamp (1990-01-01 .. 2200-01-01).
+ * In ms it is [6.3e11, 7.3e12) and in seconds [6.3e8, 7.3e9) — disjoint ranges, so a number has
+ * at most one plausible reading. Anything else (1972 in ms, which no cutoff can tell from 3968 in
+ * seconds, or 1e100) is rejected as ambiguous/out of range rather than guessed — a guess on the
+ * wrong side reads stale data as fresh. ISO strings carry no ambiguity and are always accepted. */
+const EPOCH_MIN_MS = Date.UTC(1990, 0, 1);
+const EPOCH_MAX_MS = Date.UTC(2200, 0, 1);
+const inWindow = (ms: number) => ms >= EPOCH_MIN_MS && ms < EPOCH_MAX_MS;
 
-/** A timestamp as epoch ms: an ISO/RFC date string, or a number (seconds or ms, see above). */
+/** A timestamp as epoch ms: an ISO/RFC date string, or a number in seconds or ms (see above). */
 function toEpochMs(v: unknown): number | undefined {
   if (typeof v === 'number' && Number.isFinite(v)) {
-    const ms = v < EPOCH_SECONDS_BELOW ? v * 1000 : v;
-    // Outside the Date range (±8.64e15 ms) it is not a timestamp: an "infinitely" old or future
-    // value would otherwise land on the passing side of both freshness comparisons.
-    return Math.abs(ms) <= MAX_DATE_MS ? ms : undefined;
+    if (inWindow(v)) return v; // milliseconds
+    if (inWindow(v * 1000)) return v * 1000; // seconds
+    return undefined;
   }
   if (typeof v === 'string' && v.trim() !== '') {
     const t = Date.parse(v);

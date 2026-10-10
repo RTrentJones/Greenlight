@@ -192,11 +192,18 @@ function checkValue(where: string, v: unknown, f: Field, out: string[]): void {
       out.push(`${where} must be an array`);
       return;
     }
-    v.forEach((item, i) => {
+    // Index loop, not forEach: forEach skips the holes of a sparse array (`[,]`), which would
+    // validate and then crash the runner when it dereferences the missing element.
+    for (let i = 0; i < v.length; i++) {
       const at = `${where}[${i}]`;
+      if (!(i in v)) {
+        out.push(`${at} is missing (sparse array)`);
+        continue;
+      }
+      const item = v[i];
       if (f.of) checkObject(at, item, f.of, out);
       else if (f.items && !kindOk(f.items, item)) out.push(`${at} must be ${KIND_NAME[f.items]}`);
-    });
+    }
     return;
   }
   if (f.obj) {
