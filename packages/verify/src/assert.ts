@@ -24,10 +24,17 @@ export function getPath(root: unknown, path: string): unknown {
  * 5138 and 1e11 ms is March 1973, so every plausible timestamp of either unit lands on the right
  * side (a 1e12 cutoff misread 1973–2001 milliseconds as seconds — a far-future, "fresh" date). */
 const EPOCH_SECONDS_BELOW = 1e11;
+/** The ECMAScript Date range, in ms from the epoch. */
+const MAX_DATE_MS = 8.64e15;
 
 /** A timestamp as epoch ms: an ISO/RFC date string, or a number (seconds or ms, see above). */
 function toEpochMs(v: unknown): number | undefined {
-  if (typeof v === 'number' && Number.isFinite(v)) return v < EPOCH_SECONDS_BELOW ? v * 1000 : v;
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    const ms = v < EPOCH_SECONDS_BELOW ? v * 1000 : v;
+    // Outside the Date range (±8.64e15 ms) it is not a timestamp: an "infinitely" old or future
+    // value would otherwise land on the passing side of both freshness comparisons.
+    return Math.abs(ms) <= MAX_DATE_MS ? ms : undefined;
+  }
   if (typeof v === 'string' && v.trim() !== '') {
     const t = Date.parse(v);
     return Number.isNaN(t) ? undefined : t;

@@ -74,6 +74,10 @@ describe('evalValue', () => {
     expect(evalValue('t', 946684800000, { maxAgeHours: 26 }, NOW)[0]).toMatch(/stale/); // 2000-01-01
     expect(evalValue('t', 946684800000, { minFutureDays: 1 }, NOW)[0]).toMatch(/need ≥ 1d/);
   });
+  it('a number outside the Date range is not a timestamp (no infinite-age pass)', () => {
+    expect(evalValue('t', 1e100, { maxAgeHours: 26 }, NOW)[0]).toMatch(/not a timestamp/);
+    expect(evalValue('t', -1e100, { minFutureDays: 1 }, NOW)[0]).toMatch(/not a timestamp/);
+  });
   it('minFutureDays catches an approaching expiry', () => {
     expect(evalValue('Expires', '2027-07-20T00:00:00Z', { minFutureDays: 30 }, NOW)).toEqual([]);
     expect(evalValue('Expires', '2026-10-20T00:00:00Z', { minFutureDays: 30 }, NOW)[0]).toMatch(

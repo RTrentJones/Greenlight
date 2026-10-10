@@ -94,7 +94,18 @@ async function checkRoute(
       (c.json?.length ?? 0) > 0 ||
       (c.text?.length ?? 0) > 0;
     if (needsBody) {
-      const text = await boundedText(res);
+      // Read one char past the cap to know whether the body was truncated: a NEGATIVE assertion
+      // (notContains, a text regex that must not match) can't be proven on a partial body.
+      const raw = await boundedText(res, MAX_BODY_CHARS + 1);
+      const truncated = raw.length > MAX_BODY_CHARS;
+      const text = truncated ? raw.slice(0, MAX_BODY_CHARS) : raw;
+      const negative =
+        c.notContains !== undefined || (c.text ?? []).some((t) => t.exists === false);
+      if (truncated && negative) {
+        reasons.push(
+          `body exceeds ${MAX_BODY_CHARS} chars — a notContains / exists:false assertion can't be proven on a truncated body`,
+        );
+      }
       if (c.contains !== undefined && !text.includes(c.contains)) {
         reasons.push(`body missing "${c.contains}"`);
       }

@@ -63,6 +63,10 @@ beforeAll(async () => {
           res.end('ok');
         }
       });
+    } else if (url === '/huge') {
+      // Bigger than the 2M-char read cap, with the forbidden marker only past the cutoff.
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(`${'a'.repeat(2_000_100)}FORBIDDEN`);
     } else if (url === '/slow') {
       setTimeout(() => {
         res.writeHead(200);
@@ -243,6 +247,18 @@ describe('verify api', () => {
     expect(r.checks[0]?.pass).toBe(false);
     expect(r.checks[0]?.detail).toMatch(/BigInt/);
     expect(r.checks[1]?.pass).toBe(true);
+  });
+
+  it('a negative assertion fails on a truncated body instead of passing on a partial read', async () => {
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/huge', status: 200, notContains: 'FORBIDDEN' }],
+    });
+    expect(r.pass).toBe(false);
+    expect(r.checks[0]?.detail).toMatch(/truncated body/);
+    // A positive assertion on the same body is unaffected.
+    const pos = await verify(base, { mode: 'api', checks: [{ path: '/huge', contains: 'aaa' }] });
+    expect(pos.pass).toBe(true);
   });
 
   it('notContains fails when a forbidden marker is present', async () => {
