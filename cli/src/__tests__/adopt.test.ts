@@ -185,6 +185,9 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     // E8: the unattended heal apply carries its own destroy-guard (plan -> guard -> apply the plan)
     expect(remediate).toContain('terraform -chdir=infra plan -input=false -out=tf.plan');
     expect(remediate).toContain('supabase_project|neon_project|neon_branch');
+    // -target still requires every defaulted-less root var, and the tunnel module needs the CF token
+    expect(remediate).toContain('TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}');
+    expect(remediate).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');
     expect(remediate).not.toContain('-auto-approve');
     // a failed self-heal escalates
     expect(remediate).toContain('if: ${{ failure() }}');
