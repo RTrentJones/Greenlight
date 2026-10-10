@@ -10,6 +10,7 @@ import { show } from './assert';
 
 type Kind =
   | 'string'
+  | 'needle' // a NON-EMPTY string: '' would match everything and silently disable the assertion
   | 'number'
   | 'count' // a non-negative integer (steps, retries, turns — fractions break the loops that use them)
   | 'unit' // a number in [0, 1] (scores)
@@ -41,11 +42,12 @@ const COUNT: Field = { kind: 'count' };
 const UNIT: Field = { kind: 'unit' };
 const BOOL: Field = { kind: 'boolean' };
 const STR: Field = { kind: 'string' };
+const NEEDLE: Field = { kind: 'needle' };
 
 const VALUE: Schema = {
   equals: { kind: 'scalar' },
   exists: BOOL,
-  matches: { kind: 'regex' },
+  matches: { kind: 'regex' }, // non-empty, see kindOk
   gte: NUM,
   lte: NUM,
   maxAgeHours: NONNEG,
@@ -57,12 +59,12 @@ const API_CHECK: Schema = {
   method: { oneOf: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] },
   body: { kind: 'body' },
   status: NUM,
-  contains: STR,
-  notContains: STR,
+  contains: NEEDLE,
+  notContains: NEEDLE,
   header: { obj: { name: { ...STR, required: true }, value: STR } },
   json: { array: true, of: { path: { ...STR, required: true }, ...VALUE } },
   // `regex` compiles with `flags`; checked specially below so the flags participate.
-  text: { array: true, of: { regex: { ...STR, required: true }, flags: STR, ...VALUE } },
+  text: { array: true, of: { regex: { ...NEEDLE, required: true }, flags: STR, ...VALUE } },
   maxMs: NONNEG,
   requestHeaders: { kind: 'record' },
 };
@@ -93,7 +95,7 @@ const MODES: Record<string, Schema> = {
         name: { ...STR, required: true },
         args: { kind: 'any-object' },
         expectKeys: { array: true, items: 'string' },
-        expectText: STR,
+        expectText: NEEDLE,
       },
     },
     requireAuthRejection: BOOL,
@@ -149,8 +151,10 @@ const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k)
 function kindOk(kind: Kind, v: unknown): boolean {
   switch (kind) {
     case 'string':
-    case 'regex':
       return typeof v === 'string';
+    case 'needle':
+    case 'regex':
+      return typeof v === 'string' && v !== '';
     case 'number':
       return typeof v === 'number' && Number.isFinite(v);
     case 'count':
@@ -174,7 +178,8 @@ function kindOk(kind: Kind, v: unknown): boolean {
 
 const KIND_NAME: Record<Kind, string> = {
   string: 'a string',
-  regex: 'a regex string',
+  needle: 'a non-empty string',
+  regex: 'a non-empty regex string',
   number: 'a finite number',
   nonneg: 'a finite number >= 0',
   count: 'a non-negative integer',

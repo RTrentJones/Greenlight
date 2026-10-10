@@ -230,6 +230,18 @@ describe('validateSpec', () => {
     ).toEqual(['eval spec.cases[0].minScore must be a number between 0 and 1']);
   });
 
+  it('rejects empty matchers, which would match everything', () => {
+    expect(
+      validateSpec({ mode: 'mcp', expectTools: [], call: { name: 'x', expectText: '' } }),
+    ).toEqual(['mcp spec.call.expectText must be a non-empty string']);
+    expect(validateSpec({ mode: 'api', checks: [{ path: '/', contains: '' }] })).toEqual([
+      'api spec.checks[0].contains must be a non-empty string',
+    ]);
+    expect(
+      validateSpec({ mode: 'api', checks: [{ path: '/', json: [{ path: 'a', matches: '' }] }] }),
+    ).toEqual(['api spec.checks[0].json[0].matches must be a non-empty regex string']);
+  });
+
   it('rejects a null request body', () => {
     expect(
       validateSpec({ mode: 'api', checks: [{ path: '/', method: 'POST', body: null }] }),
