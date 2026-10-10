@@ -186,7 +186,7 @@ describe('validateSpec', () => {
     ]);
     expect(validateSpec({ mode: 'api', settleRetries: '3', concurrency: 'both' })).toEqual([
       'api spec.concurrency must be one of serial, parallel, got "both"',
-      'api spec.settleRetries must be a finite number >= 0',
+      'api spec.settleRetries must be a non-negative integer',
     ]);
     expect(validateSpec({ mode: 'mcp', expectTools: ['a', 1] })).toEqual([
       'mcp spec.expectTools[1] must be a string',
@@ -204,7 +204,7 @@ describe('validateSpec', () => {
       }),
     ).toEqual(['api spec.checks[0].text[0].minFutureDays must be a finite number >= 0']);
     expect(validateSpec({ mode: 'api', settleRetries: -2 })[0]).toMatch(
-      /must be a finite number >= 0/,
+      /must be a non-negative integer/,
     );
   });
 
@@ -212,6 +212,22 @@ describe('validateSpec', () => {
     expect(validateSpec({ mode: 'api', checks: [{ path: '/', contains: undefined }] })).toEqual([
       'api spec.checks[0].contains is undefined (an unset env var?) — omit the field or give it a value',
     ]);
+  });
+
+  it('requires integer counts and a [0,1] minScore', () => {
+    expect(
+      validateSpec({
+        mode: 'agent-web',
+        historyWindow: 0.5,
+        scenarios: [{ name: 'a', task: 'b' }],
+      }),
+    ).toEqual(['agent-web spec.historyWindow must be a non-negative integer']);
+    expect(
+      validateSpec({
+        mode: 'eval',
+        cases: [{ name: 'a', tool: 't', rubric: 'r', minScore: 2 }],
+      }),
+    ).toEqual(['eval spec.cases[0].minScore must be a number between 0 and 1']);
   });
 
   it('rejects a null request body', () => {

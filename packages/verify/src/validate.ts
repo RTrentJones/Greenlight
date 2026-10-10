@@ -11,6 +11,8 @@ import { show } from './assert';
 type Kind =
   | 'string'
   | 'number'
+  | 'count' // a non-negative integer (steps, retries, turns — fractions break the loops that use them)
+  | 'unit' // a number in [0, 1] (scores)
   | 'nonneg' // a finite number >= 0 (thresholds, budgets, counts — a sign error must not invert a guard)
   | 'boolean'
   | 'scalar' // string | number | boolean | null
@@ -35,6 +37,8 @@ type Schema = Record<string, Field>;
 
 const NUM: Field = { kind: 'number' };
 const NONNEG: Field = { kind: 'nonneg' };
+const COUNT: Field = { kind: 'count' };
+const UNIT: Field = { kind: 'unit' };
 const BOOL: Field = { kind: 'boolean' };
 const STR: Field = { kind: 'string' };
 
@@ -75,9 +79,9 @@ const MODES: Record<string, Schema> = {
     rssValid: BOOL,
     sitemapValid: BOOL,
     noBrokenInternalLinks: BOOL,
-    maxLinks: NONNEG,
+    maxLinks: COUNT,
     timeoutMs: NONNEG,
-    settleRetries: NONNEG,
+    settleRetries: COUNT,
     settleMs: NONNEG,
     requireIdentity: BOOL,
   },
@@ -116,10 +120,10 @@ const MODES: Record<string, Schema> = {
       },
     },
     model: STR,
-    maxSteps: NONNEG,
-    historyWindow: NONNEG,
-    maxTokens: NONNEG,
-    maxRepeats: NONNEG,
+    maxSteps: COUNT,
+    historyWindow: COUNT,
+    maxTokens: COUNT,
+    maxRepeats: COUNT,
     headed: BOOL,
   },
   eval: {
@@ -131,7 +135,7 @@ const MODES: Record<string, Schema> = {
         tool: { ...STR, required: true },
         args: { kind: 'any-object' },
         rubric: { ...STR, required: true },
-        minScore: NONNEG,
+        minScore: UNIT,
       },
     },
     model: STR,
@@ -149,6 +153,10 @@ function kindOk(kind: Kind, v: unknown): boolean {
       return typeof v === 'string';
     case 'number':
       return typeof v === 'number' && Number.isFinite(v);
+    case 'count':
+      return typeof v === 'number' && Number.isInteger(v) && v >= 0;
+    case 'unit':
+      return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
     case 'nonneg':
       return typeof v === 'number' && Number.isFinite(v) && v >= 0;
     case 'boolean':
@@ -169,6 +177,8 @@ const KIND_NAME: Record<Kind, string> = {
   regex: 'a regex string',
   number: 'a finite number',
   nonneg: 'a finite number >= 0',
+  count: 'a non-negative integer',
+  unit: 'a number between 0 and 1',
   boolean: 'a boolean',
   scalar: 'a string, number, boolean or null',
   record: 'an object of strings',
