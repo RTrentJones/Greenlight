@@ -28,6 +28,8 @@ export function getPath(root: unknown, path: string): unknown {
 const EPOCH_MIN_MS = Date.UTC(1990, 0, 1);
 const EPOCH_MAX_MS = Date.UTC(2200, 0, 1);
 const inWindow = (ms: number) => ms >= EPOCH_MIN_MS && ms < EPOCH_MAX_MS;
+/** Clock skew tolerated before a freshness timestamp counts as "in the future". */
+const FRESHNESS_SKEW_MS = 5 * 60_000;
 
 /** A timestamp as epoch ms: an ISO/RFC date string, or a number in seconds or ms (see above). */
 function toEpochMs(v: unknown): number | undefined {
@@ -98,6 +100,11 @@ export function evalValue(
         if (ageH > a.maxAgeHours) {
           reasons.push(
             `${label} is ${ageH.toFixed(1)}h old (${new Date(t).toISOString()}), max ${a.maxAgeHours}h — stale`,
+          );
+        } else if (t - now > FRESHNESS_SKEW_MS) {
+          // A "last ran" time in the future is a clock or unit error, never evidence of freshness.
+          reasons.push(
+            `${label} is in the future (${new Date(t).toISOString()}) — not a valid freshness timestamp`,
           );
         }
       }

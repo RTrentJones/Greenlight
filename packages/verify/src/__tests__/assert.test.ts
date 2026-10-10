@@ -64,6 +64,13 @@ describe('evalValue', () => {
     const stale = evalValue('lastRun', '2026-10-03T13:00:47Z', { maxAgeHours: 26 }, NOW);
     expect(stale[0]).toMatch(/lastRun is 167\.0h old .* max 26h — stale/);
   });
+  it('a future freshness timestamp is a clock/unit error, not fresh', () => {
+    expect(evalValue('lastRun', '2199-01-01T00:00:00Z', { maxAgeHours: 26 }, NOW)[0]).toMatch(
+      /in the future/,
+    );
+    // Small skew (a few seconds ahead of the verifier's clock) is tolerated.
+    expect(evalValue('lastRun', NOW + 30_000, { maxAgeHours: 26 }, NOW)).toEqual([]);
+  });
   it('accepts epoch seconds and ms as timestamps', () => {
     const oneHourAgo = NOW - 3_600_000;
     expect(evalValue('t', oneHourAgo, { maxAgeHours: 2 }, NOW)).toEqual([]);
@@ -187,6 +194,12 @@ describe('validateSpec', () => {
     expect(validateSpec({ mode: 'test', timeoutMs: Number.NaN })).toEqual([
       'test spec.timeoutMs must be a finite number',
     ]);
+  });
+
+  it('rejects a null request body', () => {
+    expect(
+      validateSpec({ mode: 'api', checks: [{ path: '/', method: 'POST', body: null }] }),
+    ).toEqual(['api spec.checks[0].body must be a string, object or array']);
   });
 
   it('rejects holes in a sparse array instead of validating and crashing later', () => {

@@ -156,7 +156,7 @@ function kindOk(kind: Kind, v: unknown): boolean {
     case 'any-object':
       return isObj(v);
     case 'body':
-      return typeof v === 'string' || typeof v === 'object';
+      return typeof v === 'string' || (typeof v === 'object' && v !== null);
   }
 }
 
