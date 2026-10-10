@@ -188,6 +188,7 @@ describe('adoptCommand (poly-repo scaffold + central registry)', () => {
     // -target still requires every defaulted-less root var, and the tunnel module needs the CF token
     expect(remediate).toContain('TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}');
     expect(remediate).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');
+    expect(remediate).toContain('TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}');
     expect(remediate).not.toContain('-auto-approve');
     // a failed self-heal escalates
     expect(remediate).toContain('if: ${{ failure() }}');

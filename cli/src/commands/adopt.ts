@@ -488,6 +488,7 @@ jobs:
           # variable without a default must be set even under -target — mirror the infra workflow.
           CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: \${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: \${{ vars.CLOUDFLARE_ACCOUNT_ID }} # the tunnel resources need it; the emitted default is ""
           TF_VAR_oci_tenancy_ocid: \${{ secrets.TF_VAR_OCI_TENANCY_OCID }}
           TF_VAR_oci_user_ocid: \${{ secrets.TF_VAR_OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: \${{ secrets.TF_VAR_OCI_FINGERPRINT }}
