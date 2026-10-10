@@ -42,11 +42,13 @@ carries the cron + KV binding + per-env `custom_domain`; no Terraform. (Local: `
 |---|---|
 | `scheduled()` | the cron: prompt Gemini → `STATE.put(today, text + metadata)` |
 | `GET /` | latest output (public, read-only) |
-| `GET /status` | `{ ok, lastRun, model, preview }` — the **api-mode verify** target |
+| `GET /status` | `{ ok, lastRun, lastAttempt, lastError, model, preview }` — the **api-mode verify** target |
+| `GET /__version` | `{ sha }` — the deployed commit (`wrangler deploy --var GREENLIGHT_SHA:<sha>`) |
 | `POST /run` | force a run — **bearer-gated** (`RUN_TOKEN`); lets deploy/verify seed the first output |
 
-`verify.config.ts` hits `/status` and asserts `ok` + a recent run. (Output *quality* is a future
-`eval` mode — LLM-judged.)
+`verify.config.ts` asserts the JSON, not just the 200: `ok === true`, `lastError === null`, and
+`lastRun` within `maxAgeHours` (26 for a daily cron), plus `requireIdentity` against `/__version`.
+(Output *quality* is a future `eval` mode — LLM-judged.)
 
 ## Gotchas
 - **KV namespace as code (no manual id).** The deploy workflow does a **find-or-create** on the KV
@@ -56,6 +58,10 @@ carries the cron + KV binding + per-env `custom_domain`; no Terraform. (Local: `
 - **Seed before verify.** The first cron may not have fired at deploy time, so `/status` would
   (correctly) report no run — the deploy step `POST /run`s once to seed *before* verifying. Don't
   reorder these.
+- **A cron failure must be loud.** `waitUntil(run())` swallows a thrown error — the Worker keeps
+  serving the last good text and `/status` keeps answering 200. The template records every failed
+  attempt (`lastError`, `ok: false`) and verify asserts freshness, so a retired model or revoked
+  key fails the gate. Keep `MODEL` off deprecated Gemini models; the error text names the cause.
 - **No keepalive.** The cron *is* the heartbeat and the edge Worker is always-available — never add
   an agent to `module.keepalive.targets_json`.
 

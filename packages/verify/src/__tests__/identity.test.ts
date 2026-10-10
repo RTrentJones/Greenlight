@@ -123,6 +123,18 @@ describe('E3 artifact-identity probe (expectedSha)', () => {
     expect(r.checks[0]?.detail).toMatch(/sha unverified/);
   });
 
+  it('requireIdentity turns a missing /__version into a hard failure', async () => {
+    versionMode = 'absent';
+    const r = await verify(
+      base,
+      { mode: 'api', checks: [{ path: '/', status: 200 }], requireIdentity: true },
+      { expectedSha: SHA },
+    );
+    expect(r.pass).toBe(false);
+    expect(r.checks[0]?.detail).toMatch(/requireIdentity is set/);
+    versionMode = 'match';
+  });
+
   it('is graceful when /__version reports no sha (built without GREENLIGHT_SHA)', async () => {
     versionMode = 'null-sha';
     const r = await verify(base, spec, { expectedSha: SHA });

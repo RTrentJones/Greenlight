@@ -14,7 +14,9 @@ describe('emitAgentDeployWorkflow', () => {
     expect(wf).toContain('test("muse.*STATE")');
     expect(wf).toContain('wrangler secret put GEMINI_API_KEY --env prod');
     expect(wf).toContain('https://muse.example.dev/run'); // seed
-    expect(wf).toContain('greenlight verify muse --env prod');
+    expect(wf).toContain('greenlight verify muse --env prod --expect-sha "$GITHUB_SHA"');
+    // the Worker serves the deployed commit at /__version, so the identity gate can enforce it
+    expect(wf).toContain('wrangler deploy --env prod --var "GREENLIGHT_SHA:$GITHUB_SHA"');
     // GitHub Actions secret refs survive the JS template (not interpolated away)
     expect(wf).toContain('${{ secrets.CLOUDFLARE_API_TOKEN }}');
     expect(wf).toContain('${{ secrets.GEMINI_API_KEY }}');

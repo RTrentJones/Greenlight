@@ -63,15 +63,64 @@ export interface VerifySpecBase {
   concurrency?: 'serial' | 'parallel';
 }
 
+/** Assertions on one extracted value (a JSON field or a regex capture). Every key is optional and
+ * they combine (all must hold). Any assertion except `exists: false` also requires the value to be
+ * present. */
+export interface ValueAssert {
+  /** Strict equality (`===`) — e.g. `true`, `"healthy"`, `0`. */
+  equals?: string | number | boolean | null;
+  /** `true`: must be present (the default implied by any other assertion). `false`: must be absent. */
+  exists?: boolean;
+  /** Regex source the value (stringified) must match. */
+  matches?: string;
+  /** Numeric bounds (the value is coerced with `Number`). */
+  gte?: number;
+  lte?: number;
+  /** FRESHNESS: the value is a timestamp (ISO string, or epoch seconds/ms) no older than this many
+   * hours — catches a cron, ingest or rebuild that silently stopped while the endpoint still 200s. */
+  maxAgeHours?: number;
+  /** EXPIRY: the value is a timestamp at least this many days in the future — e.g. a
+   * security.txt `Expires`, a cert or token expiry. */
+  minFutureDays?: number;
+}
+
+/** A `ValueAssert` on a field of a JSON body, addressed by a dot/bracket path (`ok`,
+ * `checks.database`, `items[0].id`; `$` or `''` is the root). */
+export interface JsonAssert extends ValueAssert {
+  path: string;
+}
+
+/** A `ValueAssert` on a regex capture from a text body: the first capture group (or the whole match
+ * when there is none). No match ⇒ the value is missing. */
+export interface TextAssert extends ValueAssert {
+  regex: string;
+  flags?: string;
+}
+
 /** api mode — HTTP assertions (docs/archive/greenlight-v1.md §9/§11). */
 export interface ApiCheck {
   path: string;
+  /** HTTP method (default `GET`). Use `POST` to assert a write route's guard — e.g. that an
+   * unauthenticated POST is rejected with 401 — without ever sending valid credentials. */
+  method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
+  /** Request body. An object is sent as JSON (with `content-type: application/json`); a string is
+   * sent as-is. */
+  body?: string | Record<string, unknown> | unknown[];
   /** Expected HTTP status (redirects are not followed). */
   status?: number;
   /** Substring the response body must contain. */
   contains?: string;
+  /** Substring the response body must NOT contain — e.g. an error banner or a stale marker. */
+  notContains?: string;
   /** Response header that must be present (optionally equal to `value`). */
   header?: { name: string; value?: string };
+  /** Assertions on fields of a JSON response body (see `JsonAssert`). */
+  json?: JsonAssert[];
+  /** Assertions on regex captures from the response body (see `TextAssert`). */
+  text?: TextAssert[];
+  /** Latency budget: the response (headers + any body read) must complete within this many ms.
+   * A degraded-but-up service fails the gate instead of passing slowly. */
+  maxMs?: number;
   /** Request headers to SEND — e.g. `{ 'x-vercel-protection-bypass': '…' }` to reach a Vercel
    * deployment behind Deployment Protection. Inject secrets from env in verify.config.ts. */
   requestHeaders?: Record<string, string>;
@@ -101,6 +150,10 @@ export interface ApiSpec extends VerifySpecBase {
   settleRetries?: number;
   /** Delay between settle retries, in ms (default 5000). */
   settleMs?: number;
+  /** Enforce artifact identity: when a sha is being gated, a tool that does not serve
+   * `{ sha }` at `/__version` FAILS instead of passing as "sha unverified". Turn this on once the
+   * tool exposes the route, so it can't silently regress to unverified. */
+  requireIdentity?: boolean;
 }
 
 /** mcp mode — protocol-level verification (docs/archive/greenlight-v1.md §6). */
@@ -114,8 +167,15 @@ export interface McpSpec extends VerifySpecBase {
    * (v0.8.0 — the guard is the point of listing tools); set `exactTools: false` to allow extras.
    * An empty `expectTools` (the lane default smoke spec) keeps it off. */
   exactTools?: boolean;
-  /** Optionally call one tool and assert the result is non-error / has keys. */
-  call?: { name: string; args?: Record<string, unknown>; expectKeys?: string[] };
+  /** Optionally call one tool and assert the result is non-error / has keys / contains text.
+   * `expectText` must appear in the result's text content (or its JSON-serialized structured
+   * content) — a functional check that the tool computed something, not just that it answered. */
+  call?: {
+    name: string;
+    args?: Record<string, unknown>;
+    expectKeys?: string[];
+    expectText?: string;
+  };
   /** Assert an unauthenticated request is rejected (auth != none servers). */
   requireAuthRejection?: boolean;
   /** Extra HTTP headers for the transport — e.g. `{ Authorization: 'Bearer …' }` for an
