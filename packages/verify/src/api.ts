@@ -1,3 +1,4 @@
+import { evalJson, evalText } from './assert';
 import { type ApiSpec, type VerifyCheck, type VerifyReport, msg, report } from './types';
 
 const trimSlash = (s: string) => s.replace(/\/+$/, '');
@@ -58,16 +59,27 @@ async function checkRoute(
   c: NonNullable<ApiSpec['checks']>[number],
   timeoutMs: number,
 ): Promise<VerifyCheck> {
-  const name = `GET ${c.path}`;
+  const method = c.method ?? 'GET';
+  const name = `${method} ${c.path}`;
+  const headers: Record<string, string> = { ...c.requestHeaders };
   try {
-    const res = await timedFetch(base + c.path, timeoutMs, { headers: c.requestHeaders });
+    // Serialize inside the guard: an unserializable body (BigInt, a cycle) fails this check
+    // instead of rejecting out of verifyApi's Promise.all and crashing the whole verify.
+    let body: string | undefined;
+    if (c.body !== undefined) {
+      if (typeof c.body === 'string') body = c.body;
+      else {
+        body = JSON.stringify(c.body);
+        if (!Object.keys(headers).some((h) => h.toLowerCase() === 'content-type')) {
+          headers['content-type'] = 'application/json';
+        }
+      }
+    }
+    const start = Date.now();
+    const res = await timedFetch(base + c.path, timeoutMs, { method, headers, body });
     const reasons: string[] = [];
     if (c.status !== undefined && res.status !== c.status) {
       reasons.push(`status ${res.status} != ${c.status}`);
-    }
-    if (c.contains !== undefined) {
-      const body = await boundedText(res);
-      if (!body.includes(c.contains)) reasons.push(`body missing "${c.contains}"`);
     }
     if (c.header) {
       const v = res.headers.get(c.header.name);
@@ -75,6 +87,37 @@ async function checkRoute(
       else if (c.header.value !== undefined && v !== c.header.value) {
         reasons.push(`header ${c.header.name}="${v}" != "${c.header.value}"`);
       }
+    }
+    const needsBody =
+      c.contains !== undefined ||
+      c.notContains !== undefined ||
+      (c.json?.length ?? 0) > 0 ||
+      (c.text?.length ?? 0) > 0;
+    if (needsBody) {
+      // Read one char past the cap to know whether the body was truncated: a NEGATIVE assertion
+      // (notContains, a text regex that must not match) can't be proven on a partial body.
+      const raw = await boundedText(res, MAX_BODY_CHARS + 1);
+      const truncated = raw.length > MAX_BODY_CHARS;
+      const text = truncated ? raw.slice(0, MAX_BODY_CHARS) : raw;
+      const negative =
+        c.notContains !== undefined || (c.text ?? []).some((t) => t.exists === false);
+      if (truncated && negative) {
+        reasons.push(
+          `body exceeds ${MAX_BODY_CHARS} chars — a notContains / exists:false assertion can't be proven on a truncated body`,
+        );
+      }
+      if (c.contains !== undefined && !text.includes(c.contains)) {
+        reasons.push(`body missing "${c.contains}"`);
+      }
+      if (c.notContains !== undefined && text.includes(c.notContains)) {
+        reasons.push(`body contains forbidden "${c.notContains}"`);
+      }
+      if (c.json?.length) reasons.push(...evalJson(text, c.json));
+      if (c.text?.length) reasons.push(...evalText(text, c.text));
+    }
+    const elapsed = Date.now() - start;
+    if (c.maxMs !== undefined && elapsed > c.maxMs) {
+      reasons.push(`took ${elapsed}ms > budget ${c.maxMs}ms`);
     }
     return { name, pass: reasons.length === 0, detail: reasons.join('; ') || undefined };
   } catch (e) {
@@ -215,12 +258,17 @@ async function checkDeployedSha(
   base: string,
   expectedSha: string,
   timeoutMs: number,
+  requireIdentity = false,
 ): Promise<VerifyCheck> {
   const name = 'deployed sha matches expected';
+  // `requireIdentity` turns the graceful adoption path into enforcement: once a tool serves
+  // /__version, losing it (or its sha) must fail rather than quietly read as "unverified".
   const unverified = (why: string): VerifyCheck => ({
     name,
-    pass: true,
-    detail: `${why} — sha unverified (serve { sha } at /__version to enforce artifact identity)`,
+    pass: !requireIdentity,
+    detail: requireIdentity
+      ? `${why} — requireIdentity is set, so a missing sha fails`
+      : `${why} — sha unverified (serve { sha } at /__version to enforce artifact identity)`,
   });
   try {
     const res = await timedFetch(`${base}/__version`, timeoutMs);
@@ -267,7 +315,7 @@ export async function verifyApi(
   // budget the content checks need. If the right artifact never appears, content is SKIPPED.
   const identityChecks: VerifyCheck[] = [];
   if (expectedSha) {
-    const task = () => checkDeployedSha(base, expectedSha, timeoutMs);
+    const task = () => checkDeployedSha(base, expectedSha, timeoutMs, spec.requireIdentity);
     let check = await timedAttempt(task, 1);
     let identityRetries = settleRetries;
     while (!check.pass && identityRetries > 0) {

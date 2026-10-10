@@ -38,6 +38,40 @@ beforeAll(async () => {
         res.writeHead(401);
         res.end('protected');
       }
+    } else if (url === '/status.json') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({ ok: true, lastRun: '2020-01-01T00:00:00Z', checks: { db: 'healthy' } }),
+      );
+    } else if (url === '/ingest') {
+      // A write route: rejects without a bearer, echoes the method + body back otherwise.
+      let data = '';
+      req.on('data', (c) => {
+        data += c;
+      });
+      req.on('end', () => {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end('method not allowed');
+        } else if (!req.headers.authorization) {
+          res.writeHead(401);
+          res.end(
+            JSON.stringify({ error: 'unauthorized', got: data, ct: req.headers['content-type'] }),
+          );
+        } else {
+          res.writeHead(200);
+          res.end('ok');
+        }
+      });
+    } else if (url === '/huge') {
+      // Bigger than the 2M-char read cap, with the forbidden marker only past the cutoff.
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(`${'a'.repeat(2_000_100)}FORBIDDEN`);
+    } else if (url === '/slow') {
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end('slow but fine');
+      }, 300).unref();
     } else if (url === '/eventually') {
       // Simulates a just-deployed static asset that propagates after a couple of hits.
       eventuallyHits += 1;
@@ -152,6 +186,118 @@ describe('verify api', () => {
     expect(r.pass).toBe(true);
     expect(rootHits).toBe(1); // `/` passed first try and was never re-run during the settle
     expect(eventuallyHits).toBe(3); // only the failing check was retried
+  });
+
+  it('asserts JSON fields, including freshness — a stale timestamp fails while the route 200s', async () => {
+    const ok = await verify(base, {
+      mode: 'api',
+      checks: [
+        {
+          path: '/status.json',
+          status: 200,
+          json: [
+            { path: 'ok', equals: true },
+            { path: 'checks.db', equals: 'healthy' },
+          ],
+        },
+      ],
+    });
+    expect(ok.pass).toBe(true);
+    const stale = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/status.json', status: 200, json: [{ path: 'lastRun', maxAgeHours: 26 }] }],
+    });
+    expect(stale.pass).toBe(false);
+    expect(stale.checks[0]?.detail).toMatch(/lastRun is .*h old .* stale/);
+  });
+
+  it('sends a POST with a JSON body and asserts the write guard rejects it', async () => {
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [
+        {
+          path: '/ingest',
+          method: 'POST',
+          body: { probe: 1 },
+          status: 401,
+          json: [
+            { path: 'got', equals: '{"probe":1}' },
+            { path: 'ct', equals: 'application/json' },
+          ],
+        },
+      ],
+    });
+    expect(r.checks[0]?.name).toBe('POST /ingest');
+    expect(r.pass).toBe(true);
+    const get = await verify(base, { mode: 'api', checks: [{ path: '/ingest', status: 405 }] });
+    expect(get.checks[0]?.name).toBe('GET /ingest'); // GET stays the default, name unchanged
+    expect(get.pass).toBe(true);
+  });
+
+  it('an unserializable body fails its check instead of crashing verify', async () => {
+    const { verifyApi } = await import('../api');
+    // Called directly (validation would accept the object shape; serialization is what throws).
+    const r = await verifyApi(base, {
+      mode: 'api',
+      checks: [
+        { path: '/ingest', method: 'POST', body: { n: 1n } as unknown as Record<string, unknown> },
+        { path: '/about', status: 200 },
+      ],
+    });
+    expect(r.checks[0]?.pass).toBe(false);
+    expect(r.checks[0]?.detail).toMatch(/BigInt/);
+    expect(r.checks[1]?.pass).toBe(true);
+  });
+
+  it('a negative assertion fails on a truncated body instead of passing on a partial read', async () => {
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/huge', status: 200, notContains: 'FORBIDDEN' }],
+    });
+    expect(r.pass).toBe(false);
+    expect(r.checks[0]?.detail).toMatch(/truncated body/);
+    // A positive assertion on the same body is unaffected.
+    const pos = await verify(base, { mode: 'api', checks: [{ path: '/huge', contains: 'aaa' }] });
+    expect(pos.pass).toBe(true);
+  });
+
+  it('notContains fails when a forbidden marker is present', async () => {
+    const r = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/about', status: 200, notContains: 'about page' }],
+    });
+    expect(r.pass).toBe(false);
+    expect(r.checks[0]?.detail).toMatch(/forbidden "about page"/);
+  });
+
+  it('maxMs fails a degraded-but-up endpoint that answers slowly', async () => {
+    const slow = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/slow', status: 200, maxMs: 100 }],
+    });
+    expect(slow.pass).toBe(false);
+    expect(slow.checks[0]?.detail).toMatch(/budget 100ms/);
+    const fine = await verify(base, {
+      mode: 'api',
+      checks: [{ path: '/slow', status: 200, maxMs: 5000 }],
+    });
+    expect(fine.pass).toBe(true);
+  });
+
+  it('fails the spec by name on an unsupported field instead of running a partial check', async () => {
+    const r = await verify(base, {
+      mode: 'api',
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately invalid spec
+      checks: [{ path: '/', status: 200, containz: 'about' } as any],
+    });
+    expect(r.pass).toBe(false);
+    expect(r.checks).toEqual([
+      {
+        name: 'spec is valid',
+        pass: false,
+        detail: 'api spec.checks[0]: unsupported field "containz"',
+      },
+    ]);
   });
 
   it('fails (not vacuously passes) when the home page yields no internal links', async () => {

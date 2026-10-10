@@ -157,8 +157,8 @@ unattended — use D1/KV or external services).
 
 | mode | what it asserts |
 |---|---|
-| `api` | URL smoke — status codes, headers, no broken internal links (crawled through a bounded pool); with an expected sha, an **artifact-identity probe** of `/__version` gates the settle loop before any content check |
-| `mcp` | MCP protocol — initialize → `tools/list` → call a tool & assert shape → assert auth rejection; `exactTools` drift-guard (**default ON** when `expectTools` is non-empty; `exactTools: false` opts out) |
+| `api` | HTTP assertions — status, headers, `contains`/`notContains`, **JSON field** (`json`) and **regex-capture** (`text`) assertions incl. **freshness** (`maxAgeHours`) and **expiry** (`minFutureDays`), a **latency budget** (`maxMs`), any **method + body** (assert a write route rejects an unauthenticated POST), no broken internal links (crawled through a bounded pool); with an expected sha, an **artifact-identity probe** of `/__version` gates the settle loop before any content check (`requireIdentity` makes a missing sha fail) |
+| `mcp` | MCP protocol — initialize → `tools/list` → call a tool & assert shape / `expectText` → assert auth rejection; `exactTools` drift-guard (**default ON** when `expectTools` is non-empty; `exactTools: false` opts out) |
 | `playwright` | a11y-tree render **and** a real suite (`suite.command`) against the deploy URL (`PLAYWRIGHT_BASE_URL`) |
 | `test` | the tool's own test command |
 | `agent-web` | LLM-driven UI scenarios (lazy-loads `playwright`, degrades to a failing check without the dep / `ANTHROPIC_API_KEY`) |
@@ -166,6 +166,18 @@ unattended — use D1/KV or external services).
 
 `logsOnFailure` runs a command only on failure with `$GREENLIGHT_VERIFY_URL` injected (telemetry
 into the report — no hard-coded URLs). The same harness runs in CI **and** the agent loop.
+
+**Depth over reachability.** A check that only proves a URL answers misses the failures that keep
+answering: a cron that stopped (the endpoint still 200s with yesterday's data), a dependency the
+health route reports as degraded, a write route whose auth guard regressed, an expiry creeping up.
+`api` checks therefore assert *content*: `json: [{ path: 'checks.database', equals: 'healthy' },
+{ path: 'lastRun', maxAgeHours: 26 }]`, `text: [{ regex: '^Expires: (.+)$', flags: 'm',
+minFutureDays: 30 }]`, `{ method: 'POST', path: '/api/ingest', status: 401 }`, `maxMs: 3000`.
+
+**Strict specs.** Every spec is validated before it runs: an unknown field, a wrong-typed one or an
+uncompilable regex fails the gate as `spec is valid — checks[0]: unsupported field "…"`. A typo, or
+a field from a newer Greenlight than the one installed, can never silently turn an assertion off
+while the gate reads green.
 
 Every `api` check records `durationMs` and `attempts` (how many settle re-runs it took — the raw
 flakiness signal; both ride the `--json` export), and adjacent specs marked

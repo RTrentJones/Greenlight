@@ -85,12 +85,30 @@ export async function verifyMcp(baseUrl: string, spec: McpSpec): Promise<VerifyR
         client.callTool({ name: spec.call.name, arguments: spec.call.args ?? {} }),
         timeoutMs,
         label,
-      )) as { isError?: boolean; structuredContent?: Record<string, unknown> };
+      )) as {
+        isError?: boolean;
+        structuredContent?: Record<string, unknown>;
+        content?: Array<{ type?: string; text?: string }>;
+      };
       const reasons: string[] = [];
       if (res.isError) reasons.push('result.isError = true');
       for (const k of spec.call.expectKeys ?? []) {
         if (!res.structuredContent || !(k in res.structuredContent)) {
           reasons.push(`structuredContent missing "${k}"`);
+        }
+      }
+      if (spec.call.expectText !== undefined) {
+        // Search what a client would actually read: the text parts, plus the structured payload.
+        const haystack = [
+          ...(res.content ?? []).map((p) => p.text ?? ''),
+          res.structuredContent ? JSON.stringify(res.structuredContent) : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        if (!haystack.includes(spec.call.expectText)) {
+          reasons.push(
+            `result missing "${spec.call.expectText}" (got: ${haystack.slice(0, 200) || 'empty'})`,
+          );
         }
       }
       checks.push({

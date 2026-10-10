@@ -7,7 +7,9 @@ and serves it. Scaffolded by `greenlight add <name> --lane agent --target worker
 
 - `scheduled` (cron, daily) → prompt Gemini → store the text + metadata in KV.
 - `GET /` — the latest output (plain text).
-- `GET /status` — `{ ok, lastRun, model, preview }` (the verify target).
+- `GET /status` — `{ ok, lastRun, lastAttempt, lastError, model, preview }` (the verify target).
+  `ok` is false while the latest run failed, and `lastError` says why — the cron never fails silently.
+- `GET /__version` — `{ sha }`, the deployed commit (baked in by the deploy workflow).
 - `POST /run` — force a run; **bearer-gated** (`Authorization: Bearer $RUN_TOKEN`).
 
 ## Setup (once)

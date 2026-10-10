@@ -95,6 +95,23 @@ describe('verify mcp', () => {
     expect(r.pass).toBe(true);
   });
 
+  it('call.expectText asserts on what the tool actually returned', async () => {
+    const ok = await verify(url, {
+      mode: 'mcp',
+      expectTools: ['ping'],
+      call: { name: 'ping', expectText: 'pong' },
+    });
+    expect(ok.checks.find((c) => c.name.startsWith('tools/call'))?.pass).toBe(true);
+    const bad = await verify(url, {
+      mode: 'mcp',
+      expectTools: ['ping'],
+      call: { name: 'ping', expectText: 'chr17' },
+    });
+    const call = bad.checks.find((c) => c.name.startsWith('tools/call'));
+    expect(call?.pass).toBe(false);
+    expect(call?.detail).toMatch(/missing "chr17" \(got: pong\)/);
+  });
+
   it('flags a missing expected tool', async () => {
     const r = await verify(url, { mode: 'mcp', expectTools: ['does-not-exist'] });
     expect(r.pass).toBe(false);

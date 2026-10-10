@@ -1,6 +1,9 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { verifyApi } from './api';
-import type { VerifyReport, VerifySpec } from './types';
+import { type VerifyMode, type VerifyReport, type VerifySpec, report } from './types';
+import { validateSpec } from './validate';
+
+const MODES: readonly VerifyMode[] = ['api', 'mcp', 'playwright', 'test', 'agent-web', 'eval'];
 
 export * from './types';
 
@@ -9,6 +12,8 @@ export function defineVerify(spec: VerifySpec): VerifySpec {
   return spec;
 }
 export { verifyApi } from './api';
+export { validateSpec } from './validate';
+export { evalJson, evalText, evalValue, getPath } from './assert';
 export { verifyMcp } from './mcp';
 export { verifyPlaywright } from './playwright';
 export { verifyTest } from './test';
@@ -68,6 +73,15 @@ export async function verify(
   spec: VerifySpec,
   opts?: VerifyOptions,
 ): Promise<VerifyReport> {
+  // Validate BEFORE touching the network: an unsupported field means an assertion the author
+  // believes is running is not, so the spec fails by name instead of passing vacuously.
+  const problems = validateSpec(spec);
+  if (problems.length > 0) {
+    const mode = (MODES as readonly string[]).includes(spec?.mode) ? spec.mode : 'api';
+    return report(mode, baseUrl, [
+      { name: 'spec is valid', pass: false, detail: problems.join('; ') },
+    ]);
+  }
   if (opts?.reachableTimeoutMs) await waitForReachable(baseUrl, opts.reachableTimeoutMs);
   switch (spec.mode) {
     case 'api':
