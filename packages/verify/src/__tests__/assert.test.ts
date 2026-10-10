@@ -13,6 +13,13 @@ describe('getPath', () => {
     expect(getPath(doc, '$')).toBe(doc);
     expect(getPath(doc, '')).toBe(doc);
   });
+  it('never resolves inherited Object.prototype properties', () => {
+    expect(getPath({}, 'constructor')).toBeUndefined();
+    expect(getPath({ a: {} }, 'a.toString')).toBeUndefined();
+    expect(getPath({}, '__proto__')).toBeUndefined();
+    expect(evalJson('{}', [{ path: 'constructor', exists: false }])).toEqual([]);
+  });
+
   it('returns undefined for any missing hop', () => {
     expect(getPath(doc, 'checks.cache')).toBeUndefined();
     expect(getPath(doc, 'ok.deeper')).toBeUndefined();
@@ -31,6 +38,17 @@ describe('evalValue', () => {
   it('exists:false asserts absence', () => {
     expect(evalValue('x', undefined, { exists: false })).toEqual([]);
     expect(evalValue('x', 1, { exists: false })[0]).toMatch(/should be absent/);
+  });
+  it('exists:false with another assertion is a contradiction, not a silent pass', () => {
+    expect(evalValue('x', undefined, { exists: false, equals: 1 })).toEqual([
+      'x: exists:false contradicts equals',
+    ]);
+    expect(
+      validateSpec({
+        mode: 'api',
+        checks: [{ path: '/', json: [{ path: 'a', exists: false, gte: 1 }] }],
+      }),
+    ).toEqual(['api spec.checks[0].json[0]: exists:false contradicts gte']);
   });
   it('numeric bounds coerce and reject non-numbers', () => {
     expect(evalValue('n', 5, { gte: 1, lte: 10 })).toEqual([]);

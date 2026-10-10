@@ -225,6 +225,11 @@ function checkObject(where: string, v: unknown, schema: Schema, out: string[]): 
   // A text assertion's regex compiles WITH its flags (an invalid flag is an error too).
   if (own(schema, 'regex') && own(schema, 'flags'))
     regexOk(`${where}.regex`, v.regex, v.flags, out);
+  // `exists: false` asserts absence, so any value assertion beside it is a contradiction.
+  if (own(schema, 'exists') && v.exists === false) {
+    const others = Object.keys(VALUE).filter((k) => k !== 'exists' && own(v, k));
+    if (others.length) out.push(`${where}: exists:false contradicts ${others.join(', ')}`);
+  }
 }
 
 /** Returns every problem found in `spec` (empty = valid). */

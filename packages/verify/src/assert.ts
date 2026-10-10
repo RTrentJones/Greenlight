@@ -11,7 +11,10 @@ export function getPath(root: unknown, path: string): unknown {
     .filter((t) => t !== '');
   let cur: unknown = root;
   for (const t of tokens) {
-    if (cur === null || typeof cur !== 'object') return undefined;
+    // Own properties only: a response without `constructor` must not "have" Object.prototype's.
+    if (cur === null || typeof cur !== 'object' || !Object.prototype.hasOwnProperty.call(cur, t)) {
+      return undefined;
+    }
     cur = (cur as Record<string, unknown>)[t];
   }
   return cur;
@@ -42,6 +45,10 @@ export function evalValue(
   // Presence is implied by every assertion other than `exists: false`, so a missing value fails
   // with one clear reason instead of a cascade of confusing comparisons against `undefined`.
   if (a.exists === false) {
+    // Absence can't be combined with a value assertion (validateSpec rejects it); fail loudly
+    // here too rather than silently dropping the other constraints.
+    const others = Object.keys(a).filter((k) => k !== 'exists');
+    if (others.length) return [`${label}: exists:false contradicts ${others.join(', ')}`];
     if (present) reasons.push(`${label} should be absent, got ${show(value)}`);
     return reasons;
   }
