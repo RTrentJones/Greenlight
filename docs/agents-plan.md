@@ -25,7 +25,7 @@ billing/card**, with limits a daily cron sits far under.
 ## Worker surface
 
 ```
-scheduled(daily) -> Gemini(gemini-2.5-flash) -> KV.put(today, text + metadata)
+scheduled(daily) -> Gemini(gemini-3.8-flash) -> KV.put(today, text + metadata)
 GET  /           -> latest output (public, read-only)
 GET  /status     -> { ok, lastRun, model, preview }    <- verify api-mode target
 POST /run        -> force a run (bearer-gated RUN_TOKEN; seeds first output + lets verify trigger)
@@ -61,8 +61,8 @@ POST /run        -> force a run (bearer-gated RUN_TOKEN; seeds first output + le
 ## Gemini (free tier) reference
 
 - Key: Google AI Studio (`aistudio.google.com/apikey`) — free, instant, no billing.
-- Model: `gemini-2.5-flash`.
-- Call: `POST …/v1beta/models/gemini-2.5-flash:generateContent?key=…` with
+- Model: `gemini-3.8-flash`.
+- Call: `POST …/v1beta/models/gemini-3.8-flash:generateContent?key=…` with
   `{ contents: [{ parts: [{ text }] }] }`.
 - Pack verify: `GET …/v1beta/models?key=…` → 200 (fail-fast on a bad key).
 
