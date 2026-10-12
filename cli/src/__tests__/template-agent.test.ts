@@ -60,6 +60,7 @@ describe('agent template: Gemini call', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
   // Fake timers + runAllTimersAsync: the backoff sleeps resolve instantly.
   const settle = async <T>(p: Promise<T>) => {
@@ -76,6 +77,20 @@ describe('agent template: Gemini call', () => {
   ])('recovers from %s', async (_, script, calls) => {
     const r = await settle(run(script));
     expect(r).toMatchObject({ http: 200, calls, status: { ok: true, lastError: null } });
+  });
+
+  it('jitters the backoff so agents sharing a key do not retry in lockstep', async () => {
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    vi.stubGlobal('setTimeout', ((fn: () => void, ms?: number) => {
+      delays.push(ms ?? 0);
+      return realSetTimeout(fn, 0);
+    }) as typeof setTimeout);
+    vi.spyOn(Math, 'random').mockReturnValueOnce(0.25).mockReturnValueOnce(0.75);
+    const r = await settle(run([503, 503, 200]));
+    expect(r.http).toBe(200);
+    // base 2s then 8s, each stretched by random() * base
+    expect(delays).toEqual([2_500, 14_000]);
   });
 
   it('gives up after 3 attempts and reports it', async () => {
