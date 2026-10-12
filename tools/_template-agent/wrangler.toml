@@ -15,6 +15,7 @@ crons = ["0 13 * * *"]
 
 [vars]
 MODEL = "gemini-3.8-flash"
+FALLBACK_MODEL = "gemini-3.6-flash"
 GREENLIGHT_ENV = "prod"
 
 # Output store. `wrangler kv namespace create STATE` → paste the id here (and per-env below).
@@ -30,6 +31,7 @@ routes = [{ pattern = "agent-tool.example.dev", custom_domain = true }]
 
 [env.prod.vars]
 MODEL = "gemini-3.8-flash"
+FALLBACK_MODEL = "gemini-3.6-flash"
 GREENLIGHT_ENV = "prod"
 
 [[env.prod.kv_namespaces]]
@@ -42,6 +44,7 @@ routes = [{ pattern = "beta.agent-tool.example.dev", custom_domain = true }]
 
 [env.beta.vars]
 MODEL = "gemini-3.8-flash"
+FALLBACK_MODEL = "gemini-3.6-flash"
 GREENLIGHT_ENV = "beta"
 
 [[env.beta.kv_namespaces]]

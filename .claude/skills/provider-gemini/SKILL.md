@@ -28,6 +28,10 @@ per-tool); stored as a **Cloudflare Worker secret** (`wrangler secret put`), nev
 replacements. The template's call retries a 429/5xx (or a network error) twice with backoff, since
 one overloaded second would otherwise fail the whole day; any other 4xx (bad key, unknown model)
 fails immediately so verify sees it.
+If the model is *still* overloaded after its retries (a 503 burst can last minutes, longer than a
+once-a-day run can wait), `FALLBACK_MODEL` (default `gemini-3.6-flash`, a different model with its
+own capacity) gets one round of its own; `/status` reports which model served the run as
+`lastModel`. A non-transient failure never falls back, so a misconfigured `MODEL` still surfaces.
 
 ```
 POST https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}
