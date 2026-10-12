@@ -21,10 +21,16 @@ per-tool); stored as a **Cloudflare Worker secret** (`wrangler secret put`), nev
 
 ## The model + call
 
-`gemini-2.5-flash` (fast; ~15 RPM / 1500 req/day free, so a daily cron is ~1/day).
+`gemini-3.8-flash`, Google's current stable Flash (free on the Standard tier; a daily cron is
+~1 request/day). Set per env as the `MODEL` var in `wrangler.toml`. Prefer a current stable model:
+`gemini-2.5-flash` is closed to new users, and Google's
+[deprecations page](https://ai.google.dev/gemini-api/docs/deprecations) lists shutdown dates and
+replacements. The template's call retries a 429/5xx (or a network error) twice with backoff, since
+one overloaded second would otherwise fail the whole day; any other 4xx (bad key, unknown model)
+fails immediately so verify sees it.
 
 ```
-POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}
+POST https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}
 { "contents": [{ "parts": [{ "text": "<prompt>" }] }] }   → candidates[0].content.parts[0].text
 ```
 
