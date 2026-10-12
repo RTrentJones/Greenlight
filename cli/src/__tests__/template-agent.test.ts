@@ -6,7 +6,9 @@ const TEMPLATE = new URL('../../../tools/_template-agent/src/index.ts', import.m
 type Worker = { fetch(req: Request, env: unknown): Promise<Response> };
 const worker = ((await import(TEMPLATE)) as { default: Worker }).default;
 
-type Step = number | 'throw';
+// A status code, a network error before the headers ('throw'), or a 200 whose body read fails
+// mid-stream ('body-drop').
+type Step = number | 'throw' | 'body-drop';
 
 const ok = () =>
   new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: ' a tip ' }] } }] }), {
@@ -26,6 +28,10 @@ async function run(script: Step[]) {
   vi.stubGlobal('fetch', async () => {
     const step = script[calls++];
     if (step === 'throw') throw new TypeError('network');
+    if (step === 'body-drop') {
+      const body = new ReadableStream({ pull: (c) => c.error(new TypeError('terminated')) });
+      return new Response(body, { status: 200 });
+    }
     return step === 200 ? ok() : new Response('x', { status: step });
   });
   const env = {
@@ -65,6 +71,8 @@ describe('agent template: Gemini call', () => {
     ['a transient 503 (the prod failure)', [503, 503, 200], 3],
     ['a 429 rate limit', [429, 200], 2],
     ['a network error', ['throw', 200], 2],
+    ['a 408 request timeout', [408, 200], 2],
+    ['a connection dropped mid-body', ['body-drop', 200], 2],
   ])('recovers from %s', async (_, script, calls) => {
     const r = await settle(run(script));
     expect(r).toMatchObject({ http: 200, calls, status: { ok: true, lastError: null } });
@@ -75,7 +83,7 @@ describe('agent template: Gemini call', () => {
     expect(r).toMatchObject({
       http: 502,
       calls: 3,
-      status: { ok: false, lastError: 'Gemini HTTP 503 after 3 attempts' },
+      status: { ok: false, lastError: 'Gemini HTTP 503 (after 3 attempts)' },
     });
   });
 
@@ -90,7 +98,7 @@ describe('agent template: Gemini call', () => {
 
   it('never leaks the API key (it rides in the request URL)', async () => {
     const r = await settle(run(['throw', 'throw', 'throw']));
-    expect(r.status.lastError).toBe('Gemini unreachable after 3 attempts: TypeError');
+    expect(r.status.lastError).toBe('Gemini unreachable: TypeError (after 3 attempts)');
     expect(JSON.stringify(r)).not.toContain('SECRETKEY');
   });
 });
