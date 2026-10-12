@@ -23,9 +23,11 @@ function kv() {
   };
 }
 
-async function run(script: Step[]) {
+async function run(script: Step[], extraEnv: Record<string, string> = {}) {
   let calls = 0;
-  vi.stubGlobal('fetch', async () => {
+  const models: string[] = []; // the model each request went to, in order
+  vi.stubGlobal('fetch', async (url: string) => {
+    models.push(/models\/([^:]+):/.exec(url)?.[1] ?? '?');
     const step = script[calls++];
     if (step === 'throw') throw new TypeError('network');
     if (step === 'body-drop') {
@@ -40,6 +42,7 @@ async function run(script: Step[]) {
     RUN_TOKEN: 't',
     GREENLIGHT_ENV: 'beta',
     STATE: kv(),
+    ...extraEnv,
   };
   const res = await worker.fetch(
     new Request('https://x/run', { method: 'POST', headers: { authorization: 'Bearer t' } }),
@@ -49,8 +52,9 @@ async function run(script: Step[]) {
   const status = (await (await worker.fetch(new Request('https://x/status'), env)).json()) as {
     ok: boolean;
     lastError: string | null;
+    lastModel: string | null;
   };
-  return { http: res.status, calls, status, body };
+  return { http: res.status, calls, models, status, body };
 }
 
 describe('agent template: Gemini call', () => {
@@ -108,6 +112,38 @@ describe('agent template: Gemini call', () => {
       http: 502,
       calls: 1,
       status: { ok: false, lastError: `Gemini HTTP ${code}` },
+    });
+  });
+
+  describe('FALLBACK_MODEL', () => {
+    const fb = { FALLBACK_MODEL: 'fb' };
+
+    it('serves the day from the fallback once the primary stays overloaded', async () => {
+      const r = await settle(run([503, 503, 503, 200], fb));
+      expect(r).toMatchObject({ http: 200, models: ['m', 'm', 'm', 'fb'] });
+      expect(r.status).toMatchObject({ ok: true, lastError: null, lastModel: 'fb' });
+    });
+
+    it('never falls back on a non-transient failure (a misconfigured primary must surface)', async () => {
+      const r = await settle(run([404], fb));
+      expect(r).toMatchObject({
+        http: 502,
+        models: ['m'],
+        status: { ok: false, lastError: 'Gemini HTTP 404' },
+      });
+    });
+
+    it('reports both models when the fallback is exhausted too', async () => {
+      const r = await settle(run([503, 503, 503, 503, 503, 503], fb));
+      expect(r).toMatchObject({ http: 502, calls: 6, status: { ok: false } });
+      expect(r.status.lastError).toBe(
+        'm: Gemini HTTP 503 (after 3 attempts); fallback fb: Gemini HTTP 503 (after 3 attempts)',
+      );
+    });
+
+    it('records the primary as lastModel on a normal day', async () => {
+      const r = await settle(run([200], fb));
+      expect(r.status).toMatchObject({ ok: true, lastModel: 'm' });
     });
   });
 
