@@ -59,6 +59,14 @@ on:
     branches: [main]
     paths: ['infra/**']
   workflow_dispatch:
+    inputs:
+      allow_compute_replace:
+        description: >-
+          Allow this run to REPLACE a running compute instance (e.g. an OCI container instance whose
+          env changed). Replacement deletes, then creates, so the tool is down until the new one
+          boots. A push run never allows it; dispatch with this set to accept the downtime.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -115,6 +123,27 @@ jobs:
             exit 1
           fi
           echo "plan-guard: OK (no destroy/replace of a stateful prod store)"
+      # Downtime backstop: replacing running compute (delete, then create) takes the tool down, and on
+      # the OCI Always-Free A1 allotment the create can fail with LimitExceeded because the deleted
+      # instance's cores are released a few minutes late (the tool then stays down until a later
+      # apply). Block it on push; a dispatch with allow_compute_replace=true accepts the downtime.
+      # If that create does hit LimitExceeded, wait a few minutes and dispatch again.
+      - name: Guard — no unplanned replacement of running compute
+        env:
+          ALLOW_REPLACE: \${{ inputs.allow_compute_replace || false }}
+        run: |
+          REPLACES=$(jq -r '[.resource_changes[] | select((.change.actions | index("delete")) and (.change.actions | index("create"))) | select(.type | test("^(oci_container_instances_container_instance|oci_core_instance)$")) | .address] | .[]' tf.plan.json)
+          if [ -z "$REPLACES" ]; then
+            echo "compute-guard: OK (no compute replacement)"
+            exit 0
+          fi
+          { echo "### This plan replaces running compute (down until the new instance boots)"; echo "$REPLACES"; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ALLOW_REPLACE" != "true" ]; then
+            echo "::error::plan would replace running compute — dispatch with allow_compute_replace=true to accept the downtime:"
+            echo "$REPLACES"
+            exit 1
+          fi
+          echo "::warning::compute replacement allowed by dispatch input: $REPLACES"
       - name: Upload the verified plan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
