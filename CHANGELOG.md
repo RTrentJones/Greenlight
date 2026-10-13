@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`init`'s `infra.yml` blocks an unplanned replacement of running compute.** Changing an OCI
+  container instance's env (or image/shape) plans a delete-then-create, so the tool is down until
+  the new instance boots. On the Always-Free A1 allotment the create can also fail with
+  `LimitExceeded`, because the deleted instance's cores are released minutes late, which leaves the
+  tool down until a second apply. The plan job now fails on such a replacement unless the run was
+  dispatched with `allow_compute_replace=true`. Existing wrappers keep their own `infra.yml` and
+  can copy the new guard step and dispatch input from the template.
+
 ## v0.10.0
 
 The probe-actually-lands release. v0.9.0 made the keepalive probe query a real table — and

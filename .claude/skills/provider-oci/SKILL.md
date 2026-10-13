@@ -57,6 +57,12 @@ token or use an `api`-mode 401 check. Keepalive health-checks `target: oci`.
   the free tier**: restart-policy ALWAYS + keepalive health-check + alert → re-apply/redeploy
   restores it. **PAYG is NOT used** (optional last resort; see `docs/oci-payg-runbook.md`). Never
   imply the harness *prevents* reclaim — it only nags and recovers.
+- **Env changes replace the instance.** OCI container instances can't update containers in place, so
+  changing `environment` (or the image/shape) plans a delete-then-create: downtime until it boots,
+  and on the A1 allotment the create can fail with `LimitExceeded` because the deleted instance's
+  cores are released minutes late. The scaffolded `infra.yml` blocks such a plan on push; dispatch it
+  with `allow_compute_replace=true` to accept the downtime, and if the create hits
+  `LimitExceeded`, wait a few minutes and dispatch again (the re-plan only creates).
 - **Out-of-A1-capacity in one AD** → set `availability_domain` on the instance module to pin another
   AD (the only time you touch it).
 - **Rotation.** The API signing key is the one long-lived credential — rotate it on a schedule (see
