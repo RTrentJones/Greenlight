@@ -30,8 +30,7 @@ async function pingTarget(t, fetchFn = fetch) {
     const init = {
       headers,
       signal: AbortSignal.timeout(1e4),
-      cache: "no-store",
-      cf: { cacheTtl: 0, cacheEverything: false }
+      cache: "no-store"
     };
     const res = await fetchFn(url, init);
     const ok = kind === "oci" ? res.status > 0 && res.status < 500 : res.status >= 200 && res.status < 300;

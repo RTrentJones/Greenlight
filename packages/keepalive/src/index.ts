@@ -131,14 +131,16 @@ export async function pingTarget(
     // reporting green. That is how heistmind-db paused on 2026-08-31 with two "successful" sweeps
     // inside the window: Supabase's rule is 7 days of complete *Postgres* inactivity, and a cached
     // response is not database activity. (The 530 that did alert was never cached — errors aren't.)
-    // `cf.cacheTtl: 0` is the Workers control; `cache: 'no-store'` covers other runtimes.
+    // `cache: 'no-store'` is the standard control and Workers honours it. Do NOT also pass
+    // `cf.cacheTtl`: the runtime rejects the pair ("CacheTtl: 0, is not compatible with cache:
+    // no-store") and throws before the request leaves, so every sweep failed and no probe reached
+    // Postgres (2026-10 keepalive outage).
     // NB: cache-busting via a query param is NOT available here — PostgREST reads unknown params
     // as column filters and answers 400.
     const init = {
       headers,
       signal: AbortSignal.timeout(10_000),
       cache: 'no-store',
-      cf: { cacheTtl: 0, cacheEverything: false },
     } as RequestInit;
     const res = await fetchFn(url, init);
     const ok =
