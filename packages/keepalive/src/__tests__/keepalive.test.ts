@@ -74,17 +74,19 @@ describe('pingTarget', () => {
   it('never lets the probe be served from cache (invariant)', async () => {
     const { fn, calls } = capturingFetch(200);
     await pingTarget(target, fn);
-    const init = calls[0]?.init as { cache?: string; cf?: { cacheTtl?: number } };
+    const init = calls[0]?.init as { cache?: string; cf?: unknown };
     expect(init.cache).toBe('no-store');
-    expect(init.cf?.cacheTtl).toBe(0);
+    // The Workers runtime throws on cf.cacheTtl combined with cache:'no-store' (RTrentJones.dev#86).
+    expect(init.cf).toBeUndefined();
   });
 
   it('sends the no-cache directives on oci probes too', async () => {
     const { fn, calls } = capturingFetch(200);
     await pingTarget({ name: 'bamcp', env: 'prod', url: 'https://b.example.dev', kind: 'oci' }, fn);
-    const init = calls[0]?.init as { cache?: string; cf?: { cacheTtl?: number } };
+    const init = calls[0]?.init as { cache?: string; cf?: unknown };
     expect(init.cache).toBe('no-store');
-    expect(init.cf?.cacheTtl).toBe(0);
+    // The Workers runtime throws on cf.cacheTtl combined with cache:'no-store' (RTrentJones.dev#86).
+    expect(init.cf).toBeUndefined();
   });
 
   it('is not ok on a 5xx (a paused/broken project)', async () => {
