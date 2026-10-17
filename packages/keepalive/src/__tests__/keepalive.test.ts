@@ -76,7 +76,7 @@ describe('pingTarget', () => {
     await pingTarget(target, fn);
     const init = calls[0]?.init as { cache?: string; cf?: unknown };
     expect(init.cache).toBe('no-store');
-    // The Workers runtime throws on cf.cacheTtl combined with cache:'no-store' (RTrentJones.dev#86).
+    // The Workers runtime throws on cf.cacheTtl combined with cache:'no-store' — it throws before the request is sent.
     expect(init.cf).toBeUndefined();
   });
 
@@ -85,7 +85,7 @@ describe('pingTarget', () => {
     await pingTarget({ name: 'bamcp', env: 'prod', url: 'https://b.example.dev', kind: 'oci' }, fn);
     const init = calls[0]?.init as { cache?: string; cf?: unknown };
     expect(init.cache).toBe('no-store');
-    // The Workers runtime throws on cf.cacheTtl combined with cache:'no-store' (RTrentJones.dev#86).
+    // The Workers runtime throws on cf.cacheTtl combined with cache:'no-store' — it throws before the request is sent.
     expect(init.cf).toBeUndefined();
   });
 

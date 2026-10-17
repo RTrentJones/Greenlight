@@ -134,7 +134,7 @@ export async function pingTarget(
     // `cache: 'no-store'` is the standard control and Workers honours it. Do NOT also pass
     // `cf.cacheTtl`: the runtime rejects the pair ("CacheTtl: 0, is not compatible with cache:
     // no-store") and throws before the request leaves, so every sweep failed and no probe reached
-    // Postgres (RTrentJones.dev#86, 2026-10).
+    // Postgres (2026-10 keepalive outage).
     // NB: cache-busting via a query param is NOT available here — PostgREST reads unknown params
     // as column filters and answers 400.
     const init = {
