@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v0.10.1
+
+The keepalive-reaches-Postgres-again patch.
+
+- **The keepalive probe no longer throws before it is sent.** v0.10.0 passed both
+  `cache: 'no-store'` and `cf: { cacheTtl: 0 }`. The Workers runtime rejects that pair
+  ("CacheTtl: 0, is not compatible with cache: no-store") and throws before the subrequest leaves,
+  so every sweep since v0.10.0 failed and no probe reached Postgres. The probe now sends only
+  `cache: 'no-store'`, which Workers honours, so it still bypasses the edge cache. The invariant test
+  asserts `no-store` and that no `cf` cache override is sent. (#28)
+
 - **`init`'s `infra.yml` blocks an unplanned replacement of running compute.** Changing an OCI
   container instance's env (or image/shape) plans a delete-then-create, so the tool is down until
   the new instance boots. On the Always-Free A1 allotment the create can also fail with
