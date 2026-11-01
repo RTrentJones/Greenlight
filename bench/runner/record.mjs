@@ -13,8 +13,17 @@
 //
 //   docker:  record.mjs --docker <cmd> <cwd> <base64 env -0> <args…>
 //            Runs as the shim user (via doas, with a clean environment). The command and the git
-//            queries run as the agent again (`doas -u agent env -i <agent env> …`). Only the shim
-//            user can connect to /run/greenlight-shim/shim.sock.
+//            queries run as the agent again, with the extra group `shim` that alone may execute
+//            the real binaries (`doas -u root /opt/runner/run-real <agent env> …`, which drops to
+//            uid agent before anything else runs). Only the shim user can connect to
+//            /run/greenlight-shim/shim.sock.
+//
+//            doas cannot restrict the arguments of `agent as shim cmd /opt/runner/record` to a
+//            pattern, so the agent can call the recorder directly with arguments of its choice.
+//            The recorder therefore validates its own invocation (`validateDocker`) and refuses
+//            (exit 126, nothing run, nothing sent) anything the shim wrapper would not produce:
+//            an unknown command, a relative cwd, an environment that is not base64. Whatever it
+//            then runs it reports truthfully, so a direct call is the same as calling the shim.
 //   process: record.mjs --process <config.json> <cmd> <args…>
 //            Local development only: same uid as the agent, so the channel is NOT protected.
 //
@@ -25,7 +34,7 @@ import { createConnection } from 'node:net';
 
 const DOCKER_REAL = {
   git: ['/usr/bin/git'],
-  greenlight: ['/usr/local/bin/node', '/opt/greenlight/greenlight.mjs'],
+  greenlight: ['/usr/local/bin/node', '/opt/real/greenlight/greenlight.mjs'],
   curl: ['/usr/bin/curl'],
   wrangler: null,
   vercel: null,
@@ -34,11 +43,25 @@ const DOCKER_REAL = {
   docker: null,
 };
 
+const ENV_ENTRY = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** `env -0 | base64` back to KEY=VALUE entries. Only well-formed names pass: an entry that does
+ * not start with an identifier (say `-u=x`) could be read as an option by `env`. */
 function decodeEnv(b64) {
   return Buffer.from(b64 ?? '', 'base64')
     .toString('utf8')
     .split('\0')
-    .filter((kv) => kv.indexOf('=') > 0);
+    .filter((kv) => ENV_ENTRY.test(kv));
+}
+
+/** What the shim wrapper (`shim.sh`) produces, and nothing else; a refusal names the problem. */
+function validateDocker(cmd, cwd, envB64) {
+  if (!Object.hasOwn(DOCKER_REAL, cmd ?? '')) return `unknown command ${JSON.stringify(cmd)}`;
+  if (typeof cwd !== 'string' || !cwd.startsWith('/') || cwd.length > 4096)
+    return 'the working directory must be an absolute path';
+  if (typeof envB64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(envB64))
+    return 'the environment must be base64';
+  return null;
 }
 
 const SH_CD = 'cd -- "$0" || exit 126; exec "$@"';
@@ -63,17 +86,24 @@ function parseArgs(argv) {
   const [mode, ...rest] = argv;
   if (mode === '--docker') {
     const [cmd, cwd, envB64, ...args] = rest;
+    const invalid = validateDocker(cmd, cwd, envB64);
+    if (invalid) {
+      process.stderr.write(
+        `greenlight shim: refusing an invocation the shim did not make: ${invalid}\n`,
+      );
+      process.exit(126);
+    }
     const env = decodeEnv(envB64);
     const base = { HOME: '/home/agent', PATH: '/usr/bin:/bin' };
     const baseList = Object.entries(base).map(([k, v]) => `${k}=${v}`);
-    // `doas -u agent env -i <env> /bin/sh -c 'cd "$0" && exec "$@"' <cwd> <argv…>`
+    // `doas -u root run-real <env> /bin/sh -c 'cd "$0" && exec "$@"' <cwd> <argv…>`, where
+    // run-real is `setpriv --reuid=agent --regid=agent --groups=shim -- env -i "$@"`.
     const as = (list) => (argvReal) => [
       '/usr/bin/doas',
       '-n',
       '-u',
-      'agent',
-      '/usr/bin/env',
-      '-i',
+      'root',
+      '/opt/runner/run-real',
       ...list,
       '/bin/sh',
       '-c',

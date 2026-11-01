@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -24,9 +26,14 @@ import {
 } from '@rtrentjones/greenlight-shared';
 import { z } from 'zod';
 import { appendEvent } from '../ledger';
-import { RequestBudget } from '../llm/limits';
-import { checkModels, clientForRole, createLimiters } from '../llm/models';
-import { FileQuotaStore, seedQuotaFromLedger } from '../llm/quota';
+import {
+  BudgetExhaustedError,
+  type DailyUsage,
+  type RateLimitPersistence,
+  RequestBudget,
+} from '../llm/limits';
+import { checkModels, clientForRole, createLimiters, entryForRole } from '../llm/models';
+import { FileQuotaStore, usageFromLedger } from '../llm/quota';
 import {
   HARNESS_VENDOR,
   HARNESS_VERSION,
@@ -58,13 +65,16 @@ import { gradeRollout } from './grade';
 import type { JudgeFn } from './grader-api';
 import { computeIdentity, sameIdentity } from './identity';
 import {
+  type RunnerImage,
   type Sandbox,
   WORK_DIR,
   createDockerSandbox,
   createProcessSandbox,
   ensureRunnerImage,
   shimUid,
+  shortSocketDir,
   stageRollout,
+  treeDiff,
 } from './sandbox';
 import { Sequencer, ShimChannel, mergeTrajectory, toJsonl, toolCallEvent } from './shims';
 
@@ -84,12 +94,18 @@ import { Sequencer, ShimChannel, mergeTrajectory, toJsonl, toolCallEvent } from 
  *    per invocation, and — once every rollout has an outcome — the sealed EvaluationRecord under
  *    `<wiki>/evidence/eval/<hash>.json`.
  *
- * A `deferred` rollout (the model stayed unavailable with fallback off, the day's quota ran out, or
- * the request cap was reached) stops the run and persists progress at
- * `.greenlight/bench/runs/<evaluationId>/progress.json`; `resume` continues it later under an
- * identical identity (a changed identity is refused). A rollout refused by the redaction guard,
- * a grader error and a model error produce NO outcome: the evaluation stays unsealed (invalid),
- * never a fake 0.
+ * Quota is scheduled per model (06 §4.8): before each rollout the runner checks that the model's
+ * remaining daily quota covers the rollout's request cap (`harness.limits.requestsPerRollout`,
+ * plus the eval judge's call on the judge model) and otherwise skips that model for today; it
+ * always runs next the model with the most quota left, so the models interleave. A rollout that
+ * is deferred anyway (the model stayed unavailable with fallback off, or another process spent
+ * the quota) defers ONLY its model; the others keep running. Progress persists at
+ * `.greenlight/bench/runs/<evaluationId>/progress.json` and the run returns `deferred` with the
+ * keys left per model; `resume` continues it later under an identical identity (a changed
+ * identity, the limits included, is refused). A rollout refused by the redaction guard, a harness
+ * error and a model error produce NO outcome: the evaluation stays unsealed (invalid), never a
+ * fake 0. A trajectory that is incomplete (an origin ref moved with no recorded command, a lost or
+ * truncated shim event) is an outcome with `graderError`: invalid at the gate, never a pass.
  */
 
 export interface RunnerAssets {
@@ -129,11 +145,17 @@ export interface BenchRunOptions {
   sandbox: SandboxKind;
   resume?: string;
   force?: boolean;
+  /** Max ReAct steps per rollout (default {@link DEFAULT_MAX_STEPS}; on resume, the evaluation's). */
   maxSteps?: number;
+  /** Hard cap on LLM requests per rollout, retries included (default `maxSteps + 2`). Part of the
+   * identity, and what the per-model quota check reserves before a rollout starts. */
+  rolloutRequestCap?: number;
   /** Hard cap on LLM requests for this invocation (also capped by `perGateMaxRequests`). */
   maxRequests?: number;
   /** For the budget estimate (bench/README-models.md: 12). */
   requestsPerRollout?: number;
+  /** The daily quota store (default: `FileQuotaStore` under `<stateDir>/..`); tests inject one. */
+  quotaStore?: QuotaStore;
   assets: RunnerAssets;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
@@ -182,12 +204,25 @@ export interface RunResult {
   rollouts: RolloutSummary[];
   /** Requests made by this invocation. */
   requests: number;
+  /** On `deferred`: the rollout keys (`task|model|run`) still to run, per model. */
+  remaining?: Record<string, string[]>;
+  /** On `deferred`: why each deferred model stopped (quota, unavailable, request cap). */
+  deferredModels?: Record<string, string>;
+}
+
+/** The daily quota persistence the runner reads remaining quota from and seeds from the ledger. */
+export interface QuotaStore extends RateLimitPersistence {
+  /** Raises today's count to at least `count` (never lowers it). */
+  raise(modelId: string, day: string, count: number): DailyUsage;
 }
 
 const ROLLOUT_KEY = (t: string, m: string, r: number) => `${t}|${m}|${r}`;
 
 export const REQUESTS_PER_ROLLOUT = 12;
-export const DEFAULT_MAX_STEPS = 10;
+/** 15: the live smoke showed 10 steps too tight for the replay tasks (bench/README-models.md). */
+export const DEFAULT_MAX_STEPS = 15;
+/** The per-rollout request cap for `maxSteps`: one request per step plus two retries' headroom. */
+export const rolloutRequestCap = (maxSteps: number): number => maxSteps + 2;
 
 // ---------------------------------------------------------------------------------------------
 // selection
@@ -502,23 +537,72 @@ interface RunCtx {
   config: ModelsConfig;
   stateDir: string;
   runnerDir: string;
-  image?: { tag: string; id: string };
+  image?: RunnerImage;
   identity: BaselineIdentity;
   evaluationId: string;
   progress: Progress;
   limiters: ReturnType<typeof createLimiters>;
   budget: RequestBudget;
+  limits: Limits;
   repo: { sourceRepo: string; gitSha: string | null; dirty: boolean; treeHash?: string };
   run: { runId: string; attempt: number };
   now: () => Date;
   log: (s: string) => void;
 }
 
+type Limits = NonNullable<BaselineIdentity['harness']['limits']>;
+type Usage = { requests: number; tokensIn: number; tokensOut: number };
+
 interface RolloutOutcome {
   summary: RolloutSummary;
   outcome?: Outcome;
   stop?: 'deferred' | 'refused';
-  usage: { requests: number; tokensIn: number; tokensOut: number };
+  /** The deferral stopped the whole invocation (its request cap), not just this model. */
+  stopAll?: boolean;
+  /** Whether a raw record was written (never for a deferred rollout). */
+  raw: boolean;
+  /** The rollout model's own usage (the ReAct loop). */
+  usage: Usage;
+  /** The eval judge's usage, spent on the judge model. */
+  judgeUsage?: Usage;
+}
+
+/** `installedSkills` of the exported tree without following anything out of it: only real
+ * directories and regular SKILL.md files under 1 MB are read, through a private copy. */
+function treeSkills(tree: string): ReturnType<typeof installedSkills> {
+  const mirror = mkdtempSync(join(tmpdir(), 'greenlight-skills-'));
+  const st = (p: string) => {
+    try {
+      return lstatSync(p);
+    } catch {
+      return undefined;
+    }
+  };
+  try {
+    for (const root of ['.agents/skills', '.claude/skills']) {
+      let dir = tree;
+      let ok = true;
+      for (const part of root.split('/')) {
+        dir = join(dir, part);
+        if (!st(dir)?.isDirectory()) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      for (const name of readdirSync(dir)) {
+        if (!st(join(dir, name))?.isDirectory()) continue;
+        const file = join(dir, name, 'SKILL.md');
+        const f = st(file);
+        if (!f?.isFile() || f.size > 1024 * 1024) continue;
+        mkdirSync(join(mirror, root, name), { recursive: true });
+        copyFileSync(file, join(mirror, root, name, 'SKILL.md'));
+      }
+    }
+    return installedSkills(mirror);
+  } finally {
+    rmSync(mirror, { recursive: true, force: true });
+  }
 }
 
 async function runRollout(
@@ -533,6 +617,7 @@ async function runRollout(
   const artifacts = join(c.stateDir, 'bench', 'runs', c.evaluationId, rawId);
   mkdirSync(artifacts, { recursive: true });
   const scratch = mkdtempSync(join(tmpdir(), 'greenlight-rollout-'));
+  let channelDir: string | undefined;
   const seed = seedFor(task.id, modelId, run);
   const isMaintainer = task.spec.graders.includes('maintainer');
   const sequencer = new Sequencer(() => Date.now());
@@ -542,19 +627,21 @@ async function runRollout(
   let result: ReactResult<Record<string, unknown>> | undefined;
   let killed = 0;
   let diff = '';
+  let invalid: string | undefined;
   const tree = join(artifacts, 'tree');
   const fail = (why: string) => {
     throw new Error(why);
   };
+  const base = { task, modelId, run, rawId, started, seed, artifacts };
   try {
     const stage = join(scratch, 'stage');
     stageRollout({ fixtureDir: join(task.dir, 'fixture'), skillsDir: o.skillsDir, dest: stage });
-    const channelDir = join(scratch, 'channel');
-    mkdirSync(channelDir);
+    // The socket lives in a short private dir of its own: a deep TMPDIR would overflow sun_path.
+    channelDir = shortSocketDir();
     const hostUid = process.getuid?.() ?? 0;
     channel = await ShimChannel.listen(join(channelDir, 'shim.sock'), {
       sequencer,
-      ...(o.sandbox === 'docker' && hostUid === 0 ? { uid: shimUid(hostUid) } : {}),
+      ...(o.sandbox === 'docker' && hostUid === 0 ? { uid: c.image?.shimUid ?? shimUid(0) } : {}),
     });
     const setup = { stageDir: stage, channelDir, cliDir: o.assets.cliDir };
     sandbox =
@@ -565,23 +652,26 @@ async function runRollout(
           })
         : await createProcessSandbox(setup, { runnerDir: c.runnerDir });
     const sb = sandbox;
+    // The origin as the agent finds it: every later move must be explained by a recorded command.
+    const originStart = await sb.originRefs();
     const client = clientForRole(c.config, roleOf(c.config, modelId), {
       findSecrets: (t) => findSecrets(t),
       limiters: c.limiters,
-      // Gate and baseline rollouts never fall back (06 §4.8): a fallback-served rollout is
-      // ungateable, and serving it would spend the other model's quota.
-      ...(c.progress.selection.role !== 'train' ? { allowFallback: false } : {}),
+      // No rollout ever falls back (06 §4.8): a fallback-served gate rollout is ungateable, a
+      // fallback-served train rollout is evidence about another model, and either would spend
+      // the other model's quota.
+      allowFallback: false,
       ...(o.env ? { env: o.env } : {}),
       ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
       ...(o.retryDelaysMs ? { retryDelaysMs: o.retryDelaysMs } : {}),
       ...(o.sleep ? { sleep: o.sleep } : {}),
     });
-    const timeoutMs = o.rolloutTimeoutMs ?? task.spec.timeoutMin * 60_000;
+    const timeoutMs =
+      c.limits.timeoutMin !== null ? c.limits.timeoutMin * 60_000 : task.spec.timeoutMin * 60_000;
     const abort = new AbortController();
     // A plain abort surfaces as `aborted`: the agent ran out of time, and its tree is still graded.
     const timer = setTimeout(() => abort.abort(), timeoutMs);
-    const maxSteps = o.maxSteps ?? DEFAULT_MAX_STEPS;
-    const perRollout = new ScopedBudget(maxSteps * 3, c.budget);
+    const perRollout = new ScopedBudget(c.limits.requestsPerRollout, c.budget);
     const tools = agentTools(sb, (name, args) =>
       toolEvents.push(toolCallEvent(name, args, sb.workDir, sequencer.next())),
     );
@@ -594,7 +684,7 @@ async function runRollout(
         task: brief,
         tools,
         finish: (isMaintainer ? MaintainerFinish : CodingFinish) as never,
-        maxSteps,
+        maxSteps: c.limits.maxSteps,
         budget: perRollout,
         seed,
         signal: abort.signal,
@@ -606,32 +696,26 @@ async function runRollout(
     if (result.transcript.some((e) => e.kind === 'tool_call' && e.name === 'finish')) {
       toolEvents.push(toolCallEvent('finish', {}, sb.workDir, sequencer.next()));
     }
-    // Stop every agent process BEFORE anything is read out, then stop listening.
+    // Stop EVERY process (in-flight recorders included) before anything is read out; then the
+    // origin, the tree and the diff all come from one container in which nothing runs.
     killed = (await sb.finish()).killed;
+    const originEnd = await sb.originRefs();
     await channel.close();
-    diff = await sb.diff();
     await sb.exportTree(tree);
+    diff = treeDiff(stage, tree);
+    invalid = channel.integrity(originStart, originEnd);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     c.log(`rollout ${task.id} ${modelId} run ${run}: harness error: ${message}`);
     await sandbox?.dispose();
     await channel?.close().catch(() => {});
     rmSync(scratch, { recursive: true, force: true });
-    return finishRaw(c, {
-      task,
-      modelId,
-      run,
-      rawId,
-      started,
-      seed,
-      artifacts,
-      result,
-      status: 'error',
-      reason: `harness: ${message}`,
-    });
+    if (channelDir) rmSync(channelDir, { recursive: true, force: true });
+    return finishRaw(c, { ...base, result, status: 'error', reason: `harness: ${message}` });
   }
   await sandbox.dispose();
   rmSync(scratch, { recursive: true, force: true });
+  rmSync(channelDir, { recursive: true, force: true });
 
   const trajectory = mergeTrajectory(toolEvents, channel.events);
   const trajectoryPath = join(artifacts, 'trajectory.jsonl');
@@ -639,20 +723,25 @@ async function runRollout(
   writeFileSync(join(artifacts, 'diff.patch'), diff);
 
   const err = result.error;
-  const resumable = ['deferred', 'rate_limited', 'budget_exhausted'];
-  if (err && resumable.includes(err.kind)) {
+  // The per-rollout request cap ends the rollout like the step limit (its tree is graded); the
+  // invocation's cap, a day's quota and an unavailable model defer it.
+  const ownCapOnly = err?.kind === 'budget_exhausted' && c.budget.remaining > 0;
+  if (err && !ownCapOnly && ['deferred', 'rate_limited', 'budget_exhausted'].includes(err.kind)) {
     return finishRaw(c, {
-      ...{ task, modelId, run, rawId, started, seed, artifacts, result },
+      ...base,
+      result,
       status: 'deferred',
       reason: `${err.kind}: ${err.message}`,
       stop: 'deferred',
+      stopAll: err.kind === 'budget_exhausted',
       killed,
       diff,
     });
   }
   if (err?.kind === 'redaction_refused') {
     return finishRaw(c, {
-      ...{ task, modelId, run, rawId, started, seed, artifacts, result },
+      ...base,
+      result,
       status: 'refused',
       reason: `redaction_refused: ${err.message}`,
       stop: 'refused',
@@ -662,7 +751,8 @@ async function runRollout(
   }
   if (err?.kind === 'model_error') {
     return finishRaw(c, {
-      ...{ task, modelId, run, rawId, started, seed, artifacts, result },
+      ...base,
+      result,
       status: 'error',
       reason: `model_error: ${err.message}`,
       killed,
@@ -699,15 +789,18 @@ async function runRollout(
     },
   );
   writeFileSync(join(artifacts, 'grade.json'), `${JSON.stringify(grade, null, 2)}\n`);
-  // A grader crash, timeout or invalid result is recorded as `graderError` (score 0, which the
-  // gate treats as invalid, reason `grader-error`), never as a plain failing score.
+  // A grader crash, timeout or invalid result — and an incomplete trajectory — is recorded as
+  // `graderError` (score 0, which the gate treats as invalid, reason `grader-error`), never as a
+  // plain failing score, and never as a pass.
   return finishRaw(c, {
-    ...{ task, modelId, run, rawId, started, seed, artifacts, result },
+    ...base,
+    result,
     status: 'graded',
     killed,
     diff,
     grade,
     judgeUsage,
+    ...(invalid ? { invalid } : {}),
   });
 }
 
@@ -771,6 +864,8 @@ class ScopedBudget extends RequestBudget {
     return Math.min(super.remaining, this.parent.remaining);
   }
   override take(): void {
+    // Own cap first, so a refused request is never counted against the invocation.
+    if (super.remaining === 0) throw new BudgetExhaustedError(this.max);
     this.parent.take();
     super.take();
   }
@@ -788,23 +883,29 @@ interface FinishInput {
   status: RolloutSummary['status'];
   reason?: string;
   stop?: 'deferred' | 'refused';
+  stopAll?: boolean;
   killed?: number;
   diff?: string;
   grade?: Awaited<ReturnType<typeof gradeRollout>>;
-  /** The eval judge's own calls, counted into the rollout's cost. */
-  judgeUsage?: { requests: number; tokensIn: number; tokensOut: number };
+  /** The eval judge's own calls, counted into the rollout's cost (and spent on the judge model). */
+  judgeUsage?: Usage;
+  /** Why the rollout's evidence is incomplete (an unexplained origin move, a truncated or lost
+   * shim event): the outcome then carries it as `graderError`, whatever the grader said. */
+  invalid?: string;
 }
 
 function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
   const r = f.result;
   const durationMs = Math.max(0, c.now().getTime() - f.started.getTime());
+  const own: Usage = {
+    requests: r?.requests ?? 0,
+    tokensIn: r?.usage.promptTokens ?? 0,
+    tokensOut: (r?.usage.candidateTokens ?? 0) + (r?.usage.thoughtTokens ?? 0),
+  };
   const usage = {
-    requests: (r?.requests ?? 0) + (f.judgeUsage?.requests ?? 0),
-    tokensIn: (r?.usage.promptTokens ?? 0) + (f.judgeUsage?.tokensIn ?? 0),
-    tokensOut:
-      (r?.usage.candidateTokens ?? 0) +
-      (r?.usage.thoughtTokens ?? 0) +
-      (f.judgeUsage?.tokensOut ?? 0),
+    requests: own.requests + (f.judgeUsage?.requests ?? 0),
+    tokensIn: own.tokensIn + (f.judgeUsage?.tokensIn ?? 0),
+    tokensOut: own.tokensOut + (f.judgeUsage?.tokensOut ?? 0),
   };
   const served = [...new Set((r?.servedBy ?? []).map(normalizeModelId))];
   const servedBy = served.length === 0 ? 'none' : served.join(',');
@@ -812,13 +913,55 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
   const transcriptText = JSON.stringify(transcript);
   writeFileSync(join(f.artifacts, 'transcript.json'), transcriptText);
 
-  const passed = f.grade?.verdict === 'pass';
+  const summary: RolloutSummary = {
+    task: f.task.id,
+    model: f.modelId,
+    run: f.run,
+    rawId: f.rawId,
+    status: f.status,
+    requests: usage.requests,
+    ...(f.reason ? { reason: f.reason } : {}),
+    ...(f.killed !== undefined ? { killedProcesses: f.killed } : {}),
+  };
+  const usages = {
+    usage: own,
+    ...(f.judgeUsage && f.judgeUsage.requests > 0 ? { judgeUsage: f.judgeUsage } : {}),
+  };
+  // A deferred rollout is not evidence of anything: it re-runs later, so it leaves no raw record
+  // (its transcript stays in the run's artifacts).
+  if (f.status === 'deferred') {
+    return {
+      summary,
+      raw: false,
+      ...usages,
+      stop: 'deferred',
+      ...(f.stopAll ? { stopAll: true } : {}),
+    };
+  }
+
+  const graderError = f.invalid
+    ? f.invalid.slice(0, 2000)
+    : f.grade?.verdict === 'error'
+      ? (f.grade.error ?? 'grader error').slice(0, 2000)
+      : undefined;
+  const passed = f.grade?.verdict === 'pass' && graderError === undefined;
+  // `unknown` whenever no trustworthy verdict exists: a harness error, a model error, a grader
+  // error or an incomplete trajectory. Only a real pass or fail is `passed`/`failed`.
+  const verdict =
+    f.status === 'graded' && f.grade && graderError === undefined
+      ? passed
+        ? 'passed'
+        : f.grade.verdict === 'fail'
+          ? 'failed'
+          : 'unknown'
+      : 'unknown';
   const lines: string[] = [
     `bench ${f.task.id} [${f.task.spec.split}] model ${f.modelId} run ${f.run} seed ${f.seed}`,
     `sandbox ${c.progress.selection.sandbox} (imageDigest ${c.identity.harness.imageDigest}); evaluation ${c.evaluationId}`,
     `agent: ${r?.ok ? 'finished' : `ended with ${r?.error?.kind ?? 'no run'}${r?.error ? `: ${r.error.message}` : ''}`}; steps ${r?.steps ?? 0}, requests ${usage.requests}, servedBy ${servedBy}${r?.fallbackUsed ? ' (fallback)' : ''}`,
     `status ${f.status}${f.reason ? `: ${f.reason}` : ''}; agent processes killed before grading: ${f.killed ?? 0}`,
   ];
+  if (f.invalid) lines.push(`invalid: ${f.invalid}`);
   if (f.grade) {
     lines.push(`grader: ${f.grade.verdict}${f.grade.error ? ` (${f.grade.error})` : ''}`);
     for (const ch of f.grade.checks)
@@ -832,7 +975,8 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
       lines.push(`    -> ${e.ok ? 'ok' : 'error'} ${String(e.result).slice(0, 400)}`);
   }
   const excerpt = truncateExcerpt(redact(lines.join('\n')));
-  const installed = installedSkills(join(f.artifacts, 'tree'));
+  const treeDir = join(f.artifacts, 'tree');
+  const installed = existsSync(treeDir) ? treeSkills(treeDir) : {};
   const injected = f.task.spec.skills;
   const stamps = Object.keys(installed).length > 0 ? installed : {};
   const record: RawRecord = {
@@ -873,13 +1017,7 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
     },
     refs: [],
     retained: {
-      verdict: f.grade
-        ? passed
-          ? 'passed'
-          : f.grade.verdict === 'fail'
-            ? 'failed'
-            : 'unknown'
-        : 'unknown',
+      verdict,
       excerpt,
       hashes: {
         excerpt: sha256(excerpt),
@@ -898,24 +1036,13 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
   mkdirSync(rawDir, { recursive: true });
   writeFileSync(join(rawDir, `${f.rawId}.json`), text);
 
-  const summary: RolloutSummary = {
-    task: f.task.id,
-    model: f.modelId,
-    run: f.run,
-    rawId: f.rawId,
-    status: f.status,
-    requests: usage.requests,
-    ...(f.reason ? { reason: f.reason } : {}),
-    ...(f.killed !== undefined ? { killedProcesses: f.killed } : {}),
-  };
   if (f.status !== 'graded' || !f.grade)
-    return { summary, usage, ...(f.stop ? { stop: f.stop } : {}) };
-  const graderError =
-    f.grade.verdict === 'error' ? (f.grade.error ?? 'grader error').slice(0, 2000) : undefined;
+    return { summary, raw: true, ...usages, ...(f.stop ? { stop: f.stop } : {}) };
   if (graderError) summary.reason = `grader error: ${graderError}`;
   const failed = f.grade.checks.filter((x) => !x.passed).map((x) => x.name);
-  const detail =
-    failed.length > 0
+  const detail = f.invalid
+    ? f.invalid.slice(0, 2000)
+    : failed.length > 0
       ? `failed: ${failed.join('; ')}`.slice(0, 2000)
       : `${f.grade.checks.length} checks passed`;
   const graders = f.task.spec.graders.map((kind) => ({ kind, passed, detail }));
@@ -942,7 +1069,7 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
     },
   };
   summary.score = outcome.score;
-  return { summary, outcome, usage };
+  return { summary, outcome, raw: true, ...usages };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1039,8 +1166,21 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       return done('usage', `task ${t.id} declares no isolation mode`);
   }
 
+  // The rollout limits are part of the identity (06 §1.5). On resume an unset limit is the
+  // evaluation's own, so only an explicitly different one is refused below.
+  const was = previous?.identity.harness.limits;
+  const maxSteps = o.maxSteps ?? was?.maxSteps ?? DEFAULT_MAX_STEPS;
+  const limits: Limits = {
+    maxSteps,
+    requestsPerRollout:
+      o.rolloutRequestCap ??
+      (was && o.maxSteps === undefined ? was.requestsPerRollout : rolloutRequestCap(maxSteps)),
+    timeoutMin:
+      o.rolloutTimeoutMs !== undefined ? o.rolloutTimeoutMs / 60_000 : (was?.timeoutMin ?? null),
+  };
+
   // 2. Identity (with the image built first, since its digest is part of it).
-  let image: { tag: string; id: string } | undefined;
+  let image: RunnerImage | undefined;
   if (o.sandbox === 'docker') image = ensureRunnerImage(runnerDir, { docker: o.dockerBin, log });
   const identity = computeIdentity({
     benchDir: o.benchDir,
@@ -1049,17 +1189,23 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     lockfile: o.assets.lockfile,
     greenlightVersion: o.assets.greenlightVersion,
     cliBuildHash: o.assets.cliBuildHash,
-    imageDigest: image?.id ?? 'process',
+    imageDigest: image?.digest ?? 'process',
     agent: { vendor: HARNESS_VENDOR, version: HARNESS_VERSION },
     models,
     mode: 'isolation',
+    limits,
   });
   if (previous) {
     const diff = identityDiff(previous.identity, identity);
     if (diff.length > 0) {
+      const lim =
+        diff.includes('harness') &&
+        JSON.stringify(previous.identity.harness.limits) !== JSON.stringify(limits)
+          ? ` (rollout limits ${JSON.stringify(previous.identity.harness.limits ?? null)} → ${JSON.stringify(limits)})`
+          : '';
       return done(
         'policy-refused',
-        `refusing to resume ${o.resume}: the baseline identity changed (${diff.join(', ')}); start a new evaluation`,
+        `refusing to resume ${o.resume}: the baseline identity changed (${diff.join(', ')})${lim}; start a new evaluation`,
         { identity },
       );
     }
@@ -1087,10 +1233,11 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
 
   // 3. Budget and models, before any request.
   const events = ledgerEvents(o.wikiRoot);
-  const store = new FileQuotaStore({ root: join(stateDir, '..') });
   // FileQuotaStore keeps `.greenlight/quota/` under its root: the state dir's parent.
+  const store: QuotaStore = o.quotaStore ?? new FileQuotaStore({ root: join(stateDir, '..') });
   const limiters = createLimiters(config, { persistence: store, ...(o.throttle ?? {}) });
-  seedQuotaFromLedger(store, events, [...limiters.keys()], { now: now() });
+  for (const [id, u] of usageFromLedger(events, [...limiters.keys()], { now: now() }))
+    store.raise(id, u.day, u.count);
   const rpr = o.requestsPerRollout ?? REQUESTS_PER_ROLLOUT;
   const estimate = estimateGateCost({
     tasks: selected.length,
@@ -1184,6 +1331,7 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     progress,
     limiters,
     budget: new RequestBudget(cap),
+    limits,
     repo: { sourceRepo: sourceRepo(o.repoRoot), ...ti },
     run: runIdentity(o.env ?? process.env),
     now,
@@ -1191,43 +1339,96 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
   };
   saveProgress(stateDir, progress);
   log(
-    `evaluation ${evaluationId}: ${role} on ${split}, ${selected.length} task(s) × ${models.length} model(s) × ${runs} run(s), ${pending.length} pending, ${o.sandbox} sandbox; request cap ${cap}`,
+    `evaluation ${evaluationId}: ${role} on ${split}, ${selected.length} task(s) × ${models.length} model(s) × ${runs} run(s), ${pending.length} pending, ${o.sandbox} sandbox; limits ${limits.maxSteps} steps / ${limits.requestsPerRollout} requests per rollout; request cap ${cap}`,
   );
-  const spend = new Map<
-    string,
-    { rollouts: number; requests: number; tokensIn: number; tokensOut: number }
-  >();
+  const spend = new Map<string, Usage & { rollouts: number }>();
+  const charge = (model: string, u: Usage, rollouts: number) => {
+    const s = spend.get(model) ?? { rollouts: 0, requests: 0, tokensIn: 0, tokensOut: 0 };
+    s.rollouts += rollouts;
+    s.requests += u.requests;
+    s.tokensIn += u.tokensIn;
+    s.tokensOut += u.tokensOut;
+    spend.set(model, s);
+  };
   const rollouts: RolloutSummary[] = [];
-  let stop: 'deferred' | 'refused' | undefined;
+  let stop: 'refused' | undefined;
+  // Per-model queues (task-major within a model); a deferred model keeps its queue for resume.
+  const queue = new Map(models.map((m) => [m, pending.filter((k) => k.split('|')[1] === m)]));
+  const deferred = new Map<string, string>();
+  const judgeModel = entryForRole(config, 'judge').id;
+  const remainingOf = async (m: string) => (await limiters.get(m)?.remainingToday()) ?? 0;
+  /** What a rollout may spend, per model: its cap on its own model, +1 judge call on the judge
+   * model for a maintainer rollout outside train. */
+  const needOf = (key: string) => {
+    const [taskId, m] = key.split('|') as [string, string];
+    const need = new Map([[m, limits.requestsPerRollout]]);
+    const task = selected.find((t) => t.id === taskId);
+    if (role !== 'train' && task?.spec.graders.includes('maintainer'))
+      need.set(judgeModel, (need.get(judgeModel) ?? 0) + 1);
+    return need;
+  };
   try {
-    for (const key of pending) {
-      const [taskId, modelId, runStr] = key.split('|') as [string, string, string];
+    for (;;) {
+      const live = models.filter((m) => (queue.get(m)?.length ?? 0) > 0 && !deferred.has(m));
+      if (live.length === 0) break;
+      // The model with the most quota left goes next (ties: models.json order), so the models
+      // interleave and neither one's day is spent while the other waits.
+      const left = new Map<string, number>();
+      for (const m of live) left.set(m, await remainingOf(m));
+      const m = [...live].sort((a, b) => (left.get(b) ?? 0) - (left.get(a) ?? 0))[0] as string;
+      const key = (queue.get(m) as string[])[0] as string;
+      const need = needOf(key);
+      let short: string | undefined;
+      for (const [nm, n] of need) {
+        const r = nm === m ? (left.get(m) ?? 0) : await remainingOf(nm);
+        if (r < n)
+          short = `daily quota: ${nm} has ${r} request(s) left today and a rollout may need ${n}`;
+      }
+      if (short) {
+        deferred.set(m, short);
+        log(`  ${m}: skipped for today (${short})`);
+        continue;
+      }
+      const total = [...need.values()].reduce((a, b) => a + b, 0);
+      if (ctx.budget.remaining < total) {
+        for (const x of live)
+          deferred.set(
+            x,
+            `request cap: ${ctx.budget.remaining} of this invocation's ${cap} requests left, a rollout may need ${total}`,
+          );
+        break;
+      }
+      const [taskId, , runStr] = key.split('|') as [string, string, string];
       const task = selected.find((t) => t.id === taskId) as LoadedTask;
-      log(`rollout ${taskId} · ${modelId} · run ${runStr} …`);
-      const r = await runRollout(ctx, task, modelId, Number(runStr));
+      log(`rollout ${taskId} · ${m} · run ${runStr} (${left.get(m)} request(s) left today) …`);
+      const r = await runRollout(ctx, task, m, Number(runStr));
       rollouts.push(r.summary);
-      progress.rawIds.push(r.summary.rawId);
-      const s = spend.get(modelId) ?? { rollouts: 0, requests: 0, tokensIn: 0, tokensOut: 0 };
-      s.rollouts += 1;
-      s.requests += r.usage.requests;
-      s.tokensIn += r.usage.tokensIn;
-      s.tokensOut += r.usage.tokensOut;
-      spend.set(modelId, s);
-      if (r.outcome) progress.outcomes.push(r.outcome);
-      else if (r.summary.status !== 'deferred')
-        progress.problems.push({ key, kind: r.summary.status, message: r.summary.reason ?? '' });
+      if (r.raw) progress.rawIds.push(r.summary.rawId);
+      charge(m, r.usage, 1);
+      if (r.judgeUsage) charge(judgeModel, r.judgeUsage, 0);
+      if (r.stop === 'deferred') {
+        // Only this model waits for another day; the key stays queued.
+        if (r.stopAll) for (const x of live) deferred.set(x, r.summary.reason ?? 'deferred');
+        else deferred.set(m, r.summary.reason ?? 'deferred');
+      } else {
+        (queue.get(m) as string[]).shift();
+        if (r.outcome) progress.outcomes.push(r.outcome);
+        else
+          progress.problems.push({ key, kind: r.summary.status, message: r.summary.reason ?? '' });
+      }
       log(
-        `  ${r.summary.status}${r.summary.score !== undefined ? ` score ${r.summary.score}` : ''}${r.summary.reason ? ` (${r.summary.reason})` : ''}; ${r.usage.requests} request(s); raw ${r.summary.rawId}`,
+        `  ${r.summary.status}${r.summary.score !== undefined ? ` score ${r.summary.score}` : ''}${r.summary.reason ? ` (${r.summary.reason})` : ''}; ${r.summary.requests} request(s); ${r.raw ? `raw ${r.summary.rawId}` : 'no raw record'}`,
       );
       saveProgress(stateDir, progress);
-      if (r.stop) {
-        stop = r.stop;
+      if (r.stop === 'refused') {
+        stop = 'refused';
         break;
       }
     }
   } finally {
     mkdirSync(o.wikiRoot, { recursive: true });
-    // One spend event per model per invocation (08 §8), with the model named for quota seeding.
+    // One spend event per model per invocation (08 §8), with the model named for quota seeding:
+    // the judge's calls are charged to the judge model, not to the rollout's.
     for (const [model, s] of spend) {
       if (s.requests === 0 && s.rollouts === 0) continue;
       appendEvent(
@@ -1241,15 +1442,6 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
   const complete = keys.every((k) =>
     allOutcomes.some((x) => ROLLOUT_KEY(x.task, x.model, x.run) === k),
   );
-  if (stop === 'deferred') {
-    progress.status = 'deferred';
-    saveProgress(stateDir, progress);
-    return done(
-      'deferred',
-      `deferred after ${allOutcomes.length}/${keys.length} rollouts; resume later with \`greenlight bench run --resume ${evaluationId}\``,
-      { evaluationId, identity, rollouts, requests },
-    );
-  }
   if (stop === 'refused') {
     progress.status = 'refused';
     saveProgress(stateDir, progress);
@@ -1257,6 +1449,24 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       'refused',
       'a rollout was refused by the redaction guard (06 §4.8): nothing flagged was sent, and the evaluation is not sealed. Fix the fixture or capture.',
       { evaluationId, identity, rollouts, requests },
+    );
+  }
+  const remaining = Object.fromEntries(
+    [...queue].filter(([, ks]) => ks.length > 0).map(([m, ks]) => [m, [...ks]]),
+  );
+  if (Object.keys(remaining).length > 0) {
+    progress.status = 'deferred';
+    saveProgress(stateDir, progress);
+    const deferredModels = Object.fromEntries(
+      Object.keys(remaining).map((m) => [m, deferred.get(m) ?? 'deferred']),
+    );
+    const per = Object.entries(remaining)
+      .map(([m, ks]) => `${m}: ${ks.length} rollout(s) left (${deferredModels[m]})`)
+      .join('; ');
+    return done(
+      'deferred',
+      `deferred after ${allOutcomes.length}/${keys.length} rollouts — ${per}; resume later with \`greenlight bench run --resume ${evaluationId}\``,
+      { evaluationId, identity, rollouts, requests, remaining, deferredModels },
     );
   }
   if (!complete) {

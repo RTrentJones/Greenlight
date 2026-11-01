@@ -35,6 +35,7 @@ import type { GateMode } from '../stats';
 const H = (c: string) => c.repeat(64);
 const TS = '2026-11-01T12:00:00.000Z';
 const CREATED = '2026-10-30T12:00:00.000Z';
+const LIMITS = { maxSteps: 15, requestsPerRollout: 17, timeoutMin: null };
 
 function identity(
   mode: GateMode,
@@ -47,7 +48,7 @@ function identity(
     splitsHash: H('2'),
     graderSetHash: H('3'),
     depsHash: H('4'),
-    harness: { runnerVersion: '1.0.0', imageDigest: 'sha256:abc' },
+    harness: { runnerVersion: '1.0.0', imageDigest: 'sha256:abc', limits: LIMITS },
     agent: { vendor: 'greenlight-harness', version: '0.1.0' },
     models: [F, S],
     skillSetHash: skillSet,
@@ -196,7 +197,22 @@ describe('decide', () => {
       ],
       ['depsHash', { depsHash: H('9') }],
       ['models', { models: [F, 'model-other'] }],
-      ['harness', { harness: { runnerVersion: '2.0.0', imageDigest: 'sha256:abc' } }],
+      [
+        'harness',
+        { harness: { runnerVersion: '2.0.0', imageDigest: 'sha256:abc', limits: LIMITS } },
+      ],
+      // The rollout limits are identity (06 §1.5): a 20-step candidate never meets a 15-step
+      // baseline.
+      [
+        'harness',
+        {
+          harness: {
+            runnerVersion: '1.0.0',
+            imageDigest: 'sha256:abc',
+            limits: { ...LIMITS, maxSteps: 20 },
+          },
+        },
+      ],
       ['proxyPolicyHash', { proxyPolicyHash: H('9') }],
     ];
     it.each(changes)('%s', (field, change) => {

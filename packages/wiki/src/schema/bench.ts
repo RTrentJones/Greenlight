@@ -222,7 +222,21 @@ export const BaselineIdentitySchema = z
     graderSetHash: Sha256,
     depsHash: Sha256,
     harness: z
-      .object({ runnerVersion: z.string().min(1), imageDigest: z.string().min(1) })
+      .object({
+        runnerVersion: z.string().min(1),
+        imageDigest: z.string().min(1),
+        /** The rollout limits: a 10-step run says nothing about a 20-step one (06 §1.5). Absent
+         * only in records written before the field existed, which then compare unequal to every
+         * record that has it. `timeoutMin` null = each task's own `timeoutMin` (in taskSetHash). */
+        limits: z
+          .object({
+            maxSteps: z.number().int().min(1),
+            requestsPerRollout: z.number().int().min(1),
+            timeoutMin: z.number().positive().nullable(),
+          })
+          .strict()
+          .optional(),
+      })
       .strict(),
     agent: z.object({ vendor: z.string().min(1), version: z.string().min(1) }).strict(),
     models: z.array(z.string().min(1)).min(1),

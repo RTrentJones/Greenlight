@@ -464,7 +464,11 @@ describe('bench (M0-03)', () => {
     splitsHash: H('2'),
     graderSetHash: H('3'),
     depsHash: H('4'),
-    harness: { runnerVersion: '0.1.0', imageDigest: 'sha256:abc' },
+    harness: {
+      runnerVersion: '0.1.0',
+      imageDigest: 'sha256:abc',
+      limits: { maxSteps: 15, requestsPerRollout: 17, timeoutMin: null },
+    },
     agent: { vendor: 'greenlight-harness', version: '0.1.0' },
     models: ['gemini-3.8-flash', 'gemini-3.6-flash'],
     skillSetHash: H('5'),
@@ -483,7 +487,15 @@ describe('bench (M0-03)', () => {
       { depsHash: H('7') },
       { models: ['gemini-3.8-flash'] },
       { agent: { vendor: 'greenlight-harness', version: '0.2.0' } },
-      { harness: { runnerVersion: '0.1.0', imageDigest: 'sha256:def' } },
+      { harness: { ...identity.harness, imageDigest: 'sha256:def' } },
+      // the rollout limits, and a record written before they were recorded
+      {
+        harness: {
+          ...identity.harness,
+          limits: { maxSteps: 20, requestsPerRollout: 17, timeoutMin: null },
+        },
+      },
+      { harness: { runnerVersion: '0.1.0', imageDigest: 'sha256:abc' } },
       { proxyPolicyHash: H('8') },
       // a task's state, kind, modes or graders: a quarantine is a re-baseline (06 §4.1)
       { tasks: [{ ...identityTask, state: 'quarantined' as const }] },

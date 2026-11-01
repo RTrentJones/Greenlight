@@ -4,9 +4,12 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,17 +24,25 @@ import { writeProcessShims } from './shims';
  * **docker** (the only sandbox a baseline or candidate may use): one container per rollout from
  * the runner image (`bench/runner/Dockerfile`):
  * - the agent user (uid 10000), its own PID namespace, `--network none`, `--read-only` root,
- *   `--cap-drop ALL` plus only SETUID/SETGID (the shim recorder's doas hop), pid/memory/cpu limits;
+ *   `--cap-drop ALL` plus only SETUID/SETGID (the shim recorder's doas hops), pid/memory/cpu
+ *   limits;
  * - tmpfs `/work` (the task fixture plus the skills under test in `.claude/skills/`, a fresh git
  *   repo), tmpfs `/srv` (the bare `origin`, so pushes are observable), tmpfs HOME and `/tmp`;
  * - exactly two bind mounts, both read-only: the shim socket directory (`/run/greenlight-shim`,
  *   socket owned by the shim uid, mode 0600: the agent cannot connect) and the built greenlight
- *   CLI (`/opt/greenlight`, for `greenlight preview`). Never `bench/`, graders, mutants,
- *   references, or the repo source; no host path of them appears anywhere in the container;
+ *   CLI (`/opt/real/greenlight`, inside a root:shim 0750 directory: only the recorder's command
+ *   hop can run it). Never `bench/`, graders, mutants, references, or the repo source; no host
+ *   path of them appears anywhere in the container;
+ * - the real binaries of the shimmed commands are executable by the shim group only, so the
+ *   agent's own processes reach git, curl and greenlight through the shims alone;
  * - no secret in any environment: the model key stays in the host process (or the egress proxy).
- * `finish` kills every agent process (`kill -9 -1` as the agent; PID 1 is an inert `sleep`)
- * before the tree is copied out, and `dispose` removes the container, so no agent process
- * survives into grading.
+ *
+ * `finish` kills EVERY process but PID 1 (an inert `sleep`) as root with CAP_KILL (a privileged
+ * `docker exec`), the shim user's in-flight recorders included, and repeats until a scan of
+ * `/proc` finds none alive; a loop that does not converge is a harness error. Only then are the
+ * origin refs and the tree read out, from a container in which nothing runs: the exported tree
+ * is the one snapshot both the diff (`treeDiff`, on the host) and the grader see. `dispose`
+ * removes the container, so no agent process survives into grading.
  *
  * **process** (local development only): the tool calls run as host child processes in a temp
  * directory, with the same shims on PATH. Same uid as the host: the agent could read the host's
@@ -58,17 +69,19 @@ export interface Sandbox {
   readonly kind: 'docker' | 'process';
   /** The work dir as the agent sees it. */
   readonly workDir: string;
-  /** `docker image inspect` id, or `process`. */
+  /** BaselineIdentity `harness.imageDigest` (see `ensureRunnerImage`), or `process`. */
   readonly imageDigest: string;
   /** HEAD of the fixture commit made at setup. */
   readonly baseCommit: string;
   /** Runs argv as the agent with cwd = workDir. */
   exec(argv: string[], opts?: ExecOptions): Promise<ExecResult>;
-  /** Kills every agent process; returns how many were still running. */
+  /** Kills every process in the sandbox; returns how many were still running. Throws when it
+   * cannot stop them all (a harness error: nothing may run while the tree is read out). */
   finish(): Promise<{ killed: number }>;
-  /** The final tree against the fixture commit, untracked files included (binary-safe). */
-  diff(): Promise<string>;
-  /** Copies the final tree (with `.git`) to `dest`, which must not exist. */
+  /** Every ref of the bare origin (`<sha> <ref>` lines, the recorder's own format). */
+  originRefs(): Promise<string>;
+  /** Copies the final tree (with `.git`) to `dest`, which must not exist. Only regular files,
+   * directories and symlinks are copied; nothing is followed. */
   exportTree(dest: string): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -86,6 +99,10 @@ export interface SandboxSetup {
 
 export const AGENT_UID = 10000;
 export const WORK_DIR = '/work';
+/** Where the built CLI is mounted in the rollout container (only the shim group can enter). */
+export const CLI_MOUNT = '/opt/real/greenlight';
+/** Cap on the exported tree (the work tmpfs is 512 MB). */
+export const MAX_TREE_BYTES = 600 * 1024 * 1024;
 
 const FIXTURE_COMMIT_SCRIPT = (git: string, origin: string) => `set -e
 ${git} init -q -b main
@@ -101,10 +118,6 @@ ${git} push -q origin main develop
 ${git} branch -q --set-upstream-to=origin/main main
 ${git} branch -q --set-upstream-to=origin/develop develop
 ${git} rev-parse HEAD`;
-
-/** The diff script: a throwaway index so the agent's own index is untouched. */
-const DIFF_SCRIPT = (git: string, base: string) =>
-  `export GIT_INDEX_FILE="$(mktemp)"; ${git} -c core.fsmonitor= add -A >/dev/null 2>&1; ${git} -c core.fsmonitor= --no-pager diff --cached --binary ${base}; rm -f "$GIT_INDEX_FILE"`;
 
 interface Collected {
   exit: number;
@@ -164,6 +177,254 @@ function run(
   });
 }
 
+/**
+ * A short private temp dir for a unix socket: `sun_path` holds about 104 bytes, and a deep TMPDIR
+ * (CI runners, macOS) would overflow it. Uses `/tmp/<prefix>XXXXXX` when TMPDIR is too long, and
+ * throws a clear error when even that is too long for `<dir>/<leaf>`.
+ */
+export function shortSocketDir(prefix = 'gl-', leaf = 'shim.sock'): string {
+  const fits = (base: string) => join(base, `${prefix}XXXXXX`, leaf).length <= 100;
+  const base = fits(tmpdir()) ? tmpdir() : '/tmp';
+  if (!fits(base) || !existsSync(base)) {
+    throw new Error(
+      `no directory short enough for a unix socket (${join(base, `${prefix}XXXXXX`, leaf).length} > 100 bytes): set TMPDIR to a shorter path`,
+    );
+  }
+  return mkdtempSync(join(base, prefix));
+}
+
+// ---------------------------------------------------------------------------------------------
+// the exported tree
+
+export type TarEntryType =
+  | 'file'
+  | 'dir'
+  | 'symlink'
+  | 'hardlink'
+  | 'char'
+  | 'block'
+  | 'fifo'
+  | 'other';
+
+export interface TarEntry {
+  name: string;
+  type: TarEntryType;
+  mode: number;
+  size: number;
+  linkname: string;
+  /** Offset of the member's data in the archive. */
+  offset: number;
+}
+
+const TYPES: Record<string, TarEntryType> = {
+  '0': 'file',
+  '\0': 'file',
+  '7': 'file',
+  '5': 'dir',
+  '2': 'symlink',
+  '1': 'hardlink',
+  '3': 'char',
+  '4': 'block',
+  '6': 'fifo',
+};
+
+function octal(b: Buffer): number {
+  if ((b[0] as number) & 0x80) throw new Error('tree archive: a base-256 size is not supported');
+  const s = b.toString('latin1').replace(/\0.*$/s, '').trim();
+  return s === '' ? 0 : Number.parseInt(s, 8);
+}
+
+/** Members of a ustar/GNU/pax archive (`L`/`K` long names and pax `path`/`linkpath` applied). */
+export function listTar(buf: Buffer): TarEntry[] {
+  const out: TarEntry[] = [];
+  let off = 0;
+  let longName: string | undefined;
+  let longLink: string | undefined;
+  let pax: Record<string, string> = {};
+  const cstr = (b: Buffer) => {
+    const z = b.indexOf(0);
+    return b.subarray(0, z < 0 ? b.length : z).toString('utf8');
+  };
+  while (off + 512 <= buf.length) {
+    const h = buf.subarray(off, off + 512);
+    if (h.every((x) => x === 0)) break;
+    const size = octal(h.subarray(124, 136));
+    const flag = String.fromCharCode(h[156] as number);
+    const ustar = h.subarray(257, 262).toString('latin1') === 'ustar';
+    const prefix = ustar ? cstr(h.subarray(345, 500)) : '';
+    const rawName = cstr(h.subarray(0, 100));
+    const start = off + 512;
+    if (start + size > buf.length) throw new Error('tree archive is truncated');
+    const data = buf.subarray(start, start + size);
+    off = start + Math.ceil(size / 512) * 512;
+    if (flag === 'L') {
+      longName = cstr(data);
+      continue;
+    }
+    if (flag === 'K') {
+      longLink = cstr(data);
+      continue;
+    }
+    if (flag === 'x' || flag === 'g') {
+      if (flag === 'x') {
+        // Records are `<len> <key>=<value>\n`, `len` counting bytes of the whole record.
+        pax = {};
+        let rest = data;
+        while (rest.length > 0) {
+          const sp = rest.indexOf(0x20);
+          const len = Number.parseInt(rest.subarray(0, sp).toString('latin1'), 10);
+          if (!(sp > 0 && len > sp && len <= rest.length)) break;
+          const rec = rest.subarray(sp + 1, len - 1).toString('utf8');
+          const eq = rec.indexOf('=');
+          if (eq > 0) pax[rec.slice(0, eq)] = rec.slice(eq + 1);
+          rest = rest.subarray(len);
+        }
+      }
+      continue;
+    }
+    const name = pax.path ?? longName ?? (prefix ? `${prefix}/${rawName}` : rawName);
+    const linkname = pax.linkpath ?? longLink ?? cstr(h.subarray(157, 257));
+    out.push({
+      name,
+      type: TYPES[flag] ?? 'other',
+      mode: octal(h.subarray(100, 108)),
+      size,
+      linkname,
+      offset: start,
+    });
+    longName = undefined;
+    longLink = undefined;
+    pax = {};
+  }
+  return out;
+}
+
+/** `./a/b/` → `a/b`; '' for the root. */
+const normal = (n: string) => n.replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+
+/**
+ * Refuses an archive the host must not unpack: a member that is absolute or climbs out with `..`,
+ * a hardlink, device, FIFO or unknown type, a duplicate name, a member below a symlink member
+ * (the classic "symlink, then write through it" escape), or more than `maxBytes` of content.
+ * Returns the members to extract.
+ */
+export function assertSafeTar(buf: Buffer, maxBytes = MAX_TREE_BYTES): TarEntry[] {
+  if (buf.length > maxBytes + 1024 * 1024) throw new Error('tree archive exceeds the size cap');
+  const entries = listTar(buf);
+  const names = new Set<string>();
+  const links = new Set<string>();
+  let total = 0;
+  const kept: TarEntry[] = [];
+  for (const e of entries) {
+    if (e.name.startsWith('/') || e.name.split('/').includes('..'))
+      throw new Error(`refusing a tree archive member that escapes: ${e.name}`);
+    if (e.type !== 'file' && e.type !== 'dir' && e.type !== 'symlink')
+      throw new Error(`refusing a tree archive member of type ${e.type}: ${e.name}`);
+    const n = normal(e.name);
+    if (n === '' || n === '.') continue;
+    if (names.has(n)) throw new Error(`refusing a duplicate tree archive member: ${n}`);
+    names.add(n);
+    if (e.type === 'symlink') links.add(n);
+    total += e.size;
+    if (total > maxBytes) throw new Error(`the final tree exceeds ${maxBytes} bytes`);
+    kept.push({ ...e, name: n });
+  }
+  for (const e of kept) {
+    const parts = e.name.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const anc = parts.slice(0, i).join('/');
+      if (links.has(anc))
+        throw new Error(`refusing a tree archive member below a symlink: ${e.name}`);
+    }
+  }
+  return kept;
+}
+
+/** The same rules as `assertSafeTar` for a directory on the host (the process sandbox): only
+ * regular files (one link each), directories and symlinks, at most `maxBytes` in all. */
+export function assertPlainTree(root: string, maxBytes = MAX_TREE_BYTES): void {
+  let total = 0;
+  const walk = (rel: string) => {
+    for (const name of readdirSync(join(root, rel))) {
+      const r = rel === '' ? name : `${rel}/${name}`;
+      const st = lstatSync(join(root, r));
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(r);
+      else if (st.isFile() && st.nlink === 1) {
+        total += st.size;
+        if (total > maxBytes) throw new Error(`the final tree exceeds ${maxBytes} bytes`);
+      } else
+        throw new Error(
+          `refusing a tree member that is not a regular file, directory or symlink: ${r}`,
+        );
+    }
+  };
+  walk('');
+}
+
+/** Unpacks checked members into `dest` (created): nothing is followed, nothing is owned by
+ * anyone but the host user, and every directory stays traversable. */
+export function extractTar(buf: Buffer, entries: readonly TarEntry[], dest: string): void {
+  mkdirSync(dest, { recursive: true });
+  for (const e of entries) {
+    const p = join(dest, e.name);
+    if (e.type === 'dir') mkdirSync(p, { recursive: true, mode: 0o755 });
+  }
+  for (const e of entries) {
+    const p = join(dest, e.name);
+    if (e.type === 'dir') continue;
+    mkdirSync(join(p, '..'), { recursive: true, mode: 0o755 });
+    if (e.type === 'symlink') symlinkSync(e.linkname, p);
+    else
+      writeFileSync(p, buf.subarray(e.offset, e.offset + e.size), {
+        mode: (e.mode & 0o755) | 0o600,
+        flag: 'wx',
+      });
+  }
+  for (const e of entries) if (e.type === 'dir') chmodSync(join(dest, e.name), 0o755);
+}
+
+/**
+ * The final tree against the base (both host directories), untracked files included,
+ * binary-safe, `.git` excluded: `git diff` of two `write-tree`s in a throwaway repository with no
+ * system, global or repository config, so nothing the agent wrote (a filter, fsmonitor, textconv
+ * or hook) can run on the host.
+ */
+export function treeDiff(baseDir: string, treeDir: string, o: { git?: string } = {}): string {
+  const git = o.git ?? 'git';
+  const tmp = mkdtempSync(join(tmpdir(), 'greenlight-diff-'));
+  try {
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      HOME: tmp,
+      XDG_CONFIG_HOME: tmp,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_DIR: join(tmp, 'repo.git'),
+      GIT_TERMINAL_PROMPT: '0',
+      LC_ALL: 'C',
+    };
+    const g = (args: string[], extra: NodeJS.ProcessEnv = {}) =>
+      execFileSync(git, args, {
+        cwd: tmp,
+        env: { ...env, ...extra },
+        maxBuffer: 256 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).toString('utf8');
+    g(['init', '-q']);
+    const tree = (work: string, index: string) => {
+      const e = { GIT_INDEX_FILE: join(tmp, index), GIT_WORK_TREE: work };
+      g(['-C', work, '-c', 'core.fsmonitor=false', 'add', '-A'], e);
+      return g(['write-tree'], e).trim();
+    };
+    const a = tree(baseDir, 'base.index');
+    const b = tree(treeDir, 'tree.index');
+    return g(['diff', '--binary', '--no-color', '--no-ext-diff', '--no-textconv', a, b]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // docker
 
@@ -190,8 +451,34 @@ export function shimUid(hostUid = process.getuid?.() ?? 0): number {
 
 export interface RunnerImage {
   tag: string;
-  /** The image id (`sha256:…`): BaselineIdentity `harness.imageDigest`. */
+  /** The local image id (`sha256:…`), informational: it changes on every rebuild. */
   id: string;
+  /** BaselineIdentity `harness.imageDigest` (see `runnerImageDigest`). */
+  digest: string;
+  /** The shim user's uid (and the shim group's gid) in this image. */
+  shimUid: number;
+}
+
+/**
+ * `harness.imageDigest`: a hash of the build context (`bench/runner/`, whose Dockerfile pins the
+ * base image by digest and every apk package by version), the shim uid, and the package list
+ * actually installed in the image (`apk info -v`, sorted).
+ *
+ * Why not the local image id: it changes on every rebuild (layer timestamps), so a pruned and
+ * rebuilt image would refuse every resume across days although nothing an agent can observe
+ * changed. The context hash names what was asked for; the package list proves what was installed
+ * (a transitive dependency the pins do not cover would show up there), so a drifted rebuild still
+ * changes the identity.
+ */
+export function runnerImageDigest(contextHash: string, uid: number, packages: string): string {
+  const list = packages
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .sort()
+    .join('\n');
+  const h = createHash('sha256').update(`runner\0${contextHash}\0${uid}\0${list}\n`).digest('hex');
+  return `ctx:sha256:${h}`;
 }
 
 /**
@@ -206,17 +493,24 @@ export function ensureRunnerImage(
   const docker = o.docker ?? 'docker';
   const env = o.env ?? process.env;
   const uid = o.uid ?? shimUid();
-  const h = createHash('sha256')
-    .update(`${hashTree(runnerDir)}:${uid}`)
-    .digest('hex');
+  const contextHash = hashTree(runnerDir);
+  const h = createHash('sha256').update(`${contextHash}:${uid}`).digest('hex');
   const tag = `greenlight-bench-runner:${h.slice(0, 16)}`;
   const inspect = () =>
     execFileSync(docker, ['image', 'inspect', '--format', '{{.Id}}', tag], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
+  const image = (id: string): RunnerImage => {
+    const packages = execFileSync(
+      docker,
+      ['run', '--rm', '--network', 'none', '--entrypoint', '/sbin/apk', tag, 'info', '-v'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 },
+    );
+    return { tag, id, digest: runnerImageDigest(contextHash, uid, packages), shimUid: uid };
+  };
   try {
-    return { tag, id: inspect() };
+    return image(inspect());
   } catch {
     // not built yet
   }
@@ -232,13 +526,12 @@ export function ensureRunnerImage(
     env: { ...env, DOCKER_BUILDKIT: '1' },
     timeout: 900_000,
   });
-  return { tag, id: inspect() };
+  return image(inspect());
 }
 
 export interface DockerSandboxOptions {
   image: RunnerImage;
   docker?: string;
-  shimUid?: number;
   memory?: string;
   cpus?: string;
   pids?: number;
@@ -249,16 +542,19 @@ export interface DockerSandboxOptions {
 const tarOf = (dir: string) =>
   execFileSync('tar', ['-C', dir, '-cf', '-', '.'], { maxBuffer: 1 << 30 });
 
-/** Refuses an archive member that is absolute or climbs out with `..`. */
-export function assertSafeTar(file: string): void {
-  const names = execFileSync('tar', ['-tf', file], { encoding: 'utf8', maxBuffer: 1 << 28 })
-    .split('\n')
-    .filter(Boolean);
-  for (const n of names) {
-    if (n.startsWith('/') || n.split('/').includes('..'))
-      throw new Error(`refusing a tree archive member that escapes: ${n}`);
-  }
-}
+/**
+ * Run as root with every capability (a privileged exec) in the container's PID namespace: SIGKILL
+ * to every process but PID 1 and itself, repeated until two consecutive /proc scans find nothing
+ * alive (zombies, which the inert PID 1 never reaps, do not count). Prints
+ * `{ before, rounds, left }`.
+ */
+const KILL_ALL = `const fs=require('fs');
+const live=()=>{const o=[];for(const d of fs.readdirSync('/proc')){if(!/^\\d+$/.test(d))continue;const p=+d;if(p===1||p===process.pid)continue;
+try{const s=fs.readFileSync('/proc/'+d+'/stat','utf8');const c=s[s.lastIndexOf(')')+2];if(c!=='Z'&&c!=='X')o.push(p)}catch{}}return o};
+const before=live().length;let rounds=0,left=live();
+for(;rounds<50;rounds++){try{process.kill(-1,'SIGKILL')}catch{}const t=Date.now();while(Date.now()-t<20){}
+left=live();if(left.length===0&&live().length===0)break}
+console.log(JSON.stringify({before,rounds,left}))`;
 
 export async function createDockerSandbox(
   setup: SandboxSetup,
@@ -301,7 +597,7 @@ export async function createDockerSandbox(
     '-v',
     `${setup.channelDir}:/run/greenlight-shim:ro`,
     '-v',
-    `${setup.cliDir}:/opt/greenlight:ro`,
+    `${setup.cliDir}:${CLI_MOUNT}:ro`,
     '-u',
     'agent',
     '-w',
@@ -314,13 +610,30 @@ export async function createDockerSandbox(
   const started = await run(docker, runArgs, { timeoutMs: 60_000 });
   if (started.exit !== 0) throw new Error(`docker run failed: ${started.stderr.trim()}`);
 
+  /** `agent`: the agent's tool calls. `git`: the runner's own git (uid agent, group shim, a clean
+   * git environment). `root`: a privileged exec, for the kill loop and the tree export only. */
+  type As = 'agent' | 'git' | 'root';
+  const user: Record<As, string[]> = {
+    agent: ['-u', 'agent'],
+    git: [
+      '-u',
+      `${AGENT_UID}:${o.image.shimUid}`,
+      '-e',
+      'HOME=/nonexistent',
+      '-e',
+      'GIT_CONFIG_NOSYSTEM=1',
+      '-e',
+      'GIT_CONFIG_GLOBAL=/dev/null',
+    ],
+    root: ['--privileged', '-u', '0'],
+  };
   const dexec = (
     argv: string[],
-    eo: ExecOptions & { stdinBuf?: Buffer; bare?: boolean } = {},
+    eo: ExecOptions & { stdinBuf?: Buffer; bare?: boolean; as?: As } = {},
   ): Promise<ExecResult> => {
     const secs = Math.max(1, Math.ceil((eo.timeoutMs ?? 120_000) / 1000));
     // In-container `timeout` so a timed-out command dies inside too (killing the docker client
-    // alone would leave it running); `bare` for the runner's own ps/kill.
+    // alone would leave it running); `bare` for the runner's own commands.
     // `docker exec` starts with umask 000; files the agent creates get the usual 022.
     const wrap = eo.bare
       ? []
@@ -328,8 +641,7 @@ export async function createDockerSandbox(
     const proc = spawn(docker, [
       'exec',
       '-i',
-      '-u',
-      'agent',
+      ...user[eo.as ?? 'agent'],
       '-w',
       WORK_DIR,
       name,
@@ -350,7 +662,9 @@ export async function createDockerSandbox(
   };
   const untar = await dexec(['tar', '-x', '-C', WORK_DIR], { stdinBuf: tarOf(setup.stageDir) });
   if (untar.exit !== 0) await fail('copy fixture', untar);
-  const init = await dexec(['sh', '-c', FIXTURE_COMMIT_SCRIPT('/usr/bin/git', '/srv/origin.git')]);
+  const init = await dexec(['sh', '-c', FIXTURE_COMMIT_SCRIPT('/usr/bin/git', '/srv/origin.git')], {
+    as: 'git',
+  });
   if (init.exit !== 0) await fail('git init', init);
   const baseCommit = init.stdout.trim().split('\n').pop() ?? '';
 
@@ -358,64 +672,76 @@ export async function createDockerSandbox(
   return {
     kind: 'docker',
     workDir: WORK_DIR,
-    imageDigest: o.image.id,
+    imageDigest: o.image.digest,
     baseCommit,
     exec: (argv, eo) => dexec(argv, eo),
     async finish() {
-      const list = async () => {
-        const r = await dexec(['ps', '-o', 'user=,pid=,comm='], { bare: true });
-        return r.stdout
-          .split('\n')
-          .map((l) => l.trim().split(/\s+/))
-          .filter(
-            ([u, pid, comm]) => u === 'agent' && pid !== '1' && comm !== 'ps' && comm !== 'timeout',
-          );
-      };
-      const before = (await list()).length;
-      // Everything the agent started, at any depth, runs as uid agent: one kill reaches it all.
-      // PID 1 (an inert sleep) ignores it; `timeout` and `kill` are the exec's own processes.
-      await dexec(['kill', '-9', '-1'], { bare: true });
-      for (let i = 0; i < 20 && (await list()).length > 0; i++) {
-        await dexec(['kill', '-9', '-1'], { bare: true });
-      }
-      return { killed: before };
-    },
-    async diff() {
-      const r = await dexec(['sh', '-c', DIFF_SCRIPT('/usr/bin/git', baseCommit)], {
-        maxOutput: 32 * 1024 * 1024,
+      const r = await dexec(['node', '-e', KILL_ALL], {
+        bare: true,
+        as: 'root',
+        timeoutMs: 60_000,
       });
+      let parsed: { before?: number; rounds?: number; left?: number[] } = {};
+      try {
+        parsed = JSON.parse(r.stdout.trim().split('\n').pop() ?? '');
+      } catch {
+        // below
+      }
+      if (r.exit !== 0 || !Array.isArray(parsed.left)) {
+        throw new Error(`the sandbox kill loop failed: ${r.stderr.trim() || r.stdout.trim()}`);
+      }
+      if (parsed.left.length > 0) {
+        throw new Error(
+          `the sandbox kill loop did not converge: ${parsed.left.length} process(es) still running after ${parsed.rounds} rounds`,
+        );
+      }
+      return { killed: parsed.before ?? 0 };
+    },
+    async originRefs() {
+      const r = await dexec(
+        ['sh', '/opt/runner/git-ctx.sh', 'origin', '/srv/origin.git', '/usr/bin/git'],
+        { bare: true, as: 'git', maxOutput: 8 * 1024 * 1024 },
+      );
+      if (r.exit !== 0) throw new Error(`could not read the origin refs: ${r.stderr.trim()}`);
       return r.stdout;
     },
     async exportTree(dest) {
-      const tmp = mkdtempSync(join(tmpdir(), 'greenlight-tree-'));
-      try {
-        const file = join(tmp, 'tree.tar');
-        const r = await new Promise<number>((res) => {
-          const p = spawn(docker, ['exec', name, 'tar', '-C', WORK_DIR, '-cf', '-', '.']);
-          const chunks: Buffer[] = [];
-          p.stdout.on('data', (b: Buffer) => chunks.push(b));
-          p.stderr.on('data', () => {});
-          p.on('close', (code) => {
-            writeFileSync(file, Buffer.concat(chunks));
-            res(code ?? 1);
-          });
-        });
-        if (r !== 0) throw new Error('could not copy the final tree out of the sandbox');
-        assertSafeTar(file);
-        mkdirSync(dest, { recursive: true });
-        execFileSync('tar', [
-          '-x',
-          '-f',
-          file,
+      const buf = await new Promise<Buffer>((res, rej) => {
+        const p = spawn(docker, [
+          'exec',
+          ...user.root,
+          name,
+          'tar',
           '-C',
-          dest,
-          '--no-same-owner',
-          '--no-same-permissions',
-          '--delay-directory-restore',
+          WORK_DIR,
+          '-cf',
+          '-',
+          '.',
         ]);
-      } finally {
-        rmSync(tmp, { recursive: true, force: true });
-      }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        let over = false;
+        let stderr = '';
+        p.stdout.on('data', (b: Buffer) => {
+          size += b.length;
+          if (size > MAX_TREE_BYTES + 1024 * 1024) {
+            over = true;
+            p.kill('SIGKILL');
+            return;
+          }
+          chunks.push(b);
+        });
+        p.stderr.on('data', (b: Buffer) => {
+          stderr = (stderr + b.toString()).slice(-2000);
+        });
+        p.on('close', (code) => {
+          if (over) rej(new Error(`the final tree exceeds ${MAX_TREE_BYTES} bytes`));
+          else if (code !== 0)
+            rej(new Error(`could not copy the final tree out of the sandbox: ${stderr.trim()}`));
+          else res(Buffer.concat(chunks));
+        });
+      });
+      extractTar(buf, assertSafeTar(buf), dest);
     },
     async dispose() {
       if (disposed) return;
@@ -458,13 +784,15 @@ export async function createProcessSandbox(
   const hostPath = process.env.PATH ?? '/usr/bin:/bin';
   const git = o.git ?? which('git', hostPath, shimDir) ?? 'git';
   const curl = which('curl', hostPath, shimDir);
+  const gitCtx = join(o.runnerDir, 'git-ctx.sh');
+  const baseEnv = { HOME: home, PATH: hostPath, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1' };
   writeProcessShims(shimDir, {
     node: process.execPath,
     recordScript: join(o.runnerDir, 'record.mjs'),
-    gitCtx: join(o.runnerDir, 'git-ctx.sh'),
+    gitCtx,
     socket: join(setup.channelDir, 'shim.sock'),
     origin,
-    baseEnv: { HOME: home, PATH: hostPath, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1' },
+    baseEnv,
     real: {
       git: [git],
       greenlight: [process.execPath, join(setup.cliDir, 'greenlight.mjs')],
@@ -535,13 +863,15 @@ export async function createProcessSandbox(
       }
       return { killed };
     },
-    async diff() {
-      const r = await pexec(['sh', '-c', DIFF_SCRIPT(`'${git}'`, baseCommit)], {
-        maxOutput: 32 * 1024 * 1024,
+    async originRefs() {
+      return execFileSync('sh', [gitCtx, 'origin', origin, git], {
+        encoding: 'utf8',
+        env: { ...baseEnv, GIT_CONFIG_GLOBAL: '/dev/null' },
+        stdio: ['ignore', 'pipe', 'ignore'],
       });
-      return r.stdout;
     },
     async exportTree(dest) {
+      assertPlainTree(work);
       cpSync(work, dest, { recursive: true, verbatimSymlinks: true });
     },
     async dispose() {

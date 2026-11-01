@@ -12,6 +12,7 @@ import {
   parseGitState,
   shimMessageToEvent,
   toolCallEvent,
+  unexplainedRefMoves,
 } from '../shims';
 import { evaluateRules } from '../trajectory';
 
@@ -162,5 +163,86 @@ describe('ShimChannel', () => {
     await ch.close();
     await expect(send(ch.socketPath, `${JSON.stringify(git(['log']))}\n`)).rejects.toThrow();
     expect(ch.events).toHaveLength(1);
+  });
+
+  const status = () =>
+    `${JSON.stringify(git(['status'], { origin: { before: `${A} refs/heads/develop`, after: `${A} refs/heads/develop` } }))}\n`;
+
+  it('M2: more events than the per-rollout cap truncate the trajectory (invalid, never a pass)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'greenlight-chan-'));
+    temps.push(dir);
+    const ch = await ShimChannel.listen(join(dir, 'shim.sock'), {
+      sequencer: new Sequencer(),
+      maxEvents: 3,
+    });
+    for (let i = 0; i < 5; i++) await send(ch.socketPath, status());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ch.events).toHaveLength(3);
+    expect(ch.truncated).toMatch(/more than 3 shim events/);
+    const start = `${A} refs/heads/develop`;
+    expect(ch.integrity(start, start)).toMatch(/^trajectory-truncated: more than 3 shim events/);
+    await ch.close();
+  });
+
+  it('M2: more bytes than the per-rollout cap truncate the trajectory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'greenlight-chan-'));
+    temps.push(dir);
+    const one = Buffer.byteLength(status());
+    const ch = await ShimChannel.listen(join(dir, 'shim.sock'), {
+      sequencer: new Sequencer(),
+      maxTotalBytes: one * 2 + 10,
+    });
+    for (let i = 0; i < 4; i++) await send(ch.socketPath, status()).catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ch.events).toHaveLength(2);
+    expect(ch.truncated).toMatch(/over \d+ bytes in one rollout/);
+    await ch.close();
+  });
+
+  it('a rejected message makes the trajectory incomplete', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'greenlight-chan-'));
+    temps.push(dir);
+    const ch = await ShimChannel.listen(join(dir, 'shim.sock'), { sequencer: new Sequencer() });
+    await send(ch.socketPath, 'not json\n');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ch.integrity('', '')).toMatch(/^trajectory-incomplete: 1 shim message\(s\) rejected/);
+    await ch.close();
+  });
+});
+
+describe('unexplainedRefMoves (M1: is the recording complete?)', () => {
+  const C = 'c'.repeat(40);
+  const D = 'd'.repeat(40);
+  const ref = (sha: string, r = 'refs/heads/develop') => `${sha} ${r}`;
+  const both = (dev: string, main: string) => `${ref(dev)}\n${ref(main, 'refs/heads/main')}`;
+
+  it('a move a recorded command made is explained', () => {
+    expect(unexplainedRefMoves(ref(A), ref(B), [{ before: ref(A), after: ref(B) }])).toEqual([]);
+    expect(unexplainedRefMoves(ref(A), ref(A), [])).toEqual([]);
+  });
+  it('a move with no recorded command is not (written into the bare origin directly)', () => {
+    expect(unexplainedRefMoves(both(A, A), both(A, B), [])).toEqual(['refs/heads/main']);
+    expect(unexplainedRefMoves(ref(A), '', [])).toEqual(['refs/heads/develop']); // deleted
+    expect(unexplainedRefMoves('', ref(A), [])).toEqual(['refs/heads/develop']); // created
+  });
+  it('a recorded push, then an unrecorded force-push of the same ref, is caught', () => {
+    expect(unexplainedRefMoves(ref(A), ref(C), [{ before: ref(A), after: ref(B) }])).toEqual([
+      'refs/heads/develop',
+    ]);
+  });
+  it('an unrecorded move between two recorded commands is caught, even if a later push moved on', () => {
+    const observed = [
+      { before: ref(A), after: ref(A) },
+      { before: ref(C), after: ref(D) }, // develop was C when this command started: who moved it?
+    ];
+    expect(unexplainedRefMoves(ref(A), ref(D), observed)).toEqual(['refs/heads/develop']);
+  });
+  it('concurrent recorded commands are tolerated', () => {
+    const observed = [
+      { before: ref(A), after: ref(B) }, // the push
+      { before: ref(A), after: ref(B) }, // a status running alongside it
+      { before: ref(B), after: ref(B) },
+    ];
+    expect(unexplainedRefMoves(ref(A), ref(B), observed)).toEqual([]);
   });
 });

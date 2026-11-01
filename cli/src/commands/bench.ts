@@ -53,11 +53,14 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
 
   run [--split train|val|test] [--tasks <glob>[,<glob>…]] [--models frontier,small] [--runs n]
       [--mode isolation] [--role train|baseline] [--sandbox docker|process] [--resume <evaluationId>]
-      [--force] [--max-requests n] [--max-steps n] [--json]
+      [--force] [--max-requests n] [--max-steps n] [--rollout-requests n] [--json]
                        run rollouts in isolated sandboxes, grade them, and write raw records, spend
                        events and (when complete) a sealed EvaluationRecord; train runs are cached
                        by baseline identity (--force re-runs). --sandbox process is local
                        development only and is refused for baseline evaluations.
+                       --max-steps (default 15) and --rollout-requests (the per-rollout request
+                       cap, default max-steps + 2) are part of the identity; a model whose daily
+                       quota left is below the cap is skipped for today (exit 1, deferred).
   check-graders [taskId…] [--verbose]
                        every grader passes its reference and fails every mutant (alias: mutants)
   models --check       verify bench/models.json against models.list
@@ -150,6 +153,7 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
       '--resume',
       '--max-requests',
       '--max-steps',
+      '--rollout-requests',
     ],
     boolean: ['--force', '--json'],
   });
@@ -203,6 +207,7 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
     force: a.flags.has('--force'),
     maxRequests: posInt(v['--max-requests'], '--max-requests'),
     maxSteps: posInt(v['--max-steps'], '--max-steps'),
+    rolloutRequestCap: posInt(v['--rollout-requests'], '--rollout-requests'),
     assets,
     env: io.env,
     ...(io.fetchImpl ? { fetchImpl: io.fetchImpl } : {}),
@@ -218,10 +223,13 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
         recordPath: r.recordPath,
         requests: r.requests,
         rollouts: r.rollouts,
+        ...(r.remaining ? { remaining: r.remaining, deferredModels: r.deferredModels } : {}),
       }),
     );
   }
   printPassRates(io, r);
+  for (const [m, keys] of Object.entries(r.remaining ?? {}))
+    io.err(`  ${m}: ${keys.length} rollout(s) left — ${r.deferredModels?.[m] ?? 'deferred'}`);
   io.err(`${r.status}: ${r.message}`);
   return EXIT[r.status];
 }
