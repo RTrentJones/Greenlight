@@ -12,7 +12,7 @@ export default {
       access: 'public',
       envs: ['beta', 'prod'],
       port: 4310,
-      preview: { command: 'node tools/guestbook/server.mjs', port: 4310, path: '/' },
+      preview: { command: 'node server.mjs', port: 4310, path: '/' },
     },
     {
       name: 'status-page',
@@ -23,7 +23,7 @@ export default {
       access: 'public',
       envs: ['beta', 'prod'],
       port: 4311,
-      preview: { command: 'node tools/status-page/server.mjs', port: 4311, path: '/' },
+      preview: { command: 'node server.mjs', port: 4311, path: '/' },
     },
   ],
 };

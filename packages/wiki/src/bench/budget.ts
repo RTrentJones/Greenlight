@@ -183,6 +183,8 @@ export interface SpendInput {
   tokensIn: number;
   tokensOut: number;
   evaluationId?: string;
+  /** The model the requests were spent on (per-model quota seeding). */
+  model?: string;
 }
 
 /** A sealed, schema-checked `spend` ledger event (08 §8). */
@@ -197,6 +199,7 @@ export function spendEvent(s: SpendInput): LedgerEvent {
       tokensIn: s.tokensIn,
       tokensOut: s.tokensOut,
       evaluationId: s.evaluationId,
+      ...(s.model !== undefined ? { model: s.model } : {}),
     },
   });
   LedgerEventSchema.parse(e);
@@ -206,7 +209,7 @@ export function spendEvent(s: SpendInput): LedgerEvent {
 /** The spend of a set of rollouts, summed from each outcome's reported cost (06 §9 "Tracking"). */
 export function spendFromOutcomes(
   outcomes: readonly BenchOutcome[],
-  opts: { ts: string; evaluationId?: string },
+  opts: { ts: string; evaluationId?: string; model?: string },
 ): LedgerEvent {
   let usd = 0;
   let requests = 0;
@@ -226,5 +229,6 @@ export function spendFromOutcomes(
     tokensIn,
     tokensOut,
     evaluationId: opts.evaluationId,
+    model: opts.model,
   });
 }

@@ -132,6 +132,10 @@ const LedgerEventObject = z
         tokensIn: z.number().int().min(0),
         tokensOut: z.number().int().min(0),
         evaluationId: z.string().optional(),
+        /** The model id the requests were spent on. A free-tier quota is per model, so quota
+         * seeding (`seedQuotaFromLedger`) charges an event to this model only; an event without it
+         * (older ledgers) is charged to every model, the conservative upper bound. */
+        model: z.string().min(1).optional(),
       })
       .strict()
       .optional(),

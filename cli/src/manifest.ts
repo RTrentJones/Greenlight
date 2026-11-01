@@ -16,8 +16,17 @@ import {
 } from '@rtrentjones/greenlight-verify';
 import { createJiti } from 'jiti';
 
+/** Manifest file names, in precedence order. The `.mjs`/`.js` forms are plain-object manifests (no
+ * package import), as the bench fixtures use so a sandbox needs no dependency install. */
+export const MANIFEST_FILES = [
+  'greenlight.config.ts',
+  'greenlight.config.example.ts',
+  'greenlight.config.mjs',
+  'greenlight.config.js',
+] as const;
+
 export function findManifestPath(cwd = process.cwd()): string | null {
-  for (const name of ['greenlight.config.ts', 'greenlight.config.example.ts']) {
+  for (const name of MANIFEST_FILES) {
     const p = resolve(cwd, name);
     if (existsSync(p)) return p;
   }
@@ -255,12 +264,19 @@ export async function verifyCoverageAt(relPath: string): Promise<VerifyCoverage 
   return { invariant, byEnv, missing };
 }
 
-/** Load a local tool's `<dir>/verify.config.ts` if present. */
+/** Verify config file names for a local tool, in precedence order (`.ts`, then the plain-JS forms
+ * a dependency-free fixture uses). */
+export const VERIFY_CONFIG_FILES = ['verify.config.ts', 'verify.config.mjs', 'verify.config.js'];
+
+/** Load a local tool's `<dir>/verify.config.{ts,mjs,js}` if present (the first that exists). */
 export function loadVerifySpec(
   dir: string,
   ctx?: VerifyConfigContext,
 ): Promise<VerifySpec | VerifySpec[] | null> {
-  return loadVerifySpecAt(`${dir}/verify.config.ts`, ctx);
+  const name =
+    VERIFY_CONFIG_FILES.find((f) => existsSync(resolve(process.cwd(), dir, f))) ??
+    VERIFY_CONFIG_FILES[0];
+  return loadVerifySpecAt(`${dir}/${name}`, ctx);
 }
 
 /** Load an external (registry) tool's spec, which lives in the wrapper at

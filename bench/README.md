@@ -179,3 +179,52 @@ alternatives, its untouched fixture and its mutants, and every pair, and fails w
 passes mutant <n>: it cannot distinguish <description>` (06 §4.3). It runs in CI as part of the
 Vitest suite, which also asserts that a run leaves no file outside its temp directories. Attack
 mutants resolve every write from their own location inside the materialized (mkdtemp) tree.
+
+## Runner (`bench/runner/`, `greenlight bench run`)
+
+`greenlight bench run` (packages/wiki/src/bench/runner.ts) runs each rollout in a throwaway sandbox
+and grades it somewhere else (06 §4.2). What runs where:
+
+| where | what | sees |
+|---|---|---|
+| host | the ReAct loop (the only holder of model access: `GEMINI_API_KEY` in the host env, or none when an egress proxy injects it, with `NODE_USE_ENV_PROXY=1`), the shim socket server, the trajectory writer, raw/evaluation records | everything |
+| rollout container | every agent tool call (`read_file`, `write_file`, `list_dir`, `bash`) via `docker exec` as uid 10000 | tmpfs `/work` (fixture + `.claude/skills/`, fresh git repo), tmpfs `/srv/origin.git` (bare origin), `/opt/greenlight` (the built CLI, read-only), `/run/greenlight-shim` (read-only; socket 0600 owned by the shim user) |
+| grading container | `graders/<id>/grade.mjs` as root (DAC_OVERRIDE/SETUID/SETGID/KILL only), the agent's app as uid 10000 | the exported tree and trajectory (read-only), a staged copy of `tasks/<id>/task.json`, `graders/<id>/`, `graders/_lib/`, `fixtures/` |
+
+Rollout container: `--network none`, `--read-only`, `--cap-drop ALL` + SETUID/SETGID (the
+recorder's doas hop), pids/memory/cpu limits, `GREENLIGHT_WIKI=off` (isolation mode). No mount of
+`bench/`, graders, mutants, references or the repo source; no secret in any environment.
+
+**Shims.** `git greenlight wrangler vercel gh terraform docker curl` on the agent's PATH are
+`shim.sh`, which hands the command to `record.mjs` running as the shim user (doas; the agent's env
+travels as data, never as the recorder's env). The recorder reads the git state with the command's
+own `-c`/`-C` options and the agent's `GIT_CONFIG_*`, snapshots the bare origin's refs, runs the
+real command as the agent, and sends one JSON line to the socket. Only the shim user can connect,
+so the agent cannot forge or edit an event. The host stamps each event (and each tool call) with
+one global sequence on arrival and builds meta with `normalizeShimEvent`; `pushed` is true only
+when an origin ref really moved. Commands not installed in the image are recorded with exit 127.
+
+**After the agent stops** (finish, step limit or timeout) the runner kills every agent process
+(`kill -9 -1` as the agent; PID 1 is an inert sleep), stops accepting shim events, takes the diff,
+exports the tree, removes the container, and only then grades. The image is built on demand from
+this directory (tag = content hash + shim uid); its id is `harness.imageDigest`.
+
+**`--sandbox process` is for local development only.** Tool calls run as host child processes in
+a temp dir with the same shims: same uid as the host, so the agent could read host files, connect
+to the shim socket and outlive the process-group kill with `setsid`. Its records carry
+`harness.imageDigest: "process"` (never comparable with a docker evaluation), and `bench run`
+refuses it for `--role baseline` (and candidate).
+
+**Records.** One `bench` raw record per rollout (`.greenlight/raw/`, excerpt redacted and
+truncated; transcript, trajectory, diff, grade report and final tree under
+`.greenlight/bench/runs/<evaluationId>/<rawId>/`), one `spend` ledger event per model per
+invocation, and a sealed EvaluationRecord (`wiki/evidence/eval/<hash>.json`) once every rollout has
+an outcome. A grader crash is an outcome with `graderError` (invalid at the gate, never a fake 0);
+a redaction refusal or a model error leaves the evaluation unsealed. A deferral (model unavailable
+with fallback off, daily quota, request cap) persists `progress.json`; `--resume <evaluationId>`
+continues it under an identical BaselineIdentity and refuses if any component changed. A train run
+whose identity matches a sealed train record is reused unless `--force`.
+
+**Activating tasks.** Every task enters `pending`. After `bench run --split val --role baseline`
+has sealed a baseline that covers a task on both gate models, `greenlight bench activate <taskId…>`
+flips it to `active` (and so changes the identity: the next gate re-baselines).

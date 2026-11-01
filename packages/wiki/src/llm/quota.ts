@@ -137,10 +137,11 @@ export class FileQuotaStore implements RateLimitPersistence {
  * `usd: 0`), for seeding a fresh quota store — e.g. on a CI runner that has the ledger but no
  * `.greenlight/` from earlier runs that day.
  *
- * A `spend` event does not name the model it was spent on, so by default every request counts
- * against every model: a conservative upper bound that can only make the limiter stop early,
- * never overspend. Pass `modelOf` when the caller can attribute an event (for example through its
- * `evaluationId`); returning `undefined` from it falls back to "every model".
+ * A `spend` event that names its `model` is charged to that model only (an id this call does not
+ * track is then ignored). One that does not (a ledger written before the field existed) counts
+ * against every model: a conservative upper bound that can only make the limiter stop early, never
+ * overspend. `modelOf` attributes such unnamed events (for example through their `evaluationId`);
+ * returning `undefined` from it falls back to "every model".
  */
 export function usageFromLedger(
   events: readonly LedgerEvent[],
@@ -157,7 +158,7 @@ export function usageFromLedger(
   const out = new Map(modelIds.map((id) => [id, { day, count: 0 }]));
   for (const e of events) {
     if (e.stage !== 'spend' || !e.spend || dayOf(new Date(e.ts)) !== day) continue;
-    const m = opts.modelOf?.(e);
+    const m = e.spend.model ?? opts.modelOf?.(e);
     const targets = m !== undefined && out.has(m) ? [m] : m === undefined ? modelIds : [];
     for (const id of targets) (out.get(id) as DailyUsage).count += e.spend.requests;
   }

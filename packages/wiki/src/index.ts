@@ -22,6 +22,12 @@ export * from './bench/stats';
 export * from './bench/policy';
 export * from './bench/gate';
 export * from './bench/budget';
+// M1-05 (b) / M1-06: the isolated bench runner, its shims and sandboxes, and baseline identity.
+export * from './bench/identity';
+export * from './bench/shims';
+export * from './bench/sandbox';
+export * from './bench/grade';
+export * from './bench/runner';
 export * from './ids';
 export * from './parse';
 export * from './load';
