@@ -16,6 +16,7 @@ import {
   GRADER_CHILD_FLAG,
   GraderCheckSchema,
   type GraderJob,
+  type JudgeFn,
   graderChildMain,
 } from './grader-api';
 import { AGENT_UID, type RunnerImage } from './sandbox';
@@ -46,6 +47,8 @@ export interface GradeJob {
   trajectoryPath?: string;
   maintainerOutputPath?: string;
   bundleDir?: string;
+  /** Ask the grader's eval judge layer (real gate grading only). */
+  useJudge?: boolean;
 }
 
 export interface GradeOptions {
@@ -53,6 +56,8 @@ export interface GradeOptions {
   gradeBundle: string;
   timeoutMs?: number;
   docker?: { image: RunnerImage; bin?: string };
+  /** The eval judge (the Gemini harness on the host); used only with `useJudge`. */
+  judge?: JudgeFn;
 }
 
 /** The in-container (or host-child) driver: `{ job, timeoutMs }` on stdin, one JSON GraderRun on
@@ -62,23 +67,63 @@ export function gradeEntryMain(): void {
     graderChildMain();
     return;
   }
-  const chunks: Buffer[] = [];
-  process.stdin.on('data', (b: Buffer) => chunks.push(b));
-  process.stdin.on('end', () => {
-    let input: { job: GraderJob; timeoutMs: number };
-    try {
-      input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    } catch (e) {
-      process.stdout.write(
-        `${JSON.stringify({ verdict: 'error', checks: [], error: `bad job: ${String(e)}`, durationMs: 0 })}\n`,
+  // Line protocol on stdin/stdout: the first stdin line is `{ job, timeoutMs }`; a judge request
+  // goes out as `{ judge: { id, prompt } }` and comes back as `{ judgeResult: { id, … } }` (the
+  // host holds the model access); the last stdout line is the GraderRun.
+  const pending = new Map<
+    number,
+    (v: { passed?: boolean; rationale?: string; error?: string }) => void
+  >();
+  let nextId = 0;
+  let buf = '';
+  let started = false;
+  const write = (v: unknown) => process.stdout.write(`${JSON.stringify(v)}\n`);
+  const judge = (prompt: string) =>
+    new Promise<{ passed: boolean; rationale: string }>((res, rej) => {
+      const id = nextId++;
+      pending.set(id, (v) =>
+        v.error !== undefined || typeof v.passed !== 'boolean'
+          ? rej(new Error(v.error ?? 'malformed judge result'))
+          : res({ passed: v.passed, rationale: v.rationale ?? '' }),
       );
-      process.exit(0);
+      write({ judge: { id, prompt } });
+    });
+  const onLine = (line: string) => {
+    let msg: { job?: GraderJob; timeoutMs?: number; judgeResult?: { id?: number } };
+    try {
+      msg = JSON.parse(line);
+    } catch (e) {
+      if (!started) {
+        write({ verdict: 'error', checks: [], error: `bad job: ${String(e)}`, durationMs: 0 });
+        process.exit(0);
+      }
       return;
     }
-    runInChild(input.job, input.timeoutMs, { entry: process.argv[1], nodeArgs: [] }).then((run) => {
-      process.stdout.write(`${JSON.stringify(run)}\n`);
-      process.exit(0);
-    });
+    if (!started && msg.job) {
+      started = true;
+      runInChild(msg.job, msg.timeoutMs ?? 300_000, {
+        entry: process.argv[1],
+        nodeArgs: [],
+        judge,
+      }).then((run) => {
+        write(run);
+        process.exit(0);
+      });
+      return;
+    }
+    const r = msg.judgeResult;
+    if (r && typeof r.id === 'number') {
+      pending.get(r.id)?.(r as never);
+      pending.delete(r.id);
+    }
+  };
+  process.stdin.on('data', (b: Buffer) => {
+    buf += b.toString('utf8');
+    for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (line.trim()) onLine(line);
+    }
   });
 }
 
@@ -119,7 +164,7 @@ export async function gradeRollout(job: GradeJob, o: GradeOptions): Promise<Grad
     return runInChild(
       { ...job, graderPath: join(job.benchDir, 'graders', job.taskId, 'grade.mjs') },
       timeoutMs,
-      { entry: o.gradeBundle, nodeArgs: [] },
+      { entry: o.gradeBundle, nodeArgs: [], ...(o.judge ? { judge: o.judge } : {}) },
     );
   }
   const docker = o.docker.bin ?? 'docker';
@@ -143,6 +188,7 @@ export async function gradeRollout(job: GradeJob, o: GradeOptions): Promise<Grad
       tree: '/grade/tree',
       appUid: AGENT_UID,
       appGid: AGENT_UID,
+      ...(job.useJudge ? { useJudge: true } : {}),
     };
     if (job.trajectoryPath) {
       mounts.push('-v', `${job.trajectoryPath}:/grade/trajectory.jsonl:ro`);
@@ -188,8 +234,31 @@ export async function gradeRollout(job: GradeJob, o: GradeOptions): Promise<Grad
       const p = spawn(docker, args);
       let stdout = '';
       let stderr = '';
+      let pendingOut = '';
       p.stdout.on('data', (b: Buffer) => {
         stdout += b.toString();
+        pendingOut += b.toString();
+        for (let i = pendingOut.indexOf('\n'); i >= 0; i = pendingOut.indexOf('\n')) {
+          const line = pendingOut.slice(0, i);
+          pendingOut = pendingOut.slice(i + 1);
+          let req: { judge?: { id?: unknown; prompt?: unknown } } | undefined;
+          try {
+            req = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          const j = req?.judge;
+          if (!j || typeof j.id !== 'number' || typeof j.prompt !== 'string') continue;
+          const id = j.id;
+          const reply = (v: Record<string, unknown>) =>
+            p.stdin.write(`${JSON.stringify({ judgeResult: { id, ...v } })}\n`);
+          if (!o.judge || !job.useJudge) reply({ error: 'no judge is available to this grading' });
+          else
+            o.judge(j.prompt).then(
+              (v) => reply({ passed: v.passed, rationale: v.rationale }),
+              (e: unknown) => reply({ error: e instanceof Error ? e.message : String(e) }),
+            );
+        }
       });
       p.stderr.on('data', (b: Buffer) => {
         stderr = (stderr + b.toString()).slice(-4000);
@@ -197,9 +266,11 @@ export async function gradeRollout(job: GradeJob, o: GradeOptions): Promise<Grad
       const timer = setTimeout(() => p.kill('SIGKILL'), timeoutMs + 60_000);
       p.on('close', (code) => {
         clearTimeout(timer);
+        p.stdin.destroy();
         res({ code: code ?? 1, stdout, stderr });
       });
-      p.stdin.end(JSON.stringify({ job: inJob, timeoutMs }));
+      p.stdin.on('error', () => {});
+      p.stdin.write(`${JSON.stringify({ job: inJob, timeoutMs })}\n`);
     });
     const line = out.stdout.trim().split('\n').pop() ?? '';
     try {

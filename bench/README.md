@@ -206,7 +206,12 @@ when an origin ref really moved. Commands not installed in the image are recorde
 
 **After the agent stops** (finish, step limit or timeout) the runner kills every agent process
 (`kill -9 -1` as the agent; PID 1 is an inert sleep), stops accepting shim events, takes the diff,
-exports the tree, removes the container, and only then grades. The image is built on demand from
+exports the tree, removes the container, and only then grades. In the grading container the
+driver talks to the host over stdin/stdout lines; the maintainer grader's eval judge
+(`GraderJob.useJudge`, baseline and candidate grading only, never train rollouts or
+check-graders) is relayed to the host, which answers with one structured call on the judge model
+(`bench/models.json` `judge`, fallback off, counted in the rollout's cost). The fake-clock
+coordinator's socket is reachable by the agent uid, and `NODE_OPTIONS` reaches the app. The image is built on demand from
 this directory (tag = content hash + shim uid); its id is `harness.imageDigest`.
 
 **`--sandbox process` is for local development only.** Tool calls run as host child processes in

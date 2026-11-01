@@ -55,6 +55,7 @@ import type { LedgerEvent } from '../schema/ledger';
 import { checkBudget, estimateGateCost, spendEvent } from './budget';
 import { type LoadedTask, loadTasks } from './check-graders';
 import { gradeRollout } from './grade';
+import type { JudgeFn } from './grader-api';
 import { computeIdentity, sameIdentity } from './identity';
 import {
   type Sandbox,
@@ -669,6 +670,11 @@ async function runRollout(
     });
   }
 
+  // The maintainer grader's eval judge (06 §4.6) runs only in real gate grading: one structured
+  // call on the judge model, fallback off, drawing on the invocation's request cap.
+  const useJudge = c.progress.selection.role !== 'train' && isMaintainer;
+  const judgeUsage = { requests: 0, tokensIn: 0, tokensOut: 0 };
+  const judge = useJudge ? judgeFor(c, judgeUsage) : undefined;
   let maintainerOutputPath: string | undefined;
   if (isMaintainer && result.result && typeof result.result.output === 'string') {
     maintainerOutputPath = join(artifacts, 'output.json');
@@ -682,9 +688,11 @@ async function runRollout(
       trajectoryPath,
       ...(maintainerOutputPath ? { maintainerOutputPath } : {}),
       ...(isMaintainer ? { bundleDir: join(task.dir, 'fixture') } : {}),
+      ...(useJudge ? { useJudge: true } : {}),
     },
     {
       gradeBundle: o.assets.gradeBundle,
+      ...(judge ? { judge } : {}),
       ...(o.sandbox === 'docker' && c.image
         ? { docker: { image: c.image, ...(o.dockerBin ? { bin: o.dockerBin } : {}) } }
         : {}),
@@ -699,7 +707,48 @@ async function runRollout(
     killed,
     diff,
     grade,
+    judgeUsage,
   });
+}
+
+/** Mirrors `JUDGE_SCHEMA` in bench/graders/_lib/maintainer.mjs (the verdict the grader expects). */
+export const JUDGE_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: { passed: { type: 'boolean' }, rationale: { type: 'string' } },
+  required: ['passed', 'rationale'],
+};
+const JudgeVerdictSchema = z.object({ passed: z.boolean(), rationale: z.string() });
+
+function judgeFor(
+  c: RunCtx,
+  usage: { requests: number; tokensIn: number; tokensOut: number },
+): JudgeFn {
+  const o = c.o;
+  const client = clientForRole(c.config, 'judge', {
+    findSecrets: (t) => findSecrets(t),
+    limiters: c.limiters,
+    allowFallback: false,
+    ...(o.env ? { env: o.env } : {}),
+    ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
+    ...(o.retryDelaysMs ? { retryDelaysMs: o.retryDelaysMs } : {}),
+    ...(o.sleep ? { sleep: o.sleep } : {}),
+  });
+  return async (prompt) => {
+    const before = c.budget.used;
+    try {
+      const { value, call } = await client.generateStructured({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        responseSchema: JUDGE_RESPONSE_SCHEMA,
+        schema: JudgeVerdictSchema,
+        budget: c.budget,
+      });
+      usage.tokensIn += call.usage.promptTokens;
+      usage.tokensOut += call.usage.candidateTokens + call.usage.thoughtTokens;
+      return value;
+    } finally {
+      usage.requests += c.budget.used - before;
+    }
+  };
 }
 
 function maintainerPrompt(): string {
@@ -742,15 +791,20 @@ interface FinishInput {
   killed?: number;
   diff?: string;
   grade?: Awaited<ReturnType<typeof gradeRollout>>;
+  /** The eval judge's own calls, counted into the rollout's cost. */
+  judgeUsage?: { requests: number; tokensIn: number; tokensOut: number };
 }
 
 function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
   const r = f.result;
   const durationMs = Math.max(0, c.now().getTime() - f.started.getTime());
   const usage = {
-    requests: r?.requests ?? 0,
-    tokensIn: r?.usage.promptTokens ?? 0,
-    tokensOut: (r?.usage.candidateTokens ?? 0) + (r?.usage.thoughtTokens ?? 0),
+    requests: (r?.requests ?? 0) + (f.judgeUsage?.requests ?? 0),
+    tokensIn: (r?.usage.promptTokens ?? 0) + (f.judgeUsage?.tokensIn ?? 0),
+    tokensOut:
+      (r?.usage.candidateTokens ?? 0) +
+      (r?.usage.thoughtTokens ?? 0) +
+      (f.judgeUsage?.tokensOut ?? 0),
   };
   const served = [...new Set((r?.servedBy ?? []).map(normalizeModelId))];
   const servedBy = served.length === 0 ? 'none' : served.join(',');

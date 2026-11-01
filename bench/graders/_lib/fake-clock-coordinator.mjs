@@ -13,7 +13,7 @@
  * The socket path is the only thing handed to the app (in BENCH_FAKE_CLOCK_SOCKET): no secret,
  * nothing about the task.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,6 +70,10 @@ export async function startClockCoordinator({
     server.once('error', rej);
     server.listen(socketPath, res);
   });
+  // The app may run as another uid than the grader (the bench grading container runs agent code
+  // as the unprivileged agent user): let it reach the socket, and nothing else in the dir.
+  chmodSync(dir, 0o711);
+  chmodSync(socketPath, 0o666);
 
   const write = (p, msg) => {
     if (!p.gone) p.sock.write(`${JSON.stringify(msg)}\n`);

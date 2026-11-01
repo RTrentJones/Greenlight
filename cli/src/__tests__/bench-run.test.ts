@@ -14,7 +14,11 @@ import {
   RawRecordSchema,
   type RunnerAssets,
   dockerAvailable,
+  ensureRunnerImage,
   findSecrets,
+  gradeRollout,
+  loadTasks,
+  materialize,
   parseLedger,
   parseTrajectory,
   runBench,
@@ -72,6 +76,30 @@ function fakeModel(script: (turn: number, sent: Sent) => Step | { status: number
     gens++;
     const model = decodeURIComponent(u.match(/models\/([^:]+):generateContent/)?.[1] ?? '');
     const turn = (body.contents ?? []).filter((c: { role: string }) => c.role === 'model').length;
+    if (
+      (body as { generationConfig?: { responseJsonSchema?: unknown } }).generationConfig
+        ?.responseJsonSchema
+    ) {
+      // The eval judge: one structured-output call.
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: [
+                  { text: '{"passed":true,"rationale":"conditional on the liveness model"}' },
+                ],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+          usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 5, totalTokenCount: 55 },
+          modelVersion: model,
+        }),
+        { status: 200 },
+      );
+    }
     const step = script(turn, s);
     if ('status' in step)
       return new Response('{"error":{"message":"overloaded"}}', { status: step.status });
@@ -302,6 +330,65 @@ describe('effective git config reaches the shim context', () => {
 
 describe('rollout isolation (13 §2.7)', () => {
   const maybe = DOCKER ? it : it.skip;
+
+  maybe.each([
+    'replay/idle-probe-leaves-store-asleep-val',
+    'replay/keepalive-probe-reaches-store-train',
+  ])(
+    'the grading container runs the %s app grader (agent app as another uid, fake clock): reference passes, fixture fails',
+    async (taskId) => {
+      const image = ensureRunnerImage(join(BENCH, 'runner'));
+      const task = loadTasks(BENCH).tasks.find((t) => t.id === taskId);
+      if (!task) throw new Error(`no task ${taskId}`);
+      const verdicts: string[] = [];
+      for (const layers of [[join(BENCH, 'references', taskId)], []]) {
+        const work = tmp('greenlight-grade-');
+        const job = materialize(BENCH, task, layers, work);
+        const run = await gradeRollout(
+          { taskId, benchDir: BENCH, tree: job.tree },
+          { gradeBundle: assets.gradeBundle, docker: { image }, timeoutMs: 120_000 },
+        );
+        verdicts.push(`${run.verdict}${run.error ? `: ${run.error}` : ''}`);
+      }
+      expect(verdicts).toEqual(['pass', 'fail']);
+    },
+    300_000,
+  );
+
+  maybe(
+    'a maintainer baseline is graded in the container with the eval judge answered by the host',
+    async () => {
+      const WIKI = 'wiki/probe-layer-incidents-val';
+      const output = readFileSync(join(BENCH, 'references', WIKI, 'output.json'), 'utf8');
+      const steps: Step[] = [
+        { name: 'read_file', args: { path: 'wiki/index.md' } },
+        { name: 'finish', args: { output } },
+      ];
+      const m = fakeModel((t) => steps[t] ?? (steps[1] as Step));
+      const r = await runBench(
+        options({
+          fetchImpl: m.fetchImpl,
+          sandbox: 'docker',
+          split: 'val',
+          tasks: [WIKI],
+          models: ['frontier'],
+          runs: 1,
+        }),
+      );
+      expect(r.status, `${r.message} ${JSON.stringify(r.rollouts)}`).toBe('complete');
+      expect(r.record?.role).toBe('baseline');
+      expect(r.record?.outcomes[0]).toMatchObject({ task: WIKI, score: 1 });
+      const judged = m.sent.filter(
+        (s) =>
+          (s.body as { generationConfig?: { responseJsonSchema?: unknown } }).generationConfig
+            ?.responseJsonSchema,
+      );
+      expect(judged).toHaveLength(1);
+      expect(judged[0]?.url).toContain(SMALL); // models.json: judge → small
+      expect(r.record?.outcomes[0]?.cost.requests).toBe(3); // two agent turns + one judge call
+    },
+    300_000,
+  );
 
   maybe(
     'a baseline runs with the fallback disabled: an unavailable model defers, never falls back',
