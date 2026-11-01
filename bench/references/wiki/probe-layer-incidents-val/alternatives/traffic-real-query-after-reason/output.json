@@ -25,6 +25,6 @@
       ]
     }
   ],
-  "update_index": "# Wiki index\n\n## Patterns\n- [keepalive-probe-misses-postgres](patterns/keepalive-probe-misses-postgres.md) — confirmed — a Supabase keepalive that never reaches Postgres.\n- [neon-never-sleeps](patterns/neon-never-sleeps.md) — hypothesis — idle-time polling keeps a scale-to-zero compute awake.\n- [probe-touches-wrong-layer](patterns/probe-touches-wrong-layer.md) — hypothesis — a probe must touch the layer its liveness model manages: the store for needs-traffic, the application for needs-silence and needs-heal.\n",
+  "update_index": "# Wiki index\n\n## Patterns\n- [keepalive-probe-misses-postgres](patterns/keepalive-probe-misses-postgres.md) — hypothesis — a Supabase keepalive that never reaches Postgres.\n- [neon-never-sleeps](patterns/neon-never-sleeps.md) — hypothesis — idle-time polling keeps a scale-to-zero compute awake.\n- [probe-touches-wrong-layer](patterns/probe-touches-wrong-layer.md) — hypothesis — a probe must touch the layer its liveness model manages: the store for needs-traffic, the application for needs-silence and needs-heal.\n",
   "append_log": "Updated pattern/probe-touches-wrong-layer with a rule conditional on the liveness model, from incident/2026-07-tripnote-keepalive-green-store-paused (needs-traffic: reach the store) and incident/2026-08-ledgerline-store-never-suspends (needs-silence: stop at the application). Linked pattern/neon-never-sleeps to it. Statuses unchanged: no deployed red-to-green evidence for the needs-silence side yet."
 }

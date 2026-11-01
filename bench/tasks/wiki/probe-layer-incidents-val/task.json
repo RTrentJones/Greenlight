@@ -110,6 +110,12 @@
       "grader": "maintainer",
       "kind": "maintainer-output",
       "description": "a correct conditional rule plus an unconditional \"keep all probes off the database\" bullet from the conditional rule alone"
+    },
+    {
+      "id": "confirms-unverified-keepalive-pattern",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that moves pattern/keepalive-probe-misses-postgres (a hypothesis with no verified remediation since the seed correction) to confirmed, from one that leaves its status alone"
     }
   ]
 }
