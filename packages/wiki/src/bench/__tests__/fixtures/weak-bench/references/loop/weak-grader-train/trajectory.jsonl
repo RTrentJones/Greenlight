@@ -1,0 +1,2 @@
+{"seq":0,"ts":"2026-11-01T10:00:00Z","source":"shim","cmd":"greenlight","argv":["preview","demo"],"cwd":"/sandbox","exit":0,"meta":{"passed":"true"}}
+{"seq":1,"ts":"2026-11-01T10:00:05Z","source":"shim","cmd":"git","argv":["push","origin","develop"],"cwd":"/sandbox","exit":0}

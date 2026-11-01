@@ -1,0 +1,18 @@
+[
+  {
+    "name": "quizdesk",
+    "env": "prod",
+    "url": "https://qzdk-fixture-ref.supabase.co",
+    "anonKey": "sb_publishable_quizdesk_fixture_anon",
+    "probeTable": "keepalive_probe",
+    "probeSelect": "id"
+  },
+  {
+    "name": "scenesmith",
+    "env": "prod",
+    "url": "https://scenesmith.example.test",
+    "kind": "oci",
+    "probePath": "/health",
+    "remediate": true
+  }
+]

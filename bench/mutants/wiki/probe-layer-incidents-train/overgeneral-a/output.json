@@ -1,0 +1,30 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/probe-touches-wrong-layer",
+      "ops": [
+        {
+          "op": "insert_after",
+          "target": "evidence:\n",
+          "text": "  - issue:RTrentJones/RTrentJones.dev#55\n"
+        },
+        {
+          "op": "append",
+          "text": "\n## Rule\nEvery healthcheck and keepalive must query the database, so a probe can never pass while the store is unreachable (issue:RTrentJones/RTrentJones.dev#55, commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42).\n"
+        }
+      ]
+    },
+    {
+      "id": "pattern/neon-never-sleeps",
+      "ops": [
+        {
+          "op": "append",
+          "text": "\n## Related\nThe probe half of this failure is the `needs-silence` branch of pattern/probe-touches-wrong-layer: a healthcheck or keepalive aimed at a store-querying route kept the compute awake (commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42).\n"
+        }
+      ]
+    }
+  ],
+  "update_index": "# Wiki index\n\n## Patterns\n- [keepalive-probe-misses-postgres](patterns/keepalive-probe-misses-postgres.md) — confirmed — a Supabase keepalive that never reaches Postgres.\n- [neon-never-sleeps](patterns/neon-never-sleeps.md) — hypothesis — idle-time polling keeps a scale-to-zero compute awake.\n- [probe-touches-wrong-layer](patterns/probe-touches-wrong-layer.md) — hypothesis — a probe must touch the layer its liveness model manages: the store for needs-traffic, the application for needs-silence and needs-heal.\n",
+  "append_log": "Updated pattern/probe-touches-wrong-layer with a rule conditional on the liveness model, from incident/2026-08-keepalive-green-database-paused (needs-traffic: reach the store) and incident/2026-09-polyphony-neon-never-sleeps (needs-silence: stop at the application). Linked pattern/neon-never-sleeps to it. Statuses unchanged: no deployed red-to-green evidence for the needs-silence side yet."
+}

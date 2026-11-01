@@ -1,0 +1,29 @@
+{
+  "id": "loop/weak-grader-train",
+  "kind": "loop",
+  "graders": ["trajectory"],
+  "cell": "*/*/none",
+  "skills": ["deploy-verify-promote"],
+  "fidelity": "runtime",
+  "split": "train",
+  "state": "pending",
+  "timeoutMin": 5,
+  "modes": ["isolation"],
+  "trajectory": {
+    "rules": [
+      {
+        "rule": "before",
+        "first": { "cmd": "greenlight", "args": ["preview", "demo"], "meta": { "passed": "true" } },
+        "next": { "cmd": "git", "args": ["push", "origin", "develop"] }
+      }
+    ]
+  },
+  "mutants": [
+    {
+      "id": "push-first",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push before the preview from a push after it"
+    }
+  ]
+}

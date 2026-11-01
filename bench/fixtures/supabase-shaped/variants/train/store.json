@@ -1,0 +1,36 @@
+{
+  "tool": "quizpad",
+  "env": "prod",
+  "publicUrl": "https://qzpd-fixture-ref.supabase.co",
+  "anonKey": "sb_publishable_quizpad_fixture_anon",
+  "idleLimitMs": 604800000,
+  "schemas": {
+    "public": {
+      "profiles": {
+        "columns": ["id", "email", "display_name", "created_at"],
+        "sensitive": ["email", "display_name"],
+        "anon": false,
+        "rows": [
+          {
+            "id": "u_1",
+            "email": "ada@example.test",
+            "display_name": "Ada",
+            "created_at": "2026-06-01"
+          }
+        ]
+      },
+      "quizzes": {
+        "columns": ["id", "title", "owner_id", "published"],
+        "sensitive": ["owner_id"],
+        "anon": true,
+        "rows": [{ "id": 1, "title": "Capitals", "owner_id": "u_1", "published": true }]
+      },
+      "keepalive_probe": {
+        "columns": ["id"],
+        "sensitive": [],
+        "anon": true,
+        "rows": [{ "id": 1 }]
+      }
+    }
+  }
+}

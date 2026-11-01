@@ -1,0 +1,47 @@
+{
+  "tool": "scenesmith",
+  "env": "bench",
+  "sourceRepo": "RTrentJones/greenlight",
+  "gitSha": null,
+  "dirty": false,
+  "wrapperRev": {
+    "sha": null,
+    "verifyConfigHash": null
+  },
+  "runId": "bench-train-baseline-1",
+  "attempt": 1,
+  "skills": {
+    "installed": {},
+    "used": "unknown"
+  },
+  "rawId": "20261101T091500Z-5e6f7a8b",
+  "kind": "bench",
+  "passed": false,
+  "startedAt": "2026-11-01T09:15:00Z",
+  "durationMs": 538000,
+  "agent": {
+    "vendor": "greenlight-harness",
+    "version": "0.1.0",
+    "model": "gemini-3.8-flash",
+    "servedBy": "gemini-3.8-flash"
+  },
+  "bench": {
+    "task": "replay/idle-probe-leaves-store-asleep-train",
+    "split": "train",
+    "model": "gemini-3.8-flash",
+    "mode": "isolation",
+    "skillSetHash": "d32d1989d414d9c734881825406ac982b9ed65699261506d2c5117b9a49cde01",
+    "evaluationId": "train-baseline-1",
+    "run": 1,
+    "seed": "1"
+  },
+  "refs": [],
+  "retained": {
+    "verdict": "failed",
+    "excerpt": "grader replay/idle-probe-leaves-store-asleep-train: FAIL (4/9 checks)\n  ok   container healthcheck declared (/health every 30000 ms)\n  ok   keepalive target declared for scenesmith (kind oci, probePath /health)\n  FAIL zero store queries from the healthcheck (20 query(ies) while the healthcheck ran)\n  FAIL zero store queries from the keepalive (1 query(ies) while the keepalive swept)\n  FAIL store suspended at the end of the idle window (awake 600 s of 600 s)\n  FAIL liveness answers 200 while the database is stopped (healthcheck 503, keepalive probe 503)\nagent diff (tools/scenesmith/Dockerfile):\n+HEALTHCHECK --interval=30s CMD wget -qO- http://127.0.0.1:8080/health || exit 1\nagent note: \"/health checks the database, so the healthcheck proves the whole stack is up\"",
+    "hashes": {
+      "excerpt": "d9cf6e617fcabd267f03344a20d6c334353bbd3d391888431dcd346b766da21c"
+    },
+    "fetchedAt": "2026-11-01T09:15:00Z"
+  }
+}
