@@ -1,0 +1,5 @@
+{
+  "keepalive/worker.mjs": "fixtures/_shared/keepalive/attacks/fetch-monkeypatch.mjs",
+  "keepalive/targets.json": "mutants/replay/idle-probe-leaves-store-asleep-train/historical-healthcheck/tree/keepalive/targets.json",
+  "tools/scenesmith/Dockerfile": "mutants/replay/idle-probe-leaves-store-asleep-train/historical-healthcheck/tree/tools/scenesmith/Dockerfile"
+}

@@ -1,6 +1,6 @@
 {"seq":0,"ts":"2026-11-01T10:00:00Z","source":"transcript","cmd":"read_file","argv":["tools/pinboard/app.mjs"],"cwd":"/sandbox"}
 {"seq":1,"ts":"2026-11-01T10:00:07Z","source":"transcript","cmd":"write_file","argv":["tools/pinboard/app.mjs"],"cwd":"/sandbox"}
-{"seq":2,"ts":"2026-11-01T10:00:14Z","source":"shim","cmd":"git","argv":["switch","develop"],"cwd":"/sandbox","exit":0}
+{"seq":2,"ts":"2026-11-01T10:00:14Z","source":"shim","cmd":"git","argv":["switch","develop"],"cwd":"/sandbox","exit":0,"meta":{"subcommand":"switch"}}
 {"seq":3,"ts":"2026-11-01T10:00:21Z","source":"shim","cmd":"greenlight","argv":["preview","pinboard"],"cwd":"/sandbox","exit":0,"meta":{"subcommand":"preview","tool":"pinboard","passed":"true"}}
-{"seq":4,"ts":"2026-11-01T10:00:28Z","source":"shim","cmd":"git","argv":["add","tools/pinboard/app.mjs"],"cwd":"/sandbox","exit":0}
-{"seq":5,"ts":"2026-11-01T10:00:35Z","source":"shim","cmd":"git","argv":["commit","-m","pinboard: update copy"],"cwd":"/sandbox","exit":0}
+{"seq":4,"ts":"2026-11-01T10:00:28Z","source":"shim","cmd":"git","argv":["add","tools/pinboard/app.mjs"],"cwd":"/sandbox","exit":0,"meta":{"subcommand":"add"}}
+{"seq":5,"ts":"2026-11-01T10:00:35Z","source":"shim","cmd":"git","argv":["commit","-m","pinboard: update copy"],"cwd":"/sandbox","exit":0,"meta":{"subcommand":"commit"}}

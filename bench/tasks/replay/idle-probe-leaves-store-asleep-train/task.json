@@ -34,6 +34,18 @@
       "grader": "app",
       "kind": "tree",
       "description": "container liveness without a keepalive target from the full liveness setup"
+    },
+    {
+      "id": "poll-30s",
+      "grader": "app",
+      "kind": "tree",
+      "description": "an idle app that polls the store every 30 seconds (twenty queries in the window, invisible when the window is compressed in real time) from one that wakes on enqueue"
+    },
+    {
+      "id": "fetch-monkeypatch",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a keepalive Worker that replaces fetch at import and reports ok without probing, together with the store-querying /health healthcheck, from a store-free liveness setup"
     }
   ]
 }

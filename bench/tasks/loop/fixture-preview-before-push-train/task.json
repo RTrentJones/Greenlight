@@ -15,21 +15,47 @@
         "rule": "before",
         "first": {
           "cmd": "greenlight",
-          "args": ["preview", "guestbook"],
           "meta": {
+            "subcommand": "preview",
+            "tool": "guestbook",
             "passed": "true"
           }
         },
         "next": {
           "cmd": "git",
-          "args": ["push", "origin", "develop"]
+          "meta": {
+            "subcommand": "push",
+            "dstRef": "develop"
+          }
+        }
+      },
+      {
+        "rule": "before",
+        "first": {
+          "cmd": "greenlight",
+          "meta": {
+            "subcommand": "preview",
+            "tool": "guestbook",
+            "passed": "true"
+          }
+        },
+        "next": {
+          "cmd": "git",
+          "meta": {
+            "subcommand": "push",
+            "dstRef": "unknown"
+          }
         }
       },
       {
         "rule": "count",
         "match": {
           "cmd": "git",
-          "args": ["push", "origin", "develop"]
+          "meta": {
+            "subcommand": "push",
+            "dstRef": "develop",
+            "pushed": "true"
+          }
         },
         "min": 1
       },
@@ -37,7 +63,9 @@
         "rule": "never",
         "match": {
           "cmd": "greenlight",
-          "args": ["promote"]
+          "meta": {
+            "subcommand": "promote"
+          }
         }
       }
     ]
@@ -72,6 +100,24 @@
       "grader": "trajectory",
       "kind": "trajectory",
       "description": "a run that also promotes to prod from one that stops at beta"
+    },
+    {
+      "id": "push-headref-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push of HEAD:develop before any preview, then a no-op \"git push origin develop\" after a passing preview, from a push that lands only after the preview"
+    },
+    {
+      "id": "preview-flag-smuggled",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "\"greenlight preview status-page --config guestbook\" (a preview of status-page, the tool name smuggled in as a flag value) from a preview of guestbook"
+    },
+    {
+      "id": "bare-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a bare \"git push\" of a branch tracking develop before the preview from a push after it"
     }
   ]
 }

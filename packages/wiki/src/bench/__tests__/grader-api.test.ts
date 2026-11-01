@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createGraderContext, runGraderJob } from '../grader-api';
+import { createGraderContext, runGraderJob, sandboxEnv } from '../grader-api';
 
 // The uniform grader interface (vision 06 §4.2, §4.6).
 
@@ -17,7 +17,6 @@ const job = (extra: Record<string, string> = {}) => ({
   benchDir: WEAK,
   graderPath: join(WEAK, 'graders', TASK, 'grade.mjs'),
   tree: work,
-  resultPath: join(work, 'result.json'),
   ...extra,
 });
 
@@ -80,5 +79,49 @@ describe('runGraderJob', () => {
     const g = join(work, 'bad.mjs');
     writeFileSync(g, 'export const x = 1;\n');
     await expect(runGraderJob({ ...job(), graderPath: g })).rejects.toThrow(/no default-exported/);
+  });
+});
+
+describe('agent code runs only in scrubbed child processes', () => {
+  it('sandboxEnv allow-lists PATH, HOME and TZ', () => {
+    process.env.GREENLIGHT_TEST_SECRET = 'x';
+    try {
+      expect(Object.keys(sandboxEnv('/tmp/h', { A: '1' })).sort()).toEqual([
+        'A',
+        'HOME',
+        'PATH',
+        'TZ',
+      ]);
+    } finally {
+      Reflect.deleteProperty(process.env, 'GREENLIGHT_TEST_SECRET');
+    }
+  });
+
+  it('spawnNode runs a script in its own process, with a throwaway HOME, over IPC', async () => {
+    const script = join(work, 'echo-env.mjs');
+    writeFileSync(
+      script,
+      "globalThis.fetch = () => 'patched';\nprocess.on('message', () => process.send({ env: process.env, cwd: process.cwd() }));\n",
+    );
+    process.env.GREENLIGHT_TEST_SECRET = 'x';
+    const { ctx, cleanup } = createGraderContext(job());
+    try {
+      const child = ctx.spawnNode({ script, cwd: work });
+      const reply = new Promise<{ env: Record<string, string>; cwd: string }>((res) =>
+        child.onMessage((m) => res(m as { env: Record<string, string>; cwd: string })),
+      );
+      child.send({});
+      const { env, cwd } = await reply;
+      expect(env.GREENLIGHT_TEST_SECRET).toBeUndefined();
+      expect(env.NODE_OPTIONS).toBeUndefined();
+      expect(env.HOME).not.toBe(process.env.HOME);
+      expect(cwd).toBe(work);
+      // The child's patch never reaches the grader.
+      expect(typeof globalThis.fetch).toBe('function');
+      expect(String(globalThis.fetch)).not.toMatch(/patched/);
+    } finally {
+      Reflect.deleteProperty(process.env, 'GREENLIGHT_TEST_SECRET');
+      await cleanup();
+    }
   });
 });

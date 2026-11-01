@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["never(greenlight {subcommand=promote})"]
+}

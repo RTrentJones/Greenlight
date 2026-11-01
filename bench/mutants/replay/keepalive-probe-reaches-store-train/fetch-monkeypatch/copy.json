@@ -1,0 +1,1 @@
+{ "keepalive/worker.mjs": "fixtures/_shared/keepalive/attacks/fetch-monkeypatch.mjs" }

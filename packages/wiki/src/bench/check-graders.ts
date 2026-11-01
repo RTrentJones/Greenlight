@@ -8,7 +8,6 @@ import {
   readdirSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { cpus, tmpdir } from 'node:os';
@@ -17,11 +16,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { type TaskSpec, TaskSpecSchema } from '../schema/bench';
 import {
-  GRADER_CHILD_ENTRY,
-  GRADER_CHILD_ENV,
+  GRADER_API_URL,
+  GRADER_CHILD_FLAG,
   type GraderCheck,
   type GraderJob,
   GraderResultSchema,
+  sandboxEnv,
 } from './grader-api';
 
 /**
@@ -36,11 +36,25 @@ import {
  *   order: `tree/` (overlaid on the fixture), `copy.json` (`{ treePath: benchRelativeSource }`),
  *   `remove.json` (paths to delete), `patch.diff` (`git apply`), `trajectory.jsonl`, `output.json`
  *   (a MaintainerOutput);
+ * - `mutants/<taskId>/<mutantId>/expect.json`: `{ "failingChecks": ["<check name>", …] }`, the
+ *   checks the mutant exists to trip. A mutant must fail on at least one of them; failing only
+ *   on others is a problem (the grader rejects it for the wrong reason, so the property the
+ *   mutant names is untested);
+ * - `references/<taskId>/alternatives/<altId>/`: further layers (applied over the reference)
+ *   that are also correct and must pass, e.g. another spelling of the fix;
  * - `pairs/<pairId>/pair.json`: rules that must fail exactly one task of a pair.
+ *
+ * Every task is also graded on its untouched `fixture/`, which must fail: a grader that passes
+ * the starting tree cannot tell a solution from doing nothing.
  *
  * A run materializes fixture → reference → mutant into a fresh temp dir and grades it in a child
  * Node process with a timeout. The CLI (`greenlight bench check-graders`) wraps `checkGraders`.
  */
+
+/** `mutants/<task>/<id>/expect.json`. */
+export const MutantExpectSchema = z
+  .object({ failingChecks: z.array(z.string().min(1)).min(1) })
+  .strict();
 
 export interface CheckGradersOptions {
   /** Absolute or cwd-relative path of `bench/`. */
@@ -55,8 +69,9 @@ export interface CheckGradersOptions {
   /** Keep the temp trees for inspection. */
   keepTemp?: boolean;
   /** Child entry and Node args for one grading run. Default: this package's grader-api.ts under
-   * tsx. A bundled CLI passes its own binary (which calls `graderChildMain` when
-   * `GREENLIGHT_GRADER_CHILD=1`) and `nodeArgs: []`. */
+   * tsx (`graderChildArgv`). A bundled CLI passes its own binary, which is invoked with
+   * GRADER_CHILD_FLAG as its first argument and then calls `graderChildMain()`, and
+   * `nodeArgs: []`. */
   childEntry?: string;
   nodeArgs?: string[];
 }
@@ -75,6 +90,12 @@ export interface MutantRun extends GraderRun {
   description: string;
   grader: string;
   kind: string;
+  /** From expect.json. */
+  expectedFailing: string[];
+}
+
+export interface AlternativeRun extends GraderRun {
+  id: string;
 }
 
 export interface TaskGraderReport {
@@ -82,6 +103,9 @@ export interface TaskGraderReport {
   split: string;
   ok: boolean;
   reference?: GraderRun;
+  /** The untouched fixture (must fail). */
+  fixture?: GraderRun;
+  alternatives: AlternativeRun[];
   mutants: MutantRun[];
   problems: string[];
 }
@@ -253,8 +277,22 @@ const TSX_LOADER = (() => {
   }
 })();
 
-/** Runs one job in a child Node process (its own process group, so a timeout also kills any app
- * the grader spawned). */
+/** The argv of one grader child: the default runs this package's grader-api under tsx; a
+ * bundled CLI passes its own binary as `entry`, which gets GRADER_CHILD_FLAG. */
+export function graderChildArgv(child: { entry?: string; nodeArgs?: string[] } = {}): string[] {
+  if (child.entry) return [...(child.nodeArgs ?? []), child.entry, GRADER_CHILD_FLAG];
+  return [
+    ...(child.nodeArgs ?? ['--import', TSX_LOADER]),
+    '--input-type=module',
+    '-e',
+    `import(${JSON.stringify(GRADER_API_URL)}).then((m) => m.graderChildMain());`,
+  ];
+}
+
+/** Runs one job in a child Node process: its own process group (a timeout or exit kills anything
+ * the grader spawned), a scrubbed environment (`sandboxEnv`, with a throwaway HOME outside every
+ * tree), and the job and result on its IPC channel. The verdict is the child's first IPC message;
+ * nothing a grandchild writes to disk, or prints, can stand in for it. */
 export function runInChild(
   job: GraderJob,
   timeoutMs: number,
@@ -262,25 +300,25 @@ export function runInChild(
 ): Promise<GraderRun> {
   const started = Date.now();
   return new Promise((res) => {
-    writeFileSync(`${job.resultPath}.job.json`, JSON.stringify(job));
-    const proc = spawn(
-      process.execPath,
-      [
-        ...(child.nodeArgs ?? ['--import', TSX_LOADER]),
-        child.entry ?? GRADER_CHILD_ENTRY,
-        `${job.resultPath}.job.json`,
-      ],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-        env: { ...process.env, [GRADER_CHILD_ENV]: '1' },
-      },
-    );
+    const home = mkdtempSync(join(tmpdir(), 'greenlight-grader-home-'));
+    const proc = spawn(process.execPath, graderChildArgv(child), {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      detached: true,
+      env: sandboxEnv(home),
+    });
     let stderr = '';
+    let message: { result?: unknown; error?: string } | undefined;
+    proc.on('message', (m: unknown) => {
+      message ??= (m ?? {}) as { result?: unknown; error?: string };
+    });
+    proc.on('error', (e) => {
+      stderr += `spawn error: ${e.message}\n`;
+    });
     proc.stdout?.on('data', () => {});
     proc.stderr?.on('data', (b: Buffer) => {
       stderr = (stderr + b.toString()).slice(-4000);
     });
+    proc.send({ job });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -290,32 +328,34 @@ export function runInChild(
         proc.kill('SIGKILL');
       }
     }, timeoutMs);
-    proc.once('exit', () => {
-      clearTimeout(timer);
-      const durationMs = Date.now() - started;
-      if (timedOut) {
-        res({ verdict: 'error', checks: [], error: `timed out after ${timeoutMs} ms`, durationMs });
-        return;
-      }
-      // Reap anything the grader left behind in its group.
+    const killGroup = () => {
       try {
         if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
       } catch {
         // group already gone
       }
-      if (!existsSync(job.resultPath)) {
+    };
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rmSync(home, { recursive: true, force: true });
+      const durationMs = Date.now() - started;
+      if (timedOut) {
+        res({ verdict: 'error', checks: [], error: `timed out after ${timeoutMs} ms`, durationMs });
+        return;
+      }
+      if (!message) {
         res({
           verdict: 'error',
           checks: [],
-          error: `grader process wrote no result${stderr ? `:\n${stderr}` : ''}`,
+          error: `grader process sent no result${stderr ? `:\n${stderr}` : ''}`,
           durationMs,
         });
         return;
       }
-      const out = JSON.parse(readFileSync(job.resultPath, 'utf8')) as {
-        result?: unknown;
-        error?: string;
-      };
+      const out = message;
       if (out.error !== undefined) {
         res({ verdict: 'error', checks: [], error: out.error, durationMs });
         return;
@@ -326,7 +366,14 @@ export function runInChild(
         return;
       }
       res({ verdict: r.data.passed ? 'pass' : 'fail', checks: r.data.checks, durationMs });
+    };
+    // On exit, reap anything the grader left in its group, then let the IPC channel and pipes
+    // drain ('close') so a result sent just before exit is not lost.
+    proc.once('exit', () => {
+      killGroup();
+      setTimeout(finish, 2000).unref();
     });
+    proc.once('close', finish);
   });
 }
 
@@ -362,6 +409,35 @@ const LAYER_FILES = [
 ];
 const isLayer = (dir: string) => LAYER_FILES.some((f) => existsSync(join(dir, f)));
 
+/** A mutant's expected failing checks, or a problem description. */
+function readExpect(path: string): string[] | string {
+  if (!existsSync(path)) {
+    return 'no expect.json declaring the checks it must fail (`{ "failingChecks": [...] }`)';
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    return `expect.json is not JSON: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  const r = MutantExpectSchema.safeParse(raw);
+  if (!r.success) {
+    return `expect.json is invalid: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`;
+  }
+  return r.data.failingChecks;
+}
+
+/** `grader <task> fails mutant <n> for the wrong reason: …`. */
+export const wrongReasonMessage = (
+  task: string,
+  mutant: string,
+  failed: string[],
+  expected: string[],
+) =>
+  `grader ${task} fails mutant ${mutant} for the wrong reason: it fails ${failed
+    .map((f) => `"${f}"`)
+    .join(', ')} but none of the expected ${expected.map((f) => `"${f}"`).join(', ')}`;
+
 export async function checkGraders(opts: CheckGradersOptions): Promise<CheckGradersReport> {
   const benchDir = resolve(opts.benchDir);
   const timeoutMs = opts.timeoutMs ?? 60_000;
@@ -390,7 +466,6 @@ export async function checkGraders(opts: CheckGradersOptions): Promise<CheckGrad
           taskId: task.id,
           benchDir,
           graderPath: join(benchDir, 'graders', task.id, 'grade.mjs'),
-          resultPath: join(workDir, 'result.json'),
           ...paths,
         },
         timeoutMs,
@@ -413,6 +488,7 @@ export async function checkGraders(opts: CheckGradersOptions): Promise<CheckGrad
       task: task.id,
       split: task.spec.split,
       ok: false,
+      alternatives: [],
       mutants: [],
       problems: [],
     };
@@ -434,17 +510,41 @@ export async function checkGraders(opts: CheckGradersOptions): Promise<CheckGrad
         }
       }
     }
+    const expected = new Map<string, string[]>();
+    // A missing or bad expect.json is a problem, but the mutant is still graded.
+    const expectProblems: string[] = [];
     for (const m of task.spec.mutants) {
-      if (!isLayer(join(mutantRoot, m.id))) {
+      const dir = join(mutantRoot, m.id);
+      if (!isLayer(dir)) {
         report.problems.push(
           `grader ${task.id}: mutant ${m.id} has no files at mutants/${task.id}/${m.id}/`,
         );
+        continue;
       }
+      const e = readExpect(join(dir, 'expect.json'));
+      if (typeof e === 'string') expectProblems.push(`grader ${task.id}: mutant ${m.id}: ${e}`);
+      else expected.set(m.id, e);
     }
+    const altRoot = join(refDir, 'alternatives');
+    const alternatives = existsSync(altRoot)
+      ? readdirSync(altRoot)
+          .filter((n) => isLayer(join(altRoot, n)))
+          .sort()
+      : [];
     if (report.problems.length > 0) continue;
+    report.problems.push(...expectProblems);
     jobs.push(async () => {
       report.reference = await grade(task, [refDir]);
     });
+    // The untouched starting tree must fail (no layer at all).
+    jobs.push(async () => {
+      report.fixture = await grade(task, []);
+    });
+    for (const a of alternatives) {
+      jobs.push(async () => {
+        report.alternatives.push({ id: a, ...(await grade(task, [refDir, join(altRoot, a)])) });
+      });
+    }
     for (const m of task.spec.mutants) {
       jobs.push(async () => {
         const run = await grade(task, [refDir, join(mutantRoot, m.id)]);
@@ -453,6 +553,7 @@ export async function checkGraders(opts: CheckGradersOptions): Promise<CheckGrad
           description: m.description,
           grader: m.grader,
           kind: m.kind,
+          expectedFailing: expected.get(m.id) ?? [],
           ...run,
         });
       });
@@ -546,10 +647,30 @@ export async function checkGraders(opts: CheckGradersOptions): Promise<CheckGrad
       if (r.reference.verdict === 'error')
         r.problems.push(`grader ${r.task} errored on its reference solution: ${r.reference.error}`);
     }
+    if (r.fixture) {
+      if (r.fixture.verdict === 'pass')
+        r.problems.push(
+          `grader ${r.task} passes the untouched fixture: it cannot distinguish a solution from doing nothing`,
+        );
+      if (r.fixture.verdict === 'error')
+        r.problems.push(`grader ${r.task} errored on the untouched fixture: ${r.fixture.error}`);
+    }
+    r.alternatives.sort((a, b) => a.id.localeCompare(b.id));
+    for (const a of r.alternatives) {
+      if (a.verdict === 'fail')
+        r.problems.push(`grader ${r.task} fails alternative solution ${a.id}: ${failedChecks(a)}`);
+      if (a.verdict === 'error')
+        r.problems.push(`grader ${r.task} errored on alternative solution ${a.id}: ${a.error}`);
+    }
     for (const m of r.mutants) {
       if (m.verdict === 'pass') r.problems.push(passesMutantMessage(r.task, m.id, m.description));
       if (m.verdict === 'error')
         r.problems.push(`grader ${r.task} errored on mutant ${m.id}: ${m.error}`);
+      if (m.verdict === 'fail' && m.expectedFailing.length > 0) {
+        const failed = m.checks.filter((c) => !c.passed).map((c) => c.name);
+        if (!failed.some((f) => m.expectedFailing.includes(f)))
+          r.problems.push(wrongReasonMessage(r.task, m.id, failed, m.expectedFailing));
+      }
     }
     r.ok = r.problems.length === 0;
     problems.push(...r.problems);
@@ -596,6 +717,9 @@ export function formatReport(r: CheckGradersReport, opts: { verbose?: boolean } 
   for (const t of r.tasks) {
     lines.push(`${mark(t.ok)} ${t.task} [${t.split}]`);
     if (t.reference) lines.push(`       reference: ${t.reference.verdict} (expect pass)`);
+    for (const a of t.alternatives)
+      lines.push(`       alternative ${a.id}: ${a.verdict} (expect pass)`);
+    if (t.fixture) lines.push(`       untouched fixture: ${t.fixture.verdict} (expect fail)`);
     for (const m of t.mutants) {
       lines.push(`       mutant ${m.id}: ${m.verdict} (expect fail)`);
       if (opts.verbose && m.verdict === 'fail') {

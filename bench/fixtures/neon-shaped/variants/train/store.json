@@ -4,7 +4,6 @@
   "dbEnv": "DATABASE_URL",
   "suspendAfterMs": 300000,
   "idleWindowMs": 600000,
-  "realWindowMs": 4500,
   "tables": {
     "scenes": ["id", "title", "body", "created_at"],
     "jobs": ["id", "prompt", "status", "created_at"]

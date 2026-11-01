@@ -50,6 +50,24 @@
       "grader": "maintainer",
       "kind": "maintainer-output",
       "description": "an output without the required append_log from a valid MaintainerOutput"
+    },
+    {
+      "id": "inverted-rule",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output whose rule is inverted (\"needs-traffic: the probe never queries the store; needs-silence: every healthcheck must query the store\") from one with the right polarity on each branch"
+    },
+    {
+      "id": "swapped-models",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that gives needs-traffic the store-free probe and needs-silence the store-reaching one from one that pairs each model with its own probe"
+    },
+    {
+      "id": "both-branches-reach",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output whose needs-silence branch also reaches the store from one whose needs-silence branch stays off it"
     }
   ]
 }

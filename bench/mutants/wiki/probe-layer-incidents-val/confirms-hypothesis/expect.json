@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "status changes follow the lifecycle (04 §4)",
+    "pages and patch targets resolve"
+  ]
+}

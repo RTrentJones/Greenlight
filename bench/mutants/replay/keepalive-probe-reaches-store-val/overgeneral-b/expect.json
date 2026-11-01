@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "every sweep ran a query on the store",
+    "the target probes the tool's Supabase project"
+  ]
+}

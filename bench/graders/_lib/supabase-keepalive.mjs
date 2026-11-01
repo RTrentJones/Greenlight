@@ -1,7 +1,8 @@
 /**
  * Hidden app grader for `replay/keepalive-probe-reaches-store-*` (vision 06 §10.1, 15 §8.2).
  *
- * It runs the sandbox's own keepalive Worker (`keepalive/worker.mjs`) over the sandbox's
+ * It runs the sandbox's own keepalive Worker (`keepalive/worker.mjs`, in its own process: see
+ * worker-host.mjs) over the sandbox's
  * `keepalive/targets.json`, on the cron's three-day schedule, for three simulated weeks against
  * the fake Supabase-shaped store, and then reads the store's introspection. Runtime checks:
  *   - the store did not pause, and every sweep ran a real query (the idle timer was reset);
@@ -11,8 +12,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { createWorkersFetch, runSweep, startStub } from './workers-runtime.mjs';
+import { createWorkersFetch, startStub, startWorkerHost } from './workers-runtime.mjs';
 
 const DAY = 86_400_000;
 
@@ -65,11 +65,9 @@ export async function gradeSupabaseKeepalive(ctx, { variant }) {
     add('keepalive worker present', false, 'keepalive/worker.mjs is missing');
     return ctx.result(checks);
   }
-  let mod;
-  try {
-    mod = await import(pathToFileURL(workerPath).href);
-  } catch (e) {
-    add('keepalive worker loads', false, e.message);
+  const worker = await startWorkerHost(ctx, workerPath);
+  if (worker.error) {
+    add('keepalive worker loads', false, worker.error);
     return ctx.result(checks);
   }
 
@@ -90,7 +88,7 @@ export async function gradeSupabaseKeepalive(ctx, { variant }) {
     const before = fake.state().queries;
     let results;
     try {
-      results = await runSweep(mod, targets, runtime.fetch);
+      results = await worker.sweep(targets, runtime.fetch);
     } catch (e) {
       results = [{ name: tool, ok: false, error: `sweep threw: ${e.message}` }];
     }
@@ -145,7 +143,7 @@ export async function gradeSupabaseKeepalive(ctx, { variant }) {
   fake.clock.advance(8 * DAY);
   let pausedResults;
   try {
-    pausedResults = await runSweep(mod, targets, runtime.fetch);
+    pausedResults = await worker.sweep(targets, runtime.fetch);
   } catch (e) {
     pausedResults = [{ name: tool, ok: false, error: e.message }];
   }
