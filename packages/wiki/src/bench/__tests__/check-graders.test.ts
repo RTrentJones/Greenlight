@@ -15,8 +15,10 @@ import {
   checkGraders,
   formatReport,
   graderChildArgv,
+  loadTasks,
   materialize,
   passesMutantMessage,
+  runInChild,
   wrongReasonMessage,
 } from '../check-graders';
 import { GRADER_CHILD_FLAG, GraderResultSchema } from '../grader-api';
@@ -391,4 +393,71 @@ describe('the first-iteration bench (13 §3 M1, criterion 1)', () => {
       });
     }
   }, 240_000);
+});
+
+describe('the maintainer eval judge (re-review 6): real gate grading only', () => {
+  const TASK = 'wiki/probe-layer-incidents-train';
+  const job = (layers: string[], useJudge: boolean) => {
+    const { tasks } = loadTasks(BENCH);
+    const task = tasks.find((t) => t.id === TASK);
+    if (!task) throw new Error(`no ${TASK}`);
+    const work = mkdtempSync(join(tmpdir(), 'judge-test-'));
+    tmp.push(work);
+    return {
+      taskId: TASK,
+      benchDir: BENCH,
+      graderPath: join(BENCH, 'graders', TASK, 'grade.mjs'),
+      ...materialize(
+        BENCH,
+        task,
+        layers.map((l) => join(BENCH, l)),
+        work,
+      ),
+      useJudge,
+    };
+  };
+  const REF = `references/${TASK}`;
+  const judgeCheck = (r: { checks: { name: string; passed: boolean; detail?: string }[] }) =>
+    r.checks.find((c) => c.name.startsWith('eval judge'));
+
+  it('runs after the deterministic checks pass, and its verdict decides', async () => {
+    const prompts: string[] = [];
+    const judge = async (prompt: string) => {
+      prompts.push(prompt);
+      return { passed: false, rationale: 'the needs-silence branch is overgeneral' };
+    };
+    const r = await runInChild(job([REF], true), 60_000, { judge });
+    expect(r.verdict).toBe('fail');
+    expect(judgeCheck(r)?.passed).toBe(false);
+    expect(judgeCheck(r)?.detail).toMatch(/overgeneral/);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatch(/exercise exactly the layer that is at\s+risk/);
+    expect(prompts[0]).toMatch(/<output>[\s\S]*needs-traffic[\s\S]*<\/output>/);
+    const ok = await runInChild(job([REF], true), 60_000, {
+      judge: async () => ({ passed: true, rationale: 'conditional, right polarity' }),
+    });
+    expect(ok.verdict).toBe('pass');
+  }, 120_000);
+
+  it('is never called without useJudge or when the prefilter fails; no judge fails closed', async () => {
+    let calls = 0;
+    const judge = async () => {
+      calls++;
+      return { passed: true, rationale: 'x' };
+    };
+    const plain = await runInChild(job([REF], false), 60_000, { judge });
+    expect(plain.verdict).toBe('pass');
+    expect(judgeCheck(plain)).toBeUndefined();
+    const inverted = await runInChild(
+      job([REF, `mutants/${TASK}/traffic-cache-is-enough`], true),
+      60_000,
+      { judge },
+    );
+    expect(inverted.verdict).toBe('fail');
+    expect(judgeCheck(inverted)?.detail).toMatch(/prefilter/);
+    expect(calls).toBe(0);
+    const none = await runInChild(job([REF], true), 60_000);
+    expect(none.verdict).toBe('fail');
+    expect(judgeCheck(none)?.detail).toMatch(/judge/);
+  }, 120_000);
 });

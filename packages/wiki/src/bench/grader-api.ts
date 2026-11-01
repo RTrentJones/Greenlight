@@ -66,8 +66,9 @@ export interface SpawnAppOptions {
   command: string[];
   /** Added to `sandboxEnv()`: the app never sees the grader's environment. */
   env?: Record<string, string>;
-  /** Grader-side modules preloaded into the app with `node --import` (absolute paths), e.g. a
-   * fake-clock shim. Put in argv when the command is `node`, else in NODE_OPTIONS. */
+  /** Grader-side modules preloaded into the app with `--import` (absolute paths), e.g. a
+   * fake-clock shim. Always passed in NODE_OPTIONS (never argv), so every Node process the app
+   * starts inherits them, whether the command is `node` or a wrapper (`sh -c`, `npm start`). */
   preload?: string[];
   /** Open an IPC channel to the app (`SpawnedApp.send` / `onMessage`), for a preloaded shim. */
   ipc?: boolean;
@@ -125,7 +126,22 @@ export interface MaintainerValidation {
   error?: string;
 }
 
+/** An eval judge's verdict (06 §4.6). */
+export interface JudgeVerdict {
+  passed: boolean;
+  rationale: string;
+}
+/** An LLM eval judge: a fixed-rubric prompt in, a verdict out. The runner supplies it (the Gemini
+ * harness's `generateStructured` with the grader's verdict schema); check-graders never does. */
+export type JudgeFn = (prompt: string) => Promise<JudgeVerdict>;
+
 export interface GraderContext {
+  /** Real gate grading asked for the eval judge layer (GraderJob.useJudge). A grader that has
+   * one calls `judge` only after its deterministic checks pass; without `useJudge` it never
+   * calls it. */
+  useJudge: boolean;
+  /** Present with `useJudge`. In a grader child it forwards over IPC to the parent's judge. */
+  judge?: JudgeFn;
   taskId: string;
   task: TaskSpec;
   split: TaskSpec['split'];
@@ -167,6 +183,10 @@ export interface GraderJob {
   trajectoryPath?: string;
   maintainerOutputPath?: string;
   bundleDir?: string;
+  /** Enable a grader's eval judge layer (real gate grading only). The parent must then answer
+   * the child's `{ judge: { id, prompt } }` IPC requests with `{ judgeResult: { id, passed,
+   * rationale } }` or `{ judgeResult: { id, error } }` (`runInChild`'s `judge` option does). */
+  useJudge?: boolean;
 }
 
 /**
@@ -259,13 +279,13 @@ async function spawnApp(
   const port = opts.port ?? (await freePort());
   const [first, ...rest] = opts.command;
   if (!first) throw new Error('spawnApp needs a command');
-  const imports = (opts.preload ?? []).flatMap((p) => ['--import', pathToFileURL(p).href]);
+  const imports = (opts.preload ?? []).map((p) => `--import=${pathToFileURL(p).href}`);
   const isNode = first === 'node';
   const extra: Record<string, string> = { ...opts.env, PORT: String(port) };
-  if (!isNode && imports.length > 0) extra.NODE_OPTIONS = imports.join(' ');
+  if (imports.length > 0) extra.NODE_OPTIONS = imports.join(' ');
   const child = startChild(
     isNode ? process.execPath : first,
-    isNode ? [...imports, ...rest] : rest,
+    rest,
     { cwd: opts.cwd, env: env(extra), ipc: Boolean(opts.ipc) },
     register,
   );
@@ -326,7 +346,10 @@ const graderWiki: GraderWiki = {
 };
 
 /** Builds the context for one job. `cleanup()` runs every registered cleanup, in reverse order. */
-export function createGraderContext(job: GraderJob): {
+export function createGraderContext(
+  job: GraderJob,
+  opts: { judge?: JudgeFn } = {},
+): {
   ctx: GraderContext;
   cleanup: () => Promise<void>;
 } {
@@ -366,7 +389,10 @@ export function createGraderContext(job: GraderJob): {
     }
   }
 
+  const useJudge = Boolean(job.useJudge);
   const ctx: GraderContext = {
+    useJudge,
+    ...(useJudge && opts.judge ? { judge: opts.judge } : {}),
     taskId: job.taskId,
     task,
     split: task.split,
@@ -426,8 +452,11 @@ export function createGraderContext(job: GraderJob): {
 
 /** Runs one grader in THIS process and returns its validated result. `check-graders` calls it
  * through a child process (below) so a grader can never share state with another. */
-export async function runGraderJob(job: GraderJob): Promise<GraderResult> {
-  const { ctx, cleanup } = createGraderContext(job);
+export async function runGraderJob(
+  job: GraderJob,
+  opts: { judge?: JudgeFn } = {},
+): Promise<GraderResult> {
+  const { ctx, cleanup } = createGraderContext(job, opts);
   try {
     const mod = (await import(pathToFileURL(job.graderPath).href)) as { default?: unknown };
     if (typeof mod.default !== 'function') {
@@ -470,10 +499,31 @@ export function graderChildMain(): void {
     new Promise<void>((res) => {
       send(msg, undefined, {}, () => res());
     });
+  // The judge, when the job asks for one, is the parent's: requests and answers ride IPC.
+  let judgeSeq = 0;
+  const judgeWaiting = new Map<number, (v: JudgeVerdict | Error) => void>();
+  process.on('message', (msg: unknown) => {
+    const r = (msg as { judgeResult?: { id?: number; error?: string } & Partial<JudgeVerdict> })
+      ?.judgeResult;
+    if (!r || typeof r.id !== 'number') return;
+    const done = judgeWaiting.get(r.id);
+    judgeWaiting.delete(r.id);
+    done?.(
+      r.error !== undefined
+        ? new Error(r.error)
+        : { passed: r.passed as boolean, rationale: r.rationale as string },
+    );
+  });
+  const judge: JudgeFn = (prompt) =>
+    new Promise((res, rej) => {
+      const id = judgeSeq++;
+      judgeWaiting.set(id, (v) => (v instanceof Error ? rej(v) : res(v)));
+      send({ judge: { id, prompt } });
+    });
   process.once('message', (msg: unknown) => {
     const job = (msg as { job?: GraderJob } | null)?.job;
     const run = job
-      ? runGraderJob(job).then((result) => reply({ result }))
+      ? runGraderJob(job, { judge }).then((result) => reply({ result }))
       : Promise.reject(new Error('expected { job } as the first IPC message'));
     run
       .catch((e: unknown) =>

@@ -46,6 +46,30 @@
       "grader": "app",
       "kind": "tree",
       "description": "a keepalive Worker that replaces fetch at import and reports ok without probing, together with the store-querying /health healthcheck, from a store-free liveness setup"
+    },
+    {
+      "id": "poll-perf-now-guard",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a 1-second tick polling when performance.now() says 30 s passed from an app that never polls when idle"
+    },
+    {
+      "id": "poll-abort-signal-timeout",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a poll loop on AbortSignal.timeout(30_000) from an app that never polls when idle"
+    },
+    {
+      "id": "poll-worker-thread",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a 30-second poll in a worker_threads Worker from an app that never polls when idle"
+    },
+    {
+      "id": "poll-child-process",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a 30-second poll in a child process spawned with its own env (no NODE_OPTIONS) from an app that never polls when idle"
     }
   ]
 }

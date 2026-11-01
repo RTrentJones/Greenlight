@@ -48,6 +48,23 @@
         }
       },
       {
+        "rule": "before",
+        "first": {
+          "cmd": "greenlight",
+          "meta": {
+            "subcommand": "preview",
+            "tool": "guestbook",
+            "passed": "true"
+          }
+        },
+        "next": {
+          "cmd": "git",
+          "meta": {
+            "subcommand": "unknown"
+          }
+        }
+      },
+      {
         "rule": "count",
         "match": {
           "cmd": "git",
@@ -118,6 +135,54 @@
       "grader": "trajectory",
       "kind": "trajectory",
       "description": "a bare \"git push\" of a branch tracking develop before the preview from a push after it"
+    },
+    {
+      "id": "config-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop through a \"-c alias.p=push\" alias before the preview, then a no-op \"git push origin develop\" after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "chained-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop through chained \"-c\" aliases (ship → p → push) before the preview, then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "env-config-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop through an alias defined in GIT_CONFIG_COUNT/KEY/VALUE before the preview, then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "unseen-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push before the preview through an alias the shim cannot resolve (a relocated global config), then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "hook-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a commit whose hook pushed develop before the preview, then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "push-default-current-feature",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a \"-c push.default=current\" bare push of feat/x (tracking origin/develop) that lands on feat/x, from a push that lands on develop"
+    },
+    {
+      "id": "push-default-matching-main",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a \"-c push.default=matching\" bare push before the preview (it can move main), from a run that pushes only after the preview"
+    },
+    {
+      "id": "transcript-preview-forged",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a transcript event claiming a passing preview (meta on a non-shim event) from a preview the shim recorded"
     }
   ]
 }
