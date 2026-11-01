@@ -205,7 +205,12 @@ async function checkInternalLinks(
 function buildTasks(base: string, spec: ApiSpec): Array<() => Promise<VerifyCheck>> {
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const tasks: Array<() => Promise<VerifyCheck>> = [];
-  for (const c of spec.checks ?? []) tasks.push(() => checkRoute(base, c, timeoutMs));
+  for (const c of spec.checks ?? []) {
+    tasks.push(async () => {
+      const check = await checkRoute(base, c, timeoutMs);
+      return c.id ? { ...check, id: c.id } : check;
+    });
+  }
   if (spec.rssValid) {
     tasks.push(() =>
       checkXml(

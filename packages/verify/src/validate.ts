@@ -20,7 +20,8 @@ type Kind =
   | 'regex' // a string that must compile
   | 'record' // an object of string values (headers, env)
   | 'any-object' // an object of anything (tool args)
-  | 'body'; // string | object | array
+  | 'body' // string | object | array
+  | 'id'; // a kebab-case check/spec id (stable handle, vision 08 §6)
 
 interface Field {
   kind?: Kind;
@@ -43,6 +44,10 @@ const UNIT: Field = { kind: 'unit' };
 const BOOL: Field = { kind: 'boolean' };
 const STR: Field = { kind: 'string' };
 const NEEDLE: Field = { kind: 'needle' };
+const ID: Field = { kind: 'id' };
+
+/** Kebab-case, starting with a letter or digit: `live`, `vote-rejects-duplicate`, `c3-guard-2`. */
+export const CHECK_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 const VALUE: Schema = {
   equals: { kind: 'scalar' },
@@ -55,6 +60,7 @@ const VALUE: Schema = {
 };
 
 const API_CHECK: Schema = {
+  id: ID,
   path: { ...STR, required: true },
   method: { oneOf: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] },
   body: { kind: 'body' },
@@ -70,6 +76,7 @@ const API_CHECK: Schema = {
 };
 
 const BASE: Schema = {
+  id: ID,
   mode: STR,
   logsOnFailure: STR,
   concurrency: { oneOf: ['serial', 'parallel'] },
@@ -173,6 +180,8 @@ function kindOk(kind: Kind, v: unknown): boolean {
       return isObj(v);
     case 'body':
       return typeof v === 'string' || (typeof v === 'object' && v !== null);
+    case 'id':
+      return typeof v === 'string' && CHECK_ID_RE.test(v);
   }
 }
 
@@ -189,6 +198,7 @@ const KIND_NAME: Record<Kind, string> = {
   record: 'an object of strings',
   'any-object': 'an object',
   body: 'a string, object or array',
+  id: 'a kebab-case id (lowercase letters, digits and hyphens, at most 63 chars)',
 };
 
 function regexOk(where: string, src: unknown, flags: unknown, out: string[]): void {
@@ -269,6 +279,37 @@ function checkObject(where: string, v: unknown, schema: Schema, out: string[]): 
   }
 }
 
+/** Every id a spec declares, in order: the spec's own `id`, then each api check's `id`. */
+export function declaredIds(spec: unknown): string[] {
+  if (!isObj(spec)) return [];
+  const ids: string[] = [];
+  if (typeof spec.id === 'string') ids.push(spec.id);
+  if (Array.isArray(spec.checks)) {
+    for (const c of spec.checks) if (isObj(c) && typeof c.id === 'string') ids.push(c.id);
+  }
+  return ids;
+}
+
+/** Problems that span a whole config (an array of specs): duplicate ids. Returned per spec index,
+ * so `verifyAll` can fail exactly the specs involved while keeping reports index-aligned. A
+ * duplicate within one spec is reported by `validateSpec` instead. */
+export function validateConfig(specs: readonly unknown[]): Map<number, string[]> {
+  const firstAt = new Map<string, number>();
+  const out = new Map<number, string[]>();
+  specs.forEach((spec, i) => {
+    for (const id of new Set(declaredIds(spec))) {
+      const prev = firstAt.get(id);
+      if (prev === undefined) {
+        firstAt.set(id, i);
+        continue;
+      }
+      const msg = `duplicate id "${id}" (also declared by spec ${prev})`;
+      out.set(i, [...(out.get(i) ?? []), msg]);
+    }
+  });
+  return out;
+}
+
 /** Returns every problem found in `spec` (empty = valid). */
 export function validateSpec(spec: unknown): string[] {
   if (!isObj(spec)) return ['spec must be an object'];
@@ -278,5 +319,10 @@ export function validateSpec(spec: unknown): string[] {
   }
   const out: string[] = [];
   checkObject(`${mode} spec`, spec, { ...BASE, ...(MODES[mode] as Schema) }, out);
+  const seen = new Set<string>();
+  for (const id of declaredIds(spec)) {
+    if (seen.has(id)) out.push(`${mode} spec: duplicate id "${id}"`);
+    seen.add(id);
+  }
   return out;
 }

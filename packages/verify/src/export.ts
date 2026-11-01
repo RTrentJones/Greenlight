@@ -23,6 +23,8 @@ export interface VerifyExportCheck {
   attempts?: number | null;
   'eval.score'?: number | null; // 0..1
   'eval.explanation'?: string | null;
+  /** The check's stable id (vision 08 §6), when it has one. Additive: omitted when absent. */
+  'eval.check_id'?: string;
 }
 
 export interface VerifyExportResult {
@@ -78,6 +80,7 @@ export function toExportResult(reports: VerifyReport[], ctx: ExportContext): Ver
         attempts: c.attempts ?? null,
         'eval.score': c.score != null ? clamp01(c.score) : c.pass ? 1 : 0,
         'eval.explanation': c.explanation ?? null,
+        ...(c.id ? { 'eval.check_id': c.id } : {}),
       });
     }
   }

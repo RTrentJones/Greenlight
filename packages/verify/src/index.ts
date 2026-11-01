@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { verifyApi } from './api';
 import { type VerifyMode, type VerifyReport, type VerifySpec, report } from './types';
-import { validateSpec } from './validate';
+import { validateConfig, validateSpec } from './validate';
 
 const MODES: readonly VerifyMode[] = ['api', 'mcp', 'playwright', 'test', 'agent-web', 'eval'];
 
@@ -12,7 +12,7 @@ export function defineVerify(spec: VerifySpec): VerifySpec {
   return spec;
 }
 export { verifyApi } from './api';
-export { validateSpec } from './validate';
+export { validateSpec, validateConfig, declaredIds, CHECK_ID_RE } from './validate';
 export { evalJson, evalText, evalValue, getPath } from './assert';
 export { verifyMcp } from './mcp';
 export { verifyPlaywright } from './playwright';
@@ -68,7 +68,26 @@ export async function waitForReachable(url: string, timeoutMs: number): Promise<
  * function (docs/archive/greenlight-v1.md §11). `mcp`/`playwright` are loaded lazily so the
  * common `api` path stays dependency-light.
  */
+/** Stamp a report with its spec's id: `specId` on the report, and `id` on every check that has
+ * none of its own (vision 08 §6). */
+function withIds(spec: VerifySpec, r: VerifyReport): VerifyReport {
+  if (!spec.id) return r;
+  return {
+    ...r,
+    specId: spec.id,
+    checks: r.checks.map((c) => (c.id ? c : { ...c, id: spec.id })),
+  };
+}
+
 export async function verify(
+  baseUrl: string,
+  spec: VerifySpec,
+  opts?: VerifyOptions,
+): Promise<VerifyReport> {
+  return withIds(spec, await runSpec(baseUrl, spec, opts));
+}
+
+async function runSpec(
   baseUrl: string,
   spec: VerifySpec,
   opts?: VerifyOptions,
@@ -126,20 +145,35 @@ export async function verifyAll(
   if (opts?.reachableTimeoutMs) await waitForReachable(baseUrl, opts.reachableTimeoutMs);
   const perSpec: VerifyOptions = { ...opts, reachableTimeoutMs: 0 };
 
+  // Config-wide problems (duplicate ids across specs) fail exactly the specs involved, before any
+  // network: an id cited by an intent criterion must name one check, never two.
+  const configProblems = validateConfig(specs);
+  const run = (j: number): Promise<VerifyReport> => {
+    const spec = specs[j] as VerifySpec;
+    const problems = configProblems.get(j);
+    if (problems) {
+      const mode = (MODES as readonly string[]).includes(spec?.mode) ? spec.mode : 'api';
+      return Promise.resolve(
+        report(mode, baseUrl, [
+          { name: 'spec is valid', pass: false, detail: problems.join('; ') },
+        ]),
+      );
+    }
+    return verify(baseUrl, spec, perSpec);
+  };
+
   const reports: VerifyReport[] = new Array(specs.length);
   let i = 0;
   while (i < specs.length) {
     if (specs[i]?.concurrency === 'parallel') {
       const start = i;
       while (i < specs.length && specs[i]?.concurrency === 'parallel') i++;
-      const batch = await Promise.all(
-        specs.slice(start, i).map((spec) => verify(baseUrl, spec, perSpec)),
-      );
+      const batch = await Promise.all(specs.slice(start, i).map((_, k) => run(start + k)));
       batch.forEach((r, j) => {
         reports[start + j] = r;
       });
     } else {
-      reports[i] = await verify(baseUrl, specs[i] as VerifySpec, perSpec);
+      reports[i] = await run(i);
       i++;
     }
   }

@@ -8,6 +8,10 @@ export type VerifyMode = 'api' | 'mcp' | 'playwright' | 'test' | 'agent-web' | '
 
 export interface VerifyCheck {
   name: string;
+  /** Stable handle for this check (vision 08 §6): copied from the `ApiCheck.id` that produced it,
+   * else from the owning spec's `id`. Intent criteria and wiki patterns cite checks by this id, so
+   * it survives renames of `name`. Absent when the author gave none. */
+  id?: string;
   pass: boolean;
   detail?: string;
   /** Wall time of the LAST attempt of this check, in ms (set by `api` mode). Exported as
@@ -32,6 +36,8 @@ export interface VerifyCheck {
 export interface VerifyReport {
   pass: boolean;
   mode: VerifyMode;
+  /** The `id` of the spec that produced this report, when it has one. */
+  specId?: string;
   url: string;
   checks: VerifyCheck[];
   /** Recent platform logs, attached ONLY on a failing report when the spec set `logsOnFailure`
@@ -48,6 +54,9 @@ export interface VerifyReport {
 
 /** Fields every spec shares. */
 export interface VerifySpecBase {
+  /** Stable kebab-case handle for the whole spec (vision 08 §6). Unique across a tool's config,
+   * together with every `ApiCheck.id`. Checks without their own id inherit it in the report. */
+  id?: string;
   /** A shell command that fetches recent platform logs, run ONLY when this spec's report FAILS, and
    * attached to `VerifyReport.logs` so the agent/CI can self-correct in-loop. General, no provider
    * coupling — e.g. `curl -i "$GREENLIGHT_VERIFY_URL"`, `vercel logs "$GREENLIGHT_VERIFY_URL"`,
@@ -99,6 +108,8 @@ export interface TextAssert extends ValueAssert {
 
 /** api mode — HTTP assertions (docs/archive/greenlight-v1.md §9/§11). */
 export interface ApiCheck {
+  /** Stable kebab-case handle for this check (vision 08 §6), unique across the tool's config. */
+  id?: string;
   path: string;
   /** HTTP method (default `GET`). Use `POST` to assert a write route's guard — e.g. that an
    * unauthenticated POST is rejected with 401 — without ever sending valid credentials. */
@@ -326,4 +337,18 @@ export function msg(e: unknown): string {
 
 export function report(mode: VerifyMode, url: string, checks: VerifyCheck[]): VerifyReport {
   return { pass: checks.length > 0 && checks.every((c) => c.pass), mode, url, checks };
+}
+
+/** Named `meta` export of a verify config (vision 08 §6, contract clause C7): the check ids that
+ * MUST be present in every environment the config is evaluated for. */
+export interface VerifyConfigMeta {
+  invariant?: string[];
+}
+
+/** Per-environment coverage of a config's check ids (vision 08 §6), computed by evaluating a
+ * function-form config once per context. `missing` lists invariant ids absent from an env. */
+export interface VerifyCoverage {
+  invariant: string[];
+  byEnv: Record<'preview' | 'beta' | 'prod', string[]>;
+  missing: { env: 'preview' | 'beta' | 'prod'; id: string }[];
 }
