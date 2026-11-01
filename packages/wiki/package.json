@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@rtrentjones/greenlight-shared": "workspace:*",
+    "yaml": "^2.9.0",
     "zod": "^3.24.1"
   }
 }
