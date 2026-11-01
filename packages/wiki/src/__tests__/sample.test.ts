@@ -140,3 +140,13 @@ describe('truncation and parsing', () => {
     expect(compareVersions('1.9', '1.10')).toBe(-1);
   });
 });
+
+describe('harness failures are not training evidence', () => {
+  it('excludes bench records whose retained verdict is unknown', () => {
+    const real = rec({ id: '0000000a', split: 'train' });
+    const base = rec({ id: '0000000b', split: 'train' });
+    const harness = { ...base, retained: { ...base.retained, verdict: 'unknown' as const } };
+    const out = sampleRecords([real, harness], { seed: 's' });
+    expect(ids(out.failing)).toEqual(['0000000a']);
+  });
+});

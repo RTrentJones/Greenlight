@@ -126,21 +126,23 @@ at 20 RPD (the judge calls fit in the small model's leftover). `--rollout-reques
 cap (and the reservation) for faster days at the risk of cutting rollouts short; it is part of the
 identity, so baseline and candidate must use the same value.
 
-**Days per gate at 20 RPD per model.** Each model runs half the rollouts.
+**Days per gate at 20 RPD per model.** Each model runs half the rollouts. Because the runner
+reserves a full rollout cap (`maxSteps + 2` = 17 requests) before starting each rollout, only one
+rollout fits per model per day, however few requests it then spends.
 
-| model | requests | days at 20 RPD |
+| model | rollouts | days at 20 RPD (one rollout per day) |
 |---|---|---|
-| frontier `gemini-3.8-flash` | 24 rollouts × 12 = 288 | ⌈288 / 20⌉ = 15 |
-| small `gemini-3.6-flash` | 24 × 12 + 12 judge = 300 | ⌈300 / 20⌉ = 15 |
+| frontier `gemini-3.8-flash` | 24 | 24 |
+| small `gemini-3.6-flash` | 24 (+12 judge calls, which fit in the leftover) | 24 |
 
-The two models draw on separate quotas and run in parallel, so the worst case is **about 15 days
-per gate**. At the expected average of about 9 requests per rollout, the small model needs
-24 × 9 + 12 = 228 requests, which is ⌈228 / 20⌉ = 12 days. Fallback is off for gate rollouts, so
-a gate never spends the small model's quota on the frontier model's half.
+The two models draw on separate quotas and run in parallel, so a gate takes **about 24 days**.
+`--rollout-requests 10` fits two rollouts per model per day (about 12 days), at the cost of cutting
+rollouts short. It is part of the identity, so it must be used for the whole evaluation. Fallback is
+off for every rollout, so one model never spends the other's quota.
 
 **Before M3.** Production mode doubles the rollouts to 96. Before then, `perGateMaxRollouts` must
-be raised to 96 and `perGateMaxRequests` to 96 × 12 + 24 = 1,176, or about 30 days per gate at
-20 RPD.
+be raised to 96 and `perGateMaxRequests` to 96 × 12 + 24 = 1,176, or about 48 days per gate at
+20 RPD under one-rollout-per-day pacing.
 
 **Shortening a gate.** Run fewer runs per task, verify higher free-tier limits (the Flash-Lite
 models are reported at 500 RPD), or move to a paid tier through `bench/models.json`.

@@ -8,7 +8,7 @@ import { type RunnerAssets, hashTree } from '@rtrentjones/greenlight-wiki';
  * The two builds a bench rollout needs (vision 06 §4.2), made from the framework checkout:
  * - `cli/greenlight.mjs`: the greenlight CLI as ONE file (every dependency inlined except jiti,
  *   which is copied next to it with its own dist, and the lazy optional playwright/anthropic). It
- *   is the only part of the repo mounted into a rollout container (read-only, `/opt/greenlight`),
+ *   is the only part of the repo mounted into a rollout container (read-only, `/opt/real/greenlight`, runnable only through the recorder),
  *   so `greenlight preview` works inside the sandbox with no install and no source checkout.
  * - `grade/bench-grade.mjs`: the grading driver and grader child (grade.ts), mounted into the
  *   grading container.

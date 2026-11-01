@@ -128,14 +128,24 @@ export interface Sample {
  *
  * with ties broken by the seeded rank.
  */
+/** A bench rollout that ended without a real verdict (06 §4.2, 08 §5.3). */
+export function isHarnessFailure(r: RawRecord): boolean {
+  return r.kind === 'bench' && r.retained.verdict === 'unknown';
+}
+
 export function sampleRecords(records: readonly RawRecord[], opts: SampleOptions): Sample {
   const maxFail = opts.failing ?? 5;
   const maxPass = opts.passing ?? 3;
   const cellOf = opts.cellOf ?? ((r: RawRecord) => r.tool);
   const skill = opts.skill?.split('@')[0];
+  // A bench record whose verdict is `unknown` failed for a harness reason (grader error, sandbox
+  // fault, incomplete trajectory), not because the agent did the task badly. It is not evidence
+  // about the skill, so it never enters a training sample as a failure (06 §3.2).
   const pool = records.filter(
     (r) =>
-      isAgentVisible(r, opts.splits) && (opts.skill === undefined || matchesSkill(r, opts.skill)),
+      isAgentVisible(r, opts.splits) &&
+      !isHarnessFailure(r) &&
+      (opts.skill === undefined || matchesSkill(r, opts.skill)),
   );
   const rank = (r: RawRecord) => seededRank(opts.seed, r.rawId);
 

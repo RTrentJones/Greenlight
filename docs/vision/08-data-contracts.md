@@ -655,7 +655,8 @@ interface BaselineIdentity {
   splitsHash: string;         // splits.json + each task's state
   graderSetHash: string;      // graders/ + mutants/ for those tasks
   depsHash: string;           // bench runner lockfile + installed @rtrentjones/greenlight version
-  harness: { runnerVersion: string; imageDigest: string };
+  harness: { runnerVersion: string; imageDigest: string;   // imageDigest: "ctx:sha256:<build context + shim uid + apk -v list>" (M6), or "process"
+             limits?: { maxSteps: number; requestsPerRollout: number; timeoutMin: number | null } };  // part of comparability; resume refuses a change
   agent: { vendor: string; version: string };
   models: string[];           // from models.json, in order
   skillSetHash: string;       // over every managed skill's SKILL.md + PURPOSE.md content
