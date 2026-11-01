@@ -296,16 +296,22 @@ function seamPatterns(terms: SeamTerms): { re: RegExp; label: string }[] {
 /** A bench task id (`replay/<slug>`, `loop/<slug>`, … — the kind prefixes of 08 §10.1). */
 const BENCH_TASK_ID_RE = /^(?:cap|replay|loop|wiki|route|port|mech)\/[a-z0-9][a-z0-9-]*$/;
 
+/** A file in a repository, `<owner>/<repo>:<path>` (a `verify` remediation pointing at the spec
+ * that enforces it): a repository reference, so it may name the owner's repo like evidence does. */
+const REPO_FILE_REF_RE = /^[\w.-]+\/[\w.-]+:[\w./-]+$/;
+
+const isRepoRef = (v: string): boolean => EVIDENCE_REF_RE.test(v) || REPO_FILE_REF_RE.test(v);
+
 /** Frontmatter fields that may name the owner's repositories, so evidence stays traceable (LR-19
  * exception, 04 §5 and 15 §1.8). Paths are matched with array indices removed. `evidence` fields
  * are schema-checked `EvidenceRef`s; the other fields are free strings, so they are exempt only
- * while their value has the shape that justifies the exemption (an evidence ref, or a bench task
- * id) — a prose `ref` naming the owner's tool is still a seam leak. */
+ * while their value has the shape that justifies the exemption (an evidence ref or repository
+ * file ref, or a bench task id) — a prose `ref` naming the owner's tool is still a seam leak. */
 const EVIDENCE_FIELDS: ReadonlyMap<string, (v: string) => boolean> = new Map([
   ['evidence', () => true],
   ['timeline.evidence', () => true],
-  ['remediation.ref', (v: string) => EVIDENCE_REF_RE.test(v)],
-  ['enforcedBy.ref', (v: string) => EVIDENCE_REF_RE.test(v)],
+  ['remediation.ref', isRepoRef],
+  ['enforcedBy.ref', isRepoRef],
   ['catches.graderTask', (v: string) => BENCH_TASK_ID_RE.test(v)],
 ]);
 

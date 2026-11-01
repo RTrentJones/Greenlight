@@ -341,6 +341,19 @@ describe('finding content', () => {
         message: `catches.graderTask names the owner's tool "${OWNER_TOOL}"`,
       },
     ]);
+    const ref = (to: string) =>
+      edit(
+        'patterns/probe-cached.md',
+        `ref: "pr:owner/${OWNER_TOOL}#9"`,
+        `ref: "${to}"`,
+      )(goodFiles());
+    // A repository file ref stays traceable; a prose ref naming the tool does not.
+    expect(lint(loadTree(ref(`owner/${OWNER_TOOL}:verify/x.config.ts`)), goodContext())).toEqual(
+      [],
+    );
+    expect(lint(loadTree(ref(`the ${OWNER_TOOL} spec`)), goodContext())).toMatchObject([
+      { rule: 'LR-19', message: `remediation.ref names the owner's tool "${OWNER_TOOL}"` },
+    ]);
   });
 
   it('attributes schema issues by their rule tag, not their message text', () => {
