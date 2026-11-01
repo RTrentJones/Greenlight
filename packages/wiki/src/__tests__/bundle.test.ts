@@ -140,7 +140,8 @@ describe('proposer bundle (06 §3.1)', () => {
     outlet: 'skill',
     evidence: {
       kind: 'bench',
-      evaluationRecord: evaluation,
+      gateInput: 'f'.repeat(64),
+      evaluationRecords: [evaluation],
       results: [
         {
           model: 'model-a',

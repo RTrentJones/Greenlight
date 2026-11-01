@@ -788,7 +788,7 @@ evidence refs, and the PR goes through normal human review. Nothing in this comm
 ```
 greenlight bench run [--split train|val|test] [--tasks <glob>] [--model <id>]… [--runs 3] [--mode isolation|production|both] [--skills-ref <git-ref>] [--json]
 greenlight bench gate <proposalId> [--models <a>,<b>] [--runs 3] [--alpha 0.05]
-greenlight bench gate --recompute <evaluationRecordHash>
+greenlight bench gate --recompute <gateInputHash>
 greenlight bench check-graders [--tasks <glob>]          # alias: bench mutants
 greenlight bench monitor [--since <date>]
 greenlight bench report [--proposal <id>] [--json]
