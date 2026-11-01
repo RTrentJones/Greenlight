@@ -1,4 +1,4 @@
-import { EvidenceRefSchema } from '@rtrentjones/greenlight-shared';
+import { EVIDENCE_REF_RE } from '@rtrentjones/greenlight-shared';
 import { z } from 'zod';
 import { IsoDate, KebabSlug, RemediationSchema } from './common';
 
@@ -31,6 +31,19 @@ export const PATTERN_CLASSES = [
 ] as const;
 
 /** `<type>/<slug>`, optionally nested by tool for project pages (`intent/bamcp`, `tools/x/...`). */
+/** An `EvidenceRef` (08 §3.1) as page frontmatter carries it: the same shape as the shared
+ * `EvidenceRefSchema`, but a malformed ref is tagged LR-03 so lint reports it under that rule. */
+const PageEvidenceRef = z.string().superRefine((v, ctx) => {
+  if (!EVIDENCE_REF_RE.test(v)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'evidence ref must be issue:o/r#n, pr:o/r#n, commit:o/r@sha, run:o/r/id, raw:<rawId>, tracer:<id> or post:<url>',
+      params: { rule: 'LR-03' },
+    });
+  }
+});
+
 const PageId = z
   .string()
   .regex(/^[a-z-]+\/[a-z0-9][a-z0-9/-]*$/, 'page id must be "<type>/<slug>"');
@@ -65,7 +78,7 @@ export const PatternPageSchema = z
       .min(1),
     affects: z.string().min(1).optional(),
     relevance: z.enum(['framework-version', 'app-code', 'both']),
-    evidence: z.array(EvidenceRefSchema),
+    evidence: z.array(PageEvidenceRef),
     catches: CatchSpecSchema.optional(),
     remediation: z.array(RemediationSchema),
     skills: z.array(KebabSlug),
@@ -120,11 +133,11 @@ export const IncidentPageSchema = z
     tool: KebabSlug,
     opened: IsoDate,
     closed: IsoDate.optional(),
-    evidence: z.array(EvidenceRefSchema),
+    evidence: z.array(PageEvidenceRef),
     patterns: z.array(PageId),
     timeline: z.array(
       z
-        .object({ date: IsoDate, text: z.string().min(1), evidence: EvidenceRefSchema.optional() })
+        .object({ date: IsoDate, text: z.string().min(1), evidence: PageEvidenceRef.optional() })
         .strict(),
     ),
   })
@@ -192,10 +205,16 @@ const rawPage = z.discriminatedUnion('type', [
  * - a `confirmed` failure pattern needs ≥1 evidence, a `catches`, and ≥1 verified remediation (LR-05);
  * - `probed` only describes failures. */
 export const PageSchema = rawPage.superRefine((p, ctx) => {
-  const issue = (path: string, message: string) =>
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  // `rule` tags an issue with the lint rule it enforces (read by lint's ruleOfIssue).
+  const issue = (path: string, message: string, rule?: 'LR-05' | 'LR-06') =>
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [path],
+      message,
+      ...(rule ? { params: { rule } } : {}),
+    });
   if ((p.status === 'superseded') !== (p.supersededBy !== undefined)) {
-    issue('supersededBy', 'supersededBy is required iff status is "superseded"');
+    issue('supersededBy', 'supersededBy is required iff status is "superseded"', 'LR-06');
   }
   if (p.type === 'pattern') {
     if (p.kind === 'strategy' && p.probed !== undefined)
@@ -205,10 +224,15 @@ export const PageSchema = rawPage.superRefine((p, ctx) => {
     }
     if (p.status === 'confirmed' && p.kind === 'failure') {
       if (p.evidence.length === 0)
-        issue('evidence', 'a confirmed failure pattern needs evidence (LR-05)');
-      if (!p.catches) issue('catches', 'a confirmed failure pattern needs catches (LR-05)');
+        issue('evidence', 'a confirmed failure pattern needs evidence (LR-05)', 'LR-05');
+      if (!p.catches)
+        issue('catches', 'a confirmed failure pattern needs catches (LR-05)', 'LR-05');
       if (!p.remediation.some((r) => r.verified)) {
-        issue('remediation', 'a confirmed failure pattern needs a verified remediation (LR-05)');
+        issue(
+          'remediation',
+          'a confirmed failure pattern needs a verified remediation (LR-05)',
+          'LR-05',
+        );
       }
     }
   }
