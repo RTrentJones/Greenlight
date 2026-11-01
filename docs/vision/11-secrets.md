@@ -28,7 +28,7 @@ This pack replaces the single write-only store with **one readable source and th
 
 The **sink** is chosen once per wrapper (`secrets.sink` in the manifest; 07 §2.1):
 
-- `infisical` is the default from P4 on (ADR-06).
+- `infisical` is the default from M5 on (ADR-06), subject to the availability check in §2.1.
 - `github` is today's model. It remains supported for owners who want no new account. In that mode
   agents get no credentials at all, and every authenticated step runs in CI. The skills say so.
 
@@ -44,8 +44,16 @@ Of the options surveyed (16, ADR-06), Infisical fits on four counts:
   (Agent Vault);
 - it syncs secrets *to* GitHub Actions, so CI is untouched.
 
-Whether Agent Proxy is included in the hosted free tier was not confirmed when this was written.
-P4 MUST confirm it, and if it is not included, the default proxy becomes the Worker proxy (§3.2).
+Whether Agent Proxy is included in the hosted free tier was not confirmed when this was written,
+and both Infisical proxy products are recent. The product claims in this section are **to verify**.
+M5 does not commit to a general implementation up front. It first prototypes **one** credential
+integration end to end:
+- the Cloudflare beta-account token through the chosen proxy;
+- under trust model A (§3.0);
+- with the client compatibility tests in §4.6.
+
+The default proxy is chosen from that evidence. If Agent Proxy is unavailable or fails the tests,
+the Worker proxy is evaluated next, against the same tests.
 
 ### 2.2 Layout
 
@@ -80,19 +88,40 @@ long-lived Infisical token is stored in GitHub.
 
 ## 3. The agent credential proxy
 
+### 3.0 Trust models
+
+What a proxy guarantees depends on where the agent runs. Two trust models are supported, and the
+documents and skills name which one applies.
+
+| | **A — isolated agent** | **B — local convenience** |
+|---|---|---|
+| where the agent runs | a separate container, VM, cloud session, or OS user with its own home directory | the operator's own shell, under `greenlight agent run --local` |
+| what it cannot reach | operator credentials and key files (`~/.ssh`, `~/.config/gh`, cloud CLI configs), credential helpers (git credential manager, `gh auth git-credential`, OS keychain), agent sockets (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`), the Docker socket, the parent process's environment and file descriptors, the release signing key (18 §3.1) | nothing is enforced. Environment variables are replaced, and that is all |
+| network | **enforced egress**: a firewall or network policy allows only the proxy and package registries. The proxy is the only route to provider hosts | routing only. `HTTPS_PROXY` is a setting the agent's tools may ignore, and direct connections succeed |
+| guarantee | an agent, even a manipulated one, cannot read a planted operator credential, inherit a credential helper, mint an approval, or reach a provider by a route around the proxy | prevents **accidental** leakage, such as a token printed into a transcript or copied into a file. It is **not** a boundary against an agent that sets out to find credentials |
+| use | default for bench sandboxes (§3.5) and cloud sessions; required for any claim in 12 that depends on the proxy | a single operator's local work, where the operator accepts the residual risk |
+
+**Allocating a pseudoterminal is not proof of human presence.** An agent with shell access can
+allocate a PTY, and refusing non-TTY stdin is only an interaction safeguard. Earlier drafts used a
+TTY check as an approval mechanism, and this document no longer does. Approval is the signed
+release artifact in 18 §3.1, made with a key the agent cannot reach under model A. Under model B
+the key MUST be held where the shell cannot use it without a human action, such as a hardware key
+that requires touch. The documentation states that model B gives no stronger guarantee.
+
 ### 3.1 Principle
 
 An agent process never holds a raw credential. Its environment carries placeholders of the form
 `gl-placeholder-<ENV_VAR>`. A proxy outside the agent's process matches each outbound request
-against an allow-list and replaces the placeholder or authorization header with the real value. A
-compromised or manipulated agent therefore has no secret it could leak (12 T-01, T-02).
+against an allow-list and replaces the placeholder or authorization header with the real value. Under
+trust model A, a compromised or manipulated agent therefore has no secret it could leak (12 T-01,
+T-02). Under model B, the same holds only for agents that do not go looking.
 
 This is not what Codex cloud does. Codex cloud makes secrets available only to the setup script
 and removes them before the agent phase, while plain environment variables persist (OpenAI,
 "Cloud environments"). That keeps secrets away from the agent, but it also means the agent cannot
 make an authenticated call during its work. The proxy pattern covers the working phase. The same
 pattern is used by Docker's AI sandboxes, Infisical's Agent Proxy and Agent Vault, and the egress
-proxy of this project's own cloud sessions. Section 7 covers how Codex fits (P7).
+proxy of this project's own cloud sessions. Section 7 covers how Codex fits (M7).
 
 ### 3.2 Two implementations
 
@@ -105,19 +134,27 @@ proxy of this project's own cloud sessions. Section 7 covers how Codex fits (P7)
 | launch | `infisical secrets agent-proxy connect`, wrapped by `greenlight agent run` | `greenlight agent run --proxy worker` sets the base-URL overrides |
 | code we own | none | the Worker (≈ 200 lines), a security-critical surface (12 T-09) |
 
-The base-URL overrides used by the Worker proxy are emitted per provider pack as `baseUrlEnv`. A
-pack whose client cannot be redirected cannot use the Worker proxy, and its token stays CI-only
-under that proxy. `proxy-config --check` reports these cases.
+The base-URL overrides used by the Worker proxy are declared per credential as `baseUrlEnv` in the
+policy (§4.2, 08 §12). A client that cannot be redirected cannot use the Worker proxy, and its
+token stays CI-only under that proxy. The client support matrix (§4.6) records these cases, and
+`proxy-config --check` reports them.
+
+**Split routing.** With the forward proxy, `agent run` sends only allow-listed hosts through it,
+and sets `NO_PROXY` for everything else, to limit what the proxy's CA can see (§5). Under model A
+the firewall still blocks direct egress to provider hosts, so split routing narrows TLS
+interception without opening a bypass. Under model B split routing is a convenience only. 12 states
+its controls accordingly.
 
 **Node.** Node 24's built-in `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set.
 Greenlight pins Node 24, so `agent run` sets the variable and DR-31 checks it.
 
 ### 3.3 Sessions
 
-`greenlight agent run` (07 §2.12) creates one proxy session per agent process.
+`greenlight agent run` (07 §2.12) creates one proxy session per agent process, in model A
+(`--isolated`) or model B (`--local`).
 
-- **Identity.** A session id (`gs_<random>`), the operator's GitHub login, the agent vendor and
-  model, and the wrapper repo.
+- **Identity.** A session id (`gs_<random>`), the **agent identity** (18 §2, never the owner's
+  login), the agent vendor and model, the wrapper repo, and the trust model (`A` or `B`).
 - **Lifetime.** The TTL defaults to 8h and is capped at 24h. The session is revoked when the child
   exits.
 - **Credential.** The proxy session credential is a short-lived token that the proxy issues. For
@@ -131,58 +168,142 @@ Greenlight pins Node 24, so `agent run` sets the variable and DR-31 checks it.
 
 ### 3.4 Promotion approval
 
-Release stays human (ADR-07). This holds as a mechanism even for an agent that has GitHub access:
+Release authority is defined in [18](18-release-authority.md). The proxy supports it as defense in
+depth. It is **not** where approval is enforced, because the proxy cannot see a provider deploy
+that a production job makes, and under model B it can be bypassed.
 
-- The session's GitHub route **denies**
-  `POST /repos/{o}/{r}/actions/workflows/promote.yml/dispatches`, together with the equivalent
-  `gh workflow run promote.yml`, unless the session was started with `--allow-promote`. That flag
-  requires an interactive confirmation on the operator's TTY.
-- `greenlight promote --perform` outside CI requires `--approval <token>` (07 §2.7). The token is
-  an approval record in the format given in §4.4.
-- Inside `promote.yml`, approval is the `workflow_dispatch` by a human actor, which is the
-  existing behavior.
+- **Agents hold no production credential**, so the proxy carries none (18 §4). A production
+  mutation cannot be made through the proxy at all.
+- **The GitHub route denies**, for every session:
+  - every `POST /repos/*/*/actions/workflows/*/dispatches`, by file name or numeric id;
+  - `POST /repos/*/*/dispatches`;
+  - ref writes to `refs/tags/release/*` and to the Vercel production branch, through the REST git
+    refs API, the contents API and the GraphQL `createRef`/`updateRef` mutations. The proxy
+    matches GraphQL by parsing the operation (§4.1).
+- **Approval itself is a signed release tag** (18 §3.1), verified by the production job.
 
-DR-32 fails when the rendered proxy allow-list would permit the dispatch without approval.
+DR-32 fails when the rendered policy would forward any of the denied operations.
 
 ### 3.5 Bench sandboxes
 
-Bench rollouts (06 §4) run behind the same proxy implementation in a **fake-upstream** mode. The
+Bench rollouts (06 §4) run under trust model A, behind the same proxy implementation in a
+**fake-upstream** mode. The
 allow-listed hosts resolve to local stubs that record the requests and return canned responses
 from the task's `fixture/`. No real credential exists in a bench sandbox. The rollout code path is
 identical to production, so a proxy-related failure shows up in the bench first.
 
 ## 4. Proxy configuration
 
-`greenlight secrets proxy-config` (07 §2.13) renders the union of `inject` specs (08 §12) for
-every **configured** token in the manifest's tool set.
+`greenlight secrets proxy-config` (07 §2.13) renders a **policy** from the `inject` specs (08 §12)
+of every configured token. Earlier drafts allowed only host, method and path globs. That language
+could not express the seed rules ("only the wrapper's projects", "only non-default branches"), so
+it is replaced by the typed policy below.
 
-### 4.1 Rendering rules
+### 4.1 Request normalization
 
-1. Hosts are exact. A leading `*.` matches exactly one label. No other wildcards are allowed.
-2. `allow` is default-deny. A request is forwarded only if `(method, path)` matches an entry.
-   Unmatched requests to an allow-listed host get `403 {"error":"denied by greenlight proxy",
-   "rule":"<host>"}` and are logged with `denied: true`.
-3. Injection replaces the `header` with `<scheme> <value>`, or the raw value, after removing any
-   value the agent sent. The agent cannot pass a second credential through.
-4. The output is deterministic, with sorted keys, so `--check` can diff it.
+Before any rule is evaluated, the proxy normalizes the request:
 
-### 4.2 Seed `inject` entries
+1. **Path canonicalization.** Percent-decode once, collapse `//`, resolve `.` and `..`, and reject
+   requests whose decoded path contains `..`, a NUL byte, or a second encoding layer.
+2. **Size.** Reject request bodies larger than `maxBodyBytes` (default 1 MiB) with 413. Bodies that
+   rules inspect must be fully read first, so streaming uploads are refused on routes that have
+   body predicates.
+3. **Parsing.** Parse the query string and, for `application/json`, the body. GraphQL requests are
+   parsed into operation type, field names and variables, so rules can match `mutation updateRef`.
+   An unparseable body on a route with body predicates is denied.
+4. **Credential stripping.** Strip every header named in the credential's `inject.header`, and any
+   `Authorization`, `Cookie` or `X-*-Key` header the agent sent.
 
-The seed `inject` entries are below. The paths are deliberately narrower than each token's scopes,
-so that the proxy enforces less than the token permits.
+### 4.2 Policy language
 
-| token (`envVar`) | hosts | allow (summary) | denied of note |
+```ts
+interface ProxyPolicy {
+  version: 1;
+  credentials: CredentialRule[];
+  defaults: { maxBodyBytes: number; followRedirects: false; auditBodies: false };
+}
+
+interface CredentialRule {
+  id: string;                         // "cloudflare-beta", "github-agent"
+  secret: string;                     // envVar in the secret source
+  env: 'beta' | 'any';                // production credentials never render for agent sessions (18 §2)
+  hosts: string[];                    // exact; leading "*." matches one label
+  inject: { header: string; scheme: 'Bearer' | 'Basic' | 'raw' }
+        | { placeholder: string; in: 'path' | 'query' | 'header' | 'body' };   // substitution
+  baseUrlEnv?: string;                // Worker proxy: env var the client reads for its API base URL
+  select: Selector;                   // which requests this credential is FOR (credential selection)
+  allow: Rule[];                      // default deny
+  deny?: Rule[];                      // evaluated first; wins over allow
+  scrub?: string[];                   // response JSON paths / regexes (§5)
+}
+
+interface Rule {
+  method: string | string[];
+  path: string;                       // glob over the canonical path; ":name" captures a segment
+  query?: Predicate[];
+  body?: Predicate[];                 // JSON pointer predicates, or GraphQL operation predicates
+  resource?: ResourceSelector;        // ties a captured segment or body value to an allowed set
+}
+
+type Predicate =
+  | { at: string; equals: string | number | boolean }
+  | { at: string; in: (string | number)[] }
+  | { at: string; matches: string }   // anchored regex
+  | { at: string; absent: true }
+  | { graphql: { type: 'query' | 'mutation'; fields: string[] } };
+
+interface ResourceSelector {
+  from: string;                       // ":acct", ":script", "/body/project_id", …
+  allowed: string[] | { manifest: 'beta-scripts' | 'wrapper-repos' | 'beta-account' | 'tool-beta-hosts' };
+}
+
+type Selector = { always: true } | { resource: ResourceSelector } | { header: string; equals: string };
+```
+
+**Evaluation order.**
+
+1. **Select the credential.** Among the rules whose `hosts` match, exactly one `select` must match.
+   - If none matches, the request is denied.
+   - Two rules for one host with overlapping selectors fail at `proxy-config` time.
+
+   This removes any union of permissions across two credentials for the same host, so two tool
+   credentials on one host cannot cross scopes.
+2. **Apply the rules.** Evaluate `deny`, then `allow`, against the canonical request.
+3. **Resolve resources.** Resolve `resource` selectors against the manifest when the session
+   starts. The resolved sets are frozen for the session.
+4. **Inject** the credential.
+5. **Forward** with redirects **not** followed. A 3xx response is returned to the client with its
+   `Location` header. If the client follows it to a host that is not allow-listed, the request
+   carries no credential, and under model A it cannot leave the sandbox.
+
+`proxy-config --check` also runs a **mutation set** for each credential. This is a fixed list of
+forbidden requests, and the check fails if any of them would be forwarded (§5):
+- another account id;
+- a production script name;
+- a `release/*` tag ref;
+- a dispatch by numeric workflow id;
+- a GraphQL `createRef` mutation;
+- a path containing an encoded `..`;
+- a body that names a disallowed project;
+- a request matching two credentials.
+
+### 4.3 Seed rules
+
+The seed rules are deliberately narrower than each token's scopes.
+
+| credential | hosts | allow (summary) | deny of note |
 |---|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | `api.cloudflare.com` | `GET /client/v4/**`; `PUT /client/v4/accounts/*/workers/scripts/*`; `POST /client/v4/graphql` | DNS record deletes, zone settings |
-| `VERCEL_API_TOKEN` | `api.vercel.com` | `GET /**`; deployment create/promote for the wrapper's project ids only | project/domain deletes |
-| `NEON_API_KEY` | `console.neon.tech` | `GET /api/v2/**`; branch create/delete only for non-default branches | project delete |
-| `SUPABASE_ACCESS_TOKEN` | `api.supabase.com` | `GET /v1/**` | everything mutating; migrations go through CI's gate |
-| `GEMINI_API_KEY` | `generativelanguage.googleapis.com` | `POST /v1beta/models/*:generateContent` | — (header `x-goog-api-key`, scheme `raw`) |
-| `TF_API_TOKEN` | `app.terraform.io` | `GET /api/v2/**` | state writes, runs (apply is CI-only) |
-| `GITHUB_TOKEN` | `api.github.com` | `GET /**`; issue/PR create and comment on the wrapper and tool repos | `promote.yml` dispatch (§3.4); secrets endpoints; branch protection |
-| per-tool verify tokens, e.g. `BAMCP_VERIFY_TOKEN` | the tool's prod host | `POST /mcp` | — |
+| `cloudflare-beta` (beta account token, 18 §4) | `api.cloudflare.com` | `GET /client/v4/accounts/:acct/**` with `:acct` ∈ `beta-account`; `PUT /client/v4/accounts/:acct/workers/scripts/:script` with `:script` ∈ `beta-scripts`; `POST /client/v4/graphql` with `type: query` | every other account id; zones and DNS; user-level token endpoints |
+| `github-agent` (agent identity token) | `api.github.com` | `GET /**`; issue and PR create, comment and update on `wrapper-repos`; `POST /repos/:o/:r/git/refs` with `/body/ref` not matching `^refs/tags/release/` | every workflow dispatch, by name or numeric id; `POST /repos/*/*/dispatches`; secrets, environments, deployments, branch protection and rulesets endpoints; GraphQL `createRef`/`updateRef` whose ref matches `refs/tags/release/` or the Vercel production branch |
+| `gemini` | `generativelanguage.googleapis.com` | `POST /v1beta/models/*:generateContent` | — (header `x-goog-api-key`, scheme `raw`) |
+| `tf-read` | `app.terraform.io` | `GET /api/v2/**` | runs, state writes |
+| per-tool verify tokens (beta) | the tool's beta host (`tool-beta-hosts`) | `POST /mcp`, `GET /**` | — |
 
-### 4.3 CI-only tokens
+Agents receive the Neon **beta branch connection string** as an environment value, not an API
+key. There is no agent rule for Vercel, Supabase, the Neon API, or any production host. Production
+verification with a token runs in CI's `ship`.
+
+### 4.4 CI-only tokens
 
 **CI-only tokens** have no `inject` field, and DR-30 lists them:
 
@@ -190,63 +311,48 @@ so that the proxy enforces less than the token permits.
   signing over the request itself, and a header swap cannot produce the signature.
 - `DOCKER_SSH_*`. SSH is not HTTP.
 - `GREENLIGHT_DISPATCH_TOKEN` and `GREENLIGHT_STATUS_TOKEN_<TOOL>`. These are cross-repo workflow
-  plumbing and have no agent use case.
-- Database passwords (`TF_VAR_*_DATABASE_PASSWORD`). Agents use the read paths above, and DDL goes
-  through CI's migrations gate.
+  plumbing.
+- Database passwords (`TF_VAR_*_DATABASE_PASSWORD`). DDL goes through CI's migrations gate.
+- **Every production credential** (18 §2). These are the production Cloudflare account token,
+  `VERCEL_API_TOKEN`, `NEON_API_KEY`, `SUPABASE_ACCESS_TOKEN` and `TF_API_TOKEN` with apply rights.
+- `GREENLIGHT_RELEASE_SIGNERS`. This is not a credential, but it is the trust root for approvals
+  (18 §3.1), so it is CI-only.
 
-### 4.4 Promotion approval record
+There is no `GREENLIGHT_APPROVAL_KEY`. Earlier drafts minted approvals with a shared HMAC key, and
+that approach is withdrawn, because any process that could reach the key could approve.
 
-**How the owner approves.** There are two equivalent paths, and both require a human at a TTY or
-in the GitHub UI.
+### 4.5 Approval replay and audit
 
-1. **In GitHub.** The owner dispatches `promote.yml` with the `name` input, as today. The approval
-   *is* the `workflow_dispatch` event. Its actor, captured as `github.actor`, must be a user and not
-   a bot. No record is minted, because the workflow pins the sha itself (capture develop's tip, then
-   `verify --expect-sha`, then `promote --commit`).
-2. **In a shell.** The owner runs `greenlight promote <tool> --commit <sha> --approve`. This prints
-   the record's summary and asks for typed confirmation of the short sha. It refuses when stdin is
-   not a TTY, so an agent cannot complete it. It then mints the record and prints it once as a
-   compact token.
+- **Replay protection** for approvals is a property of the production job (18 §3.1 step 5). The
+  proxy holds no approval state.
+- **Audit records** hold `(sessionId, credentialId, host, method, canonicalPath, status, injected,
+  denied, ruleId)`. Query strings, bodies and headers are never logged. Path segments that no
+  `resource` selector names are hashed before logging, because a path can carry a secret.
 
-**Record format.** The record is a JSON object, signed and then encoded as
-`gla1.<base64url(payload)>.<base64url(sig)>`:
+### 4.6 Client support matrix
 
-```ts
-interface PromotionApproval {
-  v: 1;
-  tool: string;                // manifest name
-  sha: string;                 // 40-hex: the exact develop commit approved for main
-  repo: string;                // "<owner>/<repo>" whose develop→main FF is approved (the tool repo for cross-repo tools)
-  approver: string;            // GitHub login of the human (from `gh api user` at mint time)
-  issuedAt: string;            // ISO
-  expiresAt: string;           // ISO, issuedAt + ≤ 1h
-  nonce: string;               // 16 random bytes, hex; single use
-}
-```
+A credential is offered to agents only through clients that have been shown to work with the
+chosen proxy implementation. The others are reported by `proxy-config --check` as **CI-only for
+this implementation**. The M5 prototype fills in this matrix. The entries below are the expected
+starting points to test, and none of them is a claim.
 
-`sig` is HMAC-SHA256 over the payload bytes, keyed by `GREENLIGHT_APPROVAL_KEY`. That key lives
-in the secret source and is **CI-only toward agents**: it has no `inject` entry, so an agent can
-never sign a record. It is available to the operator's shell (for minting), to the proxy (for
-checking), and to CI.
+| client | forward proxy (`HTTPS_PROXY` + CA) | Worker proxy (base-URL override) | test |
+|---|---|---|---|
+| `wrangler` | expected to work, with `NODE_EXTRA_CA_CERTS` | to verify: whether it honours an API base-URL override | `wrangler deploy` of a beta script; the same against a production script name, which must be refused |
+| `gh` | expected to work (`HTTPS_PROXY`, custom CA) | `GH_HOST` targets GitHub Enterprise hosts, which is not a general override; treat as unsupported | `gh pr create`; `gh api` on an allowed and a denied path; `gh workflow run` by numeric id, which must be refused |
+| `git` over HTTPS | expected to work (`http.proxy`, `http.sslCAInfo`) | unsupported | push to an allowed branch; push of a `release/*` tag, which must be refused |
+| Terraform providers | expected to work (Go honours `HTTPS_PROXY`) | per provider, to verify | `terraform plan` with the read-only token |
+| `vercel` CLI, Neon and Supabase CLIs | n/a: agents hold no credential for them | n/a | none |
+| Node `fetch` (Node 24) | only with `NODE_USE_ENV_PROXY=1` and the CA (DR-31) | works with an explicit base URL | the verify harness against a beta MCP endpoint |
 
-**How it is checked.** The proxy and the CLI check a record in the same way.
+Each test runs in a model-A sandbox with direct egress blocked. A client that bypasses the proxy
+therefore fails instead of passing silently.
 
-1. When the proxy sees a request to dispatch `promote.yml`, or a
-   `PATCH /repos/{o}/{r}/git/refs/heads/main` from a session, it requires the header
-   `X-Greenlight-Approval: <token>`. `greenlight promote --approval` sets that header on its GitHub
-   calls.
-2. It verifies the signature, checks that `expiresAt` is in the future, and checks that the
-   `nonce` has not been used. Used nonces are kept in the proxy's store until expiry.
-3. It checks that the request targets `repo`. For a dispatch, the `inputs.name` must equal `tool`.
-   For a ref update, the new `sha` must equal the record's `sha`. For a dispatch, the record's `sha`
-   is passed as the `commit` input, and `promote.yml` verifies that develop's tip equals it before
-   anything else. The existing `promote --commit` refusal (develop moved) covers the race.
-4. On success it forwards the request and marks the nonce used. On failure it returns
-   `403 {"error":"promotion requires a valid approval","reason":"<expired|sha-mismatch|tool-mismatch|replayed|bad-signature>"}`.
+### 4.7 Promotion approval record (moved)
 
-`greenlight promote --perform --approval <token>` outside CI applies the same checks locally before
-it attempts the fast-forward. It writes the approval's `approver` and `nonce` into the `promote`
-stage event's `detail`, so the raw record shows who approved which sha.
+The approval record that earlier drafts defined at §4.4 has been replaced by the owner-signed
+release tag in [18 §3.1](18-release-authority.md). References to "11 §4.4" for approval mean 18
+§3.1.
 
 ## 5. Limits and response scrubbing
 
@@ -262,9 +368,12 @@ stage event's `detail`, so the raw record shows who approved which sha.
   returning them, and replaces any match with `gl-redacted-<kind>`. The scrubbed form is what the
   agent sees and what any trace captures.
 - **TLS interception is a trust decision.** Installing the forward proxy's CA lets it read all
-  traffic that goes through it. `agent run` routes only allow-listed hosts through the proxy
-  (`NO_PROXY` for everything else) when the proxy supports split routing. The skills state the
-  trade-off when offering `--proxy infisical`.
+  traffic that goes through it. Split routing (§3.2) limits that to allow-listed hosts. Under model
+  A the firewall still prevents direct egress, so this narrows the CA's view without creating a
+  bypass. The skills state the trade-off when offering `--proxy infisical`.
+- **Streaming responses** are scrubbed incrementally with a carry-over buffer of 4 KiB, so a secret
+  split across chunks is still matched. Responses with a `Content-Encoding` are decoded before
+  scrubbing and re-encoded after.
 - **Placeholders are not secrets.** `gl-placeholder-*` values may appear in logs and traces. The
   §6 detector ignores them.
 
@@ -296,18 +405,20 @@ two ways.
 
 Each match is replaced with `gl-redacted-<kind>`. The detector MUST have a test that plants one
 example of every shape, plus every manifest secret name with a random value, into a sample log, and
-asserts zero survivors. This is the P5 merge blocker (14). The shapes are illustrative and MUST be
+asserts zero survivors. This is a merge blocker for raw capture in M3 (14). The shapes are illustrative and MUST be
 confirmed against each provider's documented token format when they are implemented.
 
-## 7. Codex (P7)
+## 7. Codex (M7)
 
 Codex cloud removes secrets before the agent phase, so a Codex cloud task cannot run authenticated
-steps itself. The P7 options, in order of preference, are:
+steps itself. For this purpose Codex cloud is a trust model A environment. The M7 options, in order
+of preference, are:
 
 1. rely on CI's `ship` and `promote.yml` for every authenticated step, which needs no new
    mechanism;
-2. run Codex locally under `greenlight agent run -- codex`, which works today for the CLI, given
-   that it honours `HTTPS_PROXY`. Codex CLI proxy behavior MUST be verified at P7;
+2. run Codex under `greenlight agent run -- codex`, isolated (model A) where possible, given that
+   the Codex CLI honours `HTTPS_PROXY`. Its proxy behavior MUST be verified at M7 and added to
+   §4.6;
 3. a Codex cloud environment whose setup script starts the proxy's client side and whose agent
    phase reaches the proxy over the network. This depends on Codex cloud network policy and is
    unverified.
@@ -325,5 +436,5 @@ defeats the boundary.
 - Docker sandboxes, credentials: https://docs.docker.com/ai/sandboxes/security/credentials/
 - Blaxel, egress proxy for agent credentials: https://blaxel.ai/blog/egress-proxy-api-credentials-ai-agent-sandboxes
 
-Vendor details are as of November 2026, and several of these products are months old. P4 MUST
-re-verify them.
+Vendor details are as of November 2026, and several of these products are months old. M5 MUST
+re-verify them before choosing an implementation.

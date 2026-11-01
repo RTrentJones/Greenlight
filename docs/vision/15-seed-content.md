@@ -1,6 +1,8 @@
 # 15 — Seed content
 
-This document contains the initial wiki content as draft pages, ready to copy into files. Section 2
+This document contains the initial wiki content as draft pages. A page is **ready to copy only
+after it passes the actual `greenlight wiki lint`** (§1, step 7). These drafts were written before
+the linter exists, and they must be re-validated when it does. Section 2
 pages go in `wiki/` in the framework repo. Section 6 and section 7 pages go in `wiki/` in
 `RTrentJones.dev`. Every page uses the schemas in 08 §3.
 
@@ -11,7 +13,7 @@ Evidence refs were resolved against the repos at the time of writing:
 - `post:` refs point at the published blog.
 
 A ref marked `TODO` could not be resolved from the material available. It MUST be resolved, or
-removed, during P0-05, and `wiki lint --online` (LR-03) catches any that are left.
+removed, during M1 seeding, and `wiki lint --online` (LR-03) catches any that are left.
 
 `updated` dates are the date of seeding, written below as `2026-11-01`. Seeders replace them with
 the date they actually commit.
@@ -40,8 +42,36 @@ the date they actually commit.
      wiki/patterns/<slug>.md.`;
    - a verify-config header comment in the wrapper becomes one line, `// Why: wiki/tools/<name>/intent.md`,
      while each check keeps a one-line inline comment naming its criterion id (`// AC-3`).
-6. **Back-link.** Add each seeded pattern to `cites` in the `PURPOSE.md` of every skill whose rules
-   it justifies, and list those skills in the pattern's `skills`.
+6. **Back-link.** Add each seeded pattern, decision and contract page to `cites` in the
+   `PURPOSE.md` of every skill whose rules it justifies, and list those skills in the page's
+   `skills`. LR-11 requires the back-link on every cited page type, not only patterns.
+7. **Validate before calling a seed ready.** Seeding happens in M1, and it is complete only when
+   all of the following hold:
+   - `greenlight wiki lint --strict` passes on the seeded framework wiki and project wiki;
+   - `pnpm check-seam` passes on every framework page;
+   - every `confirmed` pattern satisfies LR-05: evidence, `catches`, and at least one remediation
+     with `verified: true` backed by deployed red→green evidence or a guard that fails on the
+     faulty configuration.
+
+   A page that fails stays out of the wiki, or enters as `hypothesis`. No exception is granted
+   for drafts in this document.
+8. **Framework prose is generalized; evidence stays specific.** Framework pages describe the
+   failure in terms of lanes, targets and stores, and never name the owner's tools or domain
+   (LR-19). The fields `evidence`, `remediation[].ref` and `catches.graderTask` may name the
+   owner's repos, issues and commits. This is the LR-19 exception for `EvidenceRef` fields, and it
+   keeps the evidence checkable. The project-specific narrative lives in the project wiki and the
+   incident pages (§6, §7), which stay in the wrapper.
+9. **Separate where a defect lived from where the lesson applies.**
+   - `affects` is the semver range of framework versions that carried a framework defect, or `"*"`
+     when the defect was in application code.
+   - `relevance` says where the lesson keeps applying:
+     - `framework-version`: hidden once the installed CLI is outside `affects`;
+     - `app-code`: surfaced regardless of CLI version, because newly written app code can repeat
+       it;
+     - `both`.
+
+   An app-level recurrence of an old framework-era fault therefore still surfaces the general
+   guidance.
 
 ## 2. Framework patterns
 
@@ -59,7 +89,8 @@ class: proxy-check
 atRisk: Supabase free-tier idle timer, measured as Postgres activity
 probed: PostgREST's in-memory schema cache at /rest/v1/
 cells: ["*/*/supabase"]
-applies: "<0.9.0"
+affects: "<0.9.0"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - issue:RTrentJones/RTrentJones.dev#55
   - commit:RTrentJones/greenlight@c97222a07dc82904193ed241f266cb6a15cce29e
@@ -73,8 +104,8 @@ remediation:
 skills: [provider-supabase, deploy-verify-promote]
 ---
 ## Symptom
-The keepalive Worker reported HeistMind healthy on every sweep, but the project paused anyway after
-a week. The next sweep got a 530 from the paused project and opened an issue.
+The keepalive Worker reported a Supabase-backed tool healthy on every sweep, but the project paused
+anyway after a week. The next sweep got a 530 from the paused project and opened an issue.
 
 ## Root cause
 The probe requested `/rest/v1/`. PostgREST answers that path from its schema cache without sending
@@ -98,20 +129,21 @@ id: pattern/keepalive-probe-cached
 type: pattern
 title: A keepalive response served from Cloudflare's cache
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: proxy-check
 atRisk: the upstream store or app the keepalive is meant to touch
 probed: Cloudflare's edge cache in front of the Worker's subrequest
 cells: ["*/*/*"]
-applies: "<0.9.0"
+affects: "<0.9.0"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - commit:RTrentJones/greenlight@938973a9046fc1f10a2bb5c5c85577f25fbefdb3
 catches:
   description: the probe's subrequest bypasses the cache, and the upstream access is observable (a query count or log line moves)
   checkSignature: "keepalive.*cache"
 remediation:
-  - { outlet: mechanism, ref: "commit:RTrentJones/greenlight@938973a9046fc1f10a2bb5c5c85577f25fbefdb3", verified: true }
+  - { outlet: mechanism, ref: "commit:RTrentJones/greenlight@938973a9046fc1f10a2bb5c5c85577f25fbefdb3", verified: false }
 skills: [provider-cloudflare]
 ---
 ## Symptom
@@ -139,13 +171,14 @@ id: pattern/workers-fetch-cache-conflict
 type: pattern
 title: The Workers runtime rejects cache:'no-store' combined with cf.cacheTtl
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: proxy-check
 atRisk: every keepalive target (no probe leaves the Worker)
 probed: nothing — the Worker throws before the subrequest is sent
 cells: ["*/*/*"]
-applies: ">=0.10.0 <0.10.1"
+affects: ">=0.10.0 <0.10.1"          # framework versions that carry the defect
+relevance: both
 evidence:
   - issue:RTrentJones/RTrentJones.dev#86
   - pr:RTrentJones/greenlight#28
@@ -170,8 +203,9 @@ runtime rejects that pair. Unit tests ran in Node, which accepts both options, s
 runtime (miniflare / `wrangler dev`), not only in Node.
 
 ## How it is caught
-The replay runs the keepalive under miniflare and asserts one subrequest per target. Set
-`verified: true` once a production sweep on 0.10.1 has reached the probe table.
+The replay runs the keepalive under miniflare and asserts one subrequest per target. The page moves
+to `confirmed` once a production sweep on 0.10.1 is shown, by a hash-verified deployed Worker, to
+have reached the probe table.
 ```
 
 ### 2.4 `patterns/caret-zero-major.md`
@@ -182,13 +216,14 @@ id: pattern/caret-zero-major
 type: pattern
 title: A caret range on a 0.x dependency silently blocks minor upgrades
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: artifact-identity
 atRisk: the fix the operator believes is deployed
 probed: the lockfile after `pnpm update`, which reported success
 cells: ["*/*/*"]
-applies: "<1.0.0"
+affects: "<1.0.0"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - issue:RTrentJones/RTrentJones.dev#55
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
@@ -206,11 +241,13 @@ The dependency was declared as `^0.8.0`. For a 0.x version, a caret range allows
 releases, so 0.9.0 was out of range and the update was a silent no-op.
 
 ## Fix / workaround
-Upgrade across a 0.x minor explicitly: `pnpm add @rtrentjones/greenlight@^0.9.0`, then
+Upgrade across a 0.x minor explicitly: `pnpm add @rtrentjones/greenlight@^<minor>.0`, then
 `greenlight bump`. Every minor release's notes give this command.
 
 ## How it is caught
-DR-33 lists open patterns that apply to the installed version but are fixed in a newer one. After
+DR-33 lists patterns known to the installed wiki that affect the installed version and name a fix
+in a later one. Knowledge published after the installed release reaches an old installation only
+through the opt-in advisory feed (04 §6). After
 any upgrade, confirm the deployed artifact (see `pattern/settle-greenlights-previous-deploy`).
 ```
 
@@ -228,7 +265,8 @@ class: artifact-identity
 atRisk: the commit being shipped
 probed: whatever artifact the URL served during the settle window
 cells: ["*/*/*"]
-applies: "<0.8.0"
+affects: "<0.8.0"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - commit:RTrentJones/greenlight@04280a63432a861e51e2b5e4d4bb71a209787bc1
   - commit:RTrentJones/greenlight@debcf1e4fc87ed6209e2c63ee182afa77f0aade5
@@ -264,19 +302,20 @@ id: pattern/oci-restart-window
 type: pattern
 title: An OCI container restart outlasts the verify window
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: env-drift
 atRisk: a correct deploy reported as failed (false red), which triggers needless rollback or heal
 probed: the old or booting container during the restart
 cells: ["mcp/oci/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: both
 evidence:
   - commit:RTrentJones/RTrentJones.dev@88c21e1c1a5a8681134c72eec09ae9d3c1cd39b9
 catches:
   description: prod verify for oci tools retries through the restart window, gated on identity so it cannot pass early
 remediation:
-  - { outlet: verify, ref: "commit:RTrentJones/RTrentJones.dev@88c21e1c1a5a8681134c72eec09ae9d3c1cd39b9", verified: true }
+  - { outlet: verify, ref: "commit:RTrentJones/RTrentJones.dev@88c21e1c1a5a8681134c72eec09ae9d3c1cd39b9", verified: false }
 skills: [provider-oci, deploy-verify-promote]
 ---
 ## Symptom
@@ -303,23 +342,24 @@ id: pattern/vercel-build-settle
 type: pattern
 title: A Vercel production build outlasts the verify settle window
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: env-drift
 atRisk: a correct promote reported as failed
 probed: the previous production deployment, or the alias mid-switch
 cells: ["next/vercel/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: both
 evidence:
   - commit:RTrentJones/RTrentJones.dev@2545b52af0ad00089897bca3576690bbb801c945
 catches:
   description: the settle window covers a prod build plus aliasing, and identity gating prevents passing on the old deployment
 remediation:
-  - { outlet: verify, ref: "commit:RTrentJones/RTrentJones.dev@2545b52af0ad00089897bca3576690bbb801c945", verified: true }
+  - { outlet: verify, ref: "commit:RTrentJones/RTrentJones.dev@2545b52af0ad00089897bca3576690bbb801c945", verified: false }
 skills: [provider-vercel, deploy-verify-promote]
 ---
 ## Symptom
-Verify after a promote failed for Tracer, then passed on a re-run.
+Verify after a promote failed for a Vercel-hosted tool, then passed on a re-run.
 
 ## Root cause
 Vercel deploys through its git integration (`deployStyle: 'git'`). A production build plus
@@ -342,13 +382,14 @@ id: pattern/neon-never-sleeps
 type: pattern
 title: Idle-time polling keeps a scale-to-zero Neon compute awake
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: free-tier-physics
 atRisk: Neon free-tier compute allowance (the compute must suspend when idle)
 probed: n/a — no check measured idle database traffic
 cells: ["*/*/neon", "mcp/oci/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
   - commit:RTrentJones/Polyphony@TODO   # the worker-wakeup / reaper change in the Polyphony repo
@@ -361,7 +402,7 @@ remediation:
 skills: [provider-neon, greenlight-build]
 ---
 ## Symptom
-An idle Polyphony queried Postgres about 50,000 times a day. Neon never suspended, and roughly 720
+An idle containerized app with a Neon database queried Postgres about 50,000 times a day. Neon never suspended, and roughly 720
 awake hours a month consumed most of the free compute allowance before any real use.
 
 ## Root cause
@@ -387,13 +428,14 @@ id: pattern/probe-touches-wrong-layer
 type: pattern
 title: A liveness probe that touches a layer it is not managing
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: proxy-check
 atRisk: the layer the probe exists to manage (container for needs-heal, store for needs-traffic)
 probed: a deeper or shallower layer than the one at risk
 cells: ["*/*/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
@@ -405,12 +447,13 @@ remediation:
 skills: [deploy-verify-promote, provider-oci, greenlight-build]
 ---
 ## Symptom
-Polyphony's keepalive probed `/health`, which checks the database and pgvector. It woke a database
+A container tool's keepalive probed `/health`, which checks the database. It woke a database
 that should have stayed asleep, and it told the heal path nothing the heal path needed.
 
 ## Root cause
-The probe exists to detect a reclaimed or dead container. HeistMind's probe needed to reach the
-store, but Polyphony's needed to stop at the application. One endpoint was serving both purposes.
+The probe exists to detect a reclaimed or dead container. A probe guarding a pausing store has to
+reach the store, but a probe guarding a container has to stop at the application. One endpoint was
+serving both purposes.
 
 ## Fix / workaround
 Split liveness from readiness. `/health/live` answers from the process, and it is what keepalive
@@ -430,13 +473,14 @@ id: pattern/ok-before-success
 type: pattern
 title: A status that reports ok before any attempt has succeeded
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: proxy-check
 atRisk: the scheduled work the status claims is happening
 probed: the existence of a status record, not a recorded successful attempt
 cells: ["agent/workers/*", "*/*/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - commit:RTrentJones/RTrentJones.dev@f143d754539eb664f2a6e2e1dbf487ac05bf32d8
   - commit:RTrentJones/greenlight@9d3fc702233be9435d3312effdc2c285068e1034
@@ -444,12 +488,12 @@ catches:
   description: verify asserts ok == true AND lastError == null AND lastRun maxAgeHours; the app sets ok only after a recorded success
   checkSignature: "status.*ok|lastRun"
 remediation:
-  - { outlet: verify, ref: "tools/muse/verify.config.ts", verified: true }
+  - { outlet: verify, ref: "tools/muse/verify.config.ts", verified: false }
   - { outlet: template, ref: "tools/_template-agent", verified: false }
 skills: [provider-gemini, greenlight-build]
 ---
 ## Symptom
-Muse's `/status` could report `ok` while no run had succeeded, and verify itself could accept an
+A cron agent's `/status` could report `ok` while no run had succeeded, and verify itself could accept an
 attempt that never succeeded or a matcher that matched nothing.
 
 ## Root cause
@@ -461,7 +505,7 @@ Set `ok` only after a successful attempt is recorded, and expose `lastError` and
 harness now requires a successful attempt and rejects empty matchers (app contract C5).
 
 ## How it is caught
-Muse's spec asserts `ok`, `lastError: null` and `lastRun` freshness together.
+The agent template's verify spec asserts `ok`, `lastError: null` and `lastRun` freshness together.
 ```
 
 ### 2.11 `patterns/freshness-across-producers.md`
@@ -472,13 +516,14 @@ id: pattern/freshness-across-producers
 type: pattern
 title: One freshness check across all producers hides a stalled feed
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: proxy-check
 atRisk: each individual scheduled feed
 probed: the newest run from any producer
 cells: ["*/*/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - commit:RTrentJones/RTrentJones.dev@7c3ab66f385528bb24cfd8586927c0015182729e
   - commit:RTrentJones/RTrentJones.dev@03f17682f9936b83ff88344b76cc9d31d87dabe5
@@ -486,11 +531,11 @@ catches:
   description: one maxAgeHours assertion per producer key (tool:mode), each with its own budget
   checkSignature: "latestRunAtBySource"
 remediation:
-  - { outlet: verify, ref: "tools/tracer/verify.config.ts", verified: true }
+  - { outlet: verify, ref: "tools/tracer/verify.config.ts", verified: false }
 skills: [greenlight-build]
 ---
 ## Symptom
-Tracer's health route looked fresh while one daily feed had stopped.
+A dashboard's health route looked fresh while one daily feed had stopped.
 
 ## Root cause
 Freshness was computed over the newest run across all tools, and later per tool. A producer that
@@ -499,7 +544,7 @@ was still running, or a manual run, masked one that had stalled.
 ## Fix / workaround
 Key last-success time by producer (`tool:mode`) and assert each producer separately, with a budget
 matched to its schedule (app contract C4). Run freshness checks only where scheduled ingest exists,
-which for Tracer is prod.
+which is often prod only.
 
 ## How it is caught
 A per-producer `maxAgeHours` assertion fails as soon as its own feed stalls.
@@ -519,7 +564,8 @@ class: capability-regression
 atRisk: interactive MCP clients onboarding via OAuth Dynamic Client Registration
 probed: an authenticated tools/list using a pre-issued machine token
 cells: ["mcp/*/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - commit:RTrentJones/RTrentJones.dev@6c50cb82cf0f199e1f344599b1ac2e380f3c651e
 catches:
@@ -530,7 +576,7 @@ remediation:
 skills: [deploy-verify-promote]
 ---
 ## Symptom
-BAMCP's gate stayed green while claude.ai's connector could no longer connect.
+An OAuth MCP server's gate stayed green while interactive MCP connectors could no longer connect.
 
 ## Root cause
 Dynamic Client Registration was disabled. Verify authenticated with a static machine token, which
@@ -542,7 +588,7 @@ the endpoint answers an empty registration with 400, and RFC 9728 protected-reso
 served.
 
 ## How it is caught
-BAMCP's api checks fail if DCR is not advertised or answers 404.
+The server's api checks fail if DCR is not advertised or answers 404.
 ```
 
 ### 2.13 `patterns/unplanned-compute-replacement.md`
@@ -559,7 +605,8 @@ class: iac-hazard
 atRisk: running containers and databases (state, uptime, free-tier allocation)
 probed: n/a — apply ran unattended on push
 cells: ["*/oci/*", "*/*/neon", "*/*/supabase"]
-applies: "<0.10.0"
+affects: "<0.10.0"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - pr:RTrentJones/greenlight#27
   - commit:RTrentJones/greenlight@7cdecab738968fa5818cb934e04ff7c213b2613a
@@ -600,7 +647,8 @@ class: spec-validity
 atRisk: the behavior the assertion was written to guard
 probed: nothing — the misspelled field was ignored and the check passed
 cells: ["*/*/*"]
-applies: "<0.6.0"
+affects: "<0.6.0"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - commit:RTrentJones/greenlight@baae67534d2686116abfa8a7c40733c221755efd
 catches:
@@ -634,13 +682,14 @@ id: pattern/alert-suppressed-by-open-issue
 type: pattern
 title: One open keepalive issue suppresses alerts for every other target
 updated: 2026-11-01
-status: hypothesis
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: alert-suppression
 atRisk: alerting for every keepalive target other than the one already failing
 probed: the existence of any open keepalive issue
 cells: ["*/*/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
 catches:
@@ -650,8 +699,8 @@ remediation: []
 skills: [provider-github]
 ---
 ## Symptom
-While HeistMind's keepalive issue stayed open, a BAMCP or Polyphony failure could not have opened a
-new alert.
+While one target's keepalive issue stayed open, a failure on any other target could not have opened
+a new alert.
 
 ## Root cause
 The alert sink de-duplicates on any open keepalive issue rather than on an issue per target.
@@ -672,13 +721,14 @@ id: pattern/gemini-overload-fallback
 type: pattern
 title: Free-tier Gemini overloads and model rotation stall a cron agent
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: free-tier-physics
 atRisk: the agent's scheduled run producing output
 probed: n/a — the cron fired, and the model call failed
 cells: ["agent/workers/*"]
-applies: "<0.10.0"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - pr:RTrentJones/greenlight#25
   - pr:RTrentJones/greenlight#26
@@ -686,7 +736,7 @@ catches:
   description: lastRun freshness plus lastError == null on /status; a forced overload in a replay recovers via the fallback model
   checkSignature: "lastRun|lastError"
 remediation:
-  - { outlet: template, ref: "tools/_template-agent (retry + second model)", verified: true }
+  - { outlet: template, ref: "tools/_template-agent (retry + second model)", verified: false }
 skills: [provider-gemini]
 ---
 ## Symptom
@@ -701,8 +751,8 @@ Retry transient errors with backoff, and fall back to a second model when the fi
 overloaded. Keep the model ids in configuration so they can be rotated without a code change.
 
 ## How it is caught
-Muse's verify asserts `lastRun` within 26 hours and `lastError: null`, so a stalled cron fails the
-gate.
+The agent's verify spec asserts `lastRun` within 26 hours and `lastError: null`, so a stalled cron
+fails the gate.
 ```
 
 ### 2.17 `patterns/fix-merged-not-running.md`
@@ -713,13 +763,14 @@ id: pattern/fix-merged-not-running
 type: pattern
 title: A merged fix that is not what is running
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: artifact-identity
 atRisk: the behavior the fix was meant to restore
 probed: the repository and the release notes, not the deployed artifact
 cells: ["*/*/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: both
 evidence:
   - issue:RTrentJones/RTrentJones.dev#55
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
@@ -727,12 +778,12 @@ catches:
   description: compare the deployed artifact with the release that contains the fix — /__version sha, or a hash of the deployed Worker script against the published build — and check the deployed config names the new setting
   checkSignature: "identity|__version"
 remediation:
-  - { outlet: mechanism, ref: "greenlight@0.8.0 (ship --expect-sha)", verified: true }
+  - { outlet: mechanism, ref: "greenlight@0.8.0 (ship --expect-sha)", verified: false }
   - { outlet: doctor, ref: "DR-33", verified: false }
 skills: [deploy-verify-promote, greenlight-portfolio]
 ---
 ## Symptom
-HeistMind's probe-table setting was committed on July 31, and the database paused on August 16
+A keepalive probe-table setting was committed, and the database paused about two weeks later
 anyway.
 
 ## Root cause
@@ -758,26 +809,27 @@ id: pattern/preview-prod-path-drift
 type: pattern
 title: Preview and prod serve the app under different base paths
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: env-drift
 atRisk: the local gate's ability to predict prod
 probed: a preview whose paths resolve differently from prod's
 cells: ["mcp/oci/*", "mcp/docker/*"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: both
 evidence:
   - commit:RTrentJones/RTrentJones.dev@TODO   # "fix(polyphony): preview base /mcp, so local paths match prod"
   - commit:RTrentJones/RTrentJones.dev@TODO   # "fix(tracer): keep data-dependent verify checks prod-only"
 catches:
   description: the same verify config, with relative paths, passes in preview and prod; env-specific checks are explicit ctx branches (C7)
 remediation:
-  - { outlet: verify, ref: "verify/polyphony.config.ts", verified: true }
+  - { outlet: verify, ref: "verify/polyphony.config.ts", verified: false }
   - { outlet: doctor, ref: "DR-26", verified: false }
 skills: [deploy-verify-promote, greenlight-build]
 ---
 ## Symptom
-Polyphony's verify checks resolved to different routes under `greenlight preview` than in prod.
-Tracer's data-dependent checks failed in envs that never receive scheduled data.
+A container tool's verify checks resolved to different routes under `greenlight preview` than in
+prod. Another tool's data-dependent checks failed in envs that never receive scheduled data.
 
 ## Root cause
 The mcp lane appends `/mcp` to the prod base. The preview served from `/`, so relative paths
@@ -800,20 +852,21 @@ id: pattern/supabase-pause
 type: pattern
 title: A free-tier Supabase project pauses after a week without database activity
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: free-tier-physics
 atRisk: the whole app behind the paused project
 probed: n/a — physics of the free tier
 cells: ["*/*/supabase"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: app-code
 evidence:
   - issue:RTrentJones/RTrentJones.dev#55
   - commit:RTrentJones/greenlight@c97222a07dc82904193ed241f266cb6a15cce29e
 catches:
   description: a needs-traffic tool has a keepalive whose probe is a real query, run more often than the idle limit
 remediation:
-  - { outlet: mechanism, ref: "packages/keepalive (probeTable required)", verified: true }
+  - { outlet: mechanism, ref: "packages/keepalive (probeTable required)", verified: false }
   - { outlet: doctor, ref: "DR-22", verified: false }
 skills: [provider-supabase, greenlight-kickoff]
 ---
@@ -843,20 +896,21 @@ id: pattern/neon-state-rm
 type: pattern
 title: Forgetting a Neon branch in Terraform state partially, or silently
 updated: 2026-11-01
-status: confirmed
+status: hypothesis     # needs red→green evidence on a deployed artifact (LR-05); input to the cycle
 kind: failure
 class: iac-hazard
 atRisk: consistency between Terraform state and the real Neon branch and endpoint
 probed: a state edit that succeeded for one resource and not the other
 cells: ["*/*/neon"]
-applies: "*"
+affects: "*"          # framework versions that carry the defect
+relevance: framework-version
 evidence:
   - commit:RTrentJones/RTrentJones.dev@aa9fb485e653487683de761fbab4b173468f241b
   - commit:RTrentJones/RTrentJones.dev@47be1c3e20abcec507401285c6fff6e4504d7c83
 catches:
   description: the recovery step removes the branch and its endpoint in one `terraform state rm` and fails the job on any error
 remediation:
-  - { outlet: mechanism, ref: "commit:RTrentJones/RTrentJones.dev@aa9fb485e653487683de761fbab4b173468f241b", verified: true }
+  - { outlet: mechanism, ref: "commit:RTrentJones/RTrentJones.dev@aa9fb485e653487683de761fbab4b173468f241b", verified: false }
 skills: [provider-neon, provider-hcp]
 ---
 ## Symptom
@@ -891,6 +945,7 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-05-01   # TODO: date of greenlight-v1 §9
 scope: [blog]
+skills: [greenlight-kickoff, greenlight-build]   # back-links required by LR-11
 ---
 The blog must stay up unattended, so its `data` is `none`, `d1` or `kv`, or an external service
 (giscus, Resend). Supabase pauses after a week idle, and the blog schema makes it unrepresentable
@@ -909,11 +964,14 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-06-01   # TODO: confirm from greenlight-v2 §6
 scope: ["*/oci/*"]
+skills: [deploy-verify-promote, provider-oci]   # back-links required by LR-11
 ---
-The OCI free tier has no room for a standing beta. `mcp/oci` tools therefore ship directly to prod,
-and the pre-prod safety is `greenlight preview` (docker, matching prod's `/mcp` contract) plus the
-SHA-gated ship-gate. An agent MUST run the local gate before pushing an OCI tool, because there is
-no beta to catch a bad image.
+The OCI free tier has no room for a standing beta. `mcp/oci` tools therefore have no beta, and the
+pre-prod safety is `greenlight preview` (docker, matching prod's `/mcp` contract) plus the
+SHA-gated ship-gate. "Direct to prod" means *no beta*. It does not mean that a push deploys: the
+prod deploy of an image digest still requires the owner's approval of that artifact through the
+protected prod path (18-release-authority). Self-heal may only redeploy the last approved digest.
+An agent MUST run the local gate before asking for that approval.
 ```
 
 ### 3.3 `decisions/neon-default-over-supabase.md`
@@ -927,6 +985,7 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-07-01   # TODO: date of v0.2.25
 scope: ["*/*/neon", "*/*/supabase"]
+skills: [greenlight-kickoff, provider-neon, provider-supabase]   # back-links required by LR-11
 ---
 Neon gives branch-per-env Postgres that scales to zero and resumes automatically, so it needs no
 keepalive. Its liveness model is `needs-silence`: idle traffic is the failure. Choose Supabase only
@@ -942,13 +1001,14 @@ id: decision/github-single-secret-store
 type: decision
 title: GitHub Actions secrets are the single secret store
 updated: 2026-11-01
-status: confirmed          # becomes superseded when P4 ships
-supersededBy: null         # set to decision/one-readable-secret-source when P4 ships
+status: confirmed          # becomes superseded when M5 ships the readable source
+supersededBy: null         # set to decision/one-readable-secret-source when M5 ships
 decided: 2026-07-01        # TODO: date of v0.4.0
 scope: ["*"]
+skills: [provider-github]   # back-links required by LR-11
 ---
 Tokens are gathered with hidden input and pushed straight to GitHub Actions secrets. No local
-secret file exists. This holds until P4, which introduces a readable source that syncs to Actions
+secret file exists. This holds until M5, which introduces a readable source that syncs to Actions
 (ADR-06). The `--sink github` mode preserves this decision for owners who opt out.
 ```
 
@@ -963,8 +1023,9 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*"]
+skills: [greenlight-wiki]   # back-links required by LR-11
 ---
-`scripts/release.mjs` bumps the npm version and `MODULE_REF` together. From P0 on, the framework
+`scripts/release.mjs` bumps the npm version and `MODULE_REF` together. From M1 on, the framework
 wiki and skills ship in the same package (ADR-04). A consumer therefore never runs CLI logic, infra
 modules, skills or patterns from different versions. An infra-only or wiki-only fix still cuts a
 patch release.
@@ -981,12 +1042,14 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*"]
+skills: [deploy-verify-promote, greenlight-portfolio]   # back-links required by LR-11
 ---
-An agent may prepare a release by verifying beta at a pinned sha and showing the evidence. It does
-not dispatch promotion unless the owner says to, in the current conversation. `promotion:
-'auto-on-green'` is allowed only for public tools whose store does not pause and holds no user data
-(ADR-07). From P4, the proxy denies the dispatch call, and the `promote` environment requires the
-owner's approval (DR-32).
+An agent may prepare a release by verifying beta at a pinned sha and showing the evidence. It
+cannot release. Every channel that mutates prod (promotion, provider deploys, infra apply,
+migrations, recovery) runs only under a protected execution identity, and only for an artifact the
+owner approved (18-release-authority). `promotion: 'auto-on-green'` is allowed only for public tools
+whose store does not pause and holds no user data (ADR-07), and changing that policy is itself an
+owner-reviewed change (DR-32).
 ```
 
 ### 3.7 `decisions/no-domain-mode.md`
@@ -1000,11 +1063,13 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*/workers/*", "*/vercel/*"]
+skills: [greenlight-kickoff, provider-cloudflare]   # back-links required by LR-11
 ---
-Without `domain`, workers tools serve at `<name>.<sub>.workers.dev`, with beta as a separate
-`<name>-beta` Worker, and vercel tools at their `vercel.app` aliases. oci and docker tools need a
-domain. Beta URLs in this mode are public, because Cloudflare Access cannot sit in front of
-workers.dev, so kickoff says so (ADR-09).
+Without `domain`, workers tools serve at their account's workers.dev subdomain. Beta is a separate
+`<name>-beta` Worker in the beta account. Vercel tools serve at their `vercel.app` aliases, and oci
+and docker tools need a domain. Beta is public unless Cloudflare Access is enabled on the beta
+Worker's workers.dev route. Version preview URLs are disabled (`preview_urls: false`), so they
+cannot bypass that protection (09 §6.6, ADR-09).
 ```
 
 ### 3.8 `decisions/retire-through-destroy-guard.md`
@@ -1013,16 +1078,24 @@ workers.dev, so kickoff says so (ADR-09).
 ---
 id: decision/retire-through-destroy-guard
 type: decision
-title: Retiring a tool removes it from IaC; destruction goes through the guarded apply
+title: Retiring a tool uses a plan-bound deletion authorization; the general destroy guard stays
 updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*"]
+skills: [greenlight-portfolio]   # back-links required by LR-11
 ---
-`greenlight retire` edits files only: the manifest entry, `infra/<name>.tf`, the keepalive target,
-and the wiki folder, which moves to `archive/`. It never destroys anything. The push triggers
-`infra.yml`, whose destroy guard requires manual approval (pattern/unplanned-compute-replacement).
-The CLI edits IaC, and CI applies it.
+The generated plan guard *fails* any plan that deletes a stateful store, before approval is
+reached, and approval cannot resume a failed job. Retirement therefore never removes or weakens
+that guard. Instead, `retire` records the following, and the guard admits exactly those addresses
+and nothing else:
+- an inventory of the tool's resources, including Wrangler-managed and adopted ones;
+- a data-disposition choice;
+- a deletion authorization bound to the exact planned resource addresses and plan hash, approved
+  by the owner.
+
+Shared stores are refused. The tool is `retiring` until each inventoried resource has an explicit
+outcome, then `retired` (10, 18).
 ```
 
 ### 3.9 `decisions/wiki-never-rolls-back.md`
@@ -1036,6 +1109,7 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*"]
+skills: [greenlight-wiki]   # back-links required by LR-11
 ---
 This follows the paper: a rejected proposal reverts the skill, never the wiki. Knowledge learned
 from the failed attempt stays. A wrong page is retired by `status: superseded` plus `supersededBy`,
@@ -1054,6 +1128,7 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*"]
+skills: [greenlight-wiki, deploy-verify-promote]   # back-links required by LR-11
 ---
 Skills give building agents intent, liveness, decisions, facts and contract pages. After a gate
 fails, they also get `confirmed` patterns through `wiki lookup`. Incidents (long narratives) and
@@ -1069,9 +1144,10 @@ id: decision/one-readable-secret-source
 type: decision
 title: One readable secret source; CI, runtime and agents are its consumers
 updated: 2026-11-01
-status: hypothesis   # becomes confirmed when P4 ships
+status: hypothesis   # becomes confirmed when M5 ships
 decided: 2026-11-01
 scope: ["*"]
+skills: [greenlight-kickoff, provider-github]   # back-links required by LR-11
 ---
 Infisical holds every secret and syncs to GitHub Actions, so CI is unchanged. Terraform projects
 values into runtime stores. Agents run behind a credential-injecting proxy and hold placeholders
@@ -1090,6 +1166,7 @@ updated: 2026-11-01
 status: confirmed
 decided: 2026-11-01
 scope: ["*/oci/*", "*/docker/*"]
+skills: [provider-oci, provider-docker, provider-github]   # back-links required by LR-11
 ---
 OCI keys sign the whole request, so a header swap cannot produce the signature. Docker targets use
 SSH, which is not HTTP. `GREENLIGHT_DISPATCH_TOKEN` lives in tool repos. None of these has an
@@ -1102,15 +1179,18 @@ DR-30 lists them so the boundary is visible.
 Each page has `type: contract`, `status: confirmed`, and `lanes` and `enforcedBy` as shown. Every
 body is 30 lines or fewer, and the full normative text is in 09.
 
-| file | clause | lanes | body summary | enforcedBy |
-|---|---|---|---|---|
-| `contract/c1-identity.md` | C1 | `*` | serve the build sha at `/__version` (`{sha, builtAt?}`); specs set `requireIdentity: true` on deployed envs | template (P1-01…03), DR-24, mechanism (`ship --expect-sha`) |
-| `contract/c2-live-vs-ready.md` | C2 | `*` | `/health/live` never touches a store; `/health` reports each dependency as JSON | template, DR-21 |
-| `contract/c3-guarded-writes.md` | C3 | `*` | every write route has an unauthenticated-rejection check (`method: POST`, `status: 401`) | verify, skill (greenlight-build) |
-| `contract/c4-freshness-per-producer.md` | C4 | `*` | every cron or feed exposes last success per producer; one `maxAgeHours` per producer | DR-25, verify |
-| `contract/c5-recorded-success.md` | C5 | `*` | `ok` is set only after a recorded successful attempt; expose `lastError` | template (agent), verify |
-| `contract/c6-zero-idle-cost.md` | C6 | `*` | no timer touches a scale-to-zero store while idle; wake on demand | skill, DR-21, replay |
-| `contract/c7-env-invariant.md` | C7 | `*` | checks that hold in every env are marked; env-specific ones are explicit branches on `ctx.env`/`ctx.preview` | DR-26, template |
+Each contract page also carries `skills: [...]`, the skills whose `PURPOSE.md` cites it, as LR-11
+requires for every cited page.
+
+| file | clause | lanes | body summary | enforcedBy | skills |
+|---|---|---|---|---|---|
+| `contract/c1-identity.md` | C1 | `*` | serve the build sha at `/__version` (`{sha, builtAt?}`); specs set `requireIdentity: true` on deployed envs | template (M4 astro, M6 other lanes), DR-24, mechanism (`ship --expect-sha`) | greenlight-build, deploy-verify-promote |
+| `contract/c2-live-vs-ready.md` | C2 | `*` | `/health/live` never touches a store; `/health` reports each dependency as JSON | template, DR-21 | greenlight-build, provider-neon, provider-supabase, provider-oci |
+| `contract/c3-guarded-writes.md` | C3 | `*` | every write route has an unauthenticated-rejection check (`method: POST`, `status: 401`) | verify, skill (greenlight-build) | greenlight-build |
+| `contract/c4-freshness-per-producer.md` | C4 | `*` | every cron or feed exposes last success per producer; one `maxAgeHours` per producer | DR-25, verify | greenlight-build, provider-gemini |
+| `contract/c5-recorded-success.md` | C5 | `*` | `ok` is set only after a recorded successful attempt; expose `lastError` | template (agent), verify | greenlight-build, provider-gemini |
+| `contract/c6-zero-idle-cost.md` | C6 | `*` | no timer touches a scale-to-zero store while idle; wake on demand | skill, DR-21, replay | greenlight-build, provider-neon |
+| `contract/c7-env-invariant.md` | C7 | `*` | checks that hold in every env are listed in the config's named `meta.invariant` export; env-specific ones are explicit branches on `ctx.env`/`ctx.preview` | DR-26, template | greenlight-build, deploy-verify-promote |
 
 ## 5. Fact page skeletons
 
@@ -1151,12 +1231,13 @@ quotas:
 | `facts/hcp-terraform-free.md` | hcp | unaffected | `managed-resources`, `users` | local execution mode |
 | `facts/github-actions-free.md` | github | unaffected | `minutes` (private repos), `storage` | public repos differ |
 | `facts/oci-always-free.md` | oci | reclaimed | `a1-ocpus`, `a1-memory`, `container-instances` | `cardRequired: true`; record the idle-reclaim policy |
-| `facts/infisical-free.md` | infisical (P4) | unaffected | `identities`, `projects` | **record whether Agent Proxy is included** (Q3) |
+| `facts/infisical-free.md` | infisical (M5) | unaffected | `identities`, `projects` | **record whether Agent Proxy is included** (Q3) |
 
 ## 6. Project wiki for the six live tools (wrapper)
 
-Proposed check ids are given in square brackets after each criterion. P0-09 adds these `id`s to the
-verify configs once P2-03 lands. Until then, LR-15 warnings are expected and accepted.
+Proposed check ids are given in square brackets after each criterion. Verify `id` support lands in
+M0 (08 §6), so M1 seeding adds these `id`s to the wrapper's verify configs in the same change that
+writes the intent pages. LR-15 is therefore satisfiable from the first seeded page.
 
 ### 6.1 `wiki/tools/blog/intent.md` and `liveness.md`
 
@@ -1488,3 +1569,125 @@ hours a month, using most of the free compute allowance before any scene had bee
 keepalive probe was not the cause, since its cron runs every three days, but it probed the wrong
 layer.
 ```
+
+## 8. First-iteration fixtures (M2)
+
+These are the seeds for the first complete WikiSkill cycle (06 §10). They live in the framework
+repo's `bench/`, which is never visible to rollout agents, proposers or maintainers (06 §1.4).
+
+### 8.1 Seed status at M1
+
+Five framework patterns enter as `confirmed`. Each has deployed red→green evidence, or a guard that
+fails on the faulty configuration:
+
+| pattern | why it is confirmed |
+|---|---|
+| `keepalive-probe-misses-postgres` | 0.9.0 deployed; the deployed Worker was verified byte-identical to the release by SHA-256, its configuration named the probe table, and the probe table answered an anonymous request with a row (§7.1) |
+| `settle-greenlights-previous-deploy` | `verify --expect-sha` refuses an artifact whose `/__version` differs, on every SHA-gated ship |
+| `dcr-disabled-silently` | the DCR checks run against the deployed server on every ship and fail when registration is disabled |
+| `unplanned-compute-replacement` | the generated plan guard fails a plan that replaces running compute |
+| `spec-typo-disables-assertion` | strict spec validation fails a config with an unknown or mistyped field before any check runs |
+
+The other fifteen patterns enter as `hypothesis`, and they are inputs to the cycle. Confirming them
+is work the cycle does, through the outlets in 06 §5.6. Seeding does not confirm them.
+
+### 8.2 Replay tasks
+
+**`replay/keepalive-probe-reaches-store`** (`fidelity: runtime`, grader `app`)
+
+- **Fixture.** A fixture wrapper with one `next/vercel/supabase` tool, plus a fake Supabase-shaped
+  service run under miniflare. The fake serves:
+  - `/rest/v1/` from an in-memory schema document **without** touching its store;
+  - `/rest/v1/<table>?select=…` by executing a query against its store.
+
+  It resets a simulated 7-day idle timer **only on store queries**, and it exposes
+  `/__fake/idle` with `{ lastQueryAt, paused }`.
+- **Brief.** "Add a keepalive target for `<tool>` so its database does not pause."
+- **Hidden grader.** It runs one keepalive sweep against the fake and asserts:
+  - `paused: false`;
+  - `lastQueryAt` advanced;
+  - the target declares a `probeTable`, and its probe reads that table without exposing user
+    columns (structural part).
+
+**`replay/idle-probe-leaves-store-asleep`** (`fidelity: runtime`, grader `app`)
+
+- **Fixture.** A fixture `mcp/oci` container tool, run locally under docker as its `preview`
+  descriptor, backed by a fake Neon-shaped Postgres proxy. The proxy counts every query and records
+  its origin from the connection's `application_name`.
+- **Brief.** "Add container liveness and a keepalive target for `<tool>`."
+- **Hidden grader.** It simulates a 10-minute idle window with the healthcheck interval and the
+  keepalive schedule compressed. It asserts:
+  - zero queries from the healthcheck and from the keepalive;
+  - `/health/live` answers 200 while the database is stopped;
+  - `/health` still reports the database when called once by verify.
+
+**Train and val variants.** Each replay task has two fixture variants that differ in tool name, the
+store's table names and the app framework. One variant is in `train` and one in `val`, so the val
+instance is unseen by the proposer (06 §1.4).
+
+### 8.3 Mutants
+
+Every mutant must make the named grader fail. CI fails if any grader passes a mutant (06 §4.3).
+
+| mutant | applied to | must fail |
+|---|---|---|
+| historical root probe: the target probes `/rest/v1/` | replay/keepalive-probe-reaches-store | keepalive-probe-reaches-store |
+| historical cached probe: the subrequest can be served from cache | replay/keepalive-probe-reaches-store | keepalive-probe-reaches-store |
+| historical healthcheck: container `HEALTHCHECK` and keepalive target `/health` | replay/idle-probe-leaves-store-asleep | idle-probe-leaves-store-asleep |
+| historical poll loop: a 2-second queue poll against the store | replay/idle-probe-leaves-store-asleep | idle-probe-leaves-store-asleep |
+| **overgeneral A**: "every healthcheck and keepalive queries the database", applied to both fixtures | both | **idle-probe-leaves-store-asleep only** |
+| **overgeneral B**: "probes never touch the database", applied to both fixtures | both | **keepalive-probe-reaches-store only** |
+
+The two overgeneral rows are what make the pair a test of learning. Each wrong rule passes one task
+and fails the other. A grader pair in which either overgeneral mutant passes both tasks, or fails
+both, is invalid, and `bench check-graders` refuses it.
+
+### 8.4 Maintainer task: `wiki/probe-layer-incidents`
+
+- **Input bundle:**
+  - the incident pages §7.1 and §7.2;
+  - failing train traces from both replay tasks under the current skills;
+  - the pages `keepalive-probe-misses-postgres` (confirmed), `neon-never-sleeps` (hypothesis) and
+    `probe-touches-wrong-layer` (hypothesis).
+- **Required distinction.** The output must contain, as a new page or an update to
+  `probe-touches-wrong-layer`, a rule that is **conditional on the liveness model**:
+  - for `needs-traffic` the probe reaches the store;
+  - for `needs-silence` and `needs-heal` it stops at the application.
+
+  The rule must cite evidence from both incidents.
+- **Structural checks:**
+  - the output validates against `MaintainerOutput`;
+  - every new or changed claim cites an `EvidenceRef` present in the bundle;
+  - no existing evidence ref is removed;
+  - no `hypothesis` is moved to `confirmed`, because the bundle holds no deployed red→green
+    evidence for the Neon side.
+- **Known-bad outputs.** These are the grader's mutants, and each must fail:
+  1. states overgeneral A;
+  2. states overgeneral B;
+  3. drops the Neon incident's evidence from the updated page;
+  4. adds a claim with no evidence ref, such as "Neon suspends after 60 seconds";
+  5. sets `neon-never-sleeps` to `confirmed`.
+
+### 8.5 Loop control task: `loop/fixture-preview-before-push`
+
+- **Fixture.** A fixture tool with a one-line change requested.
+- **Grader.** The `trajectory` grader requires
+  `before(preview passed for <tool>, git push origin develop)`.
+- **Purpose.** It checks the trajectory machinery itself, not the probe lesson.
+- **Mutants:**
+  - a recorded trajectory that pushes before previewing;
+  - one that previews a different tool;
+  - one whose preview failed.
+
+### 8.6 Control-arm proposal
+
+The harness evaluates a hand-written skill patch to `greenlight-build`, labelled `control` in the
+ledger and never merged:
+
+> **Health checks must always query the database**, so that a probe cannot pass while the store is
+> unreachable.
+
+It is plausible, and it is wrong for `needs-silence`. The cycle's own self-check passes only when
+the evaluator rejects it: `replay/idle-probe-leaves-store-asleep` (val variant) must regress under
+the patch on both gate models. If the control is accepted, the gate is not discriminating, and the
+iteration is recorded as a harness failure, not as a learning result.

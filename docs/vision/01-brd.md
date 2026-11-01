@@ -78,27 +78,33 @@ of scope.
 
 | goal | outcome | evidence that it has been met |
 |---|---|---|
-| **G1 Start** | A new project starts easily on the accounts the owner already has. | The idea-to-beta drill (13 §3, P2) passes for a newcomer with no domain. |
-| **G2 Edit** | An agent that has never seen a project can change it safely. | The cold-edit drill (13 §3, P0) passes, and the cold-edit first-pass rate meets its target. |
+| **G1 Start** | A new project starts easily on the accounts the owner already has. | The idea-to-beta drill (13 §3, M4) passes for a newcomer with no domain. |
+| **G2 Edit** | An agent that has never seen a project can change it safely. | The cold-edit drill (13 §3, M3) passes, and the cold-edit first-pass rate meets its target. |
 | **G3 Stay alive** | Every project stays alive unattended, and no project starves the others of free-tier quota. | Keepalive and liveness doctor rules pass for every tool; no quota exceeds 80% without a warning having been raised. |
-| **G4 Release** | Release stays in human hands, and the owner can see what is waiting. | The promote history shows no production change without an approval record; `portfolio` shows beta-ahead-of-prod for every tool. |
-| **G5 Learn** | Each failure becomes durable knowledge that reaches the skills and checks that would have prevented it. | Every confirmed incident has a confirmed pattern with a verified remediation; replay tasks pass. |
+| **G4 Release** | Release stays in human hands, and the owner can see what is waiting. | Every production mutation, through every channel in 18, traces to an owner approval artifact for its tool and sha; `portfolio` shows beta-ahead-of-prod for every tool. |
+| **G5 Learn** | Each failure becomes durable knowledge that reaches the skills and checks that would have prevented it. | WikiSkill iterations complete with reviewed ledger rows from M2 onward; the gate rejects plausible but wrong lessons (the control arm); every confirmed incident has a confirmed pattern with a verified remediation; replay tasks pass. |
 
-G5 is an enabling goal. It exists because G2 and G3 degrade over time without it.
+G5 is the enabling goal, and its method drives the others. The WikiSkill cycle (06 §0, ADR-14) runs
+from M2 onward, and later work on G1–G4 enters through it. G2 and G3 degrade over time without it.
 
 ## 5. Success metrics
 
+No metric counts accepted proposals. A cycle that rejects a wrong change, or finds nothing worth
+changing, has done its job. A target that rewarded acceptances would reward manufactured
+improvements (ADR-14).
+
 | metric | definition | target | how measured | from |
 |---|---|---|---|---|
-| **Idea to beta** | Wall-clock time from the owner's first sentence to a green beta `ship` on a fresh free-tier account with no domain | ≤ 60 minutes median over three drills, of which ≤ 10 minutes is human input | Drill log timestamps; the first `ship` StageEvent with `env: beta, passed: true` | P2 |
-| **Cold-edit first-pass rate** | Share of changes by a session that did not create the project where the first `preview` after the change passes | ≥ 70% over a rolling 20 changes | `preview` StageEvents joined to the session (08 §7 `agent.sessionRef`); a cold session is one with no earlier raw record for that tool | P0 baseline, P5 automated |
+| **Completed iterations** | WikiSkill iterations that reach a human-reviewed ledger event (`candidate-accepted`, `candidate-rejected` or `no-action`) with a reproducible evaluation record | ≥ 1 per month once M2 ships; every iteration's decision reproduces with `bench gate --recompute` | Ledger events plus `EvaluationRecord` hashes (08 §10.4) | M2 |
+| **Discrimination** | Share of control proposals (deliberately wrong, labelled `control`) that the evaluator rejects | 100% | Ledger events with `control: true` | M2 |
+| **Cost per iteration** | LLM spend of one full iteration (train refresh, maintainer, proposer, evaluation) | Reported every iteration, and within `perGateMaxUsd` | Ledger `spend` events | M2 |
+| **Idea to beta** | Wall-clock time from the owner's first sentence to a green beta `ship` on a fresh free-tier account with no domain | ≤ 60 minutes median over three drills, of which ≤ 10 minutes is human input | Drill log timestamps; the first `ship` StageEvent with `env: beta, passed: true` | M4 |
+| **Cold-edit first-pass rate** | Share of changes by a session that did not create the project where the first `preview` after the change passes | ≥ 70% over a rolling 20 changes | `preview` raw records joined on change identity (08 §5); a cold session is one with no earlier raw record for that tool | M3 (manual), M6 (automated) |
 | **Unattended uptime** | Share of keepalive sweeps per tool that pass, over 90 days | ≥ 99% per tool, excluding provider-wide outages | Keepalive raw records (`kind: keepalive`) or the keepalive Worker's issue history | ongoing |
-| **No unapproved prod change** | Prod ships whose promote run lacks an approval record | 0 | `promote.yml` run history joined to approval records (11 §4.4) | P4 |
-| **Lesson capture** | Share of closed incidents with a confirmed pattern and a verified remediation within 14 days of closure | ≥ 90% | `wiki lint` plus incident `closed` and pattern `status` dates | P5 |
-| **Skill change discipline** | Share of `version:` bumps on managed skills with a ledger row whose outcome is `accepted` | 100% | LR-14 plus a CI check comparing SKILL.md versions against the ledger | P6 |
-| **Free-tier fidelity** | Share of `fact` pages with `verified` ≤ 90 days old | ≥ 90% | LR-17 | P0 |
-
-## 6. Scope
+| **No unapproved prod change** | Production mutations, on any channel in the release authorization matrix (18), without an owner approval artifact for that tool and sha | 0 | Protected-job history joined to approval artifacts; provider deployment logs | M5 |
+| **Lesson capture** | Share of closed incidents with a confirmed pattern and a verified remediation within 14 days of closure | ≥ 90% | `wiki lint` plus incident `closed` and pattern `status` dates | M3 |
+| **Skill change discipline** | Share of `version:` bumps on managed skills backed by a `candidate-accepted` then `merged` event, or by the temporary human-reviewed path before a skill has a bench slice | 100% | LR-14 plus a CI check comparing SKILL.md versions against the ledger | M1 |
+| **Free-tier fidelity** | Share of `fact` pages with `verified` ≤ 90 days old | ≥ 90% | LR-17 | M3 |
 
 ### 6.1 In scope
 
@@ -112,9 +118,11 @@ G5 is an enabling goal. It exists because G2 and G3 degrade over time without it
 - Portfolio operations: `portfolio`, `retire`, quota headroom (10).
 - Centralized secrets, with Infisical as the default, a GitHub-only fallback and a credential proxy
   for agents (11).
-- Raw evidence capture, `wiki lookup`, and the maintainer procedure (06).
-- The evolution loop: bench, proposer, gate and ledger. It is in scope and comes last (06).
-- Codex parity, as a stretch phase (P7).
+- The WikiSkill cycle: training rollouts, maintainer, proposer, outlet-specific evaluation, ledger
+  and human review (06). It is the first working milestone (M2), and it drives the rest.
+- Raw evidence capture and `wiki lookup` (06, 03).
+- Release authority over every production-mutation channel (18).
+- Codex parity, as a stretch milestone (M7).
 
 ### 6.2 Out of scope
 
@@ -134,7 +142,8 @@ G5 is an enabling goal. It exists because G2 and G3 degrade over time without it
 |---|---|---|
 | K-1 | **Free-tier-first.** The default path costs nothing. | No-domain mode is required; paid providers are opt-in; bench scoring runs locally with no cloud spend. |
 | K-2 | **Clone-and-own.** Everything is files in repos the owner controls. | The wikis are git-tracked markdown; no hosted store is required. |
-| K-3 | **GitHub-centric.** GitHub Actions is the only CI. | Approval and promotion ride `workflow_dispatch` and GitHub environments; Infisical syncs to Actions secrets rather than replacing them in CI. |
+| K-3 | **GitHub-centric.** GitHub Actions is the only CI. | Approval and promotion ride protected workflows; Infisical syncs to Actions secrets rather than replacing them in CI. |
+| K-8 | **GitHub plan features vary by repository visibility.** Environment protection rules (required reviewers) and branch protection are not available for private repositories on every plan. | The free path cannot assume them. Release authority (18) relies on an owner approval artifact checked by the protected job, which works on any plan. Environment reviewers and branch protection are used as additional backstops where the plan provides them, and `doctor` reports which ones are actually configured on the remote. |
 | K-4 | **Solo operator.** One person reviews everything. | Human review load must be bounded: the proposer makes one atomic change at a time, and the ledger is the review queue. |
 | K-5 | **Lockstep versioning.** The npm version equals `MODULE_REF`. | The framework wiki and skills ship in the same package at the same version (ADR-04). |
 | K-6 | **No personal data in framework files** (`check-seam`). | Framework wiki pages pass the seam check (LR-19); project specifics stay in the wrapper. |
@@ -171,11 +180,12 @@ G5 is an enabling goal. It exists because G2 and G3 degrade over time without it
 |---|---|---|---|---|
 | R-1 | A token leaks through raw evidence or wiki text | medium | high | Agents hold placeholders only (11); redaction at capture; LR-20; planted-secret test as a merge blocker (13 §2.6) |
 | R-2 | A contributed pattern injects instructions into other users' agents | medium | high | Reviewed PRs only; `hypothesis` pages are never surfaced; patterns are data to the proposer (12 T-04) |
-| R-3 | An agent promotes to prod without approval | low | high | Promotion is human by default (ADR-07); the proxy denies the dispatch call (11 §4.4); DR-32 |
-| R-4 | A skill change helps one model and harms another | medium | medium | Two-model lexicographic gate (ADR-11) |
+| R-3 | An agent changes production without approval, through promotion or another channel | medium | high | Release authorization matrix over every channel (18, ADR-15); agents hold beta-scoped capabilities only; DR-32, DR-34–DR-36 |
+| R-4 | A skill change helps one model and harms another | medium | medium | Two-model gate under one policy table, safety before efficacy (ADR-11) |
 | R-5 | A bench grader passes for the wrong reason | medium | medium | Mutation checks for every grader (06 §4.3) |
 | R-6 | Free-tier facts go stale | high | medium | `verified` dates, LR-17, refresh procedure |
-| R-7 | Evolution loop cost exceeds its value | medium | low | Ordered last (P6); run on demand; a 10-task validation split |
+| R-7 | Evolution loop cost exceeds its value | medium | medium | Start small (M1–M2: a handful of local, credential-free tasks); per-gate caps; cost reported per iteration; scale only after the cycle shows discrimination (M6) |
+| R-11 | The cycle is pushed to manufacture improvements | medium | medium | No metric or exit criterion requires an acceptance (ADR-14); control arms; rejection history read first |
 | R-8 | The wiki becomes a fifth copy of the docs and drifts | medium | medium | One home per statement (04 §7); footgun sections shrink to links |
 | R-9 | Vibe-coded projects accumulate and exhaust shared quota | high | medium | Headroom warnings, `retire`, DR-27 |
 | R-10 | The loop skill regresses and every project's delivery degrades | low | high | Highest blast radius: full replay suite plus human release (ADR-12) |
@@ -191,13 +201,14 @@ G5 is an enabling goal. It exists because G2 and G3 degrade over time without it
 | BR-05 | Every new project MUST meet the self-verifying-app contract from its first preview. | Most incidents came from checks that could not distinguish working from broken. | G2, G3 | BUILD |
 | BR-06 | Every project MUST declare how it stays alive, and the system MUST refuse configurations that contradict the declaration. | Supabase needs traffic, Neon needs silence, OCI needs healing; both directions have failed. | G3 | PORT, BUILD |
 | BR-07 | The owner MUST see, across all projects, what is verified in beta and waiting for release, what is failing, and how much shared quota remains. | There is currently no portfolio view. | G4, G3 | PORT |
-| BR-08 | No production change MUST happen without the owner's approval, except where the owner has opted a low-stakes project into autonomous release. | Release control is the owner's. | G4 | LOOP, SEC |
-| BR-09 | Abandoned projects MUST be retirable in one guarded operation that frees their resources. | Cheap project creation makes dead projects accumulate. | G3 | PORT |
+| BR-08 | No production change MUST happen without the owner's approval, through any channel, except where the owner has approved a policy opting a low-stakes project into autonomous release. | Release control is the owner's, and promotion is only one of several production channels. | G4 | LOOP, SEC |
+| BR-09 | Abandoned projects MUST be retirable through a guarded lifecycle that deletes exactly the authorized resources and tracks every resource until it is confirmed gone. | Cheap project creation makes dead projects accumulate. | G3 | PORT |
 | BR-10 | Coding agents MUST be able to make authenticated calls they need without ever holding raw credentials, and all secrets MUST have one readable source. | GitHub Actions secrets cannot be read outside CI, so tokens get pasted into sessions. | G2 | SEC |
 | BR-11 | Every managed skill, including the deploy-verify-promote loop, MUST record which wiki evidence justifies each of its rules. | Rules without reasons are relitigated or silently dropped. | G5, G2 | SKILL, WIKI |
 | BR-12 | Every gate run MUST leave durable evidence attributable to the tool, commit, skill versions and agent. | Skill quality cannot be measured without it. | G5 | LOOP, WIKI |
 | BR-13 | Each failure MUST be compiled into a pattern and routed to the strongest available remedy: mechanism before doctor rule, before template, before verify check, before skill text. | History shows code-enforced lessons persist and prose lessons do not (ADR-01). | G5 | WIKI, EVO |
-| BR-14 | A skill change MUST be accepted only on measured evidence that it does not regress known incidents and improves capability, on more than one model. | Skill text changes can harm other models (paper: 50.5 → 18.1). | G5 | EVO |
+| BR-14 | Every change MUST be accepted only on evidence suited to its outlet. A skill change needs controlled rollouts showing no regression of known incidents and improved capability on more than one model. A framework fix needs a reproduction that fails before it and passes after it. | Skill text changes can harm other models (paper: 50.5 → 18.1), and a framework fix should not need an unrelated capability gain. | G5 | EVO |
+| BR-18 | Improvements MUST be driven by the WikiSkill cycle from the first working milestone, and a justified rejection or no-action MUST count as a successful iteration. | Building features first and evolving later leaves the method unproven while most of the work is done. | G5 | EVO, WIKI |
 | BR-15 | Knowledge shipped by the framework MUST match the installed framework version. | The 0.x caret trap left HeistMind running guidance for a version it did not have. | G2 | WIKI, SKILL |
 | BR-16 | The system SHOULD be operable by Codex as well as Claude Code. | The owner uses more than one agent; this is a stretch goal (ADR-02). | G2 | AGENT |
 | BR-17 | Contributions from other users MUST be reviewable and MUST NOT reach other users' agents without review and evidence. | The wiki is a channel into other people's agents. | G5 | WIKI, SEC |

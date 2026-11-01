@@ -9,6 +9,25 @@ to ask what was meant.
 Status: **SPECIFICATION, not built.** It supersedes `docs/plan-wiki-skill.md` and
 `docs/wiki-skill-design.md`, which remain as the working drafts it grew from.
 
+**Revision 2 (after the owner's review of `b44c8ae`).** The WikiSkill cycle is now the method that
+drives every improvement from the first working milestone. It is no longer a late phase
+(ADR-14). The main changes:
+
+- **Roadmap.** Versioned phases P0–P7 are replaced by milestones M0–M7 (ADR-19), and every exit
+  drill runs against that milestone's own release.
+- **Evaluation.**
+  - Training, validation and test evidence are separated by mechanism.
+  - Baselines are content-addressed.
+  - Graders observe what each skill is responsible for, including the order of actions.
+  - Each outlet has its own acceptance rule.
+  - Ledger stages are recorded separately.
+- **Release authority** covers every production-mutation channel (18, ADR-15).
+- **Retirement** is a plan-bound lifecycle (ADR-18).
+- **Agent isolation** is stated as two trust models (ADR-17).
+- **Contradictions fixed.** These include check ids arriving after the drills that use them, the
+  removed Astro `hybrid` output, the destroy guard, the seed statuses and the single-model gate
+  evidence.
+
 ## The vision in one paragraph
 
 Greenlight manages a portfolio of projects for one owner. It keeps every project alive on free
@@ -30,7 +49,7 @@ changes, an approach adapted from WikiSkill (arXiv:2608.27454).
 | 03 | [architecture.md](03-architecture.md) | components, planes, repos, data flows | implementer |
 | 04 | [knowledge-model.md](04-knowledge-model.md) | the wiki: page types, layouts, lint rules `LR-*`, versioning, pruning | implementer, maintainer agent |
 | 05 | [skill-system.md](05-skill-system.md) | the managed-skill model applied to **every** skill, the catalog, hooks | implementer, skill author |
-| 06 | [evolution-loop.md](06-evolution-loop.md) | maintainer, proposer, outlets, bench, gate, ledger | implementer |
+| 06 | [evolution-loop.md](06-evolution-loop.md) | the WikiSkill cycle: training rollouts, maintainer, proposer, outlet acceptance, bench, gate, ledger stages, the first iteration | implementer |
 | 07 | [cli-spec.md](07-cli-spec.md) | every new or changed command, flag, output and exit code; doctor rules `DR-*` | implementer |
 | 08 | [data-contracts.md](08-data-contracts.md) | every schema: manifest, frontmatter, raw records, events, ledger, bench, JSON outputs | implementer |
 | 09 | [app-contract.md](09-app-contract.md) | the self-verifying-app contract `C1`–`C7`, per-lane implementation | implementer, build skill |
@@ -38,13 +57,15 @@ changes, an approach adapted from WikiSkill (arXiv:2608.27454).
 | 11 | [secrets.md](11-secrets.md) | one readable source, three consumers, the credential proxy | implementer |
 | 12 | [threat-model.md](12-threat-model.md) | threats `T-*` and the controls that answer them | reviewer |
 | 13 | [test-and-acceptance.md](13-test-and-acceptance.md) | test strategy, drills, metrics, definition of done | implementer, reviewer |
-| 14 | [roadmap.md](14-roadmap.md) | phases `P0`–`P7`, work breakdown, dependencies, exit criteria | owner, implementer |
+| 14 | [roadmap.md](14-roadmap.md) | milestones `M0`–`M7`: the first WikiSkill cycle, then what it drives; work breakdown, prerequisites, exit drills | owner, implementer |
 | 15 | [seed-content.md](15-seed-content.md) | the initial wiki: patterns, facts, decisions, project pages for the six live tools | implementer, maintainer agent |
 | 16 | [decisions-and-glossary.md](16-decisions-and-glossary.md) | decision records `ADR-*`, open questions, glossary | everyone |
 | 17 | [appendix-wikiskill.md](17-appendix-wikiskill.md) | what the paper says and how each idea maps or departs | reviewer |
+| 18 | [release-authority.md](18-release-authority.md) | the release authorization matrix per target × channel, the protected execution identity, approval artifacts, recovery, trust models | implementer, reviewer |
 
-To build, read 01 → 02 → 03, then 08 alongside whichever component you are implementing. Read 14
-for the order of work.
+To build, read 01 → 02 → 03, then 06 §0 and §10 for the method and the first iteration, then 08
+alongside whichever component you are implementing. Read 14 for the order of work, and 18 before
+touching anything that deploys.
 
 ## Conventions
 
@@ -64,7 +85,8 @@ issues can cite it. IDs are never reused.
 | `C1`–`C7` | app-contract clauses | 09 |
 | `T-nn` | threat | 12 |
 | `ADR-nn` | decision record | 16 |
-| `P0`–`P7` | roadmap phase | 14 |
+| `Q-nn` | open question | 16 |
+| `M0`–`M7` | roadmap milestone (replaces the earlier phases `P0`–`P7`; mapping in 14) | 14 |
 
 **Names used throughout.** These are fixed so that every document agrees.
 
