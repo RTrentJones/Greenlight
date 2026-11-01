@@ -137,11 +137,8 @@ Release stays human (ADR-07). This holds as a mechanism even for an agent that h
   `POST /repos/{o}/{r}/actions/workflows/promote.yml/dispatches`, together with the equivalent
   `gh workflow run promote.yml`, unless the session was started with `--allow-promote`. That flag
   requires an interactive confirmation on the operator's TTY.
-- `greenlight promote --perform` outside CI requires `--approval <token>` (07 §2.7). An approval
-  token is an HMAC over `(tool, sha, expiresAt)` with a 1-hour expiry. It is minted by
-  `greenlight promote <tool> --commit <sha> --approve`, which requires a TTY and prints the token
-  once. The agent can ask for a token. It cannot mint one, because the minting command refuses a
-  non-TTY stdin.
+- `greenlight promote --perform` outside CI requires `--approval <token>` (07 §2.7). The token is
+  an approval record in the format given in §4.4.
 - Inside `promote.yml`, approval is the `workflow_dispatch` by a human actor, which is the
   existing behavior.
 
@@ -159,7 +156,7 @@ identical to production, so a proxy-related failure shows up in the bench first.
 `greenlight secrets proxy-config` (07 §2.13) renders the union of `inject` specs (08 §12) for
 every **configured** token in the manifest's tool set.
 
-Rendering rules:
+### 4.1 Rendering rules
 
 1. Hosts are exact. A leading `*.` matches exactly one label. No other wildcards are allowed.
 2. `allow` is default-deny. A request is forwarded only if `(method, path)` matches an entry.
@@ -168,6 +165,8 @@ Rendering rules:
 3. Injection replaces the `header` with `<scheme> <value>`, or the raw value, after removing any
    value the agent sent. The agent cannot pass a second credential through.
 4. The output is deterministic, with sorted keys, so `--check` can diff it.
+
+### 4.2 Seed `inject` entries
 
 The seed `inject` entries are below. The paths are deliberately narrower than each token's scopes,
 so that the proxy enforces less than the token permits.
@@ -183,6 +182,8 @@ so that the proxy enforces less than the token permits.
 | `GITHUB_TOKEN` | `api.github.com` | `GET /**`; issue/PR create and comment on the wrapper and tool repos | `promote.yml` dispatch (§3.4); secrets endpoints; branch protection |
 | per-tool verify tokens, e.g. `BAMCP_VERIFY_TOKEN` | the tool's prod host | `POST /mcp` | — |
 
+### 4.3 CI-only tokens
+
 **CI-only tokens** have no `inject` field, and DR-30 lists them:
 
 - `TF_VAR_oci_private_key` and the other OCI auth values. OCI authenticates with API-key request
@@ -192,6 +193,60 @@ so that the proxy enforces less than the token permits.
   plumbing and have no agent use case.
 - Database passwords (`TF_VAR_*_DATABASE_PASSWORD`). Agents use the read paths above, and DDL goes
   through CI's migrations gate.
+
+### 4.4 Promotion approval record
+
+**How the owner approves.** There are two equivalent paths, and both require a human at a TTY or
+in the GitHub UI.
+
+1. **In GitHub.** The owner dispatches `promote.yml` with the `name` input, as today. The approval
+   *is* the `workflow_dispatch` event. Its actor, captured as `github.actor`, must be a user and not
+   a bot. No record is minted, because the workflow pins the sha itself (capture develop's tip, then
+   `verify --expect-sha`, then `promote --commit`).
+2. **In a shell.** The owner runs `greenlight promote <tool> --commit <sha> --approve`. This prints
+   the record's summary and asks for typed confirmation of the short sha. It refuses when stdin is
+   not a TTY, so an agent cannot complete it. It then mints the record and prints it once as a
+   compact token.
+
+**Record format.** The record is a JSON object, signed and then encoded as
+`gla1.<base64url(payload)>.<base64url(sig)>`:
+
+```ts
+interface PromotionApproval {
+  v: 1;
+  tool: string;                // manifest name
+  sha: string;                 // 40-hex: the exact develop commit approved for main
+  repo: string;                // "<owner>/<repo>" whose develop→main FF is approved (the tool repo for cross-repo tools)
+  approver: string;            // GitHub login of the human (from `gh api user` at mint time)
+  issuedAt: string;            // ISO
+  expiresAt: string;           // ISO, issuedAt + ≤ 1h
+  nonce: string;               // 16 random bytes, hex; single use
+}
+```
+
+`sig` is HMAC-SHA256 over the payload bytes, keyed by `GREENLIGHT_APPROVAL_KEY`. That key lives
+in the secret source and is **CI-only toward agents**: it has no `inject` entry, so an agent can
+never sign a record. It is available to the operator's shell (for minting), to the proxy (for
+checking), and to CI.
+
+**How it is checked.** The proxy and the CLI check a record in the same way.
+
+1. When the proxy sees a request to dispatch `promote.yml`, or a
+   `PATCH /repos/{o}/{r}/git/refs/heads/main` from a session, it requires the header
+   `X-Greenlight-Approval: <token>`. `greenlight promote --approval` sets that header on its GitHub
+   calls.
+2. It verifies the signature, checks that `expiresAt` is in the future, and checks that the
+   `nonce` has not been used. Used nonces are kept in the proxy's store until expiry.
+3. It checks that the request targets `repo`. For a dispatch, the `inputs.name` must equal `tool`.
+   For a ref update, the new `sha` must equal the record's `sha`. For a dispatch, the record's `sha`
+   is passed as the `commit` input, and `promote.yml` verifies that develop's tip equals it before
+   anything else. The existing `promote --commit` refusal (develop moved) covers the race.
+4. On success it forwards the request and marks the nonce used. On failure it returns
+   `403 {"error":"promotion requires a valid approval","reason":"<expired|sha-mismatch|tool-mismatch|replayed|bad-signature>"}`.
+
+`greenlight promote --perform --approval <token>` outside CI applies the same checks locally before
+it attempts the fast-forward. It writes the approval's `approver` and `nonce` into the `promote`
+stage event's `detail`, so the raw record shows who approved which sha.
 
 ## 5. Limits and response scrubbing
 

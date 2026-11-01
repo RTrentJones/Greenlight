@@ -27,9 +27,21 @@ behavior, and they are listed in section 1 only for completeness.
 - **Idempotency.** Every write is idempotent. Running a command twice with the same inputs leaves
   the same files. The exceptions are append-only artifacts (`log.md`, raw records,
   `ledger.jsonl`), and those append exactly one entry per logical event, keyed by an id.
-- **Agent identity.** The environment variables `GREENLIGHT_AGENT`
-  (`claude`, `codex` or `other`), `GREENLIGHT_MODEL` and `GREENLIGHT_SESSION` are read when set,
-  and they are stamped into stage events and raw records (08 §5, §7). Nothing requires them.
+- **Environment variables.** Every command honours these:
+
+  | variable | effect |
+  |---|---|
+  | `GREENLIGHT_AGENT` | `claude`, `codex` or `other`; stamped into stage events and raw records (08 §5, §7) |
+  | `GREENLIGHT_MODEL` | the agent's model id; stamped likewise, and used as the maintainer actor in `log.md` |
+  | `GREENLIGHT_SESSION` | proxy session id (set by `agent run`); recorded as `agent.sessionRef` |
+  | `GREENLIGHT_RAW=off` | disables raw capture everywhere (`preview`, `ship`, `promote`, `wiki capture` becomes a no-op that exits 0) |
+  | `GREENLIGHT_WIKI=off` | disables every wiki hook: no `wiki:` block in failure reports, and `wiki context`/`wiki lookup` print nothing and exit 0. **The bench runner sets it for every rollout** (06 §4.2) |
+  | `GREENLIGHT_SECRET_SINK` | overrides `secrets.sink` (`infisical` or `github`) |
+  | `GREENLIGHT_INGEST_URL` | Tracer (or any OTel-shaped) ingest endpoint for raw records and stage events; with `GREENLIGHT_INGEST_TOKEN`. Replaces the per-command ingest wiring |
+  | `GREENLIGHT_SKILL_VERSION` / `GREENLIGHT_SKILL_VERSIONS` | override the skill version stamp(s) (08 §7) |
+  | `GREENLIGHT_CAPTURE=1` | makes a standalone `verify` write a raw record |
+
+  Nothing requires any of them.
 
 ## 1. Command inventory
 
@@ -52,12 +64,17 @@ behavior, and they are listed in section 1 only for completeness.
 | `portfolio` | new | P3 | FR-PORT |
 | `retire` | new | P3 | FR-PORT |
 | `wiki lint / render` | new | P0 | FR-WIKI |
+| `wiki context` (alias `wiki lookup --tool <t> --start`) | new | P0 | FR-WIKI, FR-SKILL |
 | `wiki lookup` | new | P5 | FR-WIKI, FR-LOOP |
+| `wiki read` | new | P0 | FR-WIKI |
+| `wiki incident open` | new | P5 | FR-WIKI |
+| `wiki traces` | new | P6 | FR-EVO |
+| `wiki stats` (alias `wiki metrics`) | new | P5 | FR-EVO, FR-SKILL |
 | `wiki capture` | new | P5 | FR-WIKI |
 | `wiki ingest` | new | P5 | FR-WIKI, FR-EVO |
 | `wiki propose / remediate` | new | P5, P6 | FR-EVO |
 | `wiki contribute` | new | P5 | FR-WIKI |
-| `bench run / gate / mutants` | new | P6 | FR-EVO |
+| `bench run / gate / check-graders / monitor / report` | new | P6 | FR-EVO |
 | `lanes`, `config`, `deploy`, `migrations scan`, `bump` | unchanged | — | — |
 
 ## 2. Changed commands
@@ -65,14 +82,17 @@ behavior, and they are listed in section 1 only for completeness.
 ### 2.1 `init`
 
 ```
-greenlight init [--domain <domain> | --no-domain --cf-subdomain <sub>] [--repo o/r]
+greenlight init [--domain <domain> | --no-domain] [--cf-subdomain <sub>] [--repo o/r]
                 [--sink infisical|github] [--force] [--no-push] [--no-tokens] [--no-verify]
 ```
 
 **Changes from the current command** (`cli/src/commands/init.ts`, which today requires
 `--domain`, or a TTY prompt for it):
 
-1. `--no-domain` writes a manifest without `domain` and with `cloudflareAccountSubdomain: <sub>`
+1. **No-domain mode** is selected by `--no-domain`, or by running `init` without `--domain` when
+   there is no TTY to prompt, or when the operator answers the domain prompt with an empty line.
+   The explicit flag exists so that scripts and skills can state intent. In this mode `init` writes
+   a manifest without `domain` and with `cloudflareAccountSubdomain: <sub>`
    (08 §1.2). If `--cf-subdomain` is absent and a Cloudflare token is available, `init` reads the
    account's workers.dev subdomain from the Cloudflare API
    (`GET /accounts/{id}/workers/subdomain`). If neither is available, it exits 3 with the message
@@ -95,7 +115,7 @@ It still never clobbers existing files unless `--force` is given. That is unchan
 ```
 greenlight add <name> --lane <l> --target <t> [--data <d>] [--auth <a>] [--envs beta,prod]
                [--liveness needs-traffic|needs-silence|needs-heal|always-on] [--probe <path>]
-               [--promotion human|auto-on-green] [--no-tokens]
+               [--promotion human|auto-on-green] [--accept-headroom] [--no-tokens]
 ```
 
 **Changes:**
@@ -111,9 +131,9 @@ greenlight add <name> --lane <l> --target <t> [--data <d>] [--auth <a>] [--envs 
    list and a `TODO: confirm with the owner` line. It also writes `liveness.md`, filled from the
    flags, and `decisions.md`, with a dated entry recording the cell choice. It appends a `log.md`
    entry with actor `harness`.
-4. **Headroom warning (P3).** Before writing anything, `add` runs the quota accounting in 10 §3
+4. **Headroom warning (P3).** Before writing anything, `add` runs the quota projection in 10 §3.3
    for the quotas the new tool would draw on. If any quota would exceed 80%, it prints the warning
-   and asks for confirmation on a TTY. Without a TTY it requires `--accept-quota`, and otherwise
+   and asks for confirmation on a TTY. Without a TTY it requires `--accept-headroom`, and otherwise
    exits 4.
 5. **No domain.** When the manifest has no domain, `add` refuses targets other than `workers` and
    `vercel` and exits 2, naming FR-KICK-04.
@@ -134,8 +154,12 @@ This command keeps all its current flags. Two things are added:
 ### 2.4 `preview`
 
 ```
-greenlight preview <name> [--no-build] [--port <p>] [--events <file>] [--no-capture]
+greenlight preview <name> [--no-build] [--port <p>] [--config <path>] [--events <file>] [--no-capture]
 ```
+
+`--config <path>` runs the local gate with a verify config other than the tool's own. The bench
+uses it to run a task's hidden grader (`bench/tasks/<id>/grader.verify.config.ts`) against the
+agent's build, without the grader ever being placed in the sandbox the agent can read.
 
 The existing behavior is kept: spin up, verify, write the receipt `.greenlight/preview-<sha>`, emit
 a `preview` stage event. The additions:
@@ -183,6 +207,7 @@ greenlight verify <name> [--env <env> | --url <url>] [--spec <path>] [--wait <ms
 
 ```
 greenlight promote <name> [--commit <sha>] [--perform] [--push] [--approval <token>]
+greenlight promote <name> --commit <sha> --approve        # mint an approval record (TTY only; 11 §4.4)
 ```
 
 **Current behavior** (`packages/loop/src/promote.ts`) is kept: a gated `develop → main`
@@ -192,7 +217,7 @@ fast-forward, pinned with `--commit`, which refuses if develop has moved. The ad
 2. **`human`.** `--perform` requires one of two things. Either the command runs inside the
    `promote.yml` workflow (`GITHUB_WORKFLOW` equals the promote workflow's name, and
    `GITHUB_EVENT_NAME` is `workflow_dispatch`, with `GITHUB_ACTOR` not a bot), or `--approval`
-   carries an approval token (11 §3.4). Otherwise it exits 4 with
+   carries an approval record (11 §4.4). Otherwise it exits 4 with
    `promotion of <name> is human-only (policy: human); dispatch promote.yml or pass --approval`.
 3. **`auto-on-green`.** `--perform` is allowed when the beta verify for `--commit` passed. That
    verify is read from the latest `ship` raw record for `(name, beta, sha)`, or from the
@@ -298,11 +323,11 @@ proxy (11 §3).
 ### 2.13 `secrets proxy-config` (new, P4)
 
 ```
-greenlight secrets proxy-config [--proxy infisical|worker] [--out <dir>] [--check]
+greenlight secrets proxy-config [--format infisical|worker] [--out <dir>] [--check]
 ```
 
 This renders the union of the configured tokens' `inject` specs (08 §12) into the proxy's format
-(11 §4). `--check` exits 1 if the rendered config differs from the deployed one, which makes it a
+(11 §4). `--format` defaults to `secrets.proxy` (`--proxy` is accepted as an alias). `--check` exits 1 if the rendered config differs from the deployed one, which makes it a
 drift guard for CI. Output files contain host and route rules only, never values.
 
 ## 3. New commands
@@ -362,12 +387,12 @@ gates. It exits 3 when there is no manifest.
 ### 3.3 `retire` (P3)
 
 ```
-greenlight retire <name> [--yes] [--keep-wiki]
+greenlight retire <name> [--dry-run] [--yes] [--keep-wiki] [--data-waived]
 ```
 
 This removes a tool from the portfolio (10 §5).
 
-1. It prints what will happen: the manifest entry, the `infra/<name>.tf` file and the resources it
+1. It prints what will happen. With `--dry-run` it stops after this step and writes nothing: the manifest entry, the `infra/<name>.tf` file and the resources it
    instantiates, the keepalive target, the workflows that mention the tool, and the quota that
    will be freed. Without a TTY and without `--yes`, it exits 2.
 2. It removes the tool's entry from `greenlight.config.ts`, using the `config-io` writer that
@@ -411,7 +436,16 @@ greenlight wiki render
 ```
 greenlight wiki capture --kind <kind> --tool <name> --env <env> --passed <bool>
                         [--sha <sha>] [--ref <EvidenceRef>]… [--excerpt-file <path>] [--verify-json <path>]
+greenlight wiki capture --from-issue <issue:o/r#n> [--tool <name>]
+greenlight wiki capture --from-run <run:o/r/id> [--tool <name>]
 ```
+
+`--from-issue` and `--from-run` build the record from GitHub through `gh`. For an issue, `kind` is
+`alert` when the issue carries the alert label and `session` otherwise. `passed` is false while the
+issue is open. The excerpt is the redacted body plus the last 5 comments. For a run, `kind` is
+`ship` or `verify` from the workflow name, `gitSha` is `headSha`, `passed` is the conclusion, and
+the excerpt is the redacted tail of the failing job log (`gh run view --log-failed`). `--tool` is
+required when it cannot be inferred from the title or the workflow name.
 
 This is the plumbing that `preview`, `ship` and `promote` call internally. It is also exposed so
 that keepalive alerts, CI steps and bench runners can write raw records. It applies redaction
@@ -424,7 +458,7 @@ record. This is best-effort, with a 5s timeout, and never fails the command.
 
 ```
 greenlight wiki lookup [--check <id|name>]… [--class <class>] [--cell <lane/target/data>] [--tool <name>]
-                       [--include-hypothesis] [--json]
+                       [--start] [--role maintainer|proposer] [--include-hypothesis] [--json]
 ```
 
 **Selection:**
@@ -442,10 +476,96 @@ greenlight wiki lookup [--check <id|name>]… [--class <class>] [--cell <lane/ta
 Incident pages are never returned (ADR-10). `lookup` with `--tool` also prints that tool's
 `liveness.md` summary line.
 
+The `--role` form returns the reading set for an evolution role instead of patterns:
+
+```
+greenlight wiki lookup --role maintainer|proposer [--skill <name>] [--json]
+```
+
+`maintainer` returns the paths of the full wiki, including incidents, plus the latest ingest bundle.
+`proposer` returns `index.md`, `skill-impact.md`, the outcome summary from `wiki stats`, and the
+target skill's files (06 §2, §3). These are the only invocations that may return incident pages.
+They are used by the `greenlight-wiki` skill and never by building skills.
+
+### 3.6a `wiki context` (P0) — the on-start hook
+
+```
+greenlight wiki context <name> [--json]
+greenlight wiki lookup --tool <name> --start [--json]        # equivalent form
+```
+
+This prints the bundle that every managed skill's `on-start` hook loads (05 §3):
+
+- `wiki/tools/<name>/intent.md`, in full;
+- `liveness.md`, in full;
+- the first 40 lines of `decisions.md`;
+- the tool's manifest entry;
+- the open alert issues for the tool, titles only.
+
+It never includes incidents. With `--json` the output is
+`{ intent, liveness, decisions, manifest, alerts }`. If the tool has no pages yet, it prints the
+manifest entry and `no project wiki for <name>: run greenlight wiki lint --fix to stub it`, and
+exits 0, so that a hook never blocks work.
+
+### 3.6b `wiki read` (P0)
+
+```
+greenlight wiki read <page-id> [--json]
+```
+
+This prints one page from the project wiki, or from the materialized framework wiki when the id
+is not found locally. A `superseded` id is followed to its replacement, with a notice. A
+`hypothesis` page is printed with a banner reading `HYPOTHESIS — not guidance`. Incident ids are
+refused (exit 4) unless `--role maintainer` is also given.
+
+### 3.6c `wiki incident open` (P5) — the on-incident hook
+
+```
+greenlight wiki incident open --tool <name> --ref <EvidenceRef> [--title <t>]
+greenlight wiki incident close <incident-id> --ref <EvidenceRef>
+```
+
+`open` creates `wiki/tools/<name>/incidents/<yyyy-mm>-<slug>.md` with `status: hypothesis` and the
+first timeline entry. It also captures the ref as a raw record (`wiki capture --from-issue` or
+`--from-run`) and appends a log entry. `close` sets `closed`. It does not mark anything
+`confirmed`, because confirmation is a maintainer step that needs red-to-green evidence (04 §4).
+
+### 3.6d `wiki traces` (P6)
+
+```
+greenlight wiki traces [--failing|--passing] [--tool <name>] [--skill <name>@<version>] [--limit 20]
+greenlight wiki traces show <rawId>
+```
+
+This is the proposer's read-only trace access. It follows the paper: no pre-sampled traces; the
+proposer reads them on demand (06 §3). The list form prints `rawId`, tool, kind, passed, skills and
+age. `show` prints one redacted raw record. Neither form writes anything.
+
+### 3.6e `wiki stats` (alias `wiki metrics`) (P5)
+
+```
+greenlight wiki stats [--metric first-pass|rollback|push-to-healthy|settle-retries|cold-edit] [--skill <name>]
+                      [--since <date>] [--by version|agent|model] [--json]
+```
+
+This computes field metrics from the raw store (and from Tracer when `GREENLIGHT_INGEST_URL` is
+set):
+
+- **`first-pass`** is the share of `(tool, sha)` pairs whose first `preview` or `ship` passed;
+- **`rollback`** is the share of ships that rolled back;
+- **`push-to-healthy`** is the median time from the first stage event to a passing prod verify;
+- **`settle-retries`** is the mean of `attempts − 1` on api checks;
+- **`cold-edit`** is the first-pass rate restricted to sessions whose agent had not touched the
+  tool in the previous 30 days.
+
+Metrics are grouped by `--by`, defaulting to the skill version. These numbers are the field
+monitor (ADR-05). The evolution monitor workflow `evo-monitor.yml` uses them to raise a
+`greenlight-evo-alarm` issue (06 §7). They never gate a change.
+
 ### 3.7 `wiki ingest` (P5)
 
 ```
-greenlight wiki ingest [--sample 5:3] [--since <date>] [--tool <name>] [--incident <EvidenceRef>]   # prepare
+greenlight wiki ingest [--sample 5:3] [--since <date>] [--tool <name>] [--incident <incident-id|EvidenceRef>]   # prepare
 greenlight wiki ingest --apply <maintainer-output.json> [--dry-run]                                # apply
 ```
 
@@ -454,7 +574,9 @@ greenlight wiki ingest --apply <maintainer-output.json> [--dry-run]             
 - `wiki.tar` (the full current wiki);
 - the sampled raw records: up to 5 failing and 3 passing by default, newest first, filtered by
   `--tool` and `--since`;
-- for `--incident`, the referenced issue or PR thread fetched through `gh` with redaction applied;
+- for `--incident`, the incident page together with every issue or PR thread in its `evidence`
+  (or the referenced thread, when a ref is given instead of a page id), fetched through `gh` with
+  redaction applied;
 - `prompt.md`, the maintainer prompt (06 §2.2) with the paths filled in.
 
 It prints the bundle path. The maintainer agent, running the `greenlight-wiki` skill, reads the
@@ -482,7 +604,9 @@ bundle and writes `maintainer-output.json` (08 §9.1).
 ```
 greenlight wiki propose [--skill <name>] [--pattern <id>]…                    # prepare proposer bundle
 greenlight wiki propose --apply <proposer-output.json> [--draft]              # stage the proposal
-greenlight wiki remediate <proposalId> --evidence <before-ref> <after-ref> --check <id>   # field evidence
+greenlight wiki remediate --proposal <proposalId> --evidence <before-ref> <after-ref> --check <id>
+greenlight wiki remediate --manual --pattern <id> --outlet mechanism|doctor|template|verify --ref <change-ref>
+                          --evidence <before-ref> <after-ref> --check <id>
 ```
 
 **`propose`**, in prepare mode, writes a bundle containing:
@@ -508,6 +632,10 @@ greenlight wiki remediate <proposalId> --evidence <before-ref> <after-ref> --che
   a ledger row with `outcome: 'pending-human'` through the harness.
 - **`no_action`:** it writes a ledger row with outcome `rejected` and the reason.
 
+**`remediate --manual`** covers a remediation made outside the proposer, for example a human
+fixing the framework directly as with the keepalive probe. It creates the proposal record on the
+fly, then proceeds as below.
+
 **`remediate`** records field evidence for the outlets that cannot be benched (`mechanism`,
 `doctor` and `verify`). It requires a before ref that is a failing run of check `<id>` and an
 after ref that is a passing run of the same check on a **deployed** artifact, both resolvable
@@ -529,12 +657,14 @@ opening anything, it runs LR-19 (`check-seam`), LR-20 (secret detector) and LR-0
 any failure exits 1. It forces `status: hypothesis` on the copy (12 T-02). The PR body lists the
 evidence refs, and the PR goes through normal human review. Nothing in this command merges.
 
-### 3.10 `bench run`, `bench gate` and `bench mutants` (P6)
+### 3.10 `bench` (P6)
 
 ```
 greenlight bench run [--split val] [--tasks <glob>] [--model <id>]… [--runs 3] [--skills-ref <git-ref>] [--json]
 greenlight bench gate <proposalId> [--models <a>,<b>] [--runs 3] [--alpha 0.05]
-greenlight bench mutants [--tasks <glob>]
+greenlight bench check-graders [--tasks <glob>]          # alias: bench mutants
+greenlight bench monitor [--since <date>]
+greenlight bench report [--proposal <id>] [--json]
 ```
 
 - **`run`** executes the selected tasks (08 §10). The run proceeds as follows:
@@ -553,8 +683,30 @@ greenlight bench mutants [--tasks <glob>]
   candidate, and a human releases.
   - **Exit codes:** 0 accepted; 1 rejected; 4 the proposal touches files outside its declared
     target.
-- **`mutants`** runs every grader against every mutant and exits 1 if any grader passes a mutant
-  (06 §4.3). CI runs it whenever `bench/` changes.
+- **`check-graders`** (alias `mutants`) runs every grader against every mutant and exits 1 if any
+  grader passes a mutant (06 §4.3). CI runs it whenever `bench/` changes.
+- **`monitor`** runs the scheduled test-split re-run against the models in `bench/models.json`. It
+  compares the result with the last accepted baseline and opens or updates a `greenlight-evo-alarm`
+  issue when any model regresses beyond the threshold in `bench/gate.json`. It refuses to start if
+  the month's spend recorded against `bench/budget.json` would exceed the cap, and exits 4. It is
+  invoked by `evo-monitor.yml`.
+- **`report`** renders a proposal's gate evidence (replay table, capability deltas per model,
+  p-values) as markdown for the PR body, or the latest `monitor` result. `evo.yml` uses it.
+
+**Configuration files** (06 §5):
+
+- `bench/models.json` lists the gate models: the frontier and the small model, with their agent
+  commands;
+- `bench/gate.json` holds `alpha`, `runs`, the blast-radius strictness table and the monitor
+  regression threshold;
+- `bench/budget.json` holds the monthly token or dollar cap and the per-proposal cap.
+
+`bench run`, `gate` and `monitor` read these files and record their spend in
+`.greenlight/bench-spend.jsonl`. The workflows are:
+
+- `evo.yml`, dispatched with a proposal id, runs `bench gate` and posts `bench report`. It runs on
+  issues labelled `greenlight-evo`;
+- `evo-monitor.yml`, scheduled monthly, runs `bench monitor`.
 
 ## 4. Doctor rules
 

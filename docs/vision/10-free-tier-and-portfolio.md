@@ -120,12 +120,52 @@ LR-21 indirectly.
    be computed from the manifest itself: the number of consumers, or the sum of their declared
    OCPUs. Those quotas are always measured.
 4. `headroomPct = 100 × (1 − used / limit)`, rounded down.
-5. **Thresholds.** Usage at or above 80% gives a warning in `accounts`, DR-27 W and the `add`
-   confirmation prompt (07 §2.2). Usage at or above 95% gives DR-27 E. For a projected add, `used`
-   includes the new tool: for count quotas this is exact; for rate quotas a new tool adds 0
-   (unknown) and the warning text says so.
+5. **Thresholds.** Current usage at or above 80% gives a warning in `accounts` and DR-27 W. Usage
+   at or above 95% gives DR-27 E. The `add` prompt (07 §2.2) uses the *projected* usage from §3.3.
 
-### 3.3 Cell availability
+### 3.3 Projection for a new tool
+
+`add` (and kickoff, through `accounts --cell`) warns when adding a tool would push any quota it
+draws on to 80% or more. The projection is computed per quota `q` in the new tool's
+`liveness.quotas`:
+
+```
+projected(q) = current(q) + estimate(q, newTool)
+warn  if projected(q) / limit(q) ≥ 0.80
+block if projected(q) / limit(q) ≥ 1.00   (exit 4 unless --accept-headroom; 07 §2.2)
+```
+
+**`current(q)`** is the measured `used` from §3.2. For rate quotas it is the **maximum daily
+value over the trailing 7 days**, not today's partial value, so a quiet morning does not hide a
+busy week. When the measurement is unavailable, the projection is reported as unknown and no
+warning is raised on that quota. The output says `headroom unknown for <q>` so that the gap is
+visible.
+
+**`estimate(q, newTool)`** is chosen by the first rule that applies:
+
+1. **Count quotas** (projects, OCPUs, managed resources): exact. For projects and OCPUs the
+   estimate is the new tool's own count, which is 1 for a project and the declared OCPUs for
+   compute. For managed resources it is the number of resources in the `infra/<name>.tf` that
+   `add` is about to emit, counted from the plan-free module resource list in the provider pack.
+2. **Sibling median.** For rate quotas, when at least two existing tools share the new tool's cell
+   and have measured usage, the estimate is the median of their trailing-7-day maximum daily usage.
+3. **Baseline.** Otherwise, the estimate is the cell's **idle baseline**: the traffic Greenlight
+   itself generates for that tool per day. It is computed from the manifest and the schedules, not
+   guessed:
+   - keepalive probes per day (0 for `always-on` and `needs-silence`, `86400 / interval` for the
+     others);
+   - plus verify runs per day (assumed 4: two ships, each with beta and prod verification);
+   - multiplied by the checks per verify (from the template's `verify.config.ts`);
+   - plus the agent lane's cron runs per day multiplied by the LLM calls per run (1 in the
+     template).
+
+   The warning text then says `estimate is the idle baseline only; real traffic will add to it`.
+
+The projection result is printed per quota as `<label>: <current> + <estimate> = <projected> /
+<limit> (<pct>%) [measured|sibling-median|baseline|unknown]`, and is also emitted in
+`accounts --cell … --json` as an additional `projected` object on each quota.
+
+### 3.4 Cell availability
 
 The cell `lane/target/data` is **available** when every provider pack it needs has
 `configured: true`. The packs a cell needs are:

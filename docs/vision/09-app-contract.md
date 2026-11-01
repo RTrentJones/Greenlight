@@ -31,7 +31,7 @@ For the mcp lane, `<base>` is the connect base, so the route is `/mcp/__version`
 Polyphony already serve it that way.
 
 **Why.** The verify settle loop could green-light the previous deployment, and a fix that existed
-in git was not what was running (15 §2.1, 15 §2.6). The harness's artifact-identity probe
+in git was not what was running (15, 15). The harness's artifact-identity probe
 (`packages/verify/src/api.ts`, together with `requireIdentity`) turns enforcement on per tool by
 exposing this route.
 
@@ -73,9 +73,9 @@ store; that probe uses the keepalive's `probeTable` query, not `/health`. `/heal
 `verify`, at deploy time and on demand.
 
 **Why.** Polyphony's container healthcheck hit `/health` every 30 seconds. That route checks
-Postgres and pgvector, so Neon never scaled to zero, and the compute allowance drained (15 §2.3).
+Postgres and pgvector, so Neon never scaled to zero, and the compute allowance drained (15).
 The opposite failure appeared on HeistMind, where the keepalive needed to reach the store and did
-not (15 §2.1). C2 gives each probe the layer it should touch.
+not (15). C2 gives each probe the layer it should touch.
 
 **Verify.**
 
@@ -95,7 +95,7 @@ OAuth Dynamic Client Registration is for MCP connectors, the config MUST also as
 capability is advertised **and** that it answers.
 
 **Why.** BAMCP's DCR was disabled, and the static machine token kept verify green while claude.ai's
-connector could no longer register (15 §2.5). HeistMind's Discord endpoint needed a check that an
+connector could no longer register (15). HeistMind's Discord endpoint needed a check that an
 unsigned POST is rejected, because a missing key answered 503 instead (`verify/heistmind.config.ts`
 in the wrapper).
 
@@ -120,7 +120,7 @@ a margin, such as a daily job at 26h.
 The response MAY be part of `/health` or `/status`.
 
 **Why.** Tracer computed freshness across all tools, so one fresh producer masked a stale one. The
-fix keyed freshness by producer (15 §2.4). A cron that stops still answers 200 with yesterday's
+fix keyed freshness by producer (15). A cron that stops still answers 200 with yesterday's
 data (greenlight-v2 §8, "depth over reachability").
 
 **Verify.**
@@ -156,7 +156,7 @@ fixed short interval. The only permitted idle traffic is what the tool's livenes
 (10 §1).
 
 **Why.** An idle Polyphony made about 50,000 Postgres queries a day: a 2-second queue poll, a
-60-second reaper and a 30-second healthcheck. Neon never slept (15 §2.3).
+60-second reaper and a 30-second healthcheck. Neon never slept (15).
 
 **Enforcement.** This clause cannot be expressed as a plain HTTP assertion, so it is enforced in
 three places:
@@ -186,7 +186,7 @@ not run.
 
 **Why.** Polyphony's preview base had to change to `/mcp` before relative paths resolved the same
 way locally. Tracer's data-dependent checks had to become prod-only. HeistMind's prod serves a
-holding page while beta serves the app. BAMCP's preview runs with auth off (15 §2.4). In each case
+holding page while beta serves the app. BAMCP's preview runs with auth off (15). In each case
 a green preview had been read as more than it proved.
 
 **Enforcement.** The template exports `invariant`, DR-26 flags configs without it, and `preview`

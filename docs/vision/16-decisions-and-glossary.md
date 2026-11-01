@@ -168,7 +168,7 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
   - Building agents read `intent`, `liveness`, `decision`, `fact` and `contract` pages at start.
   - They receive `confirmed` patterns only through `wiki lookup`, after a gate fails.
   - They never receive incidents.
-  - Bench rollouts get no lookup.
+  - Bench rollouts get no lookup (`GREENLIGHT_WIKI=off`).
 - **Consequences.** P6 measures whether lookup helps, using the val split with lookup on and off,
   and removes it if it does not.
 - **Alternatives considered.** Full wiki access: rejected on the paper's evidence. No access:
@@ -301,6 +301,12 @@ skills and framework wiki.
 improvement, on two models.
 
 **Headroom.** The share of a free-tier quota still unused across the whole portfolio.
+
+**`GREENLIGHT_WIKI=off`.** An environment switch that disables `wiki lookup` and every skill hook
+that reads the wiki. The bench runner sets it for every rollout.
+
+**`greenlight-evo` / `greenlight-evo-alarm`.** GitHub labels. The first marks issues, branches and
+PRs opened by the evolution loop. The second marks regression alarms opened by `evo-monitor.yml`.
 
 **Hook.** A defined point at which a managed skill reads or writes the wiki: `on-start`,
 `on-failure`, `on-complete` or `on-incident` (05 §3).

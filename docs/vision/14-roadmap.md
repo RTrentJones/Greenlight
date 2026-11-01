@@ -32,7 +32,7 @@ The current release is `0.10.1`. The plan assigns one minor version per phase:
 | P6 | 0.17.0 | none; the bench runs in the framework repo |
 | P7 | 0.18.0 | `greenlight agent sync` again to write `.agents/` |
 
-**Upgrades across a 0.x minor must be explicit.** The pattern `caret-range-0x-blocks-minor` (15
+**Upgrades across a 0.x minor must be explicit.** The pattern `caret-zero-major` (15
 §2.4) shows that `^0.10.0` will not pick up 0.11.0. Each phase's release notes therefore MUST tell
 consumers to run `pnpm add @rtrentjones/greenlight@^0.<n>.0`. DR-33 flags the gap once the wiki
 exists.
@@ -122,7 +122,7 @@ included.
 - Satisfies: DR-28.
 
 **P0-05 — Seed the framework wiki.**
-- Files: `wiki/**`, holding the pages drafted in 15 §2–§5: 16 patterns, 5 decisions, 7 contract
+- Files: `wiki/**`, holding the pages drafted in 15 §2–§5: 20 patterns, 12 decisions, 7 contract
   pages, fact skeletons and 2 incidents.
 - Content: shrink each provider skill's footgun paragraph to a one-line rule plus a link, under the
   one-home rule (04 §7).
@@ -546,6 +546,10 @@ explains them. Incidents can be compiled into patterns by a maintainer pass.
 - Files: `packages/wiki/src/lookup.ts` and `cli/src/commands/wiki.ts`.
 - Content: given a check id, check name, class or cell, return `confirmed` patterns whose `applies`
   includes the installed version, following `supersededBy` links.
+- Kill switch: `GREENLIGHT_WIKI=off` makes `wiki lookup` return nothing and turns every skill hook
+  that reads the wiki into a no-op. P5-05's report links and P5-01's `wikiHits` respect it. The bench
+  runner sets it for every rollout (ADR-10). Owners can also set it to rule the wiki out while
+  debugging.
 - Tests: `lookup.test.ts`.
 - Satisfies: FR-WIKI, ADR-10.
 
@@ -573,7 +577,7 @@ explains them. Incidents can be compiled into patterns by a maintainer pass.
 - **Release:** 0.16.0.
 - **Exit:** in a throwaway tool, the keepalive probe for a needs-traffic target is pointed at a
   cache path. Verify, or the keepalive dry run, fails. The report links to
-  `pattern/keepalive-probe-schema-cache`, and `wiki ingest` over the resulting raw records produces
+  `pattern/keepalive-probe-misses-postgres`, and `wiki ingest` over the resulting raw records produces
   a lint-clean update to that pattern's evidence.
 - **Risk:** redaction misses a new token shape. Mitigation: agents hold only placeholders after P4,
   so redaction is the backstop rather than the primary control, and the planted-secret test grows
@@ -595,7 +599,18 @@ locally reproducible failure pattern, and every grader is shown to fail on its m
   agent headless with the brief and the plugin (Claude Code `claude -p`, behind the P4 proxy
   pointed at fake upstreams), then run the hidden grader through `greenlight preview`. Wiki lookup
   is disabled during rollouts (ADR-10).
-- Tests: runner unit tests with a stub agent.
+- Configuration, all committed and schema-validated by `packages/bench`:
+  - `bench/models.json` lists the gate model pair (Q4), each with a vendor, a model id and an
+    optional per-rollout token cap;
+  - `bench/gate.json` holds the gate parameters: runs (3), bootstrap resamples (1,000), alpha
+    (0.05), the per-blast-radius strictness from 06 §5.4, and whether the shorten-on-tie rule is
+    enabled (default off);
+  - `bench/budget.json` sets `maxRolloutsPerRun` and `maxRolloutsPerMonth`. The runner refuses to
+    start a run that would exceed either limit, and the remaining monthly budget is printed before
+    every run.
+- Rollouts run with `GREENLIGHT_WIKI=off`.
+- Tests: runner unit tests with a stub agent; schema tests for the three config files; a test that
+  the budget refusal triggers.
 - Satisfies: FR-EVO.
 
 **P6-02 — Mutation checks.**
@@ -623,6 +638,9 @@ locally reproducible failure pattern, and every grader is shown to fail on its m
   the `greenlight-wiki` skill (06 §3).
 - Content: validate `ProposerOutput` (08 §9.2). `issue` actions open GitHub issues, and
   `create`/`patch` actions stage a branch.
+- Label: every issue and branch the proposer opens carries the GitHub label `greenlight-evo`, so
+  evolution work can be filtered and never mistaken for human work. `wiki propose` creates the
+  label if it is missing.
 - Tests: `propose.test.ts`.
 
 **P6-06 — Gate.**
@@ -645,11 +663,19 @@ locally reproducible failure pattern, and every grader is shown to fail on its m
   remediation, and set `verified: true`.
 - Tests: unit tests.
 
-**P6-09 — Scheduled re-evaluation.**
-- Files: `.github/workflows/bench-monthly.yml` in the framework repo, run by manual dispatch plus a
-  monthly cron.
-- Content: re-run the test split on the current default models and open an issue on regression.
-  It is budget-capped by `BENCH_MAX_ROLLOUTS`.
+**P6-09 — Evolution workflows.** Two workflows go in the framework repo.
+- `.github/workflows/evo.yml` runs one evolution iteration, or `--iterations n`, on manual dispatch
+  only: maintainer pass, proposer, gate, ledger. Accepted changes land on a `greenlight-evo/<proposalId>`
+  branch, and a PR labeled `greenlight-evo` is opened for a human to merge (ADR-12). The workflow
+  reads model credentials through the P4 proxy and respects `bench/budget.json`.
+- `.github/workflows/evo-monitor.yml` runs on a monthly cron plus manual dispatch. It re-runs the
+  test split on the models in `bench/models.json` and compares field metrics (first-pass rate and
+  rollback rate per skill version, from stage events or Tracer) against the previous skill version.
+  When the test split regresses, or a field metric drops past the threshold in `bench/gate.json`, it
+  opens an issue labeled `greenlight-evo-alarm`. The alarm is what triggers a maintainer pass (ADR-05);
+  the monitor itself never changes a skill.
+- Tests: `actionlint` on both workflows; a dry-run mode (`EVO_DRY_RUN=1`) exercised in `check-all`
+  with a stub agent.
 
 ### P6.2 Applies to every managed skill
 
