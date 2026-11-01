@@ -526,8 +526,24 @@ modes appear in the ledger evidence, per model.
 
 1. Load the baseline, R_best. This is the stored val result of the currently accepted skill set,
    per model and per mode. It is re-run if its `BaselineIdentity` differs from the current one in
-   any component other than the skill set (§1.5), or if it is older than 30 days.
-2. Run val with the candidate skill set: 3 runs, for each gate model, in each mode.
+   any component other than the skill set (§1.5), or if it is older than 30 days
+   (`EvaluationRecord.createdAt` against the gate's `ts`; `bench/gate.json` `maxBaselineAgeDays`).
+   The gate checks the whole record set, not each mode alone: every baseline record carries the
+   accepted skill-set hash the caller names, every candidate record carries one other skill-set
+   hash, and all records agree on every identity field except `mode`, `wikiSnapshotHash` and the
+   skill set. Any violation is a harness error.
+2. Run val with the candidate skill set: 3 runs, for each gate model, in each mode. A mode that
+   any gated task declares (`TaskSpec.modes`) but that has no record on both sides makes the
+   evaluation **invalid**; it is never skipped.
+
+   **M1/M2 posture (isolation only).** Production mode needs the wiki hooks and a pinned snapshot,
+   which land in M3. Until then the gate runs isolation mode only, and the caller must say so
+   explicitly (`modes: ["isolation"]`). The declaration is validated against the tasks (each
+   declared mode is declared by some gated task, and every gated task is evaluated in at least one
+   declared mode), recorded in the gate input record (`modes`, `modesDeclared: true`, §5.8), and
+   reported as `modes-partial`. Steps 5 and the production half of step 3 are then not evaluated,
+   and the ledger evidence holds isolation results only. From M3 the declaration is dropped and
+   both modes are required.
 3. **Constraint (replay).** For each model, every replay task that passed in the baseline (in at
    least 2 of 3 runs) MUST pass in at least 2 of 3 candidate runs. Any regression rejects the
    proposal, which records `replay.regressions`.
@@ -602,6 +618,11 @@ the ledger.
 
   No capability gain is required. This is the path for replay-only fixes when capability is
   unchanged or saturated, and for security repairs. The ledger label is `path: "safety-fix"`.
+
+  A target is exempt from the high-radius "no flaky replay task in the baseline" rule: the path
+  exists for replay tasks that fail in the baseline, and a target at 1 of 3 is one. Holding it to
+  the flaky rule would make it unfixable. A high-radius target is held to 3 of 3 on the candidate
+  instead. Every non-target replay task still obeys the flaky rule.
 - **Neutral-prerequisite path.** This path is for a change that enables a later change but cannot
   show a gain on its own, such as renaming a section that a mechanism will reference. Safety and
   non-regression must hold. The PR names the dependent proposal. A human must approve it
@@ -643,6 +664,13 @@ change agent behaviour.
 
 Every outlet's evidence lands in the same ledger, with its own `evidence.kind` (08 §8).
 
+For a template candidate, the gate takes the generated-app test result per lane and, per template
+mutant, whether those tests caught it. It applies the §5.4 replay safety rules unchanged and
+replaces the efficacy column with non-regression: capability may not fall by more than one
+task-mean on any model in any evaluated mode. A failing lane or an escaping mutant rejects; no
+lane or no mutant is an invalid evaluation. The ledger evidence is `kind: "template"`, with the
+per-model × mode results beside the lane and mutant counts.
+
 ### 5.7 Release check on the held-out test set
 
 Before a release that carries skill or template changes, `bench run --split test` runs the released
@@ -665,9 +693,23 @@ to the evidence store. The record holds:
 - per task, per run, per model and per mode: the outcome, the per-grader results, the seed, the
   token and dollar cost, the duration and the raw id.
 
-The ledger references the record by hash. Anyone holding the record can recompute the decision
-with `bench gate --recompute <hash>`, which re-runs §5.2 from the stored outcomes without new
-rollouts. The record is retained as long as the ledger row exists (03 §5).
+Every gate decision also writes a content-addressed `GateInputRecord` (08 §10.4) beside the
+evaluation records (`wiki/evidence/eval/<hash>.json`). It holds everything else the decision
+depends on: the event `ts`, outlet, blast radius, path, the bootstrap seed actually used, the
+resolved `bench/gate.json`, the two model ids, the evaluated modes and whether they were declared
+(§5.1), the accepted and candidate skill-set hashes, the task list sorted by id with each task's
+kind, state and modes, the hash of every baseline and candidate evaluation record (one per mode
+per side), the safety-fix targets, the neutral reason, the tie-break line counts and, for a
+template, the lane and mutant results.
+
+The ledger's bench or template evidence references the gate input by `gateInput` and lists every
+evaluation record it read in `evaluationRecords`. Anyone holding the gate input and those records
+can recompute the decision with `bench gate --recompute <gateInputHash>`, which re-runs §5.2 from
+the stored outcomes without new rollouts and needs no other input: the bootstrap resamples tasks
+in id order, so the order of the task files cannot change the p-value, and the baseline is named
+by hash, so a second comparable baseline from another accepted skill set is never ambiguous. The
+recompute fails if the rebuilt gate input does not hash to the given one. The gate input and every
+record it lists are retained as long as the ledger row exists (03 §5).
 
 ## 6. Applying an accepted change
 
@@ -836,7 +878,12 @@ The first iteration succeeds when:
 
 - the maintainer output passes its grader;
 - the proposal or `no_action` is valid;
-- the control is rejected;
+- the control is rejected **because the Neon replay regresses**: the exit check asserts that the
+  decision's reasons include `replay-regression` on `replay/idle-probe-leaves-store-asleep-val`
+  (`rejectedForReplayRegression(decision, taskId)` in `packages/wiki/src/bench/gate.ts`). A
+  rejection for any other reason alone does not count, because the val objective set holds only
+  the wiki and loop tasks, so an overgeneral patch also fails `no-strict-improvement` whatever it
+  does to the replays;
 - the real proposal has a recorded outcome under its outlet's rule;
 - the owner has reviewed the ledger rows.
 
