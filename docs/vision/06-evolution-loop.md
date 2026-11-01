@@ -902,9 +902,16 @@ brief", as in the paper, and the same code runs locally and in CI.
 
 - `gemini.ts`: a client over `generateContent` with function calling. It carries the agent
   lane's retry policy: retry a 429 or 5xx twice with backoff, then one round on the fallback model.
-  Unlike the agent lane, it records which model served each call. If the fallback served a gate
-  rollout, that rollout is invalid for gating: the evaluation record marks it `served-by-fallback`,
-  and the gate re-runs it later or aborts. Mixing models would break the baseline identity.
+  Unlike the agent lane, it records which model served each call. `servedBy` is the API's
+  `modelVersion` when the response carries one, and otherwise the id of the endpoint called. The
+  configured id is kept as `requested`. If the fallback served a gate rollout, or the alias drifted
+  to another `modelVersion`, that rollout is invalid for gating: the evaluation record marks it
+  `served-by-fallback`, and the gate re-runs it later or aborts. Mixing models would break the
+  baseline identity. **Gate and baseline rollouts therefore run with the fallback disabled**
+  (`allowFallback: false`). After the retries, the client throws a transient, resumable
+  `FallbackDisabledError`, and the ReAct loop reports it as `deferred`. The runner re-runs the
+  rollout on a later day instead of sending it to the small model, which would spend the small
+  model's quota on a rollout the gate cannot use.
 - `react.ts`: a ReAct loop with a fixed tool set per role.
 
 | role | tools | system prompt |
@@ -922,8 +929,13 @@ model change.
 per day, not dollars.
 
 - `bench/models.json` records each model's limits (`rpm`, `rpd`, `tpm`).
-- The harness throttles to stay under them.
+- The harness throttles to stay under them. The daily count persists in
+  `.greenlight/quota/<model>.json` (`FileQuotaStore`, under a lock), so separate processes on one
+  day share one quota. A fresh runner seeds that count from today's `spend` events.
 - `bench run` refuses a gate whose expected request count exceeds the day's remaining `rpd`.
+- `bench/README-models.md` holds the budget arithmetic for the first M2 gate. That gate runs
+  isolation mode only and includes the baseline re-run: 48 rollouts and about 12 requests per
+  rollout, so 600 requests, or about 15 days at 20 RPD per model.
 
 A gate that cannot finish within one day's quota is split across days. This is safe because the
 baseline identity pins every input, and rollouts are independent. `spend` ledger events record
@@ -943,6 +955,20 @@ Everything the harness sends must therefore be publishable:
 - `bench run` refuses to send a bundle containing a string the redaction detector flags. It does
   not send a redacted copy silently, because a refusal is the visible signal that capture leaked
   something.
+- **The detector is the real one.** Every role, including rollouts, passes
+  `findSecrets` from `packages/shared/src/redact.ts` (11 §6) to the client. A no-op detector is
+  never used, even for inputs that are credential-free by construction, because the guard is the
+  only check that such inputs are in fact free of credentials. The detector skips code
+  expressions (11 §6), so vendored fixture source such as the keepalive worker's
+  `apikey: t.anonKey` does not trip it, and a test keeps every bench fixture scanning clean.
+- The guard scans every string leaf of every outgoing part. That includes fields the harness does
+  not model but preserves and replays, such as `inlineData`, `fileData` and thought signatures, as
+  well as the system instruction and the tool declarations.
+- **Refusal is the behaviour.** A flagged request is never sent. The client throws
+  `RedactionRefusedError` naming only the locations, and the ReAct loop ends the rollout with
+  `redaction_refused`. A refused rollout produces no outcome, so the gate stops on the refusal
+  instead of scoring it as a pass or a fail. It is never retried with a scrubbed copy. The fix
+  belongs in capture or in the fixture.
 
 An owner who needs prompts kept out of training uses a paid Gemini tier or another provider, which
 is configured through `bench/models.json`.
