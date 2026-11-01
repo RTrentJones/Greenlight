@@ -13,8 +13,10 @@ import {
   withWrites,
 } from './load';
 import type { PageIssue } from './parse';
-import type { Changeset } from './patch';
 import { findSecrets } from './redact';
+
+/** Structurally `Changeset` from patch.ts, declared here because patch.ts imports lint (06 §2.4). */
+type Changeset = { writes: { path: string; content: string }[] };
 
 /**
  * Wiki lint (vision 04 §5). This milestone implements the offline structural rules LR-01, LR-02,
