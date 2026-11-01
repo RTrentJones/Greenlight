@@ -187,48 +187,133 @@ and grades it somewhere else (06 §4.2). What runs where:
 
 | where | what | sees |
 |---|---|---|
-| host | the ReAct loop (the only holder of model access: `GEMINI_API_KEY` in the host env, or none when an egress proxy injects it, with `NODE_USE_ENV_PROXY=1`), the shim socket server, the trajectory writer, raw/evaluation records | everything |
-| rollout container | every agent tool call (`read_file`, `write_file`, `list_dir`, `bash`) via `docker exec` as uid 10000 | tmpfs `/work` (fixture + `.claude/skills/`, fresh git repo), tmpfs `/srv/origin.git` (bare origin), `/opt/greenlight` (the built CLI, read-only), `/run/greenlight-shim` (read-only; socket 0600 owned by the shim user) |
+| host | the ReAct loop (the only holder of model access: `GEMINI_API_KEY` in the host env, or none when an egress proxy injects it, with `NODE_USE_ENV_PROXY=1`), the shim socket server, the trajectory writer, the origin and tree read-out, the diff, raw/evaluation records | everything |
+| rollout container | every agent tool call (`read_file`, `write_file`, `list_dir`, `bash`) via `docker exec` as uid 10000 | tmpfs `/work` (fixture + `.claude/skills/`, fresh git repo), tmpfs `/srv/origin.git` (bare origin), `/opt/real/greenlight` (the built CLI, read-only, inside a root:shim 0750 directory), `/run/greenlight-shim` (read-only; socket 0600 owned by the shim user) |
 | grading container | `graders/<id>/grade.mjs` as root (DAC_OVERRIDE/SETUID/SETGID/KILL only), the agent's app as uid 10000 | the exported tree and trajectory (read-only), a staged copy of `tasks/<id>/task.json`, `graders/<id>/`, `graders/_lib/`, `fixtures/` |
 
 Rollout container: `--network none`, `--read-only`, `--cap-drop ALL` + SETUID/SETGID (the
-recorder's doas hop), pids/memory/cpu limits, `GREENLIGHT_WIKI=off` (isolation mode). No mount of
+recorder's doas hops), pids/memory/cpu limits, `GREENLIGHT_WIKI=off` (isolation mode). No mount of
 `bench/`, graders, mutants, references or the repo source; no secret in any environment.
 
 **Shims.** `git greenlight wrangler vercel gh terraform docker curl` on the agent's PATH are
-`shim.sh`, which hands the command to `record.mjs` running as the shim user (doas; the agent's env
-travels as data, never as the recorder's env). The recorder reads the git state with the command's
-own `-c`/`-C` options and the agent's `GIT_CONFIG_*`, snapshots the bare origin's refs, runs the
-real command as the agent, and sends one JSON line to the socket. Only the shim user can connect,
-so the agent cannot forge or edit an event. The host stamps each event (and each tool call) with
-one global sequence on arrival and builds meta with `normalizeShimEvent`; `pushed` is true only
-when an origin ref really moved. Commands not installed in the image are recorded with exit 127.
+`shim.sh`, which hands the command to `record.mjs` running as the shim user (`doas -u shim`; the
+agent's env travels as data, never as the recorder's env). The recorder reads the git state with
+the command's own `-c`/`-C` options and the agent's `GIT_CONFIG_*`, snapshots the bare origin's
+refs, runs the real command as the agent through `/opt/runner/run-real` (`doas -u root`, which
+immediately `setpriv`s to uid agent with the extra group `shim`), and sends one JSON line to the
+socket. The host stamps each event (and each tool call) with one global sequence on arrival and
+builds meta with `normalizeShimEvent`; `pushed` is true only when an origin ref really moved.
+Commands not installed in the image are recorded with exit 127.
 
-**After the agent stops** (finish, step limit or timeout) the runner kills every agent process
-(`kill -9 -1` as the agent; PID 1 is an inert sleep), stops accepting shim events, takes the diff,
-exports the tree, removes the container, and only then grades. In the grading container the
+**The real binaries run only through the recorder.** `/usr/bin/git` (and `git-shell`,
+`/usr/libexec/git-core/`), `/usr/bin/curl` and the CLI under `/opt/real/` are root:shim 0750 (any
+of `wrangler vercel gh terraform docker` installed later gets the same treatment). The agent's own
+processes are not in the shim group, so `/usr/bin/git push` or `node /opt/real/greenlight/…` fails
+with "Permission denied": every git, curl and greenlight call the agent makes goes through a shim
+and is recorded. The runner's own git (fixture commit, origin read-out) runs as uid agent with the
+shim group, outside any agent process.
+
+**What is and is not guaranteed.**
+
+- The agent cannot connect to the shim socket (owned by the shim uid, mode 0600), so it cannot
+  forge or edit an event.
+- doas cannot restrict `permit agent as shim cmd /opt/runner/record` to argument patterns, so the
+  agent can invoke the recorder directly with arguments of its choice. `record.mjs` validates its
+  own invocation (a shimmed command name, an absolute cwd, a base64 environment of well-formed
+  names) and refuses anything else with exit 126 without running or sending anything; what it
+  does run, it reports truthfully, so a direct call is equivalent to calling the shim. The second
+  rule, `permit shim as root cmd /opt/runner/run-real`, is reachable only from the recorder.
+- The trajectory is checked for completeness, not assumed complete. The host lists the bare
+  origin's refs after setup and again after every process is killed; every value any ref took
+  (in any recorded before/after listing, and at the end) must be its start value or one a
+  recorded git command left it at. Otherwise the outcome carries `graderError:
+  "trajectory-incomplete: origin ref(s) moved with no recorded command: …"`. A shim message the
+  host rejected (lost event) is `trajectory-incomplete` too; more than 10,000 events or 8 MB of
+  shim messages in one rollout is `trajectory-truncated` (2 MB per message). All of them are
+  invalid at the gate (`grader-error`), never a pass. Residual risks are in 06 §4.6.
+- Not guaranteed: what a recorded command's own children do (a git hook, an alias `!cmd`, the
+  app `greenlight preview` starts) runs with the shim group and is attributed to that command; a
+  ref moved and moved back between two listings is invisible. Neither can fake a recorded push or
+  preview: a rule matches only recorded events.
+
+**After the agent stops** (finish, step limit or timeout) the runner kills EVERY process but PID 1
+(an inert sleep) — the shim user's in-flight recorders included — from a privileged root `docker
+exec` (CAP_KILL), repeating until two consecutive `/proc` scans find nothing alive; a loop that
+does not converge is a harness error. Only then does it read the origin refs, stop accepting shim
+events and export the tree (as root, so no file is unreadable). The export is checked before it is
+unpacked on the host: only regular files, directories and symlinks, no absolute or `..` member,
+no duplicate, nothing below a symlink member, at most 600 MB; host code never follows a symlink
+out of the tree (skill stamps are read through `lstat`ed regular files only). The diff
+(`diff.patch`) is computed on the host from that same exported tree against the staged fixture, in
+a throwaway repository with no system, global or repository config, so diff and graded tree are
+one snapshot and nothing the agent configured (filter, fsmonitor, textconv, hook) runs on the
+host. The container is removed, and only then is the rollout graded. In the grading container the
 driver talks to the host over stdin/stdout lines; the maintainer grader's eval judge
 (`GraderJob.useJudge`, baseline and candidate grading only, never train rollouts or
 check-graders) is relayed to the host, which answers with one structured call on the judge model
-(`bench/models.json` `judge`, fallback off, counted in the rollout's cost). The fake-clock
-coordinator's socket is reachable by the agent uid, and `NODE_OPTIONS` reaches the app. The image is built on demand from
-this directory (tag = content hash + shim uid); its id is `harness.imageDigest`.
+(`bench/models.json` `judge`, fallback off, counted in the rollout's cost and spent on the judge
+model's own `spend` event).
+
+**Limits are identity.** `--max-steps` (default 15), the per-rollout request cap
+(`--rollout-requests`, default max-steps + 2: one request per step plus two retries' headroom)
+and the rollout timeout override are `harness.limits` in the BaselineIdentity: a cached 10-step
+train run is not reused for `--max-steps 20`, a gate never compares records run under different
+limits, and `--resume` refuses an explicitly changed limit (an unset one is the evaluation's own).
+
+**Quota scheduling.** Before each rollout the runner checks the model's remaining daily quota
+(`.greenlight/quota/`, seeded from today's `spend` events) against the rollout's request cap
+(plus one judge call on the judge model for a maintainer gate rollout). A model below it is
+skipped for today and the other keeps running; the model with the most quota left always goes
+next, so the models interleave. No rollout ever falls back to another model (train included: a
+fallback-served train outcome would be evidence about the wrong model and spend the other's
+quota). A rollout deferred anyway (model unavailable with fallback off, quota spent by another
+process) defers only its model. The run then returns `deferred` (exit 1) with the keys left per
+model (`--json`: `remaining`, `deferredModels`); `--resume <evaluationId>` continues it on a later
+day. A deferred rollout's requests are lost (a ReAct run cannot resume mid-way) but still counted
+in `spend`; it leaves no raw record.
+
+**Image reproducibility (resume across days).** The Dockerfile pins the base image by digest and
+every apk package by version. `harness.imageDigest` is `ctx:sha256:<hash>` over this directory's
+content, the shim uid and the installed package list (`apk info -v`), not the local image id,
+which changes on every rebuild: a pruned and rebuilt image with the same content resumes; a
+drifted package changes the identity. A pin the Alpine mirror no longer serves makes the build fail
+instead of drift. Operational discipline for a gate split across days:
+
+- do not `docker image prune`/`docker system prune` the `greenlight-bench-runner:*` images while
+  an evaluation is unsealed (a rebuild needs the pinned versions to still be on the mirror);
+- keep the checkout frozen: `depsHash` covers the lockfile and the whole built CLI bundle
+  (`cliBuild`), so any change to the CLI source, the lockfile, `bench/` or the skills between
+  days refuses the resume (`git stash`/a separate worktree for other work);
+- keep the same host user (the shim uid is part of the image digest) and the same `bench/runner/`.
 
 **`--sandbox process` is for local development only.** Tool calls run as host child processes in
 a temp dir with the same shims: same uid as the host, so the agent could read host files, connect
-to the shim socket and outlive the process-group kill with `setsid`. Its records carry
-`harness.imageDigest: "process"` (never comparable with a docker evaluation), and `bench run`
-refuses it for `--role baseline` (and candidate).
+to the shim socket, run the real binaries and outlive the process-group kill with `setsid`. Its
+records carry `harness.imageDigest: "process"` (never comparable with a docker evaluation), and
+`bench run` refuses it for `--role baseline` (and candidate).
 
-**Records.** One `bench` raw record per rollout (`.greenlight/raw/`, excerpt redacted and
-truncated; transcript, trajectory, diff, grade report and final tree under
+**Records.** One `bench` raw record per rollout that ran to an end (`.greenlight/raw/`, excerpt
+redacted and truncated; transcript, trajectory, diff, grade report and final tree under
 `.greenlight/bench/runs/<evaluationId>/<rawId>/`), one `spend` ledger event per model per
 invocation, and a sealed EvaluationRecord (`wiki/evidence/eval/<hash>.json`) once every rollout has
-an outcome. A grader crash is an outcome with `graderError` (invalid at the gate, never a fake 0);
-a redaction refusal or a model error leaves the evaluation unsealed. A deferral (model unavailable
-with fallback off, daily quota, request cap) persists `progress.json`; `--resume <evaluationId>`
-continues it under an identical BaselineIdentity and refuses if any component changed. A train run
-whose identity matches a sealed train record is reused unless `--force`.
+an outcome. A grader crash or an incomplete trajectory is an outcome with `graderError` (invalid at
+the gate, never a fake 0); a harness error, a redaction refusal or a model error leaves the
+evaluation unsealed, with a raw record whose `retained.verdict` is `unknown` (and `passed: false`,
+which the schema requires: consumers must read the verdict, see 06 §4.2). A deferred rollout writes
+no raw record. A train run whose identity matches a sealed train record is reused unless
+`--force`.
+
+**Threat model notes.**
+
+- The fake-clock coordinator (`graders/_lib/fake-clock-coordinator.mjs`) serves its socket with
+  mode 0666 in a 0711 temp dir in the grading container, because the agent's app (uid 10000) must
+  connect to it. Anything running as the app can therefore send clock messages (advance or stall
+  its own view of time). That is the app under test talking to its own clock: it cannot reach the
+  grader's verdict channel (the grader child's IPC) or the staged grader files (0600/0700), and a
+  participant that stalls makes `advance` throw, which fails the window rather than passing it.
+  `NODE_OPTIONS` reaches the app (the fake-clock shim is preloaded through it).
+- The grading container runs the grader as root with DAC_OVERRIDE/SETUID/SETGID/KILL and no
+  network; the agent's code runs there only as uid 10000.
 
 **Activating tasks.** Every task enters `pending`. After `bench run --split val --role baseline`
 has sealed a baseline that covers a task on both gate models, `greenlight bench activate <taskId…>`

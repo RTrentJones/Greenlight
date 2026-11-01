@@ -108,9 +108,23 @@ perGateMaxRequests 600
 splitAcrossDays true            the gate cannot fit in one day's rpd (below)
 ```
 
-The ReAct `maxSteps` for the inference agent should be 10 or lower, so that 12 requests per
-rollout, retries included, remains an upper estimate. The live smoke task used 2 requests for one
-tool call and `finish`.
+The ReAct `maxSteps` for the inference agent is **15** (`DEFAULT_MAX_STEPS`): the live smoke showed
+10 too tight for the replay tasks. Each rollout's hard request cap is `maxSteps + 2` = **17**
+(one request per step plus two retries' headroom; `harness.limits` in the identity). 12 per
+rollout stays the *expected* figure the budget above is sized on, but it is no longer an upper
+bound: the worst case is 48 × 17 + 12 = 828 requests, so a gate that ran every rollout to its cap
+would stop at `perGateMaxRequests` 600 and resume with a fresh cap the next invocation. The live
+smoke task used 2 requests for one tool call and `finish`.
+
+**The cap is reserved, which sets the pace.** Before each rollout the runner requires the model's
+remaining daily quota to cover the full cap (17, plus 1 on the judge model for a maintainer gate
+rollout), so a rollout is never started that the day's quota could cut off mid-way. At 20 RPD
+that admits **one rollout per model per day** (a second one only if the first used 3 requests or
+fewer), whatever the rollout actually spends: 20 − ~9–12 used leaves 8–11, below 17. The days
+table below therefore understates the pace: a gate's 24 rollouts per model take about **24 days**
+at 20 RPD (the judge calls fit in the small model's leftover). `--rollout-requests n` lowers the
+cap (and the reservation) for faster days at the risk of cutting rollouts short; it is part of the
+identity, so baseline and candidate must use the same value.
 
 **Days per gate at 20 RPD per model.** Each model runs half the rollouts.
 
