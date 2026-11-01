@@ -66,7 +66,9 @@ export interface GateContext {
   radius: BlastRadius;
   path: GatePath;
   models: { frontier: string; small: string };
-  /** The val tasks with kind, state and modes (pending and quarantined are excluded, 06 §4.1). */
+  /** The val tasks with kind, state and modes (pending and quarantined are excluded, 06 §4.1).
+   * Must equal every record's `identity.tasks` (id, kind, state, modes), or the gate throws: a
+   * task's state changes only with a re-baseline. */
   tasks: readonly PolicyTask[];
   /** The currently accepted skill set's hash (06 §5.1 step 1). Every baseline record must carry
    * it; every candidate record must carry one other skill-set hash. */
@@ -300,6 +302,38 @@ function summarize(reasons: PolicyReason[]): string {
 
 const sortedUnique = (xs: readonly string[]): string[] => [...new Set(xs)].sort();
 
+/**
+ * The gate's task list must be the one the records were run under (06 §1.5, §4.1): the caller's
+ * tasks, projected and sorted as the GateInputRecord holds them, must equal every record's
+ * `identity.tasks` projected to (id, kind, state, modes). Otherwise a caller could mark a
+ * regressing replay task `quarantined` (or change its kind or modes) and exclude it from the gate.
+ * A quarantine is therefore a new identity, so a re-baseline. Throws naming the differing tasks.
+ */
+function assertTasksMatchIdentity(
+  tasks: GateInputRecord['tasks'],
+  records: readonly EvaluationRecord[],
+): void {
+  for (const r of records) {
+    const bound = r.identity.tasks.map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      state: t.state,
+      modes: [...t.modes],
+    }));
+    if (canonicalJson(bound) === canonicalJson(tasks)) continue;
+    const key = (t: (typeof tasks)[number]) => canonicalJson(t);
+    const ours = new Map(tasks.map((t) => [t.id, key(t)]));
+    const theirs = new Map(bound.map((t) => [t.id, key(t)]));
+    const ids = [...new Set([...ours.keys(), ...theirs.keys()])]
+      .filter((id) => ours.get(id) !== theirs.get(id))
+      .sort();
+    throw new GateHarnessError(
+      `the gate's task list differs from record ${r.hash}'s identity in ${ids.join(', ')}; a task's state, kind or modes change only with a re-baseline (06 §4.1)`,
+      ['tasks', ...ids.map((id) => `tasks.${id}`)],
+    );
+  }
+}
+
 /** The task list as the GateInputRecord holds it: sorted by id, modes resolved (default both). */
 function recordedTasks(tasks: readonly PolicyTask[]): GateInputRecord['tasks'] {
   return [...tasks]
@@ -344,6 +378,7 @@ export function decide(
   const seed = ctx.seed ?? `gate:${proposalId}`;
   const outlet = ctx.outlet ?? 'skill';
   const tasks = recordedTasks(ctx.tasks);
+  assertTasksMatchIdentity(tasks, [...baselines, ...candidates]);
   const safetyFixTargets =
     ctx.path === 'safety-fix' && ctx.safetyFixTargets
       ? sortedUnique(ctx.safetyFixTargets)
@@ -565,6 +600,7 @@ export function earlyStopEvent(
 ): LedgerEvent | null {
   const config = loadGateConfig(ctx.config ?? {});
   const baselines = asList(baselineRecord).map(validated);
+  assertTasksMatchIdentity(recordedTasks(ctx.tasks), baselines);
   const res = earlyStop({
     models: ctx.models,
     modes: baselines.map((r) => r.identity.mode),
@@ -585,7 +621,7 @@ export function earlyStopEvent(
 export interface ReleaseContext {
   ts: string;
   models: { frontier: string; small: string };
-  /** The test-split tasks with kind, state and modes. */
+  /** The test-split tasks with kind, state and modes; must equal every record's `identity.tasks`. */
   tasks: readonly PolicyTask[];
   /** As GateContext.modes: omit to require every mode the test tasks declare (06 §5.7). */
   modes?: readonly GateMode[];
@@ -627,11 +663,13 @@ export function releaseCheck(
     // A release may carry no skill change against the previous one; the check still runs.
     distinctSkillSets: false,
   });
+  const tasks = recordedTasks(ctx.tasks);
+  assertTasksMatchIdentity(tasks, [...prev, ...cand]);
   const policy = releasePolicy({
     models: ctx.models,
     modes: set.modes,
     declaredModes: ctx.modes,
-    tasks: ctx.tasks,
+    tasks,
     previous: prev.flatMap((r) => r.outcomes),
     candidate: cand.flatMap((r) => r.outcomes),
     runs: ctx.runs,

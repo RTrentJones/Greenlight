@@ -91,6 +91,32 @@ function clean(over: Partial<PolicyInput> = {}): PolicyInput {
 }
 
 describe('applyPolicy details', () => {
+  it('a grader crash is invalid (grader-error), never a fail or a regression, on any task', () => {
+    const crash = (o: PolicyInput['candidate'][number]) => ({
+      ...o,
+      score: 0 as const,
+      graders: [{ kind: 'app' as const, passed: false }],
+      graderError: 'grader timed out',
+    });
+    for (const [task, side] of [
+      ['replay/a', 'candidate'],
+      ['replay/q', 'candidate'], // a quarantined (excluded) task still invalidates
+      ['cap/c1', 'baseline'],
+    ] as const) {
+      const base = clean();
+      const list = base[side].map((o) =>
+        o.task === task && o.model === S && o.mode === 'isolation' && o.run === 2 ? crash(o) : o,
+      );
+      const out = applyPolicy({ ...base, [side]: list });
+      expect(out.decision, task).toBe('invalid');
+      expect(out.results).toEqual([]);
+      expect(out.reasons).toContainEqual(
+        expect.objectContaining({ code: 'grader-error', severity: 'invalid', task, model: S }),
+      );
+      expect(out.reasons.some((r) => r.severity === 'fail')).toBe(false);
+    }
+  });
+
   it('accepts the clean world with real bootstrap p-values and reports the GateResult figures', () => {
     const out = applyPolicy(clean());
     expect(out.decision).toBe('accept');
@@ -314,6 +340,13 @@ describe('earlyStop', () => {
     const b = allPass.map((o, i) => (i === 0 ? { ...o, servedBy: 'other' } : o));
     expect(earlyStop({ ...input, baseline: b }).stop).toBe(false);
   });
+  it('does not stop on a grader-error baseline', () => {
+    const b = allPass.map((o, i) => (i === 0 ? { ...o, graderError: 'crashed' } : o));
+    expect(earlyStop({ ...input, baseline: b })).toEqual({
+      stop: false,
+      detail: 'grader-error baseline outcome',
+    });
+  });
 });
 
 describe('releasePolicy (06 §5.7)', () => {
@@ -334,6 +367,22 @@ describe('releasePolicy (06 §5.7)', () => {
     };
   };
   it('passes an unchanged skill set', () => expect(releasePolicy(both()).decision).toBe('pass'));
+  it('is invalid on a grader crash, not blocked', () => {
+    const input = both();
+    const candidate = input.candidate.map((o, i) =>
+      i === 0
+        ? {
+            ...o,
+            score: 0 as const,
+            graders: [{ kind: 'app' as const, passed: false }],
+            graderError: 'x',
+          }
+        : o,
+    );
+    const out = releasePolicy({ ...input, candidate });
+    expect(out.decision).toBe('invalid');
+    expect(out.reasons.map((r) => r.code)).toContain('grader-error');
+  });
   it('blocks a test replay regression on the small model', () => {
     const out = releasePolicy(
       both((w, m) => {

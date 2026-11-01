@@ -645,6 +645,13 @@ Examples:
 ```ts
 interface BaselineIdentity {
   taskSetHash: string;        // over task.json + brief.md + fixture/ of every task in the split, in id order
+  tasks: {                    // the evaluated tasks as the gate reads them; sorted by id, unique
+    id: string;
+    kind: TaskSpec['kind'];
+    state: 'pending' | 'active' | 'quarantined';
+    modes: ('isolation' | 'production')[];   // unique, in isolation, production order
+    graders: TaskSpec['graders'];            // unique, in GRADER_KINDS order
+  }[];
   splitsHash: string;         // splits.json + each task's state
   graderSetHash: string;      // graders/ + mutants/ for those tasks
   depsHash: string;           // bench runner lockfile + installed @rtrentjones/greenlight version
@@ -658,7 +665,17 @@ interface BaselineIdentity {
 }
 ```
 
-Two evaluations are comparable iff all fields except `skillSetHash` are equal (06 §1.5).
+Two evaluations are comparable iff all fields except `skillSetHash` are equal (06 §1.5). That
+includes `tasks`: a change in any task's state, kind, modes or graders makes two identities
+incomparable. `tasks` is what binds the gate's task list to the evaluated records: the gate
+(`decide`, `recompute`, `releaseCheck`, the early stop) requires its task list, projected to
+`(id, kind, state, modes)`, to equal every record's `identity.tasks` projected the same way, and
+throws a harness error naming the differing tasks otherwise. The caller therefore cannot exclude a
+task by passing it as `quarantined` (or change its kind or modes): a quarantine is a new identity,
+so a re-baseline (06 §4.1). The runner fills `tasks` from the task specs with `identityTasks()`
+(`packages/wiki/src/schema/bench.ts`), the canonical projection. `taskSetHash` hashes the full
+`task.json` of each task, `quarantineReason` included, so the human reason is part of the
+identity too.
 
 ### 10.4 Evaluation record and gate input record
 
@@ -675,6 +692,9 @@ interface EvaluationRecord {
     score: 0 | 1; graders: { kind: string; passed: boolean; detail?: string }[];
     seed: string; rawId: string; durationMs: number;
     servedBy: string;                  // the model that actually served it; a fallback-served rollout is invalid for gating (06 §4.8)
+    graderError?: string;              // a grader crashed (threw, timed out) instead of returning a verdict;
+                                       // the outcome scores 0 and the evaluation is INVALID (reason `grader-error`),
+                                       // never a fail or a regression
     cost: { usd: number; requests: number; tokensIn: number; tokensOut: number };
   }[];
 }
@@ -707,7 +727,8 @@ interface GateInputRecord {
   acceptedSkillSetHash: string;        // every baseline record carries it
   candidateSkillSetHash: string;       // every candidate record carries it; ≠ accepted
   tasks: { id: string; kind: TaskSpec['kind']; state: TaskSpec['state'];
-           modes: ('isolation' | 'production')[] }[];   // sorted by id, modes resolved
+           modes: ('isolation' | 'production')[] }[];   // sorted by id, modes resolved; equals every
+                                                       // listed record's identity.tasks without graders
   baselineRecords: string[];           // EvaluationRecord hashes, one per mode, in mode order
   candidateRecords: string[];
   safetyFixTargets?: string[];         // sorted; safety-fix path only
@@ -723,9 +744,16 @@ interface GateInputRecord {
 The gate's identity rules over the record set (06 §1.5, §5.1): every baseline record carries
 `acceptedSkillSetHash` and every candidate record `candidateSkillSetHash`; all records agree on
 every `BaselineIdentity` field except `mode`, `wikiSnapshotHash` and `skillSetHash`; within one
-mode, baseline and candidate are comparable as above. A mode a gated task declares but that lacks
+mode, baseline and candidate are comparable as above; and the gate's `tasks` equals every
+record's `identity.tasks` projected to `(id, kind, state, modes)` (§10.3), so a resealed gate input
+with a changed task state fails `--recompute`. A mode a gated task declares but that lacks
 a record on either side makes the evaluation invalid unless the caller declared a narrower
 `modes`.
+
+A grader crash is not a verdict. The runner records it as `graderError` on the outcome with
+`score: 0`; the policy then marks the whole evaluation invalid (`grader-error`, any task, either
+side, as for a fallback-served rollout), so it never reads as a failing run, a replay regression or
+a release block, and a baseline holding one never triggers the early stop.
 
 ### 10.5 Budget
 

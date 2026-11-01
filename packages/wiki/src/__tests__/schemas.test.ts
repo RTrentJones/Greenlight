@@ -18,6 +18,7 @@ import {
   comparable,
   evalEvidencePath,
   identityDiff,
+  identityTasks,
   sealEvent,
   sealGateInput,
   sealRecord,
@@ -450,8 +451,16 @@ describe('bench (M0-03)', () => {
     ok(TrajectoryRuleSchema, { rule: 'count', match: { cmd: 'git' }, max: 0 });
   });
 
+  const identityTask: BaselineIdentity['tasks'][number] = {
+    id: 'loop/x',
+    kind: 'loop',
+    state: 'active',
+    modes: ['isolation', 'production'],
+    graders: ['trajectory'],
+  };
   const identity: BaselineIdentity = {
     taskSetHash: H('1'),
+    tasks: [identityTask],
     splitsHash: H('2'),
     graderSetHash: H('3'),
     depsHash: H('4'),
@@ -476,6 +485,11 @@ describe('bench (M0-03)', () => {
       { agent: { vendor: 'greenlight-harness', version: '0.2.0' } },
       { harness: { runnerVersion: '0.1.0', imageDigest: 'sha256:def' } },
       { proxyPolicyHash: H('8') },
+      // a task's state, kind, modes or graders: a quarantine is a re-baseline (06 §4.1)
+      { tasks: [{ ...identityTask, state: 'quarantined' as const }] },
+      { tasks: [{ ...identityTask, kind: 'replay' as const }] },
+      { tasks: [{ ...identityTask, modes: ['isolation' as const] }] },
+      { tasks: [{ ...identityTask, graders: ['app' as const, 'trajectory' as const] }] },
     ]) {
       const other = { ...identity, ...change } as BaselineIdentity;
       expect(comparable(identity, other), JSON.stringify(change)).toBe(false);
@@ -485,6 +499,54 @@ describe('bench (M0-03)', () => {
 
   it('production mode needs a wiki snapshot', () => {
     bad(BaselineIdentitySchema, { ...identity, mode: 'production' }, /wikiSnapshotHash/);
+  });
+
+  it('identity tasks are required, sorted, unique, strict and canonical (08 §10.3)', () => {
+    const { tasks: _t, ...noTasks } = identity;
+    bad(BaselineIdentitySchema, noTasks);
+    bad(BaselineIdentitySchema, { ...identity, tasks: [] });
+    const other = { ...identityTask, id: 'loop/a' };
+    ok(BaselineIdentitySchema, { ...identity, tasks: [other, identityTask] });
+    bad(BaselineIdentitySchema, { ...identity, tasks: [identityTask, other] }, /sorted by id/);
+    bad(BaselineIdentitySchema, { ...identity, tasks: [identityTask, identityTask] }, /unique/);
+    bad(BaselineIdentitySchema, { ...identity, tasks: [{ ...identityTask, split: 'val' }] });
+    bad(
+      BaselineIdentitySchema,
+      { ...identity, tasks: [{ ...identityTask, modes: ['production', 'isolation'] }] },
+      /isolation, production order/,
+    );
+    bad(
+      BaselineIdentitySchema,
+      { ...identity, tasks: [{ ...identityTask, graders: ['trajectory', 'app'] }] },
+      /GRADER_KINDS order/,
+    );
+    expect(
+      identityTasks([
+        {
+          id: 'loop/x',
+          kind: 'loop',
+          state: 'active',
+          modes: ['production', 'isolation'],
+          graders: ['trajectory', 'app'],
+        },
+        {
+          id: 'cap/a',
+          kind: 'capability',
+          state: 'pending',
+          modes: ['isolation'],
+          graders: ['app'],
+        },
+      ]),
+    ).toEqual([
+      { id: 'cap/a', kind: 'capability', state: 'pending', modes: ['isolation'], graders: ['app'] },
+      {
+        id: 'loop/x',
+        kind: 'loop',
+        state: 'active',
+        modes: ['isolation', 'production'],
+        graders: ['app', 'trajectory'],
+      },
+    ]);
   });
 
   const outcome: EvaluationRecord['outcomes'][number] = {
@@ -524,6 +586,36 @@ describe('bench (M0-03)', () => {
         outcomes: [{ ...outcome, score: 0 }],
       }),
       /score is 1 iff/,
+    );
+    // A grader crash scores 0 (and is invalid for gating, never a fail).
+    const crashed = {
+      ...outcome,
+      score: 0 as const,
+      graders: [{ kind: 'trajectory' as const, passed: false }],
+      graderError: 'grader threw: ENOENT',
+    };
+    ok(
+      EvaluationRecordSchema,
+      sealRecord({ identity, role: 'baseline', createdAt: TS, outcomes: [crashed] }),
+    );
+    bad(
+      EvaluationRecordSchema,
+      sealRecord({
+        identity,
+        role: 'baseline',
+        createdAt: TS,
+        outcomes: [{ ...outcome, graderError: 'grader threw' }],
+      }),
+      /graderError scores 0/,
+    );
+    bad(
+      EvaluationRecordSchema,
+      sealRecord({
+        identity,
+        role: 'baseline',
+        createdAt: TS,
+        outcomes: [{ ...crashed, graderError: '' }],
+      }),
     );
     const { createdAt: _c, ...undated } = rec;
     bad(EvaluationRecordSchema, undated);

@@ -151,9 +151,73 @@ export const TaskSpecSchema = z
     }
   });
 
+const MODE_ORDER = ['isolation', 'production'] as const;
+const TaskState = z.enum(['pending', 'active', 'quarantined']);
+
+const ascending = (xs: readonly string[]): boolean =>
+  xs.every((x, i) => i === 0 || (xs[i - 1] as string) < x);
+
+/** True when `xs` is unique and in the order of `order` (the canonical list order). */
+const inOrder = (xs: readonly string[], order: readonly string[]): boolean => {
+  const canon = order.filter((o) => xs.includes(o));
+  return canon.length === xs.length && canon.every((o, i) => xs[i] === o);
+};
+
+/**
+ * One task as the baseline identity records it (08 §10.3): what the gate needs to know about the
+ * task to exclude or gate it. Bound into the identity so a task's state, kind, modes or graders
+ * cannot be changed by the gate's caller: a quarantine is a new identity, so a re-baseline
+ * (06 §4.1). `modes` and `graders` are unique, in canonical order (MODE_ORDER, GRADER_KINDS).
+ */
+export const IdentityTaskSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: z.enum(TASK_KINDS),
+    state: TaskState,
+    modes: z.array(Mode).min(1),
+    graders: z.array(z.enum(GRADER_KINDS)).min(1),
+  })
+  .strict()
+  .superRefine((t, ctx) => {
+    if (!inOrder(t.modes, MODE_ORDER)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['modes'],
+        message: `task ${t.id} modes are unique, in isolation, production order`,
+      });
+    }
+    if (!inOrder(t.graders, GRADER_KINDS)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['graders'],
+        message: `task ${t.id} graders are unique, in GRADER_KINDS order (${GRADER_KINDS.join(', ')})`,
+      });
+    }
+  });
+export type IdentityTask = z.infer<typeof IdentityTaskSchema>;
+
+/** The canonical identity projection of task specs: sorted by id, modes and graders in canonical
+ * order. The runner fills `BaselineIdentity.tasks` with this. */
+export function identityTasks(
+  specs: readonly Pick<TaskSpec, 'id' | 'kind' | 'state' | 'modes' | 'graders'>[],
+): IdentityTask[] {
+  return [...specs]
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      state: t.state,
+      modes: MODE_ORDER.filter((m) => t.modes.includes(m)),
+      graders: GRADER_KINDS.filter((g) => t.graders.includes(g)),
+    }));
+}
+
 export const BaselineIdentitySchema = z
   .object({
     taskSetHash: Sha256,
+    /** The evaluated tasks with the fields the gate reads (sorted by id, unique). The gate asserts
+     * that its task list equals this projection (06 §1.5, §4.1). */
+    tasks: z.array(IdentityTaskSchema).min(1),
     splitsHash: Sha256,
     graderSetHash: Sha256,
     depsHash: Sha256,
@@ -168,15 +232,28 @@ export const BaselineIdentitySchema = z
     proxyPolicyHash: Sha256.nullable(),
   })
   .strict()
-  .refine((b) => b.mode !== 'production' || b.wikiSnapshotHash !== null, {
-    message: 'production mode needs a wikiSnapshotHash',
-    path: ['wikiSnapshotHash'],
+  .superRefine((b, ctx) => {
+    if (b.mode === 'production' && b.wikiSnapshotHash === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['wikiSnapshotHash'],
+        message: 'production mode needs a wikiSnapshotHash',
+      });
+    }
+    if (!ascending(b.tasks.map((t) => t.id))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tasks'],
+        message: 'tasks are sorted by id, unique',
+      });
+    }
   });
 
 export type BaselineIdentity = z.infer<typeof BaselineIdentitySchema>;
 
 /** Fields that differ between two identities. Two evaluations are comparable iff the only
- * difference is `skillSetHash` (vision 06 §1.5); anything else forces a re-baseline. */
+ * difference is `skillSetHash` (vision 06 §1.5); anything else forces a re-baseline — including
+ * `tasks`, so a change in any task's state, kind, modes or graders (e.g. a quarantine) does. */
 export function identityDiff(a: BaselineIdentity, b: BaselineIdentity): string[] {
   const keys = Object.keys(a) as (keyof BaselineIdentity)[];
   return keys.filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
@@ -210,6 +287,10 @@ const OutcomeSchema = z
     /** The model that actually served the rollout; a fallback-served rollout is invalid for gating
      * (vision 06 §4.8). */
     servedBy: z.string().min(1),
+    /** Set when a grader crashed (threw, timed out) instead of returning a verdict. The outcome
+     * scores 0 and makes the evaluation invalid (`grader-error`), never a fail or a regression: a
+     * broken grader says nothing about the skill. */
+    graderError: z.string().min(1).optional(),
     cost: z
       .object({
         usd: z.number().min(0),
@@ -220,9 +301,21 @@ const OutcomeSchema = z
       .strict(),
   })
   .strict()
-  .refine((o) => o.score === (o.graders.every((g) => g.passed) ? 1 : 0), {
-    message: 'score is 1 iff every grader passed',
-    path: ['score'],
+  .superRefine((o, ctx) => {
+    if (o.score !== (o.graders.every((g) => g.passed) ? 1 : 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['score'],
+        message: 'score is 1 iff every grader passed',
+      });
+    }
+    if (o.graderError !== undefined && o.score !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['graderError'],
+        message: 'an outcome with a graderError scores 0',
+      });
+    }
   });
 
 export const EvaluationRecordSchema = z
@@ -279,11 +372,6 @@ export const evalEvidencePath = (hash: string): string => `${EVAL_EVIDENCE_DIR}/
 
 const Radius = z.enum(['high', 'medium', 'low']);
 const GatePathEnum = z.enum(['standard', 'safety-fix', 'neutral']);
-const MODE_ORDER = ['isolation', 'production'] as const;
-
-const ascending = (xs: readonly string[]): boolean =>
-  xs.every((x, i) => i === 0 || (xs[i - 1] as string) < x);
-
 /**
  * Everything a gate decision depends on besides the EvaluationRecords it names (vision 06 §5.8,
  * 08 §10.4). Content-addressed and stored beside the records (`evidence/eval/<hash>.json`); the
@@ -329,7 +417,7 @@ export const GateInputRecordSchema = z
           .object({
             id: z.string().min(1),
             kind: z.enum(TASK_KINDS),
-            state: z.enum(['pending', 'active', 'quarantined']),
+            state: TaskState,
             modes: z.array(Mode).min(1),
           })
           .strict(),

@@ -36,6 +36,7 @@ export type PolicyTask = Pick<TaskSpec, 'id' | 'kind' | 'state'> & {
 export const REASON_CODES = [
   // invalid: the evaluation cannot be gated at all
   'fallback-served',
+  'grader-error',
   'incomplete-outcomes',
   'unknown-task',
   'unknown-model',
@@ -309,7 +310,9 @@ interface ValidityInput {
 /** Everything that makes an evaluation ungateable. A fallback-served rollout (servedBy ≠ model)
  * is invalid for gating (06 §4.8). Reading: any fallback-served outcome in either record
  * invalidates the whole evaluation, even on an excluded task, because mixing models breaks the
- * baseline identity; and a gated task missing any run on either side is invalid, not a fail. */
+ * baseline identity; and a gated task missing any run on either side is invalid, not a fail.
+ * A grader crash (`graderError`, scored 0) is likewise invalid on any task, either side: a broken
+ * grader says nothing about the skill, so it must never read as a fail or a regression. */
 function validity(v: ValidityInput): PolicyReason[] {
   const out: PolicyReason[] = [];
   const known = new Set(v.tasks.map((t) => t.id));
@@ -325,6 +328,14 @@ function validity(v: ValidityInput): PolicyReason[] {
           severity: 'invalid',
           ...at,
           detail: `${side} run ${o.run} served by ${o.servedBy}`,
+        });
+      }
+      if (o.graderError !== undefined) {
+        out.push({
+          code: 'grader-error',
+          severity: 'invalid',
+          ...at,
+          detail: `${side} run ${o.run}: ${o.graderError}`,
         });
       }
       if (!known.has(o.task)) {
@@ -770,8 +781,8 @@ export interface EarlyStopInput {
  * The early stop (06 §1.3 step 3, §9): the baseline already scores capability 1.0 with every
  * replay passing on both models, so the proposer is not run and the harness records `no-action`.
  * Reading: "every replay passing" means every run (R of R) in every evaluated mode; at least one
- * objective task must exist (an empty objective has no capability of 1.0); and a fallback-served
- * baseline outcome means the baseline cannot be trusted, so there is no early stop.
+ * objective task must exist (an empty objective has no capability of 1.0); and a fallback-served or
+ * grader-error baseline outcome means the baseline cannot be trusted, so there is no early stop.
  */
 export function earlyStop(input: EarlyStopInput): { stop: boolean; detail: string } {
   const runs = input.runs ?? DEFAULT_RUNS;
@@ -779,6 +790,9 @@ export function earlyStop(input: EarlyStopInput): { stop: boolean; detail: strin
   if (gated.objective.length === 0) return { stop: false, detail: 'no objective tasks' };
   if (input.baseline.some((o) => o.servedBy !== o.model)) {
     return { stop: false, detail: 'fallback-served baseline outcome' };
+  }
+  if (input.baseline.some((o) => o.graderError !== undefined)) {
+    return { stop: false, detail: 'grader-error baseline outcome' };
   }
   const modes = sortModes(input.modes);
   if (modes.length === 0) return { stop: false, detail: 'no modes evaluated' };

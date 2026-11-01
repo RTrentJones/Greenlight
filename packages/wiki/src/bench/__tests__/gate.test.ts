@@ -1,6 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CELLS, F, S, TASKS, cleanCell, expand } from '../../__tests__/fixtures/policy/vectors';
+import {
+  CELLS,
+  F,
+  S,
+  TASKS,
+  cleanCell,
+  expand,
+  identityTasksFor,
+} from '../../__tests__/fixtures/policy/vectors';
 import {
   type BaselineIdentity,
   type EvaluationRecord,
@@ -28,9 +36,14 @@ const H = (c: string) => c.repeat(64);
 const TS = '2026-11-01T12:00:00.000Z';
 const CREATED = '2026-10-30T12:00:00.000Z';
 
-function identity(mode: GateMode, skillSet = H('a')): BaselineIdentity {
+function identity(
+  mode: GateMode,
+  skillSet = H('a'),
+  tasks: readonly PolicyTask[] = TASKS,
+): BaselineIdentity {
   return {
     taskSetHash: H('1'),
+    tasks: identityTasksFor(tasks),
     splitsHash: H('2'),
     graderSetHash: H('3'),
     depsHash: H('4'),
@@ -173,6 +186,14 @@ describe('decide', () => {
   describe('identity mismatch is a harness error, never a result (06 §1.5)', () => {
     const changes: [string, Partial<BaselineIdentity>][] = [
       ['taskSetHash', { taskSetHash: H('9') }],
+      [
+        'tasks',
+        {
+          tasks: identityTasksFor(TASKS).map((t) =>
+            t.id === 'cap/c1' ? { ...t, graders: ['app' as const, 'trajectory' as const] } : t,
+          ),
+        },
+      ],
       ['depsHash', { depsHash: H('9') }],
       ['models', { models: [F, 'model-other'] }],
       ['harness', { harness: { runnerVersion: '2.0.0', imageDigest: 'sha256:abc' } }],
@@ -267,7 +288,10 @@ describe('decide', () => {
     });
     it('a declaration is validated against the tasks', () => {
       const isoTasks: PolicyTask[] = TASKS.map((t) => ({ ...t, modes: ['isolation'] }));
-      const prodOnly = decide([baseIso, baseProd], [candIso, candProd], {
+      const bind = (r: EvaluationRecord, tasks: PolicyTask[]) =>
+        withIdentity(r, { tasks: identityTasksFor(tasks) });
+      const iso = (r: EvaluationRecord) => bind(r, isoTasks);
+      const prodOnly = decide([iso(baseIso), iso(baseProd)], [iso(candIso), iso(candProd)], {
         ...ctx,
         tasks: isoTasks,
         modes: ['isolation', 'production'],
@@ -279,7 +303,10 @@ describe('decide', () => {
         ...isoTasks.filter((t) => t.id !== 'cap/c1'),
         { id: 'cap/c1', kind: 'capability', state: 'active', modes: ['production'] },
       ];
-      const d = decide(baseIso, candIso, { ...isoCtx, tasks: prodTask });
+      const d = decide(bind(baseIso, prodTask), bind(candIso, prodTask), {
+        ...isoCtx,
+        tasks: prodTask,
+      });
       expect(d.decision).toBe('invalid');
       expect(d.reasons).toContainEqual(
         expect.objectContaining({ code: 'task-not-evaluated', task: 'cap/c1' }),
@@ -316,6 +343,83 @@ describe('decide', () => {
     expect(() =>
       decide(baseIso, candIso, { ...isoCtx, models: { frontier: F, small: 'x' } }),
     ).toThrow(/not in the evaluation identity/);
+  });
+
+  describe("the task list is bound to the records' identity (finding: quarantine via ctx)", () => {
+    const quarantine = (tasks: readonly PolicyTask[], id: string): PolicyTask[] =>
+      tasks.map((t) => (t.id === id ? { ...t, state: 'quarantined' as const } : t));
+    const regressed = record('cand', 'isolation', (w, m) => {
+      if (m === S) w['replay/a'] = 1;
+    });
+
+    it('marking a regressing replay task quarantined in ctx is a harness error', () => {
+      expect(decide(baseIso, regressed, isoCtx).decision).toBe('reject');
+      const err = harnessError(() =>
+        decide(baseIso, regressed, { ...isoCtx, tasks: quarantine(TASKS, 'replay/a') }),
+      );
+      expect(err.fields).toEqual(['tasks', 'tasks.replay/a']);
+      expect(err.message).toMatch(/differs from record .* identity in replay\/a; .*re-baseline/);
+    });
+
+    it('a change of kind or modes, a missing or an extra task is refused the same way', () => {
+      const changed: PolicyTask[][] = [
+        TASKS.map((t) => (t.id === 'cap/c1' ? { ...t, kind: 'wiki' as const } : t)),
+        TASKS.map((t) => (t.id === 'cap/c1' ? { ...t, modes: ['isolation' as const] } : t)),
+        TASKS.filter((t) => t.id !== 'cap/c1'),
+        [...TASKS, { id: 'cap/c11', kind: 'capability', state: 'active' }],
+      ];
+      for (const tasks of changed) {
+        const err = harnessError(() => decide(baseIso, candIso, { ...isoCtx, tasks }));
+        expect(err.fields.slice(1)).toEqual([
+          tasks.some((t) => t.id === 'cap/c11') ? 'tasks.cap/c11' : 'tasks.cap/c1',
+        ]);
+      }
+    });
+
+    it('a quarantine is a re-baseline: records run under the new identity gate without the task', () => {
+      const qTasks = quarantine(TASKS, 'replay/a');
+      const q = (r: EvaluationRecord) => withIdentity(r, { tasks: identityTasksFor(qTasks) });
+      // The old baseline and a new candidate are not comparable (tasks differ).
+      expect(harnessError(() => decide(baseIso, q(regressed), isoCtx)).fields).toEqual(['tasks']);
+      const d = decide(q(baseIso), q(regressed), { ...isoCtx, tasks: qTasks });
+      expect(d.decision).toBe('accept');
+      expect(d.reasons).toContainEqual(
+        expect.objectContaining({ code: 'excluded-task', task: 'replay/a' }),
+      );
+      expect(d.gateInput?.tasks.find((t) => t.id === 'replay/a')?.state).toBe('quarantined');
+    });
+
+    it('binds earlyStopEvent and releaseCheck too', () => {
+      const tasks = quarantine(TASKS, 'replay/a');
+      expect(() => earlyStopEvent(baseIso, { ...ctx, tasks, proposalId: 'prop-9' })).toThrow(
+        /replay\/a/,
+      );
+      const rc = record('base', 'isolation', undefined, { role: 'release-check' });
+      expect(() =>
+        releaseCheck(rc, rc, { ts: TS, models: ctx.models, tasks, modes: ['isolation'] }),
+      ).toThrow(GateHarnessError);
+    });
+  });
+
+  it('a grader crash makes the evaluation invalid, never a regression', () => {
+    const { hash: _h, ...rest } = candIso;
+    const outcomes = rest.outcomes.map((o) =>
+      o.task === 'replay/a' && o.model === S && o.run === 1
+        ? {
+            ...o,
+            score: 0 as const,
+            graders: [{ kind: 'app' as const, passed: false }],
+            graderError: 'app grader timed out after 600s',
+          }
+        : o,
+    );
+    const d = decide(baseIso, sealRecord({ ...rest, outcomes }), isoCtx);
+    expect(d.decision).toBe('invalid');
+    expect(d.ledgerEvent).toBeNull();
+    expect(d.reasons).toContainEqual(
+      expect.objectContaining({ code: 'grader-error', severity: 'invalid', task: 'replay/a' }),
+    );
+    expect(d.reasons.some((r) => r.code === 'replay-regression')).toBe(false);
   });
 
   it('does not depend on the order of ctx.tasks (06 §5.8)', () => {
@@ -391,6 +495,26 @@ describe('recompute (06 §5.8, 13 §2.7)', () => {
     const forged = sealGateInput({ ...rest, proposalId: 'prop-other' });
     expect(() => recompute(forged, pool)).toThrow(/proposal/);
   });
+
+  it('a gate input resealed with a tampered task list is refused (quarantine after the fact)', () => {
+    const regressed = record('cand', 'isolation', (w, m) => {
+      if (m === S) w['replay/a'] = 1;
+    });
+    const original = decide(baseIso, regressed, isoCtx);
+    expect(original.decision).toBe('reject');
+    const g = original.gateInput;
+    if (!g) throw new Error('no input');
+    const { hash: _h, ...rest } = g;
+    const forged = sealGateInput({
+      ...rest,
+      tasks: rest.tasks.map((t) =>
+        t.id === 'replay/a' ? { ...t, state: 'quarantined' as const } : t,
+      ),
+    });
+    GateInputRecordSchema.parse(forged);
+    const err = harnessError(() => recompute(forged, [baseIso, regressed]));
+    expect(err.fields).toEqual(['tasks', 'tasks.replay/a']);
+  });
 });
 
 describe('the control arm is rejected for the right reason (06 §10.2–§10.3)', () => {
@@ -415,7 +539,7 @@ describe('the control arm is rejected for the right reason (06 §10.2–§10.3)'
   });
   const rec = (side: Side, idleProbe: number) =>
     sealRecord({
-      identity: identity('isolation', side === 'base' ? H('a') : H('c')),
+      identity: identity('isolation', side === 'base' ? H('a') : H('c'), tasks),
       role: side === 'base' ? 'baseline' : 'candidate',
       proposalId: side === 'cand' ? 'control-1' : undefined,
       createdAt: CREATED,
