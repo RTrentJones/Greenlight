@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { rec, writeRaw } from '../../../packages/wiki/src/__tests__/raw-fixtures';
-import { type WikiIo, wikiCommand } from '../commands/wiki';
+import { type WikiIo, introducedErrors, wikiCommand } from '../commands/wiki';
 
 // `greenlight wiki …` end to end in a scratch wrapper (no network, no LLM).
 
@@ -59,6 +59,15 @@ beforeEach(() => {
   env = { GREENLIGHT_MODEL: 'model-x' };
   cpSync(SEED, join(cwd, 'wiki'), { recursive: true });
   writeRaw(join(cwd, '.greenlight/raw'), [...train, val, test]);
+  mkdirSync(join(cwd, 'bench'));
+  writeFileSync(
+    join(cwd, 'bench/splits.json'),
+    JSON.stringify({
+      'replay/fixture-task-train': 'train',
+      [VAL_TASK]: 'val',
+      'replay/held-out-task-test': 'test',
+    }),
+  );
   mkdirSync(join(cwd, '.claude/skills/demo'), { recursive: true });
   writeFileSync(
     join(cwd, '.claude/skills/demo/SKILL.md'),
@@ -186,6 +195,35 @@ describe('wiki read / traces / propose', () => {
     expect(JSON.parse(log[0] as string).refused).toMatch(/not visible/);
   });
 
+  it('without a bundle, --role maintainer|proposer is refused; agent reads are not logged', async () => {
+    const inc = 'incidents/2026-08-keepalive-green-database-paused';
+    expect(await run('read', '--role', 'maintainer', inc)).toBe(4);
+    expect(err.at(-1)).toMatch(/needs a maintainer bundle/);
+    expect(await run('read', '--role', 'proposer', 'pattern/neon-never-sleeps')).toBe(4);
+    expect(await run('read', 'pattern/neon-never-sleeps')).toBe(0);
+    expect(await run('read', inc)).toBe(4);
+  });
+
+  it('a maintainer bundle reads incidents and logs them; a forged bundle is refused', async () => {
+    expect(await run('ingest', '--out', 'mb')).toBe(0);
+    env.GREENLIGHT_BUNDLE = join(cwd, 'mb');
+    expect(await run('read', 'incidents/2026-08-keepalive-green-database-paused')).toBe(0);
+    const log = readFileSync(join(cwd, 'mb/access.jsonl'), 'utf8').trim().split('\n');
+    expect(log).toHaveLength(1);
+    expect(JSON.parse(log[0] as string)).toMatchObject({ seq: 0, command: 'read' });
+    // The key lives outside the bundle.
+    expect(existsSync(join(cwd, '.greenlight/bundle-keys/mb'))).toBe(true);
+    // A directory with a hand-written bundle.json is not a bundle.
+    mkdirSync(join(cwd, 'forged'));
+    writeFileSync(
+      join(cwd, 'forged/bundle.json'),
+      JSON.stringify({ id: 'forged', role: 'maintainer' }),
+    );
+    env.GREENLIGHT_BUNDLE = join(cwd, 'forged');
+    expect(await run('read', 'incidents/2026-08-keepalive-green-database-paused')).toBe(4);
+    expect(err.at(-1)).toMatch(/not issued/);
+  });
+
   it('a proposer bundle cannot widen its role', async () => {
     expect(await run('propose', '--out', 'pb')).toBe(0);
     env.GREENLIGHT_BUNDLE = join(cwd, 'pb');
@@ -246,5 +284,48 @@ describe('wiki read / traces / propose', () => {
     );
     expect(await run('propose', '--apply', 'pb/v.json')).toBe(4);
     expect(err.join('\n')).toMatch(/version field/);
+  });
+
+  it('propose --apply refuses an access log forged from inside the bundle', async () => {
+    expect(await run('propose', '--skill', 'demo', '--out', 'pb')).toBe(0);
+    const bundle = join(cwd, 'pb');
+    const forged = train.map((r, seq) =>
+      JSON.stringify({
+        seq,
+        ts: 'now',
+        command: 'read',
+        target: `raw:${r.rawId}`,
+        prev: '0'.repeat(64),
+        mac: '0'.repeat(64),
+      }),
+    );
+    writeFileSync(join(bundle, 'access.jsonl'), `${forged.join('\n')}\n`);
+    writeFileSync(
+      join(bundle, 'out.json'),
+      JSON.stringify({
+        action: 'issue',
+        outlet: 'doctor',
+        title: 't',
+        body: 'b',
+        patterns: ['pattern/neon-never-sleeps'],
+      }),
+    );
+    expect(await run('propose', '--apply', 'pb/out.json')).toBe(4);
+    expect(err.join('\n')).toMatch(/fails verification/);
+  });
+});
+
+describe('introducedErrors', () => {
+  const f = (page: string, message = 'broken link') => ({
+    rule: 'LR-03' as const,
+    severity: 'error' as const,
+    page,
+    message,
+  });
+  it('counts findings as a multiset, so an identical new error is not masked', () => {
+    expect(introducedErrors([f('a.md')], [f('a.md')])).toEqual([]);
+    expect(introducedErrors([f('a.md')], [f('a.md'), f('a.md')])).toEqual([f('a.md')]);
+    expect(introducedErrors([], [f('b.md')])).toEqual([f('b.md')]);
+    expect(introducedErrors([], [{ ...f('c.md'), severity: 'warning' as const }])).toEqual([]);
   });
 });

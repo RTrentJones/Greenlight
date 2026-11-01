@@ -1,7 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  FileLockTimeoutError,
   LedgerWriteError,
   appendEvent,
   compareTs,
@@ -9,11 +11,13 @@ import {
   orderLedgerEvents,
   proposalHistory,
   renderSkillImpact,
+  withFileLock,
 } from '../ledger';
 import { lint } from '../lint';
 import { loadWiki } from '../load';
 import { type LedgerEvent, sealEvent } from '../schema';
 import { goodContext, goodFiles, ledgerEvents, ledgerText, writeTree } from './fixtures';
+import { race } from './race';
 
 // Vision 08 §8: harness-only, append-only ledger; skill-impact.md rendered from it.
 
@@ -286,5 +290,67 @@ describe('renderSkillImpact', () => {
       LedgerEvent,
     ];
     expect(renderSkillImpact([d, c, a, b, e])).toBe(renderSkillImpact(events));
+  });
+});
+
+describe('appendEvent across processes', () => {
+  it('never writes a duplicate eventId or loses an append when processes race', async () => {
+    const root = writeTree({ 'ledger.jsonl': '' });
+    const shared = sealEvent({ ...event, proposalId: 'p-shared' });
+    const results = await race(
+      8,
+      pathToFileURL(resolve(__dirname, '../ledger.ts')).href,
+      `
+        let won = 0;
+        for (let i = 0; i < 8; i++) {
+          try { m.appendEvent(arg.root, arg.shared); won++; }
+          catch (e) { if (!/already in the ledger/.test(e.message)) throw e; }
+          m.appendEvent(arg.root, { ...arg.event, proposalId: 'p-' + idx + '-' + i });
+        }
+        return won;
+      `,
+      { root, shared, event },
+    );
+    for (const r of results) expect(r.stderr).toBe('');
+    expect(results.every((r) => r.code === 0)).toBe(true);
+    expect(results.reduce((n, r) => n + Number(r.stdout), 0)).toBe(1);
+    const wiki = loadWiki(root);
+    expect(wiki.ledgerErrors).toEqual([]);
+    expect(ledgerProblems(wiki.ledger)).toEqual([]);
+    expect(wiki.ledger).toHaveLength(1 + 8 * 8);
+    expect(wiki.ledger.filter((e) => e.eventId === shared.eventId)).toHaveLength(1);
+    expect(existsSync(join(root, 'ledger.jsonl.lock'))).toBe(false);
+  }, 60_000);
+});
+
+describe('withFileLock', () => {
+  it('a holder whose stale lock was taken over never deletes the new holder’s lock', () => {
+    const root = writeTree({});
+    const lock = join(root, 'x.lock');
+    withFileLock(lock, () => {
+      // Simulate a waiter that found this lock stale, stole it and now holds it.
+      writeFileSync(lock, 'someone-else');
+    });
+    expect(readFileSync(lock, 'utf8')).toBe('someone-else');
+  });
+
+  it('steals a stale lock and releases its own', () => {
+    const root = writeTree({});
+    const lock = join(root, 'y.lock');
+    writeFileSync(lock, 'crashed-holder');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lock, old, old);
+    expect(withFileLock(lock, () => readFileSync(lock, 'utf8'), { staleMs: 1_000 })).not.toBe(
+      'crashed-holder',
+    );
+    expect(existsSync(lock)).toBe(false);
+    expect(existsSync(`${lock}.guard`)).toBe(false);
+  });
+
+  it('times out on a live lock', () => {
+    const root = writeTree({});
+    const lock = join(root, 'z.lock');
+    writeFileSync(lock, 'live');
+    expect(() => withFileLock(lock, () => 1, { timeoutMs: 50 })).toThrow(FileLockTimeoutError);
   });
 });

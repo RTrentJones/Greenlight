@@ -1,15 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import {
-  closeSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { FileLockTimeoutError, withFileLock } from '../ledger';
 import type { LedgerEvent } from '../schema/ledger';
 import { type DailyUsage, type RateLimitPersistence, pacificDay } from './limits';
 
@@ -21,7 +13,9 @@ import { type DailyUsage, type RateLimitPersistence, pacificDay } from './limits
  * Writes go to a temp file and are renamed into place, so a reader never sees a torn file; the
  * read-check-increment in `take` runs under an exclusive lock file (`<file>.lock`, created with
  * O_EXCL), so concurrent processes on one machine cannot both take the last request. A lock older
- * than `staleLockMs` is presumed abandoned by a crashed process and removed.
+ * than `staleLockMs` is presumed abandoned by a crashed process and removed — by exactly one
+ * waiter, under the lock's guard, and only if it still holds the token that waiter saw; a holder
+ * releases only a lock that still holds its own token (`withFileLock`).
  */
 
 export const QUOTA_DIR = join('.greenlight', 'quota');
@@ -37,8 +31,6 @@ export interface FileQuotaStoreOptions {
   lockTimeoutMs?: number;
   now?: () => number;
 }
-
-const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 function isUsage(v: unknown): v is DailyUsage {
   const u = v as DailyUsage;
@@ -120,32 +112,22 @@ export class FileQuotaStore implements RateLimitPersistence {
     renameSync(tmp, target);
   }
 
+  /** The shared token-checked lock (ledger.ts): a stale lock is stolen only under its guard, by
+   * one waiter, and the holder removes only a lock that still holds its own token. */
   private withLock<T>(modelId: string, fn: () => T): T {
     mkdirSync(this.dir, { recursive: true });
     const lock = `${this.path(modelId)}.lock`;
-    const deadline = this.now() + this.lockTimeoutMs;
-    for (;;) {
-      try {
-        closeSync(openSync(lock, 'wx'));
-        break;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-        try {
-          if (this.now() - statSync(lock).mtimeMs > this.staleLockMs) {
-            rmSync(lock, { force: true });
-            continue;
-          }
-        } catch {
-          continue; // the holder released it between our open and stat
-        }
-        if (this.now() > deadline) throw new Error(`timed out waiting for the quota lock ${lock}`);
-        pause(20);
-      }
-    }
     try {
-      return fn();
-    } finally {
-      rmSync(lock, { force: true });
+      return withFileLock(lock, fn, {
+        staleMs: this.staleLockMs,
+        timeoutMs: this.lockTimeoutMs,
+        now: this.now,
+      });
+    } catch (e) {
+      if (e instanceof FileLockTimeoutError) {
+        throw new Error(`timed out waiting for the quota lock ${e.lock}`);
+      }
+      throw e;
     }
   }
 }
