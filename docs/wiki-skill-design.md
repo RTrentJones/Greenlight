@@ -470,6 +470,9 @@ Version scoping (`applies:`) handles most of that without deletion. The remainin
    (section 3.4).
 7. **`wiki lookup` and failure-report links** replace "the agent may read the index on failure"
    (section 6.4).
+8. **Secrets move to one readable source with three consumers**, and agents get credentials only
+   through an injecting proxy (section 11). Raw-capture redaction becomes a backstop instead of the
+   primary control.
 
 ## 10. Open questions
 
@@ -481,3 +484,143 @@ Version scoping (`applies:`) handles most of that without deletion. The remainin
   benchable in isolation. Recommended: yes for gate evidence, with a human merge.
 - **Which models make up the gate pair, and what is the monthly token budget?** This is the
   operator's call. Without a budget the bench will either run rarely or run up costs.
+- **Hosted Infisical or self-hosted, and is Agent Proxy on the free tier?** Its free-tier status
+  was not confirmed when this was written (section 11.3). The answer decides between Infisical's
+  proxy and the Worker proxy as the default.
+
+## 11. Secrets: one source, three consumers
+
+### 11.1 The current model and where it stops working
+
+Today GitHub Actions secrets are the single store (`docs/security.md`). `secrets gather`
+hidden-prompts each value, verifies it fail-fast, and pushes it with `gh` over stdin. Terraform
+then carries provider credentials into the runtime stores (Workers secrets, Vercel env). That model
+is sound for CI, but it has one structural property the wiki loop runs into: **Actions secrets are
+write-only from outside a workflow.** Nothing outside CI can read them, so any agent-side step that
+needs a credential has no sanctioned source. Steps of that kind:
+
+- `verify --env prod` with `BAMCP_VERIFY_TOKEN`;
+- `deploy` from a session;
+- a provider MCP server;
+- a bench rollout that touches a real API.
+
+The result is the usual workaround of a token pasted into a shell, or into chat. The vision makes
+this worse. "Anyone points their agent" means many agents, on many machines, each needing some
+credentials, and the contribution channel in section 6.3 means some of the text those agents read
+will be adversarial. An agent that holds no secret cannot be talked into leaking one.
+
+### 11.2 What Codex does, and the pattern worth copying
+
+Codex cloud, per OpenAI's environment docs, exposes secrets **only to the setup script** and
+removes them before the agent phase starts, whereas plain environment variables persist through the
+task. That is a phase boundary rather than an HTTP mechanism. It is the right instinct, because the
+agent never holds the value. It does not help an agent that needs to call an authenticated API
+*during* its work. Any file written during setup, such as an `~/.npmrc` token, also defeats the
+boundary.
+
+The pattern that does cover the working phase is the **credential-injecting egress proxy**. The
+agent's environment holds a placeholder, or nothing at all. Outbound HTTPS goes through a proxy
+that matches the destination host and swaps in the real credential on the wire. This Claude Code
+cloud session runs behind one of these, and the same design appears in Docker's AI sandboxes, in
+Infisical's Agent Proxy and open-source Agent Vault, and in Blaxel's sandbox networking. The agent
+keeps using its normal CLIs, SDKs and MCP clients.
+
+### 11.3 Candidate tools
+
+| tool | fit for Greenlight | agent-facing mechanism | cost / ops |
+|---|---|---|---|
+| **Infisical** | best overall fit: OSS and self-hostable (clone-and-own), syncs secrets *to* GitHub Actions so CI keeps working, GitHub OIDC auth | **Agent Proxy** (GA July 2026; `infisical secrets agent-proxy connect`, placeholders, header/path/body substitution) and **Agent Vault** (OSS forward proxy); official MCP server | cloud free tier exists; whether Agent Proxy is included was **not confirmed**; self-host is free but is one more service to run |
+| **Cloudflare Worker proxy (build our own)** | lives on the always-on spine, free tier, no new account | reverse proxy at `vault.<domain>`: a session token goes in, the real header comes out; per-route method/path allow-list; no TLS interception | we own the code and its security; each client needs a base-URL override, which not every CLI supports |
+| **Bitwarden Secrets Manager** | open source, free plan, per-agent machine-account tokens | SDK/CLI fetch plus an MCP server (experimental); **no injecting proxy**, so the agent holds the value | free plan limits apply |
+| **Doppler** | polished, syncs to GitHub/Vercel/Cloudflare | `doppler run`, MCP server (preview); the agent holds the value | free developer tier; reportedly does not bill machine identities |
+| **1Password** | strong UX, Environments MCP built into the desktop app, Unified Access aims to keep secrets from models | `op run`, service accounts | **no free plan**, which conflicts with the free-tier goal |
+| **Vault / OpenBao** | dynamic, short-lived credentials | Vault Agent templating, response-wrapping | heavy to operate for one person |
+| **Docker sandboxes (`sbx`)** | local sandbox runs only | host-side injecting proxy (`sbx secret set`) | local, free; does not cover CI or cloud sessions |
+
+Treat vendor details as of November 2026, and re-verify them, because several of these products
+are months old.
+
+### 11.4 Recommended architecture
+
+**One readable source, three consumers.** The CI and runtime stores become *projections* of a
+single source.
+
+```
+           ┌────────────── Infisical (source of truth; GitHub OIDC; audit log) ─────────────┐
+           │                              │                                                  │
+   sync → GitHub Actions secrets    Terraform → Workers secrets /           Agent Proxy (or Worker proxy)
+   (CI: ship, infra.yml)            Vercel env (runtime, unchanged)          → agents get placeholders only
+```
+
+- **CI is unchanged.** Workflows keep reading `secrets.*`. Infisical's GitHub sync writes them, so
+  `infra.yml`, `deploy.yml` and `promote.yml` need no edits. GitHub OIDC remains the preferred auth
+  for cloud providers that support it.
+- **Runtime is unchanged.** Terraform still projects values into Workers and Vercel.
+- **Agents never receive raw values.**
+  - `greenlight agent run -- <cmd>`, or the session's `HTTPS_PROXY`, wraps the agent.
+  - The environment carries placeholders, and the proxy injects the real header for allow-listed
+    hosts.
+  - Node 24 tools need `NODE_USE_ENV_PROXY=1` for built-in `fetch` to honour the proxy, and the
+    proxy's CA has to be trusted. `doctor` should check both. Requests that skip the proxy fail
+    with an invalid-placeholder error, which is the safe direction.
+
+**The provider-pack registry generates the proxy configuration.** This is where centralization
+becomes real rather than a policy. `providers.ts` already declares every token's `envVar`, scopes,
+create-link and a fail-fast `verify` call against the provider's API. One more field per token
+lets the registry emit the proxy's service definitions:
+
+```ts
+inject?: { hosts: ['api.cloudflare.com'], header: 'Authorization', scheme: 'Bearer',
+           allow?: [{ method: 'GET', path: '/client/v4/**' }] }
+```
+
+With that field, `greenlight add` declares a tool's credentials once, and the same declaration
+drives four things:
+
+- `secrets gather`, which writes to Infisical instead of `gh`, with `--sink github` kept for the
+  current model;
+- the GitHub sync;
+- the proxy routes;
+- `secrets check`.
+
+**Not everything can be injected over HTTP**, and the registry should say so explicitly:
+
+- **OCI** authenticates by request signing over the request itself. A header swap cannot produce
+  that signature, so OCI keys stay CI-only.
+- **The docker target's SSH key** is not HTTP at all, so it also stays CI-only.
+- **`GREENLIGHT_DISPATCH_TOKEN`** lives in tool repos, so it remains a per-repo GitHub secret.
+
+Tokens without an `inject` field are CI-only by definition. `doctor` lists them, so the boundary
+is visible rather than discovered.
+
+### 11.5 Limits the design must not overclaim
+
+- **A proxy prevents leaking the credential, not misusing it.** An agent behind the proxy can still
+  ask Cloudflare to delete a DNS record. Least-privilege tokens remain the first control. Per-route
+  method/path allow-lists are the second: an agent's Cloudflare route can be read-only plus
+  `workers/scripts` writes, with zone deletes denied. The keepalive lesson applies here too, so
+  each allow-list ships with a mutation check proving that a forbidden call is refused (section
+  5.3).
+- **Responses can carry secrets back.** Some provider APIs echo tokens or connection strings, such
+  as Neon connection URIs and Supabase keys. The proxy should scrub known secret shapes from
+  response bodies, and raw capture keeps its redaction as a second layer.
+- **TLS interception is a trust decision.** A forward proxy that injects headers has to see
+  plaintext. Installing its CA lets it see all traffic, not only the allow-listed hosts. The Worker
+  reverse proxy avoids this, at the cost of base-URL overrides.
+- **Sessions must be short-lived and attributable.** Each agent session gets its own proxy identity
+  with a TTL, and the audit log records `(session, host, method, path, status)`. Those records
+  become raw-layer evidence for the wiki in the same `(tool, sha)` join as everything else (section
+  4).
+
+### 11.6 How this changes the plan
+
+- **Phase 1 (raw capture).** Agents run behind the proxy, so captured traces contain placeholders.
+  Redaction stays as the backstop, and its planted-secret test remains a merge blocker.
+- **Phase 2 (kickoff).** The kickoff skill sets up Infisical (free cloud or self-host) after GitHub
+  and before Cloudflare. It also offers `--sink github` for users who want today's model with no new
+  account.
+- **Phase 4 (bench).** Bench sandboxes run the same proxy pointed at fake upstreams, so the rollout
+  code path matches production while holding no real credentials.
+- **New registry work** (lands with Phase 2): the `inject` field, proxy config emission, Infisical
+  as a `secrets gather` sink, and the `doctor` checks for CI-only tokens, proxy CA trust and
+  `NODE_USE_ENV_PROXY`.
