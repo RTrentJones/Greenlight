@@ -1,312 +1,243 @@
-# Plan — Greenlight as a wiki skill
+# Plan — the Greenlight wiki skill
 
-Status: **PLAN** (not built). Design rationale, and the revisions it makes to the phases below, are in
-[wiki-skill-design.md](wiki-skill-design.md); where the two differ, the design doc wins. Source: Tang et al., *WikiSkill: Compiling Agent Experience into
-Persistent Knowledge for Skill Evolution* (arXiv:2608.27454, Aug 2026).
+Status: **PLAN** (not built). The rationale is in [wiki-skill-design.md](wiki-skill-design.md).
+This plan sets the priorities, and where the two disagree, this plan wins. Background:
+WikiSkill (arXiv:2608.27454).
 
-## Goal
+## The vision this serves
 
-Anyone should be able to point a coding agent at an empty directory and say "build me X on
-Greenlight". The agent then kicks off a repo, wires it to free-tier providers only, and builds a web
-app that can verify itself. The app ships through the deploy → verify → promote loop, and the agent
-gets an objective pass/fail result at every step.
+Greenlight manages a **portfolio of projects**. It keeps them alive, it lets Claude or Codex edit
+any of them, it verifies each change in beta, and it leaves the release decision with the owner.
+This extension adds one thing: someone who has set up a few free-tier accounts can **vibe code** a
+new web app, or other software, simply by describing it. The new project then joins the portfolio
+on the same terms as the others.
 
-The skills that guide the agent should get better as they are used. Each failure in the field
-should become a written pattern, and each pattern should be able to justify a measured skill edit.
-That is the part this paper supplies.
+Every item in this plan has to serve at least one of four outcomes:
 
-## What the paper contributes, and what it does not
+1. **Start.** A new project starts easily on the accounts the user already has.
+2. **Edit.** An agent that has never seen a project can change it safely.
+3. **Stay alive.** Every project stays alive unattended, and none of them starves the others of
+   free-tier quota.
+4. **Release.** Release stays in human hands, and the human can see what is waiting.
 
-WikiSkill splits agent experience into three layers, which live as three directories:
+The paper's automated skill-evolution loop (bench, proposer, gate) serves these outcomes only
+indirectly, and it is the most expensive part. It therefore comes last and is optional (Phase 6).
+The wiki's first job is something the paper does not cover: **memory that outlives a chat
+session**, so that whichever agent opens a project next knows what it is for and how it is kept
+alive.
 
-- **`raw/`** holds immutable execution traces: reasoning, tool calls, tool outputs and answers.
-- **`wiki/`** is compiled knowledge. It contains `patterns/*.md` (one failure mode or successful
-  strategy per page, 10–30 lines, with root cause and workaround), `index.md` (a catalog with one
-  line per pattern: problem, root cause, fix), `logs.md` (a chronological log) and `skill-impact.md`.
-  The last file is an audit trail of every skill proposal, with its diff, validation score and
-  whether it was accepted. **The harness writes this file, not the agent.**
-- **`skills/<name>/`** holds `SKILL.md` and `PURPOSE.md`. `PURPOSE.md` maps the skill back to the
-  wiki patterns that motivated it.
+## What the user experiences
 
-Four roles run the loop:
+The loop this plan builds, from the user's side:
 
-1. The **Inference Agent** does the tasks with the current skills.
-2. The **Wiki Maintainer** reads the full wiki plus a sample of traces (at most 5 failing and 3
-   passing, each truncated to 15k characters). It does root-cause analysis and emits a JSON edit
-   set: `create_patterns`, `update_patterns` (exact-substring `append` / `replace` /
-   `insert_after`), a full `update_index`, and `append_log`.
-3. The **Skill Proposer** reads the index and `skill-impact.md` first, so it does not repeat a
-   rejected idea. It then reads at least 4 traces through `read_file` and emits exactly one atomic
-   change: create one skill, patch one skill, or `no_action`.
-4. **Gating and Rollback** accepts a proposal only if the validation score strictly improves.
-   **Skills roll back; the wiki never does.**
+1. The user says *"I want a site where my book club can vote on next month's pick."*
+2. The agent runs `greenlight accounts`. It reports which providers are configured and verified,
+   and how much free-tier headroom is left **across the whole portfolio**.
+3. The agent proposes a cell using only those accounts, for example astro/workers/d1. It explains
+   the free-tier consequences in a sentence or two, drawn from the wiki's fact pages. Example:
+   "D1 stays up without traffic; this adds about 1% to your Workers request usage."
+4. The agent writes the project's `intent.md`. It records the acceptance criteria in the user's own
+   words ("members can vote once; results show after the deadline"), and the user confirms them.
+5. The agent scaffolds from a template that already serves `/__version` and liveness/readiness
+   routes. It turns each acceptance criterion into a verify check **before** writing the feature,
+   then builds until `greenlight preview` is green.
+6. The agent pushes to `develop`, and CI ships beta. The user gets a beta URL to try.
+7. The user says what is wrong, in plain language. **Each complaint becomes a verify check plus a
+   fix**, so it cannot come back, and it is recorded in `intent.md`.
+8. The user says "ship it". Only then does promotion run: verify beta at the pinned sha,
+   fast-forward, then ship prod. The agent can prepare a release but cannot perform one on its own
+   initiative.
+9. Months later, Codex is asked to add a feature. It reads the project wiki, sees the intent, the
+   liveness model and the past incidents, and goes through the same gates.
 
-The results justify adopting this. Across five benchmarks and five models, WikiSkill beat the best
-prior skill-evolution method by 3–12 points. Giving the proposer wiki access was worth +15 points on
-Gemini-3.5-Flash. Two findings shape the design below:
+The user never has to read Terraform, YAML or a token, but nothing is hidden from them.
 
-- Letting the *inference* agent read the wiki during evolution rollouts **lowered** scores (63.7 →
-  60.9). The likely cause is that the agent solves tasks from the wiki instead of the skills, which
-  makes the traces less informative about the skills.
-- Skills transfer across models, but not always in a good direction. One small model's spreadsheet
-  skills cut a large model from 50.5 to 18.1.
+## The wiki, in priority order
 
-The paper does not give us everything we need. Its setting is an offline benchmark with
-train/validation/test splits and an automatic score. Greenlight has no benchmark, so **the main new
-work is building one** (Phase 4). The paper also has no lint, query or pruning operations, and its
-limitations section names pruning as missing. Those parts of this plan are our own additions, and
-they are marked as such.
+### 1. Project wiki: the handoff memory (primary)
 
-## The mapping onto Greenlight
+Each manifest tool gets `wiki/<tool>/` in the **wrapper**. The wrapper is the portfolio's home, and
+it already owns each tool's verify config and infra. Tool repos get a generated pointer in their
+`AGENTS.md`/`CLAUDE.md`, so an agent working inside a submodule finds the wiki.
 
-Greenlight already has most of the substrate, which is why this fits well:
-
-| WikiSkill | Greenlight today | Gap |
+| page | holds | today it lives in |
 |---|---|---|
-| raw traces | `ship`/`preview` emit `StageEvent` JSON lines (`--events <file>`, ingest POST); `verify --json` emits an OTel-shaped result; `logsOnFailure` captures telemetry | No single place a run lands, no secret redaction, and the agent's own transcript is not linked |
-| validation score | `verify(baseUrl, spec)` pass/fail, `eval` 0..1 scores, local `preview` gate | No task suite to score *skills* against (only *tools*) |
-| skill version in results | `skillVersion()` already stamps `deploy-verify-promote`'s `version:` on stage events "so skill-text changes can be compared against gate outcomes" | Covers only one skill; nothing reads it back |
-| skills layer | `.claude/skills/*` mirrored to `plugin/skills` (`check-plugin-sync`) | No `PURPOSE.md`, no kickoff/build skills |
-| wiki layer | Knowledge is scattered across `docs/`, provider skills' "footguns" and commit messages (e.g. #26 Gemini overload fallback, #27 replacement guard, #28 keepalive `cacheTtl`) | Nothing compiled, indexed or linked to skills |
+| `intent.md` | purpose, users, acceptance criteria in the user's words, each mapped to a verify check id; complaints turned into checks | chat history (lost) |
+| `liveness.md` | what is at risk while idle (store pauses / compute reclaimed / must stay silent), which probe guards it, which free-tier quotas it draws on | verify-config header comments, manifest comments, blog posts |
+| `decisions.md` | choices and reasons ("polyphony is lane mcp only to reach the oci target") | manifest comments |
+| `incidents/` | timelines with evidence links | blog posts, GitHub issues |
 
-## Target layout
+The existing projects already prove this content is needed. BAMCP's verify config opens with a
+forty-line comment explaining why each check exists. Polyphony's manifest entry carries a paragraph
+explaining a lane choice that otherwise looks wrong. The keepalive post is an incident page written
+as an essay. The project wiki gives this knowledge a home that `doctor` can check. The
+verify-config comments then shrink to links.
 
-The **framework wiki** is curated, lives in the Greenlight repo, and ships to everyone. A **project
-wiki** is local to each consumer repo and feeds the framework wiki through reviewed PRs.
+### 2. Framework wiki: shared knowledge (secondary)
 
-```
-Greenlight/
-  wiki/                                   # framework wiki (new; mirrored to plugin/wiki)
-    index.md                              # one line per page: [name](path) — problem · root cause · fix
-    log.md                                # append-only, one entry per maintainer pass
-    skill-impact.md                       # HARNESS-WRITTEN: proposal, target, diff, score, outcome, model
-    patterns/<slug>.md                    # 10–30 lines (paper rule)
-    free-tier/<provider>.md               # [our addition] fact pages: limits, card?, idle behavior, verified-on date
-  .claude/skills/
-    greenlight-kickoff/{SKILL.md,PURPOSE.md}    # new
-    greenlight-build/{SKILL.md,PURPOSE.md}      # new
-    greenlight-wiki/{SKILL.md,PURPOSE.md}       # new — maintainer + proposer procedures
-    deploy-verify-promote/{SKILL.md,PURPOSE.md} # existing + PURPOSE.md
-    provider-*/{SKILL.md,PURPOSE.md}            # existing + PURPOSE.md
-  bench/                                  # new — the validation suite (Phase 4)
-    tasks/<task-id>/{brief.md, grader.verify.config.ts, cell.json}
-    splits.json                           # train / val / test task ids
+`Greenlight/wiki/` holds knowledge that is true for every user:
 
-<consumer repo>/
-  .greenlight/raw/<run-id>/               # gitignored, immutable: events.jsonl, verify.json, logs.txt, transcript ref
-  wiki/                                   # committed project wiki, same schema; patterns can be upstreamed
-```
+- `fact` pages, one per free tier, with quotas, whether a card is required, idle behavior, how to
+  query current usage, and a verified-on date;
+- `pattern` pages compiled from real incidents;
+- `contract` pages, one per clause of the self-verifying-app contract.
 
-**Pattern page schema.** The paper fixes only the length and content. The frontmatter is our
-addition, and it exists so `wiki lint` can check pages mechanically.
+The page schema, outlet ranking and versioning are in design sections 2–3. It ships with the CLI in
+lockstep, and `agent sync` materializes it.
 
-```markdown
----
-kind: failure | strategy
-cells: [workers/d1, agent/workers/kv]     # lane/target/data cells it applies to
-evidence: [raw:2026-11-01T1203-ab12, pr:RTrentJones/greenlight#28]
-skills: [provider-cloudflare]             # skills whose PURPOSE.md cite it
-verified: 2026-11-01
----
-# keepalive-probe-cached
-**Symptom** … **Root cause** … **Fix / workaround** … **How verify catches it** …
-```
+### 3. Automated skill evolution (optional, last)
 
-## The three new skills
+The paper's mechanism is in design section 5. It is worth building only once the portfolio is
+large enough that skill quality, not missing features, is the bottleneck.
 
-### `greenlight-kickoff`: from an empty directory to a green first ship
+## Portfolio concerns the extension creates
 
-This skill handles the "anyone, free tier" promise. It should get a user from an empty directory to
-a verified first deploy with only free accounts. Its procedure would be:
+Vibe coding makes projects cheap to start. That turns several problems that do not matter at six
+projects into the main risks at twenty.
 
-1. **Choose a cell.** Ask what the user is building, then choose a lane × target × data cell. The
-   choice comes from a free-tier decision table that the skill links from `wiki/free-tier/*`. It
-   should not be restated inside the skill, because limits drift. The defaults:
+- **Free tiers are per account, and projects share them.** Neon compute hours and project count,
+  Workers requests per day, Vercel Hobby limits, Gemini requests per day, and OCI's A1 allowance
+  are all spent by every project together. Polyphony alone came close to using up Neon's compute
+  allowance (design §1.3). `greenlight accounts` reports headroom from provider usage APIs where
+  they exist, and from fact-page quotas otherwise. Kickoff warns before a new project would push an
+  account past roughly 80% of a limit.
+- **Every project declares its liveness model.** `liveness.md` and a matching manifest field say
+  whether the project needs traffic (Supabase), needs silence (Neon) or needs a reclaim heal (OCI).
+  `doctor` fails a project whose store pauses and which has no keepalive, and it fails a
+  scale-to-zero project whose probe touches the store.
+- **Release visibility.** `greenlight portfolio` gives one table for all tools:
+  - the beta sha against the prod sha, showing what is verified and waiting for a release
+    decision;
+  - the last ship result;
+  - the last keepalive sweep;
+  - open alert issues;
+  - quota headroom.
 
-   - A site or app: `astro`/`workers` with `d1` or `kv`.
-   - An interactive app: `next`/`vercel` with `neon`.
-   - A scheduled agent: `agent`/`workers`/`kv` with Gemini.
-   - Tools for other agents: `mcp`/`workers`.
+  This table is the operator's release control panel. Tracer can render it, but the CLI output is
+  the source.
+- **Retirement.** A dead vibe-coded project keeps consuming quota and keepalive sweeps.
+  `greenlight retire <name>` removes the manifest entry, archives `wiki/<tool>/`, and lets
+  `infra.yml` destroy the resources through the existing destroy guard with manual approval.
 
-   Supabase is offered only when auth, storage and realtime are all needed together, with the pause
-   trap stated up front. OCI is offered only with the warning that signup needs a card and idle
-   instances are reclaimed.
+## Agent neutrality: Claude and Codex
 
-2. **Check prerequisites in order:** GitHub, Cloudflare, HCP Terraform, then the cell's provider.
-   The skill links each signup and says whether it needs a card. Tokens go only through `greenlight
-   secrets gather`, never into chat.
-3. **Scaffold and preview.** Run `greenlight init`, then `greenlight add <name> --lane --target
-   --data`, then `greenlight preview <name>`. This gives a green local gate before any cloud
-   resource exists.
-4. **Push and ship.** Push to `develop` and watch the `greenlight ship` beta result. Promotion is a
-   separate deliberate step that the user dispatches.
+Today Greenlight is Claude-only. Skills live in `.claude/skills` plus the plugin, and `agent sync`
+writes a CLAUDE.md block. Codex reads `AGENTS.md` and repo skills in `.agents/skills`. It uses the
+same SKILL.md standard, with `name` and `description` frontmatter and progressive loading.
 
-**Prerequisite gap in the framework.** `packages/shared` currently *requires* `domain`, and `init`
-assumes a Cloudflare zone. A domain is the one non-free item on the default path. Phase 2 therefore
-adds a **no-domain mode**: `domain` becomes optional, and when it is absent, workers tools are
-served at `<name>.<account>.workers.dev` and Vercel tools at their `*.vercel.app` URL. Without this
-mode the kickoff skill cannot honestly claim a $0 start.
+- `agent sync` writes both `.claude/skills/` and `.agents/skills/` from one source, plus matching
+  `CLAUDE.md` and `AGENTS.md` blocks. A `check-agent-sync` guard keeps the copies identical, the
+  same way `check-plugin-sync` does today.
+- Anything an agent needs to *query* is a CLI command, never a vendor feature: `accounts`,
+  `portfolio`, `wiki lookup`, `status` and `verify`. Any agent that reads command output can then
+  use it.
+- Codex cloud removes secrets before the agent phase starts. A Codex cloud task therefore relies on
+  CI's `ship` for authenticated verification, or on the credential proxy (design §11). The skills
+  say this explicitly instead of letting the agent discover it.
 
-### `greenlight-build`: making an app self-verifying
+## Other software, not just web apps
 
-This skill turns "the loop exists" into "every app the agent builds is checkable". It is a
-contract with five parts:
+The lanes today are `astro`, `next`, `mcp` and `agent`, which cover sites, apps, MCP servers and
+scheduled agents. Vibe-coded software also includes bots, APIs, CLIs and libraries.
 
-- **Write the verify spec first.** Write `verify.config.ts` from the user's acceptance criteria
-  *before* the feature code. The spec must go red first, then green.
-- **Expose identity and health.** Every app serves `/__version`, which turns on the SHA gate. It
-  also serves a JSON health route that reports each dependency (`checks.database`, `lastRun`), so
-  `api` checks can assert content rather than reachability (v2 §8, "depth over reachability").
-- **Assert guards.** Every write route has a verify check that an unauthenticated request is
-  rejected (`method: 'POST', status: 401`). Every cron has a freshness check (`maxAgeHours`).
-- **Choose modes per lane.** Use `api` for everything, `playwright` for UI flows, `mcp` with
-  `expectTools` for MCP servers, and `eval` only where quality is subjective.
-- **Stay within the free tier.** Link the cell's free-tier page and design under its limits, for
-  example batching D1 writes and keeping cron frequency below Gemini's RPD.
+- **Bots and APIs** fit the existing workers path. A `hono` lane is already a v2 aim, and
+  HeistMind's Discord interactions endpoint shows the bot shape.
+- **Packages and CLIs** need no hosting. They need a `package` lane where:
+  - beta is a prerelease dist-tag;
+  - verify installs from the registry and runs a smoke command (`test` mode);
+  - promote moves the dist-tag to `latest`.
 
-### `greenlight-wiki`: maintaining the wiki and proposing skill changes
-
-This skill holds the procedures for two roles, Wiki Maintainer and Skill Proposer. They run in a
-human-invoked session or in CI. A normal app-building session would not load them.
-
-## Runtime rule: when the building agent may read the wiki
-
-The paper's ablation applies to *evolution rollouts*, so the plan separates two modes:
-
-- **Bench rollouts** (Phase 4): the inference agent has **no wiki access**, only skills. This keeps
-  traces informative, as the paper recommends.
-- **Normal use**: skills are primary. The agent may consult `wiki/index.md` **after a gate fails**,
-  as a debugging lookup. This mirrors how `logsOnFailure` already works. The decision to allow this
-  is ours, not the paper's. Phase 4 measures it by comparing the two policies on the val split.
-
-## CLI surface
-
-The `wiki` command family is new. The deterministic CLI parts check and apply what the agent
-proposes, so the agent never writes wiki or skill files freehand. This is the same "mechanism, not
-instruction" stance that `deploy-verify-promote` v2 takes.
-
-- `greenlight wiki capture` runs inside `preview`, `ship` and `verify`. It writes
-  `.greenlight/raw/<run-id>/`: the stage events, the `verify --json` result, `logsOnFailure`
-  output, the git sha, the skill versions in use, and the agent model if known. **Secrets are
-  redacted before the write.** Known token shapes are scrubbed, and so are values of every secret
-  name in the manifest's provider packs. Each log is truncated to 15k characters, which is the
-  paper's budget.
-- `greenlight wiki ingest [--sample 5:3]` takes a sample of failing and passing raw runs and prints
-  the maintainer prompt bundle. It then accepts the maintainer's JSON (`create_patterns`,
-  `update_patterns`, `update_index`, `append_log`), validates it against the schema, applies the
-  exact-substring patches, and refuses ambiguous or missing targets.
-- `greenlight wiki propose` builds the proposer bundle (index, `skill-impact.md`, outcome summary)
-  and exposes traces read-only. It accepts one `create` / `patch` / `no_action` and stages the
-  change on a branch. **It does not accept anything; Phase 4's gate does.**
-- `greenlight wiki lint` is our addition and runs inside `doctor`. It flags broken links, orphan
-  pages (not in the index, or no inbound link), index lines that point nowhere, pattern pages over
-  30 lines, `free-tier/*` pages whose `verified:` date is more than 90 days old, skills without a
-  `PURPOSE.md`, and `PURPOSE.md` citations of pages that do not exist. With `doctor --strict`,
-  these fail CI.
-- `greenlight wiki contribute <slug>` opens a PR that upstreams a project-wiki pattern into the
-  framework wiki. `check-seam` runs on the pattern, so personal domains and emails never leave the
-  consumer.
+  The loop has the same shape and needs no keepalive. This is out of scope for this plan's core
+  phases, but the contract and wiki schema must not assume HTTP, so that the lane can be added
+  without a redesign.
 
 ## Phases
 
-Each phase ships through the normal Greenlight release, and each has a test that shows it is done.
+Each phase has a test that shows it is done.
 
-**Phase 0: seed the wiki, without automation.**
-- Create `wiki/` with the schema above.
-- Hand-compile 15–25 seed patterns from material that already exists:
-  - provider-skill footguns;
-  - `docs/oci-payg-runbook.md`;
-  - the Supabase pause trap;
-  - commit history (#26 Gemini overload fallback, #27 unplanned-replacement guard, #28 keepalive
-    `cacheTtl`, the v0.8 SHA-gating motivation).
-- Write `free-tier/` pages for Cloudflare (Workers, D1, KV, cron), Neon, Vercel Hobby, Gemini (AI
-  Studio), HCP Terraform, GitHub Actions, OCI Always Free and Supabase Free. Each page records limits,
-  whether a card is required, idle behavior and a `verified:` date.
-- Add a `PURPOSE.md` to every existing skill.
-- Extend `copy-assets` / `check-plugin-sync` to mirror `wiki/` into `plugin/wiki`.
-- *Done when* `wiki lint` (still a script at this stage) passes in `check-all`, and the plugin ships
-  the wiki.
+**Phase 0: memory and Codex parity.**
+- Define the project-wiki schema and write `wiki/<tool>/` for all six live tools from the material
+  that already exists: verify-config comments, manifest comments, blog posts, issues #55 and #86.
+- Seed the framework wiki with free-tier `fact` pages, including quotas, and with patterns from the
+  incident corpus.
+- Make `agent sync` write `.agents/skills` and `AGENTS.md`.
+- *Done when* Codex, given only the wrapper and the request "add a check that BAMCP's demo BAM still
+  loads", makes the change and gets a green `preview` without being told anything the wiki does not
+  say. The same drill is repeated with Claude on a different tool.
 
-**Phase 1: raw capture.**
-- Add `wiki capture` and wire it into `preview`, `ship` and `verify`.
-- Generalize `skillVersion()` so it stamps the versions of all loaded skills, not just
-  `deploy-verify-promote`.
-- *Done when* a failing `preview` produces a redacted, truncated run directory. A unit test plants
-  every provider-pack secret name and asserts that none survive.
+**Phase 1: the contract in templates.**
+- Put `/__version`, the split between `/health/live` and `/health`, and the marking of
+  environment-invariant checks into the astro, next and mcp templates. Only the agent template has
+  these today.
+- Add `doctor` rules: a liveness model is declared, a pausing store has a keepalive, and a
+  scale-to-zero store is not probed.
+- *Done when* `greenlight add` for every lane produces a tool whose first `preview` already passes
+  identity and liveness checks.
 
-**Phase 2: the kickoff and build skills, plus no-domain mode.**
-- Make `domain` optional in the schema, and add a `workers.dev` / `vercel.app` URL fallback to the
-  `url()` adapter contract.
-- Make `init` work without a zone, and teach `doctor` that apex-only checks are skipped without a
-  domain.
-- Write `greenlight-kickoff` and `greenlight-build`.
-- *Done when* a fresh agent session, given only the plugin and the prompt "build a guestbook on
-  Greenlight, free tier only", reaches a green `preview`. A fresh account then reaches a green beta
-  `ship` with no domain. The ship is run by hand, once per supported cell.
+**Phase 2: the vibe-code flow.**
+- Add `greenlight accounts`.
+- Add the no-domain mode, falling back to `workers.dev` and `vercel.app` (design §6.1).
+- Write the kickoff and build skills, including two rules: each acceptance criterion maps to a
+  verify check, and each complaint becomes a check.
+- Make the skills state that promotion is the user's call.
+- *Done when* someone who has never used Greenlight, with only free accounts and no domain, goes
+  from a one-sentence idea to a beta URL. Their complaints are visible as checks in `intent.md`, and
+  prod changes only after they say so.
 
-**Phase 3: the Wiki Maintainer.**
-- Add `wiki ingest` with JSON validation and patch application, plus the maintainer section of
-  `greenlight-wiki`. The skill reuses the paper's instructions: deep root-cause analysis rather than
-  symptoms, and `update_index` and `append_log` are always required.
-- *Done when* ingesting the Phase 1 run directories produces lint-clean pattern edits, and a
-  golden-file test covers patch application and refusals.
+**Phase 3: portfolio operations.**
+- Add `greenlight portfolio` (beta ahead of prod, ship and keepalive state, alerts, quota
+  headroom).
+- Add `greenlight retire`.
+- Add the kickoff headroom warning.
+- *Done when* the portfolio table for the six live tools matches reality, checked by hand once.
+  Retiring a throwaway test tool also frees its resources through the guarded apply.
 
-**Phase 4: the bench, the proposer and the gate.** This phase is the centre of the plan.
-- Build `bench/` with about 30 app briefs spread across the free-tier cells. Examples: a guestbook
-  on `astro`/`workers`/`d1`, a link shortener on workers with `kv`, a daily digest on
-  `agent`/`workers`/`kv`, a todo app on `next`/`vercel`/`neon`, and a lookup tool on `mcp`/`workers`.
-- Give each brief a **hidden grader** `verify.config.ts` that the agent never sees. The grader
-  checks the brief's behavior *and* the `greenlight-build` contract: `/__version`, health JSON, a
-  401 on unauthenticated writes, and an agent-authored verify spec that exists and passes.
-- **Score every brief locally** through `greenlight preview` (wrangler/miniflare, local Postgres
-  for Neon cells). The bench then needs no cloud credentials, costs nothing and is reproducible.
-  Deploys are deliberately left out of the score.
-- Rollouts run headless (`claude -p` with the plugin, no wiki access) in throwaway sandboxes.
-- Add `wiki propose` and a `bench gate` that applies one proposal, runs the val split three times,
-  and accepts only on a **strict improvement**, using the paper's paired bootstrap (1,000 resamples,
-  p < 0.05).
-- The harness, never the agent, appends the outcome to `skill-impact.md` and bumps the skill's
-  `version:`. Stage events then let field pass rates be compared per skill version.
-- *Done when* one full evolution run from the current skills finishes, the test split is reported
-  against the starting skills, and at least one accepted change has an audit row whose
-  `PURPOSE.md` cites a pattern.
+**Phase 4: centralized secrets.**
+- Make Infisical, or the `--sink github` fallback, the single readable source, and have it sync
+  secrets to GitHub Actions.
+- Add the `inject` field to the provider registry, run agents behind the credential proxy, and list
+  CI-only tokens explicitly (design §11).
+- The proxy's GitHub allow-list denies the agent the call that dispatches `promote.yml` unless the
+  user has approved it. This turns "release stays in human hands" from a skill instruction into a
+  mechanism.
+- *Done when* a full Phase 2 drill runs with no raw credential in the agent's environment, and the
+  agent's attempt to dispatch promotion without approval is refused.
 
-**Phase 5: the field loop and pruning.**
-- Add `wiki contribute` for consumer → framework PRs. A human reviews every PR, and nothing merges
-  automatically.
-- Add pruning, which is our addition and covers the paper's stated gap. Lint proposes merging
-  near-duplicate patterns. Pages with no evidence newer than 180 days and no citing skill move to
-  `wiki/archive/` through a maintainer pass, so they are archived, not deleted.
-- Add a monthly scheduled job that re-runs the test split on the current default model, which
-  catches regressions caused by the model changing underneath the skills.
+**Phase 5: learning from failures.**
+- Add reference-based raw capture feeding Tracer, with `.greenlight/raw/` as the fallback.
+- Add `greenlight wiki lookup`, and have verify failure reports link to matching patterns.
+- Add the maintainer procedure that compiles incidents into patterns, and route each pattern to its
+  strongest outlet (design §2).
+- *Done when* a deliberately reintroduced known failure, such as a keepalive probe pointed at a
+  cache, fails verify with a link to the right pattern.
 
-## Risks and how the plan handles them
+**Phase 6 (optional): automated skill evolution.**
+- Build the bench from replay tasks plus capability briefs, with mutation-tested graders, a
+  lexicographic gate, a two-model gate and the remediation ledger (design §5).
+- Start this phase only if Phases 0–5 have been running long enough that the first-pass gate rate,
+  rather than missing features, limits the portfolio.
 
-- **Secret leakage through traces.** This risk is the most serious, because raw traces of deploys
-  naturally contain tokens. The plan redacts at capture, keeps `.greenlight/` gitignored, and
-  upstreams patterns, never raw runs. The Phase 1 test is a merge blocker.
-- **Overfitting to the bench.** The test split is held out, and briefs are written so the hidden
-  grader checks behavior, not file layout. The bench gets new briefs as field patterns reveal gaps.
-- **Negative cross-model transfer.** The paper showed this can be severe. Every `skill-impact.md`
-  row therefore records the model, and Phase 4 gates on two models (a frontier one and a cheaper
-  one). A proposal must not regress either model.
-- **Strict gating rejects neutral proposals.** The paper notes this costs later gains. We keep
-  strict gating for now. One optional tie-breaker, our addition: accept a non-regressing proposal if
-  it *shortens* the skill.
-- **Free-tier facts drift.** Facts live in dated `free-tier/*` pages that lint expires. Skills link
-  to them and do not copy them.
-- **Bench cost.** Thirty briefs × three runs × two models per proposal is real token spend. Phase 4
-  starts with a 10-brief val split. Every rollout is `preview`-only, so there is no cloud cost.
+## How we know it is working
+
+Two measures track the vision directly. Both can be taken by hand from the start.
+
+- **Idea to beta.** The time from "I want X" to a green beta URL on a fresh free-tier account. This
+  measures outcome 1.
+- **Cold-edit first-pass rate.** How often an agent editing a project it did not create passes the
+  local gate on the first push. This measures outcome 2 and the value of the project wiki. Stage
+  events already record the first-pass rate per skill version, and Phase 5 adds the agent and model.
+
+Uptime (outcome 3) and "nothing reached prod without approval" (outcome 4) are already observable,
+through keepalive issues and the promote workflow history.
 
 ## Decisions for you
 
-1. **No-domain mode (Phase 2).** It changes the manifest schema, which is a framework change, and
-   without it the "$0 start" claim is false. Recommended.
-2. **Wiki access during normal use.** The options are skills-only, which is the paper's evolution
-   setting, or skills plus an index lookup after a failure, which is recommended and measured in
-   Phase 4.
-3. **The bench runner's model and budget.** This sets how often evolution runs. The recommendation
-   is to run it on demand, not on every push.
-4. **Whether `greenlight-wiki` ships in the public plugin** or stays a maintainer-only skill in this
-   repo. The recommendation is to ship `kickoff` and `build` publicly and keep `wiki` repo-local
-   until Phase 4 has produced accepted changes.
+1. **Where the project wiki lives.** The plan puts it in the wrapper, with a pointer from each tool
+   repo. The alternative is to put intent and decisions in the tool repo, where they travel with
+   the code. That splits the wiki in two.
+2. **The agent's power over promotion.** The plan treats promotion as human-only, enforced by
+   mechanism in Phase 4. Alternatives are a per-project opt-in to autonomous promotion when beta is
+   green, or that only for low-stakes lanes such as the blog.
+3. **Infisical or GitHub-only for secrets.** This was open in design §10. The plan's default is
+   Infisical, with GitHub-only as the no-new-account fallback.
+4. **Whether the `package` lane joins this plan** or stays a later aim.

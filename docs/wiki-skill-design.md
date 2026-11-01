@@ -5,6 +5,18 @@ document works out *why the design has the shape it does*. It starts from the fa
 current tools have actually had, then from the vision of anyone pointing an agent at Greenlight,
 and it records where Greenlight should depart from the WikiSkill paper (arXiv:2608.27454) and why.
 
+## 0. Scope against the vision
+
+Greenlight's vision is a managed portfolio. It keeps projects alive, it lets Claude or Codex edit
+them, it verifies each change in beta, and it leaves release under the owner's control. This
+extension lets someone vibe code new projects onto the free tiers they have set up. The
+[plan](plan-wiki-skill.md) ranks the work against that vision. The project wiki (handoff memory),
+the vibe-code flow, portfolio operations and agent neutrality come first. The paper-derived
+evolution loop in section 5 is optional and comes last.
+
+This document remains the reasoning behind each mechanism. Read section 5 as the design for that
+optional phase, not as the centre of the work.
+
 ## 1. Evidence from the current use cases
 
 Six tools run on Greenlight today:
