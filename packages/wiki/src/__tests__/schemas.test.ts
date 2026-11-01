@@ -4,6 +4,7 @@ import {
   BaselineIdentitySchema,
   type EvaluationRecord,
   EvaluationRecordSchema,
+  GateInputRecordSchema,
   type GateResult,
   LedgerEventSchema,
   MaintainerOutputSchema,
@@ -15,8 +16,10 @@ import {
   canonicalJson,
   checkProposalHistory,
   comparable,
+  evalEvidencePath,
   identityDiff,
   sealEvent,
+  sealGateInput,
   sealRecord,
   touchesVersion,
 } from '../index';
@@ -24,6 +27,7 @@ import {
 // Vision 08 §3, §8, §9, §10 / roadmap M0-03..M0-06; acceptance rows in 13 §2.1 and §2.7.
 
 const H = (c: string) => c.repeat(64);
+const TS = '2026-11-01T00:00:00.000Z';
 
 const ok = (schema: { safeParse: (v: unknown) => { success: boolean } }, v: unknown) =>
   expect(schema.safeParse(v).success).toBe(true);
@@ -162,7 +166,8 @@ describe('ledger (M0-04)', () => {
       skill: 'greenlight-build',
       evidence: {
         kind: 'bench',
-        evaluationRecord: H('a'),
+        gateInput: H('c'),
+        evaluationRecords: [H('a'), H('b')],
         results: [result, { ...result, model: 'gemini-3.6-flash' }],
       },
     });
@@ -249,6 +254,70 @@ describe('ledger (M0-04)', () => {
       'stage "merged" cannot follow "candidate-rejected"',
     ]);
     expect(checkProposalHistory([e('merged')])).toEqual(['stage "merged" cannot follow "start"']);
+  });
+
+  it('stage machine by outlet: only the verify outlet skips released (06 §3.5, §6.1)', () => {
+    const e = (stage: string, outlet?: string) => ({ stage, outlet }) as never;
+    // CLI-released outlets: verified-in-production needs released first.
+    for (const outlet of ['skill', 'template', 'mechanism', 'doctor', undefined]) {
+      expect(
+        checkProposalHistory([
+          e('candidate-accepted', outlet),
+          e('merged'),
+          e('verified-in-production'),
+        ]),
+        String(outlet),
+      ).toEqual(['stage "verified-in-production" cannot follow "merged"']);
+    }
+    // The verify outlet lives in the wrapper: merged → verified-in-production, never released.
+    expect(
+      checkProposalHistory([
+        e('candidate-accepted', 'verify'),
+        e('merged'),
+        e('verified-in-production'),
+        e('withdrawn'),
+      ]),
+    ).toEqual([]);
+    expect(
+      checkProposalHistory([e('candidate-accepted', 'verify'), e('merged'), e('released')]),
+    ).toEqual(['stage "released" cannot follow "merged" (outlet verify has no CLI release)']);
+    expect(checkProposalHistory([e('candidate-accepted', 'skill'), e('merged', 'verify')])).toEqual(
+      ['events name more than one outlet (skill, verify)'],
+    );
+  });
+
+  it('candidate bench evidence names its gate input; release-check evidence need not', () => {
+    const results = [
+      {
+        model: 'm',
+        mode: 'isolation' as const,
+        split: 'val' as const,
+        runs: 3,
+        replay: { total: 0, baselinePassing: 0, candidatePassing: 0, regressions: [] },
+        capability: { before: 0, after: 0, delta: 0, pValue: null },
+        decision: 'pass' as const,
+      },
+    ];
+    bad(
+      LedgerEventSchema,
+      sealEvent({
+        ts: TS,
+        proposalId: 'p',
+        stage: 'candidate-rejected',
+        path: 'standard',
+        evidence: { kind: 'bench', evaluationRecords: [H('a')], results },
+      }),
+      /gate input/,
+    );
+    ok(
+      LedgerEventSchema,
+      sealEvent({
+        ts: TS,
+        stage: 'release-check',
+        reason: 'release check passed',
+        evidence: { kind: 'bench', evaluationRecords: [H('a'), H('b')], results },
+      }),
+    );
   });
 });
 
@@ -433,24 +502,77 @@ describe('bench (M0-03)', () => {
   };
 
   it('evaluation records are content-addressed and internally consistent', () => {
-    const rec = sealRecord({ identity, role: 'baseline', outcomes: [outcome] });
+    const rec = sealRecord({ identity, role: 'baseline', createdAt: TS, outcomes: [outcome] });
     ok(EvaluationRecordSchema, rec);
     bad(EvaluationRecordSchema, { ...rec, role: 'release-check' }, /hash/);
     bad(
       EvaluationRecordSchema,
-      sealRecord({ identity, role: 'candidate', outcomes: [outcome] }),
+      sealRecord({ identity, role: 'candidate', createdAt: TS, outcomes: [outcome] }),
       /names its proposal/,
     );
     bad(
       EvaluationRecordSchema,
-      sealRecord({ identity, role: 'baseline', outcomes: [outcome, outcome] }),
+      sealRecord({ identity, role: 'baseline', createdAt: TS, outcomes: [outcome, outcome] }),
       /duplicate outcome/,
     );
     bad(
       EvaluationRecordSchema,
-      sealRecord({ identity, role: 'baseline', outcomes: [{ ...outcome, score: 0 }] }),
+      sealRecord({
+        identity,
+        role: 'baseline',
+        createdAt: TS,
+        outcomes: [{ ...outcome, score: 0 }],
+      }),
       /score is 1 iff/,
     );
+    const { createdAt: _c, ...undated } = rec;
+    bad(EvaluationRecordSchema, undated);
+  });
+
+  it('gate input records are content-addressed and canonical (08 §10.4)', () => {
+    const input = sealGateInput({
+      kind: 'gate-input',
+      proposalId: 'prop-1',
+      ts: TS,
+      outlet: 'skill',
+      radius: 'medium',
+      path: 'standard',
+      seed: 'gate:prop-1',
+      config: {
+        alpha: 0.05,
+        runs: 3,
+        resamples: 1000,
+        acceptShorterOnTie: false,
+        maxBaselineAgeDays: 30,
+      },
+      models: { frontier: 'gemini-3.8-flash', small: 'gemini-3.6-flash' },
+      modes: ['isolation'],
+      modesDeclared: true,
+      acceptedSkillSetHash: H('5'),
+      candidateSkillSetHash: H('6'),
+      tasks: [
+        { id: 'loop/x', kind: 'loop', state: 'active', modes: ['isolation', 'production'] },
+        { id: 'replay/y', kind: 'replay', state: 'pending', modes: ['isolation'] },
+      ],
+      baselineRecords: [H('a')],
+      candidateRecords: [H('b')],
+    });
+    ok(GateInputRecordSchema, input);
+    expect(evalEvidencePath(input.hash)).toBe(`evidence/eval/${input.hash}.json`);
+    bad(GateInputRecordSchema, { ...input, seed: 'other' }, /hash/);
+    const reseal = (over: Record<string, unknown>) => {
+      const { hash: _h, ...rest } = input;
+      return sealGateInput({ ...rest, ...over } as never);
+    };
+    bad(GateInputRecordSchema, reseal({ tasks: [...input.tasks].reverse() }), /sorted by id/);
+    bad(
+      GateInputRecordSchema,
+      reseal({ modes: ['production', 'isolation'] }),
+      /isolation, production order/,
+    );
+    bad(GateInputRecordSchema, reseal({ candidateRecords: [H('b'), H('c')] }), /one baseline/);
+    bad(GateInputRecordSchema, reseal({ candidateSkillSetHash: H('5') }), /equals the accepted/);
+    bad(GateInputRecordSchema, reseal({ outlet: 'template' }), /template results/);
   });
 
   it('the models config needs two distinct gate models', () => {

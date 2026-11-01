@@ -41,6 +41,11 @@ export const REASON_CODES = [
   'unknown-model',
   'unknown-mode',
   'mode-missing',
+  'mode-not-in-tasks',
+  'task-not-evaluated',
+  'template-evidence-missing',
+  'template-no-lanes',
+  'template-no-mutants',
   // fail: a policy rule did not hold
   'replay-regression',
   'flaky-baseline',
@@ -54,10 +59,13 @@ export const REASON_CODES = [
   'safety-fix-target-not-fixed',
   'neutral-needs-reason',
   'neutral-already-pending',
+  'template-lane-failed',
+  'template-mutant-escaped',
   // info: recorded, does not change the decision on its own
   'excluded-task',
   'no-objective-tasks',
   'tie-break-shorter',
+  'modes-partial',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -79,13 +87,33 @@ export interface PValueArgs {
   resamples: number;
 }
 
+/** Template outlet evidence (06 §5.6): generated-app tests per lane using the template, and per
+ * template mutant whether those tests caught (failed on) it. */
+export interface TemplateResults {
+  lanes: readonly { lane: string; passed: boolean }[];
+  mutants: readonly { id: string; caught: boolean }[];
+}
+
 export interface PolicyInput {
   radius: BlastRadius;
   path: GatePath;
+  /** The outlet under evaluation (06 §5.6). Default `skill`. A `template` candidate needs no
+   * strict capability improvement; its capability guard is non-regression in every model and
+   * mode, and `template` results must show every lane passing and every mutant caught. */
+  outlet?: 'skill' | 'template';
+  template?: TemplateResults;
   /** The gate pair (06 §5.3). */
   models: { frontier: string; small: string };
-  /** The modes evaluated in this gate, in any order. */
+  /** The modes evaluated in this gate (records on both sides), in any order. */
   modes: readonly GateMode[];
+  /**
+   * The modes the caller declares this evaluation covers. Absent: every mode some gated task
+   * declares (TaskSpec.modes) is required, and a missing one makes the evaluation invalid. Present:
+   * an explicit narrower posture (the M1/M2 isolation-only gate, 06 §5.1), validated against the
+   * tasks — each declared mode must be declared by a gated task, and every gated task must be
+   * evaluated in at least one declared mode. A partial declaration is recorded as `modes-partial`.
+   */
+  declaredModes?: readonly GateMode[];
   tasks: readonly PolicyTask[];
   baseline: readonly BenchOutcome[];
   candidate: readonly BenchOutcome[];
@@ -178,7 +206,10 @@ function gatedTasks(tasks: readonly PolicyTask[]): Gated {
   const replay: PolicyTask[] = [];
   const objective: PolicyTask[] = [];
   const reasons: PolicyReason[] = [];
-  for (const t of tasks) {
+  // Sorted by id so the bootstrap's resampling (by position) and every list derived from the tasks
+  // do not depend on the order the caller passed them in (06 §5.8 recompute).
+  const sorted = [...tasks].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const t of sorted) {
     if (t.state !== 'active') {
       reasons.push({ code: 'excluded-task', severity: 'info', task: t.id, detail: t.state });
     } else if (t.kind === 'replay') replay.push(t);
@@ -186,6 +217,83 @@ function gatedTasks(tasks: readonly PolicyTask[]): Gated {
     else reasons.push({ code: 'excluded-task', severity: 'info', task: t.id, detail: t.kind });
   }
   return { replay, objective, reasons };
+}
+
+/** Every mode some gated (active replay or objective) task declares, in mode order. */
+export function requiredModes(tasks: readonly PolicyTask[]): GateMode[] {
+  const g = gatedTasks(tasks);
+  return sortModes([...g.replay, ...g.objective].flatMap((t) => [...taskModes(t)]));
+}
+
+/** The mode rules of 06 §5.1 / §4.7: which modes must be evaluated, and whether the evaluated set
+ * matches. Invalid reasons make the evaluation ungateable; `modes-partial` is info. */
+function modeReasons(
+  evaluated: readonly GateMode[],
+  declared: readonly GateMode[] | undefined,
+  gated: Gated,
+): PolicyReason[] {
+  const out: PolicyReason[] = [];
+  const tasks = [...gated.replay, ...gated.objective];
+  const union = sortModes(tasks.flatMap((t) => [...taskModes(t)]));
+  let required = union;
+  if (declared !== undefined) {
+    required = sortModes(declared);
+    if (required.length === 0) {
+      out.push({ code: 'mode-missing', severity: 'invalid', detail: 'no modes declared' });
+    }
+    for (const m of required) {
+      if (!union.includes(m)) {
+        out.push({
+          code: 'mode-not-in-tasks',
+          severity: 'invalid',
+          mode: m,
+          detail: 'declared, but no gated task declares it',
+        });
+      }
+    }
+    for (const t of tasks) {
+      if (!taskModes(t).some((m) => required.includes(m))) {
+        out.push({
+          code: 'task-not-evaluated',
+          severity: 'invalid',
+          task: t.id,
+          detail: `declares ${taskModes(t).join(', ')}; evaluated ${required.join(', ') || 'none'}`,
+        });
+      }
+    }
+    const skipped = union.filter((m) => !required.includes(m));
+    if (skipped.length > 0) {
+      out.push({
+        code: 'modes-partial',
+        severity: 'info',
+        detail: `declared ${required.join(', ')}; not evaluated: ${skipped.join(', ')}`,
+      });
+    }
+  }
+  for (const m of required) {
+    if (!evaluated.includes(m)) {
+      out.push({
+        code: 'mode-missing',
+        severity: 'invalid',
+        mode: m,
+        detail:
+          declared === undefined
+            ? 'a gated task declares this mode, and it has no record on both sides'
+            : 'declared, but it has no record on both sides',
+      });
+    }
+  }
+  for (const m of evaluated) {
+    if (!required.includes(m)) {
+      out.push({
+        code: 'unknown-mode',
+        severity: 'invalid',
+        mode: m,
+        detail: declared === undefined ? 'no gated task declares it' : 'not declared',
+      });
+    }
+  }
+  return out;
 }
 
 interface ValidityInput {
@@ -334,8 +442,10 @@ function replaySafety(
     if (t.candPasses >= need) passing++;
     const at = { model: c.model, mode: c.mode, task: t.task };
     // Reading (06 §5.4, high radius): "no flaky replay task may exist in the baseline" covers every
-    // gated replay task, including a safety-fix target. A target at 1/3 or 2/3 must be fixed or
-    // quarantined by a human first; a high-radius safety fix starts from 0/3.
+    // gated replay task EXCEPT a safety-fix target. The safety-fix path exists for replay tasks
+    // that fail in the baseline, and a target at 1/3 is exactly such a task; holding it to the
+    // flaky rule would make it unfixable. The target is held to 3 of 3 on the candidate instead.
+    if (exempt.has(t.task)) continue;
     if (radius === 'high' && t.basePasses > 0 && t.basePasses < c.runs) {
       reasons.push({
         code: 'flaky-baseline',
@@ -344,7 +454,6 @@ function replaySafety(
         detail: `baseline ${t.basePasses}/${c.runs}`,
       });
     }
-    if (exempt.has(t.task)) continue;
     if (isBaselinePassing && t.candPasses < need) {
       regressions.push(t.task);
       reasons.push({
@@ -432,9 +541,28 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
     candidate: input.candidate,
     runs,
   });
+  const outlet = input.outlet ?? 'skill';
+  const modeProblems = modeReasons(modes, input.declaredModes, gated);
+  invalid.push(...modeProblems.filter((r) => r.severity === 'invalid'));
+  reasons.push(...modeProblems.filter((r) => r.severity === 'info'));
+  if (outlet === 'template' && !input.template) {
+    invalid.push({
+      code: 'template-evidence-missing',
+      severity: 'invalid',
+      detail: 'a template candidate needs generated-app test and mutant results (06 §5.6)',
+    });
+  } else if (outlet === 'template' && input.template) {
+    // No lane or no mutant means nothing was shown at all: not a template evaluation.
+    if (input.template.lanes.length === 0) {
+      invalid.push({ code: 'template-no-lanes', severity: 'invalid' });
+    }
+    if (input.template.mutants.length === 0) {
+      invalid.push({ code: 'template-no-mutants', severity: 'invalid' });
+    }
+  }
   if (modes.length === 0) {
     invalid.push({ code: 'mode-missing', severity: 'invalid', detail: 'no modes evaluated' });
-  } else if (input.path === 'standard' && !modes.includes('isolation')) {
+  } else if (outlet === 'skill' && input.path === 'standard' && !modes.includes('isolation')) {
     // §5.1 step 4: efficacy is measured in isolation mode; a standard gate without it cannot pass
     // or fail on efficacy, so it is not a gate result at all.
     invalid.push({
@@ -481,6 +609,19 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
       pathReasons.push({ code: 'neutral-already-pending', severity: 'fail' });
     }
   }
+  if (outlet === 'template' && input.template) {
+    const { lanes, mutants } = input.template;
+    for (const l of lanes) {
+      if (!l.passed) {
+        pathReasons.push({ code: 'template-lane-failed', severity: 'fail', detail: l.lane });
+      }
+    }
+    for (const m of mutants) {
+      if (!m.caught) {
+        pathReasons.push({ code: 'template-mutant-escaped', severity: 'fail', detail: m.id });
+      }
+    }
+  }
 
   type Cell = {
     stats: CellStats;
@@ -505,8 +646,10 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
         computeP: mode === 'isolation',
       });
       const safety = replaySafety(stats, input.radius, targets);
+      // Reading (06 §5.6 template): "capability rollouts on cells using the template do not
+      // regress in either mode" is the one-task-mean non-regression of §5.4, on every model.
       const capability =
-        input.path === 'standard'
+        input.path === 'standard' && outlet === 'skill'
           ? standardCapability(stats, role, input.radius, alpha)
           : // Reading (06 §5.4, alternative paths): "capability does not fall by more than one
             // task-mean" / "non-regression must hold" applies to every model in both modes, which
@@ -560,7 +703,12 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
     c.safety.reasons.length === 0 && c.capability.length === 0 && c.target.length === 0;
   let tieBreak = false;
   const standardAccepts = cells.every(cellPasses) && pathReasons.length === 0;
-  if (input.path === 'standard' && !standardAccepts && input.tieBreak?.enabled) {
+  if (
+    outlet === 'skill' &&
+    input.path === 'standard' &&
+    !standardAccepts &&
+    input.tieBreak?.enabled
+  ) {
     // 06 §5.5: replay constraint holds; |Δ| < 1 task-mean on both models (Reading: in every
     // evaluated mode) with p ≥ alpha where computed; SKILL.md shrinks by ≥ 10%.
     const { linesBefore, linesAfter } = input.tieBreak;
@@ -655,6 +803,8 @@ export function earlyStop(input: EarlyStopInput): { stop: boolean; detail: strin
 export interface ReleasePolicyInput {
   models: { frontier: string; small: string };
   modes: readonly GateMode[];
+  /** As PolicyInput.declaredModes: absent, every mode a gated test task declares is required. */
+  declaredModes?: readonly GateMode[];
   tasks: readonly PolicyTask[];
   /** The previously released skill set on the test split. */
   previous: readonly BenchOutcome[];
@@ -689,6 +839,9 @@ export function releasePolicy(input: ReleasePolicyInput): {
     candidate: input.candidate,
     runs,
   });
+  const modeProblems = modeReasons(modes, input.declaredModes, gated);
+  invalid.push(...modeProblems.filter((r) => r.severity === 'invalid'));
+  reasons.push(...modeProblems.filter((r) => r.severity === 'info'));
   if (modes.length === 0) invalid.push({ code: 'mode-missing', severity: 'invalid' });
   if (invalid.length > 0) {
     return { decision: 'invalid', results: [], reasons: [...reasons, ...invalid] };

@@ -109,6 +109,42 @@ describe('applyPolicy details', () => {
     expect(out.results[1]?.capability.pValue).toBeNull(); // production: not computed
   });
 
+  it('bootstraps over tasks sorted by id: the p-value does not depend on ctx.tasks order', () => {
+    // An uneven gain, so resampling by position would see different diffs under a reorder.
+    const base = clean();
+    const uneven = {
+      ...base,
+      candidate: base.candidate.map((o) =>
+        o.task === 'cap/c6' && o.mode === 'isolation' && o.run === 3
+          ? { ...o, score: 0 as const }
+          : o,
+      ),
+    };
+    const a = applyPolicy(uneven);
+    const shuffled = [...TASKS].reverse();
+    const b = applyPolicy({ ...uneven, tasks: shuffled });
+    expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+  });
+
+  it('requires every mode the gated tasks declare unless the caller declares fewer', () => {
+    const base = clean();
+    const iso = (o: { mode: string }) => o.mode === 'isolation';
+    const isoOnly = {
+      ...base,
+      modes: ['isolation'] as const,
+      baseline: base.baseline.filter(iso),
+      candidate: base.candidate.filter(iso),
+    };
+    const silent = applyPolicy(isoOnly);
+    expect(silent.decision).toBe('invalid');
+    expect(silent.reasons).toContainEqual(
+      expect.objectContaining({ code: 'mode-missing', mode: 'production' }),
+    );
+    const declared = applyPolicy({ ...isoOnly, declaredModes: ['isolation'] });
+    expect(declared.decision).toBe('accept');
+    expect(declared.reasons.map((r) => r.code)).toContain('modes-partial');
+  });
+
   it('treats pending tasks as absent: a pending task whose candidate regresses changes nothing', () => {
     const withPending = applyPolicy(clean());
     const activated = applyPolicy(

@@ -167,7 +167,8 @@ export function ledgerEvents() {
       pattern: ['pattern/probe-cached'],
       evidence: {
         kind: 'bench',
-        evaluationRecord: H('a'),
+        gateInput: H('c'),
+        evaluationRecords: [H('a'), H('b')],
         results: [
           {
             model: 'model-a',

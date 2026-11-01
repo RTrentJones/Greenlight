@@ -231,6 +231,9 @@ export const EvaluationRecordSchema = z
     identity: BaselineIdentitySchema,
     role: z.enum(['baseline', 'candidate', 'release-check', 'train']),
     proposalId: z.string().min(1).optional(),
+    /** When the evaluation finished (ISO). The gate refuses a baseline older than
+     * `maxBaselineAgeDays` (default 30) at the gate's ts (vision 06 §1.5, §5.1). */
+    createdAt: IsoDateTime,
     outcomes: z.array(OutcomeSchema),
   })
   .strict()
@@ -267,6 +270,134 @@ export type EvaluationRecord = z.infer<typeof EvaluationRecordSchema>;
 /** Builds a record with its content hash filled in. */
 export function sealRecord(r: Omit<EvaluationRecord, 'hash'>): EvaluationRecord {
   return { ...r, hash: contentHash(r as Record<string, unknown>, 'hash') };
+}
+
+/** Where content-addressed evidence lives, relative to the wiki root (08 §10.4): evaluation
+ * records and gate input records share `evidence/eval/<hash>.json`. */
+export const EVAL_EVIDENCE_DIR = 'evidence/eval';
+export const evalEvidencePath = (hash: string): string => `${EVAL_EVIDENCE_DIR}/${hash}.json`;
+
+const Radius = z.enum(['high', 'medium', 'low']);
+const GatePathEnum = z.enum(['standard', 'safety-fix', 'neutral']);
+const MODE_ORDER = ['isolation', 'production'] as const;
+
+const ascending = (xs: readonly string[]): boolean =>
+  xs.every((x, i) => i === 0 || (xs[i - 1] as string) < x);
+
+/**
+ * Everything a gate decision depends on besides the EvaluationRecords it names (vision 06 §5.8,
+ * 08 §10.4). Content-addressed and stored beside the records (`evidence/eval/<hash>.json`); the
+ * ledger's bench or template evidence references it by `gateInput`. `bench gate --recompute
+ * <hash>` needs this record plus the records it lists, and nothing else: no ctx, no task-file
+ * order, no choice among several comparable baselines.
+ */
+export const GateInputRecordSchema = z
+  .object({
+    hash: Sha256,
+    kind: z.literal('gate-input'),
+    proposalId: z.string().min(1),
+    /** The ledger event's ts; it seeds the eventId and the baseline-age check. */
+    ts: IsoDateTime,
+    outlet: z.enum(['skill', 'template']),
+    radius: Radius,
+    path: GatePathEnum,
+    /** The bootstrap seed actually used (default `gate:<proposalId>`, or the caller's override). */
+    seed: z.string().min(1),
+    /** bench/gate.json as resolved, defaults filled in. */
+    config: z
+      .object({
+        alpha: z.number().gt(0).lt(1),
+        runs: z.number().int().min(1),
+        resamples: z.number().int().min(1),
+        acceptShorterOnTie: z.boolean(),
+        maxBaselineAgeDays: z.number().int().min(1),
+      })
+      .strict(),
+    models: z.object({ frontier: z.string().min(1), small: z.string().min(1) }).strict(),
+    /** The modes evaluated, in isolation, production order. */
+    modes: z.array(Mode).min(1),
+    /** True when the caller declared `modes` explicitly (the M1/M2 isolation-only posture, 06 §5.1);
+     * false when they are every mode the gated tasks declare. */
+    modesDeclared: z.boolean(),
+    /** The accepted skill set the baseline was run under; every baseline record carries it. */
+    acceptedSkillSetHash: Sha256,
+    candidateSkillSetHash: Sha256,
+    /** The gated task list, sorted by id, with kind, state and resolved modes. */
+    tasks: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            kind: z.enum(TASK_KINDS),
+            state: z.enum(['pending', 'active', 'quarantined']),
+            modes: z.array(Mode).min(1),
+          })
+          .strict(),
+      )
+      .min(1),
+    /** One record hash per evaluated mode on each side, in mode order. */
+    baselineRecords: z.array(Sha256).min(1),
+    candidateRecords: z.array(Sha256).min(1),
+    safetyFixTargets: z.array(z.string().min(1)).optional(),
+    neutralReason: z.string().min(1).optional(),
+    neutralPendingForSkill: z.boolean().optional(),
+    skillLines: z
+      .object({ before: z.number().int().min(0), after: z.number().int().min(0) })
+      .strict()
+      .optional(),
+    skill: z.string().min(1).optional(),
+    pattern: z.array(z.string().min(1)).optional(),
+    control: z.boolean().optional(),
+    /** Template outlet only (06 §5.6): generated-app test results per lane, and per mutant whether
+     * those tests caught it. */
+    template: z
+      .object({
+        lanes: z.array(z.object({ lane: z.string().min(1), passed: z.boolean() }).strict()),
+        mutants: z.array(z.object({ id: z.string().min(1), caught: z.boolean() }).strict()),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((g, ctx) => {
+    const issue = (path: string, message: string) =>
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+    if (g.hash !== contentHash(g as unknown as Record<string, unknown>, 'hash')) {
+      issue('hash', 'hash must be the sha256 of the canonical JSON of the rest');
+    }
+    if (!ascending(g.tasks.map((t) => t.id))) issue('tasks', 'tasks are sorted by id, unique');
+    for (const t of g.tasks) {
+      const order = MODE_ORDER.filter((m) => t.modes.includes(m));
+      if (order.length !== t.modes.length || order.some((m, i) => t.modes[i] !== m)) {
+        issue('tasks', `task ${t.id} modes are unique, in isolation, production order`);
+      }
+    }
+    const modes = MODE_ORDER.filter((m) => g.modes.includes(m));
+    if (modes.length !== g.modes.length || modes.some((m, i) => g.modes[i] !== m)) {
+      issue('modes', 'modes are unique, in isolation, production order');
+    }
+    if (
+      g.baselineRecords.length !== g.modes.length ||
+      g.candidateRecords.length !== g.modes.length
+    ) {
+      issue('baselineRecords', 'one baseline and one candidate record per evaluated mode');
+    }
+    if (g.acceptedSkillSetHash === g.candidateSkillSetHash) {
+      issue('candidateSkillSetHash', 'the candidate skill set equals the accepted one');
+    }
+    if (g.safetyFixTargets && !ascending(g.safetyFixTargets)) {
+      issue('safetyFixTargets', 'safetyFixTargets are sorted, unique');
+    }
+    if ((g.outlet === 'template') !== (g.template !== undefined)) {
+      issue('template', 'template results are required iff the outlet is "template"');
+    }
+  });
+
+export type GateInputRecord = z.infer<typeof GateInputRecordSchema>;
+
+/** Builds a gate input record with its content hash filled in. */
+export function sealGateInput(g: Omit<GateInputRecord, 'hash'>): GateInputRecord {
+  return { ...g, hash: contentHash(g as Record<string, unknown>, 'hash') };
 }
 
 export const BudgetSchema = z

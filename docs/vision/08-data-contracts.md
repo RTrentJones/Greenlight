@@ -480,10 +480,15 @@ type LedgerEvent = {
 };
 
 type Evidence =
-  | { kind: 'bench'; evaluationRecord: string;   // hash of the EvaluationRecord (§10.4)
-      results: GateResult[] }                    // one per model × mode
+  | { kind: 'bench';
+      gateInput?: string;            // hash of the GateInputRecord (§10.4); REQUIRED on candidate-* events,
+                                     // absent on release-check events
+      evaluationRecords: string[];   // every EvaluationRecord read, baseline and candidate, every mode, sorted
+      results: GateResult[] }        // one per model × mode
   | { kind: 'repro'; base: EvidenceRef; candidate: EvidenceRef; reproTask: string }  // fails on base, passes on candidate
-  | { kind: 'template'; evaluationRecord: string; lanes: string[]; mutantsFailed: number; mutantsTotal: number }
+  | { kind: 'template'; gateInput: string; evaluationRecords: string[];
+      results: GateResult[];         // the capability non-regression guard, one per model × mode
+      lanes: string[]; mutantsFailed: number; mutantsTotal: number }
   | { kind: 'artifact'; check: string; faulty: EvidenceRef; fixed: EvidenceRef }       // verify outlet
   | { kind: 'field'; check: string; before: EvidenceRef; after: EvidenceRef };        // verified-in-production
 
@@ -494,6 +499,31 @@ interface GateResult {
   decision: 'pass' | 'fail';                    // this model×mode under the policy table (06 §5.4)
 }
 ```
+
+`evaluationRecords` replaces the earlier single `evaluationRecord` (which named only the isolation
+candidate): a list keeps every record the decision read under the retention rule without
+dereferencing the gate input. The gate input names the same records by side and mode.
+
+**Stage machine (06 §6.1).** Per proposal, in time order (`ts` compared as instants, not strings;
+equal instants keep append order):
+
+| from | allowed next |
+|---|---|
+| start | `no-action`, `candidate-rejected`, `candidate-accepted` |
+| `candidate-accepted` | `merged`, `withdrawn` |
+| `merged` | `released`, `withdrawn`; for the `verify` outlet: `verified-in-production`, `withdrawn` |
+| `released` | `verified-in-production`, `withdrawn` |
+| `verified-in-production` | `withdrawn` |
+| `no-action`, `candidate-rejected`, `withdrawn` | nothing (final) |
+
+`released` means "in a published CLI version" (06 §6.1), so it follows `merged` exactly for the
+outlets a CLI release carries: `mechanism`, `doctor`, `template` and `skill`. The `verify` outlet's
+assertion lives in the wrapper's verify spec (06 §3.5) and has no CLI release, so it goes
+`merged → verified-in-production`, and `released` is refused for it. A history that names no
+outlet is treated as release-carried. A proposal's events name at most one outlet.
+`appendEvent` loads the ledger first and refuses, writing nothing, a duplicate `eventId`, a stage
+the machine does not allow, or a `ts` earlier than the proposal's latest event. LR-14 reports
+duplicate `eventId`s and every stage-machine violation in a committed ledger.
 
 `skill-impact.md` renders one row per proposal, newest first. The columns are date, proposal,
 skill or outlet, patterns, path, latest stage, and an evidence summary in which each model and mode
@@ -630,7 +660,7 @@ interface BaselineIdentity {
 
 Two evaluations are comparable iff all fields except `skillSetHash` are equal (06 §1.5).
 
-### 10.4 Evaluation record
+### 10.4 Evaluation record and gate input record
 
 ```ts
 interface EvaluationRecord {
@@ -638,6 +668,8 @@ interface EvaluationRecord {
   identity: BaselineIdentity;
   role: 'baseline' | 'candidate' | 'release-check' | 'train';
   proposalId?: string;
+  createdAt: string;                   // ISO; the gate refuses a baseline older than gate.json
+                                       // maxBaselineAgeDays (default 30) at its ts (06 §5.1)
   outcomes: {
     task: string; run: number; model: string; mode: 'isolation' | 'production';
     score: 0 | 1; graders: { kind: string; passed: boolean; detail?: string }[];
@@ -651,6 +683,49 @@ interface EvaluationRecord {
 Evaluation records are stored under `wiki/evidence/eval/<hash>.json`. They contain no grader source
 and no transcripts, only verdicts and raw ids. The raw records stay under `.greenlight/raw/` and
 are retained by the rule in §5.3.
+
+Each gate decision also stores a **gate input record** beside them, under the same convention. It
+holds every input of the decision other than the evaluation records' outcomes, so
+`bench gate --recompute <hash>` needs this record and the records it lists, and nothing else
+(06 §5.8):
+
+```ts
+interface GateInputRecord {
+  hash: string;                        // sha256 of the canonical JSON of the rest
+  kind: 'gate-input';
+  proposalId: string;
+  ts: string;                          // the ledger event's ts: seeds the eventId and the baseline-age check
+  outlet: 'skill' | 'template';
+  radius: 'high' | 'medium' | 'low';
+  path: 'standard' | 'safety-fix' | 'neutral';
+  seed: string;                        // the bootstrap seed used (default `gate:<proposalId>`)
+  config: { alpha: number; runs: number; resamples: number; acceptShorterOnTie: boolean;
+            maxBaselineAgeDays: number };   // bench/gate.json, defaults resolved
+  models: { frontier: string; small: string };
+  modes: ('isolation' | 'production')[];    // evaluated, in isolation, production order
+  modesDeclared: boolean;              // true for an explicit narrower posture (M1/M2 isolation only)
+  acceptedSkillSetHash: string;        // every baseline record carries it
+  candidateSkillSetHash: string;       // every candidate record carries it; ≠ accepted
+  tasks: { id: string; kind: TaskSpec['kind']; state: TaskSpec['state'];
+           modes: ('isolation' | 'production')[] }[];   // sorted by id, modes resolved
+  baselineRecords: string[];           // EvaluationRecord hashes, one per mode, in mode order
+  candidateRecords: string[];
+  safetyFixTargets?: string[];         // sorted; safety-fix path only
+  neutralReason?: string;
+  neutralPendingForSkill?: boolean;
+  skillLines?: { before: number; after: number };     // the 06 §5.5 tie-break
+  skill?: string; pattern?: string[]; control?: boolean;
+  template?: { lanes: { lane: string; passed: boolean }[];
+               mutants: { id: string; caught: boolean }[] };  // REQUIRED iff outlet is template
+}
+```
+
+The gate's identity rules over the record set (06 §1.5, §5.1): every baseline record carries
+`acceptedSkillSetHash` and every candidate record `candidateSkillSetHash`; all records agree on
+every `BaselineIdentity` field except `mode`, `wikiSnapshotHash` and `skillSetHash`; within one
+mode, baseline and candidate are comparable as above. A mode a gated task declares but that lacks
+a record on either side makes the evaluation invalid unless the caller declared a narrower
+`modes`.
 
 ### 10.5 Budget
 
