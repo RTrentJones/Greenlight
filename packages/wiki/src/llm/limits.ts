@@ -10,10 +10,15 @@ export interface DailyUsage {
 }
 
 /** Optional durable store for the daily count, so separate processes (or CI runs) on the same day
- * see one another's usage. The limiter loads once, lazily, and saves after every acquire. */
+ * see one another's usage. The limiter loads once, lazily, and saves after every acquire. A store
+ * that also implements `take` is the source of truth instead: every acquire re-reads and
+ * increments the shared count atomically, so concurrent processes cannot overspend the day. */
 export interface RateLimitPersistence {
   load(modelId: string): Promise<DailyUsage | null> | DailyUsage | null;
   save(modelId: string, usage: DailyUsage): Promise<void> | void;
+  /** Atomically counts one request for `day` if fewer than `rpd` are used, returning the new
+   * usage, or `null` (nothing counted) when the day is used up. */
+  take?(modelId: string, day: string, rpd: number): Promise<DailyUsage | null> | DailyUsage | null;
 }
 
 export class RateLimitExhaustedError extends Error {
@@ -106,6 +111,12 @@ export class RateLimiter {
   }
 
   private async acquireNow(): Promise<void> {
+    const shared = this.persistence?.take ? this.persistence : undefined;
+    if (shared) {
+      // Re-read the shared count every time: another process may have spent the day.
+      this.loaded = false;
+      this.usage = null;
+    }
     const u = await this.today();
     if (u.count >= this.rpd) throw new RateLimitExhaustedError(this.modelId, u.day, this.rpd);
     for (;;) {
@@ -115,9 +126,15 @@ export class RateLimiter {
       const oldest = this.window[0] as number;
       await this.sleep(60_000 - (t - oldest) + 1);
     }
+    if (shared?.take) {
+      const taken = await shared.take(this.modelId, u.day, this.rpd);
+      if (!taken) throw new RateLimitExhaustedError(this.modelId, u.day, this.rpd);
+      this.usage = taken;
+    } else {
+      u.count += 1;
+      await this.persistence?.save(this.modelId, { ...u });
+    }
     this.window.push(this.now());
-    u.count += 1;
-    await this.persistence?.save(this.modelId, { ...u });
   }
 }
 

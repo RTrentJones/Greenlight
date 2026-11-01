@@ -2,6 +2,6 @@
   "monthlyUsd": 0,
   "perGateMaxUsd": 0,
   "perGateMaxRollouts": 48,
-  "perGateMaxRequests": 480,
+  "perGateMaxRequests": 600,
   "splitAcrossDays": true
 }

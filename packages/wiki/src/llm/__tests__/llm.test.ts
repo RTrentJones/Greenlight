@@ -1,13 +1,18 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { findSecrets } from '@rtrentjones/greenlight-shared';
+import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { checkBudget, estimateGateCost, spendEvent } from '../../bench/budget';
 import { BudgetSchema, ModelsConfigSchema } from '../../schema';
 import {
+  FallbackDisabledError,
   GeminiClient,
   type GeminiClientOptions,
   GeminiHttpError,
   RedactionRefusedError,
+  outgoingTexts,
 } from '../gemini';
 import {
   BudgetExhaustedError,
@@ -16,6 +21,7 @@ import {
   RequestBudget,
 } from '../limits';
 import { checkModels, clientForRole, createLimiters } from '../models';
+import { FileQuotaStore, quotaFileName, seedQuotaFromLedger, usageFromLedger } from '../quota';
 import { type ReactTool, runReact } from '../react';
 
 // Vision 06 §4.8 / roadmap M1-05: the Greenlight harness on the Gemini free tier.
@@ -127,13 +133,33 @@ describe('bench config files', () => {
     ]);
     expect(m.temperature).toBe(0.2);
   });
-  it('bench/budget.json validates and is sized for 4 tasks × 3 runs × 2 models × 2 modes', () => {
+  it('bench/budget.json admits the first M2 gate (README-models.md arithmetic)', () => {
     const b = BudgetSchema.parse(budgetJson);
     expect(b.monthlyUsd).toBe(0);
     expect(b.perGateMaxUsd).toBe(0);
-    expect(b.perGateMaxRollouts).toBe(4 * 3 * 2 * 2);
-    expect(b.perGateMaxRequests).toBe(b.perGateMaxRollouts * 10);
     expect(b.splitAcrossDays).toBe(true);
+    // 4 val tasks × 3 runs × 2 models × 1 mode (isolation) × 2 (baseline re-run).
+    const estimate = estimateGateCost({
+      tasks: 4,
+      runs: 3,
+      models: 2,
+      modes: 1,
+      baselineRerun: true,
+      requestsPerRollout: 12.25,
+    });
+    expect(estimate).toEqual({ rollouts: 48, requests: 588, usd: 0 });
+    const check = checkBudget(b, estimate, [], '2026-11-01T00:00:00Z', {
+      dailyRequestsRemaining: 20,
+    });
+    expect(check.refusals).toEqual([]);
+    // Production mode (M3) doubles the rollouts and must raise the caps first.
+    const m3 = estimateGateCost({
+      ...{ tasks: 4, runs: 3, models: 2 },
+      modes: 2,
+      baselineRerun: true,
+      requestsPerRollout: 12.25,
+    });
+    expect(checkBudget(b, m3, [], '2026-11-01T00:00:00Z').ok).toBe(false);
   });
 });
 
@@ -176,6 +202,7 @@ describe('gemini client', () => {
     ]);
     expect(r.servedBy).toBe('small');
     expect(r.requested).toBe('big');
+    expect(r.endpoint).toBe('small');
     expect(r.fallbackUsed).toBe(true);
     expect(r.usage).toEqual({
       promptTokens: 3,
@@ -184,6 +211,56 @@ describe('gemini client', () => {
       totalTokens: 5,
     });
     expect(r.attempts.map((a) => a.status)).toEqual([503, 503, 'network', 429, 200]);
+  });
+
+  it('with fallback disabled, defers after the retries instead of calling the fallback', async () => {
+    const f = mockFetch([err(429), err(429), err(429), text('never')]);
+    const e = await client(f.impl, { allowFallback: false })
+      .generate({ contents: [{ role: 'user', parts: [{ text: 'q' }] }] })
+      .catch((x) => x);
+    expect(e).toBeInstanceOf(FallbackDisabledError);
+    expect(e).toBeInstanceOf(GeminiHttpError);
+    expect(e.transient).toBe(true);
+    expect(e.resumable).toBe(true);
+    expect(f.sent.map((s) => s.url.match(/models\/(\w+):/)?.[1])).toEqual(['big', 'big', 'big']);
+    // A per-call override wins over the client default.
+    const g = mockFetch([err(503), err(503), err(503), text('ok')]);
+    const r = await client(g.impl, { allowFallback: false }).generate({
+      contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+      allowFallback: true,
+    });
+    expect(r.fallbackUsed).toBe(true);
+  });
+
+  it('runReact reports a deferred rollout when fallback is disabled', async () => {
+    const f = mockFetch([err(503), err(503), err(503)]);
+    const r = await runReact({
+      ...base,
+      client: client(f.impl, { allowFallback: false }),
+      maxSteps: 3,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error?.kind).toBe('deferred');
+  });
+
+  it('servedBy is the API modelVersion when present (alias drift), keeping requested and endpoint', async () => {
+    const reply = text('ok');
+    (reply.body as Record<string, unknown>).modelVersion = 'big-002';
+    const f = mockFetch([reply, text('ok')]);
+    const r = await client(f.impl).generate({
+      contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+    });
+    expect(r).toMatchObject({
+      servedBy: 'big-002',
+      modelVersion: 'big-002',
+      requested: 'big',
+      endpoint: 'big',
+      fallbackUsed: false,
+    });
+    const r2 = await client(f.impl).generate({
+      contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+    });
+    expect(r2.servedBy).toBe('big');
   });
 
   it('fails a non-transient 4xx immediately: no retry, no fallback', async () => {
@@ -225,7 +302,7 @@ describe('gemini client', () => {
       })
       .catch((x) => x);
     expect(e).toBeInstanceOf(RedactionRefusedError);
-    expect(e.locations).toEqual(['contents[1].parts[0].functionResponse']);
+    expect(e.locations).toEqual(['contents[1].parts[0].functionResponse.response.result']);
     expect(e.message).not.toContain('ghp_abc');
     expect(f.sent).toHaveLength(0);
   });
@@ -495,5 +572,184 @@ describe('checkModels', () => {
   it('throws on an HTTP failure', async () => {
     const f = mockFetch([err(403)]);
     await expect(checkModels(config, f.impl, { env: {} })).rejects.toThrow(/HTTP 403/);
+  });
+});
+
+describe('outgoing scan covers every string leaf (9c)', () => {
+  const leak = `${'gh'}p_${'Ab3'.repeat(13)}`;
+  const req = (part: Record<string, unknown>) => ({
+    contents: [{ role: 'user' as const, parts: [{ text: 'clean' }, part] }],
+  });
+
+  it.each([
+    ['inlineData', { inlineData: { mimeType: 'text/plain', data: leak } }],
+    ['fileData', { fileData: { mimeType: 'text/plain', fileUri: `https://x.test/${leak}` } }],
+    ['executableCode', { executableCode: { language: 'PYTHON', code: `print("${leak}")` } }],
+    ['a nested unknown field', { futureField: { deep: [{ value: leak }] } }],
+    ['functionCall args', { functionCall: { name: 'write_file', args: { content: leak } } }],
+  ])('refuses a secret in %s, before any request', async (_n, part) => {
+    const f = mockFetch([text('never')]);
+    const e = await client(f.impl, { findSecrets: (t) => findSecrets(t) })
+      .generate(req(part))
+      .catch((x) => x);
+    expect(e).toBeInstanceOf(RedactionRefusedError);
+    expect(e.locations).toHaveLength(1);
+    expect(e.locations[0]).toMatch(/^contents\[0\]\.parts\[1\]\./);
+    expect(f.sent).toHaveLength(0);
+  });
+
+  it('scans a leaf with its key, so a key-name shape still fires', async () => {
+    const part = { functionCall: { name: 'x', args: { password: 'hunter2hunter2' } } };
+    expect(outgoingTexts(req(part)).map((t) => t.text)).toContain('password=hunter2hunter2');
+    const f = mockFetch([text('never')]);
+    const e = await client(f.impl, { findSecrets: (t) => findSecrets(t) })
+      .generate(req(part))
+      .catch((x) => x);
+    expect(e).toBeInstanceOf(RedactionRefusedError);
+  });
+
+  it('sends a clean replayed model turn, thought signature and vendored code included', async () => {
+    const f = mockFetch([text('ok')]);
+    const r = await client(f.impl, { findSecrets: (t) => findSecrets(t) }).generate({
+      contents: [
+        { role: 'user', parts: [{ text: 'read the worker' }] },
+        {
+          role: 'model',
+          parts: [{ text: 'ok', thoughtSignature: 'EqsBCqgBAWkUfRM8t2Fog6inh35Tk' }],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'read_file',
+                response: {
+                  result: 'headers = { apikey: t.anonKey, Authorization: `Bearer ${t.anonKey}` };',
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(r.text).toBe('ok');
+  });
+});
+
+describe('FileQuotaStore', () => {
+  const dirs: string[] = [];
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), 'gl-quota-'));
+    dirs.push(d);
+    return d;
+  };
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('persists the count in .greenlight/quota/<model>.json across limiters (processes)', async () => {
+    const root = tmp();
+    const t = Date.UTC(2026, 10, 1, 12);
+    const mk = () =>
+      new RateLimiter({
+        modelId: 'gemini-3.8-flash',
+        rpm: 100,
+        rpd: 3,
+        now: () => t,
+        persistence: new FileQuotaStore({ root }),
+      });
+    await mk().acquire();
+    await mk().acquire();
+    const file = join(root, '.greenlight/quota/gemini-3.8-flash.json');
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ day: '2026-11-01', count: 2 });
+    // Two limiters created before either spends: the shared count still stops at rpd.
+    const a = mk();
+    const b = mk();
+    expect(await a.remainingToday()).toBe(1);
+    expect(await b.remainingToday()).toBe(1);
+    const results = await Promise.allSettled([a.acquire(), b.acquire()]);
+    expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((x) => x.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(RateLimitExhaustedError);
+    expect(JSON.parse(readFileSync(file, 'utf8')).count).toBe(3);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+  });
+
+  it('starts a new day at zero and takes over a stale lock', () => {
+    const root = tmp();
+    let now = Date.now();
+    const s = new FileQuotaStore({ root, now: () => now, staleLockMs: 10 });
+    s.save('m', { day: '2026-10-31', count: 20 });
+    expect(s.take('m', '2026-11-01', 20)).toEqual({ day: '2026-11-01', count: 1 });
+    writeFileSync(`${s.path('m')}.lock`, '');
+    now += 60_000;
+    expect(s.take('m', '2026-11-01', 20)).toEqual({ day: '2026-11-01', count: 2 });
+    expect(s.take('m', '2026-11-01', 2)).toBeNull();
+  });
+
+  it('refuses a corrupt file rather than resetting the count', () => {
+    const root = tmp();
+    const s = new FileQuotaStore({ root });
+    s.save('m', { day: '2026-11-01', count: 1 });
+    writeFileSync(s.path('m'), '{oops');
+    expect(() => s.load('m')).toThrow(/not valid JSON/);
+  });
+
+  it('names files safely', () => {
+    expect(quotaFileName('models/gemini-3.8-flash')).toBe('models_gemini-3.8-flash.json');
+  });
+
+  it('seeds today from ledger spend events, never lowering a recorded count', () => {
+    const root = tmp();
+    const s = new FileQuotaStore({ root });
+    const spend = (ts: string, requests: number) =>
+      spendEvent({ ts, usd: 0, rollouts: 1, requests, tokensIn: 1, tokensOut: 1 });
+    // 2026-11-01 Pacific (PDT) runs from 07:00Z on 11-01 to 07:00Z on 11-02.
+    const events = [
+      spend('2026-11-01T06:59:00Z', 50), // still 2026-10-31 in Pacific time
+      spend('2026-11-01T08:00:00Z', 7),
+      spend('2026-11-02T06:00:00Z', 5),
+    ];
+    const ids = ['gemini-3.8-flash', 'gemini-3.6-flash'];
+    const now = new Date('2026-11-01T20:00:00Z');
+    expect(usageFromLedger(events, ids, { now }).get('gemini-3.6-flash')).toEqual({
+      day: '2026-11-01',
+      count: 12,
+    });
+    const attributed = usageFromLedger(events, ids, {
+      now,
+      modelOf: (e) => (e.spend?.requests === 7 ? 'gemini-3.8-flash' : undefined),
+    });
+    expect(attributed.get('gemini-3.8-flash')?.count).toBe(12);
+    expect(attributed.get('gemini-3.6-flash')?.count).toBe(5);
+    s.save('gemini-3.8-flash', { day: '2026-11-01', count: 15 });
+    const seeded = seedQuotaFromLedger(s, events, ids, { now });
+    expect(seeded.get('gemini-3.8-flash')?.count).toBe(15);
+    expect(seeded.get('gemini-3.6-flash')?.count).toBe(12);
+  });
+});
+
+describe('checkModels: methods and deprecation', () => {
+  const config = ModelsConfigSchema.parse(modelsJson);
+  it('treats a model with no listed methods as unusable and reports deprecated ones', async () => {
+    const f = mockFetch([
+      {
+        status: 200,
+        body: {
+          models: [
+            { name: 'models/gemini-3.8-flash' },
+            {
+              name: 'models/gemini-3.6-flash',
+              description: 'Deprecated: migrate to a newer Flash model.',
+              supportedGenerationMethods: ['generateContent'],
+            },
+          ],
+        },
+      },
+    ]);
+    const r = await checkModels(config, f.impl, { env: {} });
+    expect(r.ok).toBe(false);
+    expect(r.missing).toEqual(['gemini-3.8-flash']);
+    expect(r.deprecated).toEqual(['gemini-3.6-flash']);
   });
 });

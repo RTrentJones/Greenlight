@@ -68,10 +68,34 @@ export interface ModelsCheck {
   ok: boolean;
   /** Ids the config names (primaries and fallbacks). */
   checked: string[];
-  /** Named ids absent from `models.list` or lacking `generateContent`. */
+  /** Named ids absent from `models.list`, listing no generation methods, or lacking
+   * `generateContent`. */
   missing: string[];
+  /** Named ids the API marks deprecated: still usable today, so `ok` is unaffected, but the gate
+   * pair should move before the model is retired (a retired id re-baselines everything). */
+  deprecated: string[];
   /** Every id `models.list` returned that supports `generateContent`. */
   available: string[];
+}
+
+interface ListedModel {
+  name: string;
+  displayName?: string;
+  description?: string;
+  supportedGenerationMethods?: string[];
+  deprecated?: boolean;
+  state?: string;
+  deprecationTime?: string;
+  deprecationDate?: string;
+}
+
+/** True when the listing marks the model deprecated: an explicit flag or state, a deprecation
+ * date, or "deprecated" in its display name or description (where Gemini announces it). */
+export function isDeprecated(m: ListedModel): boolean {
+  if (m.deprecated === true) return true;
+  if (typeof m.state === 'string' && /deprecat|retir/i.test(m.state)) return true;
+  if (m.deprecationTime || m.deprecationDate) return true;
+  return /\bdeprecated\b/i.test(`${m.displayName ?? ''} ${m.description ?? ''}`);
 }
 
 /** `bench models --check`: lists the provider's models and fails on any configured id that is not
@@ -83,6 +107,7 @@ export async function checkModels(
 ): Promise<ModelsCheck> {
   const env = opts.env ?? process.env;
   const available = new Set<string>();
+  const deprecatedIds = new Set<string>();
   let pageToken: string | undefined;
   for (let page = 0; page < 50; page++) {
     const q = new URLSearchParams({ pageSize: '1000' });
@@ -91,14 +116,13 @@ export async function checkModels(
       headers: geminiHeaders(config.keyEnv, env),
     });
     if (!res.ok) throw new Error(`models.list failed: HTTP ${res.status}`);
-    const data = (await res.json()) as {
-      models?: { name: string; supportedGenerationMethods?: string[] }[];
-      nextPageToken?: string;
-    };
+    const data = (await res.json()) as { models?: ListedModel[]; nextPageToken?: string };
     for (const m of data.models ?? []) {
-      const methods = m.supportedGenerationMethods;
-      if (methods && !methods.includes('generateContent')) continue;
-      available.add(m.name.replace(/^models\//, ''));
+      // A model that lists no methods cannot be shown to serve generateContent: unusable.
+      if (!m.supportedGenerationMethods?.includes('generateContent')) continue;
+      const id = m.name.replace(/^models\//, '');
+      available.add(id);
+      if (isDeprecated(m)) deprecatedIds.add(id);
     }
     pageToken = data.nextPageToken || undefined;
     if (!pageToken) break;
@@ -107,5 +131,12 @@ export async function checkModels(
     ...new Set(entries(config).flatMap((e) => [e.id, e.fallback].filter(Boolean) as string[])),
   ];
   const missing = checked.filter((id) => !available.has(id));
-  return { ok: missing.length === 0, checked, missing, available: [...available].sort() };
+  const deprecated = checked.filter((id) => deprecatedIds.has(id));
+  return {
+    ok: missing.length === 0,
+    checked,
+    missing,
+    deprecated,
+    available: [...available].sort(),
+  };
 }
