@@ -47,7 +47,7 @@ The loop this plan builds, from the user's side:
 8. The user says "ship it". Only then does promotion run: verify beta at the pinned sha,
    fast-forward, then ship prod. The agent can prepare a release but cannot perform one on its own
    initiative.
-9. Months later, Codex is asked to add a feature. It reads the project wiki, sees the intent, the
+9. Months later, an agent in a fresh session (eventually Codex too) is asked to add a feature. It reads the project wiki, sees the intent, the
    liveness model and the past incidents, and goes through the same gates.
 
 The user never has to read Terraform, YAML or a token, but nothing is hidden from them.
@@ -58,7 +58,7 @@ The user never has to read Terraform, YAML or a token, but nothing is hidden fro
 
 Each manifest tool gets `wiki/<tool>/` in the **wrapper**. The wrapper is the portfolio's home, and
 it already owns each tool's verify config and infra. Tool repos get a generated pointer in their
-`AGENTS.md`/`CLAUDE.md`, so an agent working inside a submodule finds the wiki.
+`CLAUDE.md` (and `AGENTS.md` once Phase 7 lands), so an agent working inside a submodule finds the wiki.
 
 | page | holds | today it lives in |
 |---|---|---|
@@ -119,21 +119,27 @@ projects into the main risks at twenty.
   `greenlight retire <name>` removes the manifest entry, archives `wiki/<tool>/`, and lets
   `infra.yml` destroy the resources through the existing destroy guard with manual approval.
 
-## Agent neutrality: Claude and Codex
+## Agent neutrality: Claude first, Codex as the stretch
 
-Today Greenlight is Claude-only. Skills live in `.claude/skills` plus the plugin, and `agent sync`
-writes a CLAUDE.md block. Codex reads `AGENTS.md` and repo skills in `.agents/skills`. It uses the
-same SKILL.md standard, with `name` and `description` frontmatter and progressive loading.
+Claude Code is the target for Phases 0–6. Codex support is a stretch goal (Phase 7). The earlier
+phases must not close it off, so they follow three constraints that cost almost nothing now.
 
-- `agent sync` writes both `.claude/skills/` and `.agents/skills/` from one source, plus matching
-  `CLAUDE.md` and `AGENTS.md` blocks. A `check-agent-sync` guard keeps the copies identical, the
-  same way `check-plugin-sync` does today.
-- Anything an agent needs to *query* is a CLI command, never a vendor feature: `accounts`,
-  `portfolio`, `wiki lookup`, `status` and `verify`. Any agent that reads command output can then
-  use it.
-- Codex cloud removes secrets before the agent phase starts. A Codex cloud task therefore relies on
-  CI's `ship` for authenticated verification, or on the credential proxy (design §11). The skills
-  say this explicitly instead of letting the agent discover it.
+**Constraints that apply from Phase 0:**
+- **Portable skills.** Skills use only the shared SKILL.md standard: `name` and `description`
+  frontmatter, then a markdown body, with no Claude-only frontmatter or tool names doing real work.
+  A Claude-specific hint is allowed only if a skill still works when an agent ignores it.
+- **The CLI is the interface.** Anything an agent needs to *query* is a CLI command, never a vendor
+  feature: `accounts`, `portfolio`, `wiki lookup`, `status` and `verify`. Any agent that reads
+  command output can then use it.
+- **Mechanism over instruction.** Gates live in CI and the CLI: promotion approval, SHA gating and
+  the credential proxy. They then hold whichever agent pushes.
+
+**What Phase 7 adds, for reference.**
+- Codex reads `AGENTS.md` and repo skills in `.agents/skills`, using the same SKILL.md standard.
+  `agent sync` would write both skill trees and both instruction blocks from one source.
+- A `check-agent-sync` guard would keep the copies identical, as `check-plugin-sync` does today.
+- Codex cloud removes secrets before the agent phase starts. Codex tasks would therefore rely on
+  CI's `ship` or the credential proxy for authenticated verification, and the skills would say so.
 
 ## Other software, not just web apps
 
@@ -155,15 +161,15 @@ scheduled agents. Vibe-coded software also includes bots, APIs, CLIs and librari
 
 Each phase has a test that shows it is done.
 
-**Phase 0: memory and Codex parity.**
+**Phase 0: memory.**
 - Define the project-wiki schema and write `wiki/<tool>/` for all six live tools from the material
   that already exists: verify-config comments, manifest comments, blog posts, issues #55 and #86.
 - Seed the framework wiki with free-tier `fact` pages, including quotas, and with patterns from the
   incident corpus.
-- Make `agent sync` write `.agents/skills` and `AGENTS.md`.
-- *Done when* Codex, given only the wrapper and the request "add a check that BAMCP's demo BAM still
-  loads", makes the change and gets a green `preview` without being told anything the wiki does not
-  say. The same drill is repeated with Claude on a different tool.
+- Write the skills to the portability constraints above.
+- *Done when* a fresh Claude session, given only the wrapper and the request "add a check that
+  BAMCP's demo BAM still loads", makes the change and gets a green `preview` without being told
+  anything the wiki does not say.
 
 **Phase 1: the contract in templates.**
 - Put `/__version`, the split between `/health/live` and `/health`, and the marking of
@@ -216,6 +222,13 @@ Each phase has a test that shows it is done.
   lexicographic gate, a two-model gate and the remediation ledger (design §5).
 - Start this phase only if Phases 0–5 have been running long enough that the first-pass gate rate,
   rather than missing features, limits the portfolio.
+
+**Phase 7 (stretch): Codex parity.**
+- Make `agent sync` write `.agents/skills/` and `AGENTS.md` alongside the Claude copies.
+- Add the `check-agent-sync` guard.
+- Document the Codex cloud secrets path, which runs through CI `ship` or the proxy.
+- *Done when* the Phase 0 drill passes with Codex on a different tool, and the Phase 2 drill passes
+  with Codex driving.
 
 ## How we know it is working
 

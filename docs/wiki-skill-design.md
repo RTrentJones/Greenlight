@@ -11,8 +11,9 @@ Greenlight's vision is a managed portfolio. It keeps projects alive, it lets Cla
 them, it verifies each change in beta, and it leaves release under the owner's control. This
 extension lets someone vibe code new projects onto the free tiers they have set up. The
 [plan](plan-wiki-skill.md) ranks the work against that vision. The project wiki (handoff memory),
-the vibe-code flow, portfolio operations and agent neutrality come first. The paper-derived
-evolution loop in section 5 is optional and comes last.
+the vibe-code flow and portfolio operations come first, built for Claude Code. Codex parity is a
+stretch goal, kept possible by portable skills and a CLI-first interface. The paper-derived
+evolution loop in section 5 is optional.
 
 This document remains the reasoning behind each mechanism. Read section 5 as the design for that
 optional phase, not as the centre of the work.
