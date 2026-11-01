@@ -1355,7 +1355,8 @@ probe: /mcp/health/live   # TODO: confirm BAMCP serves this; today the keepalive
 quotas: [fact/oci-always-free#a1-ocpus, fact/oci-always-free#a1-memory]
 ---
 Keepalive probes the app, never anything deeper. On failure, `greenlight-remediate-bamcp.yml`
-re-applies infra and redeploys. Never imply the harness prevents reclaim; it detects and heals.
+re-applies infra and redeploys the last owner-approved image digest, never a newer unapproved
+build (18-release-authority). Never imply the harness prevents reclaim; it detects and heals.
 ```
 
 ### 6.4 `wiki/tools/tracer/…`

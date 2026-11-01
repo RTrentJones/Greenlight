@@ -5,10 +5,25 @@
 arXiv:2608.27454v1 (cs.AI, cross-listed cs.CL), 27 August 2026, CC BY 4.0. The authors are at
 Google Research, and Tu Vu is also at Virginia Tech.
 
-The full HTML text is at https://arxiv.org/html/2608.27454v1. This summary was taken from the
-abstract page and the HTML. The PDF returned no extractable text. The prompt details in Appendix E
-and the steps of Algorithm 1 come from a model-extracted reading of the HTML, so they are
-paraphrases rather than quotations.
+The full HTML text is at https://arxiv.org/html/2608.27454v1.
+
+> **Limitation: read this before relying on anything in §1.**
+>
+> - **How this summary was produced.** It comes from a model-extracted reading of the abstract page
+>   and the HTML. The PDF returned no extractable text. The prompt details in Appendix E and the
+>   steps of Algorithm 1 are paraphrases, not quotations, and the reference list was not read.
+> - **The review could not check it.** The owner's independent review of this pack could not
+>   retrieve the paper at all, because both the PDF and the HTML were blocked in that environment.
+>   Its fidelity to the original is therefore **unverified**.
+> - **What follows from that.** Treat the paper's research claims, and every vendor product
+>   availability statement elsewhere in this pack, as evidence to check. None of them is a
+>   prerequisite that dictates Greenlight's architecture.
+>   - Each mechanism Greenlight adopts is justified by Greenlight's own incidents and evaluated by
+>     its own gate (06).
+>   - The paper is the source of the method's shape: raw layer, wiki, maintainer, proposer, gate and
+>     ledger. It is not the source of any guarantee.
+> - **Required before M2.** The numbers in §1.6 MUST be checked against the paper before they are
+>   quoted outside this repo, and this note updated with the result.
 
 ## 1. Summary
 
@@ -160,20 +175,29 @@ The other findings:
 |---|---|---|
 | raw layer, immutable traces | `RawRecord` in `.greenlight/raw/`, plus Tracer (08 §5) | **By reference.** Greenlight's evidence lives in GitHub issues, PRs, CI runs and Tracer, and accumulates over weeks. Records hold pinned refs and a redacted 15k excerpt instead of full traces (ADR-08). |
 | one trace = one task rollout | three time scales joined on `(tool, gitSha)`: build, deploy, run | Incidents span weeks. The keepalive incident ran from July to October across releases. |
-| `wiki/patterns`, 10–30 lines | `pattern` pages with the same length rule | **Extra fields:** `atRisk`, `probed`, `catches`, `applies`, `status`. The dominant real failure is a check that measures the wrong layer (15 §2), and version-specific fixes need scoping. |
+| `wiki/patterns`, 10–30 lines | `pattern` pages with the same length rule | **Extra fields:** `atRisk`, `probed`, `catches`, `affects`, `relevance`, `status`. The dominant real failure is a check that measures the wrong layer (15 §2). Version-specific fixes need scoping, and `relevance` keeps app-level lessons visible after the framework defect is fixed. |
 | one page type | eight page types, including `fact`, `decision`, `incident`, `contract`, `intent`, `liveness` | Greenlight's existing knowledge already comes in these shapes. Forcing them into one type would bloat patterns. |
 | `index.md`, `logs.md` | same, generated and validated (08 §4) | The index is sharded by cell past 60 lines (LR-09), an answer to the growth concern. |
 | `skill-impact.md`, harness-written | `ledger.jsonl` rendered to `skill-impact.md`, harness-only (LR-14) | **Generalized into a remediation ledger** with an `outlet` column, because many fixes are not skill text (ADR-01). |
 | `PURPOSE.md` maps skill → patterns | `PURPOSE.md` with `cites[]` and the rule text, plus `blast-radius`, `hooks`, `bench-slice` | Lint verifies citations, back-links and coverage (LR-11 to LR-13). |
 | skills evolve from an empty set | existing hand-written skills are the starting point | Greenlight already has ten skills encoding real lessons, so starting empty would discard them. |
 | outlet: create or patch a skill | five ranked outlets: mechanism, doctor, template, verify, skill | Greenlight's history shows that lessons enforced by code persist and instructions do not (ADR-01). |
-| inference agent without wiki access | no wiki during bench rollouts; in normal use, only `confirmed` patterns, and only after a gate fails (ADR-10) | The ablation concerned trace informativeness during evolution. In production the goal is solving the owner's problem, so access is limited by timing and status. |
+| inference agent without wiki access | **two evaluation modes**: isolation (wiki off) for training rollouts and skill attribution, and production (hooks on, pinned wiki snapshot) for the shipped workflow (06 §4.7); in normal use, only `confirmed` patterns, and only after a gate fails (ADR-10) | The ablation concerned trace informativeness during evolution, which isolation mode preserves. The product ships with hooks, so the gate must also check the product as shipped. |
+| training traces from rollouts under the current skills | `bench run --split train` under the accepted skill set, regenerated whenever the baseline identity changes and after every merged skill or template change; field records are added as training evidence (06 §1.3) | The earlier draft sampled only existing records, which drift away from the skills being evolved. |
+| train / validation / test splits | visibility enforced by mechanism: proposers see train traces and an aggregate val score only; graders, mutants, val/test transcripts are never in a bundle; the proposer runs in a sandbox without a repo checkout (06 §1.4) | Validation is reused across proposals, so leakage would turn the gate into an optimization target. |
+| task success graded on the final answer | **behaviour graders** per skill: `app`, `trajectory` (action order from trusted shims), `maintainer`, `routing`, `repro` (06 §4.6), graded in a separate container after the rollout's process tree is killed | A final app passes whether or not the agent previewed before pushing; delivery skills are about order, not only outcome. |
+| one acceptance rule | **acceptance by outlet** (06 §5.6): rollouts for skills, generated-app tests for templates, failing-then-passing reproductions for mechanism and doctor, faulty-artifact rejection for verify | A proven framework fix should not need an unrelated capability gain, and a unit test cannot show that instructions change agent behaviour. |
+| accept / reject | **ledger stages** recorded separately: `no-action`, `candidate-rejected`, `candidate-accepted`, `merged`, `released`, `verified-in-production`, `withdrawn` (06 §6.1) | A measured candidate is not a shipped fix, and a shipped fix is not a resolved incident. |
+| strict improvement rejects neutral proposals (stated limitation) | **safety-fix** and **neutral-prerequisite** paths, both human-reviewed and labelled, replacing efficacy and never safety (06 §5.4) | Replay-only fixes and security repairs must be acceptable when capability is unchanged or saturated. |
+| test split reported at the end | **release check** on the held-out test split before any release carrying skill or template changes, and deliberate test-set rotation (06 §4.1, §5.7) | Repeated validation reuse makes val p-values optimistic. |
+| evaluation of a fixed setup | content-addressed `BaselineIdentity` and `EvaluationRecord` (06 §1.5, §5.8) | Any change to tasks, graders, dependencies, harness, agent, model, mode or wiki snapshot invalidates the baseline. Decisions are recomputable from stored per-task, per-run outcomes. |
+| evolution as a research loop | **the method that drives Greenlight's own improvements from the first milestone** (06 §0, ADR-14); a valid iteration that ends in rejection or `no_action` counts as success | Bringing the cycle forward prevents the roadmap from designing every improvement before the method that is meant to choose them exists. |
 | Wiki Maintainer JSON | `MaintainerOutput` with `create_pages` / `update_pages` (08 §9.1) | Generalized from patterns to all page types. The same exact-substring patch ops are kept, with atomic rejection. |
 | Skill Proposer, `finish()` | `ProposerOutput` with `create` / `patch` / `issue` / `no_action` (08 §9.2) | The `issue` action routes mechanism, doctor and verify outlets to human-reviewed PRs. |
 | validation benchmark | bench of capability briefs plus **replay tasks** from confirmed incidents (06 §4) | Greenlight has no external benchmark, so it builds one from its own failures. |
 | graders trusted | every grader must fail on its known-bad mutants (06 §4.3) | The dominant failure class, a check that passes for the wrong reason, applies to graders too. |
-| strict improvement gate | **lexicographic gate**: no replay regression, then strict improvement; two models (ADR-11) | Prevents a capability gain from reintroducing a known incident. The two models answer the negative-transfer finding. |
+| strict improvement gate | **lexicographic gate**: replay safety on both models at every blast radius, then strict improvement in isolation mode, then production-mode non-regression; one policy table (06 §5.4, ADR-11) | Prevents a capability gain from reintroducing a known incident. The two models answer the negative-transfer finding. |
 | skills injected in full | progressive disclosure through the agent's skill routing, plus `wiki lookup` keyed by failing check id | An answer to the paper's open retrieval question that needs no semantic search. |
-| no pruning | `applies` ranges, archival rules and fact expiry (04 §8) | The paper names this as missing. |
+| no pruning | `affects`/`relevance` scoping, archival rules and fact expiry (04 §8) | The paper names this as missing. |
 | single operator, offline | offline batch evolution in the framework repo; project wikis grow online through skills' hooks | Project knowledge such as intent and liveness must be written as work happens, not compiled later. |
 | one model family per run | ledger records models; monthly re-run on current defaults | Default models change under the skills. Muse's Gemini default has already rotated. |

@@ -24,7 +24,10 @@ From `packages/shared/src/schema.ts`: `ConfigSchema = { domain (required), alert
 ```ts
 // ConfigSchema
 domain?: string;                 // CHANGED: optional (no-domain mode, FR-KICK-04)
-cloudflareAccountSubdomain?: string; // NEW: "<sub>" for <name>.<sub>.workers.dev when domain is absent
+cloudflare?: {                   // NEW: two free accounts, because Workers script permission is account-wide (18)
+  prod: { accountSubdomain?: string };   // "<sub>" for <name>.<sub>.workers.dev when domain is absent
+  beta: { accountSubdomain: string };    // REQUIRED when any tool targets workers: beta always runs in this account
+};
 promotion?: PromotionPolicy;     // NEW: portfolio default, overridable per tool (default 'human')
 
 // ToolSchema
@@ -52,7 +55,10 @@ interface Liveness {
 **Validation rules**, added to `superRefine`:
 
 - When `domain` is absent, every tool's target MUST be `workers` or `vercel`.
-  `cloudflareAccountSubdomain` MUST be set when any tool targets `workers`.
+  `cloudflare.prod.accountSubdomain` MUST be set when domain is absent and any tool targets
+  `workers`. `cloudflare.beta.accountSubdomain` MUST be set whenever any tool targets `workers`,
+  with or without a domain, because beta always runs in the separate beta account (18). The
+  account ids themselves are repo variables, not manifest fields.
 - `liveness.model` MUST be consistent with `data` and `target`:
   - `needs-traffic` requires `data: 'supabase'`;
   - `needs-silence` requires `data: 'neon'`, or a store wired directly in infra, which is flagged
@@ -74,14 +80,17 @@ interface Liveness {
 
 | env | domain set (current) | domain absent (new) |
 |---|---|---|
-| prod, workers | `https://<name>.<domain>` | `https://<name>.<sub>.workers.dev` |
-| beta, workers | `https://beta.<name>.<domain>` | `https://<name>-beta.<sub>.workers.dev` |
+| prod, workers | `https://<name>.<domain>` | `https://<name>.<prodSub>.workers.dev` |
+| beta, workers | `https://<name>.<betaSub>.workers.dev` (beta account; a `beta.<name>.<domain>` custom domain is not available because the zone lives in the prod account) | `https://<name>.<betaSub>.workers.dev` |
 | prod, vercel | `https://<name>.<domain>` | `https://<vercelProject>.vercel.app` (from adapter) |
 | beta, vercel | `https://beta.<name>.<domain>` | adapter-supplied branch alias for `develop` |
-| blog | apex / `beta.` apex | `https://blog.<sub>.workers.dev` / `https://blog-beta.<sub>.workers.dev` |
+| blog | apex / `https://blog.<betaSub>.workers.dev` | `https://blog.<prodSub>.workers.dev` / `https://blog.<betaSub>.workers.dev` |
 
-On Workers, beta is a separate Worker named `<name>-beta`, not a version alias. This keeps URLs
-deterministic, which is the property `resolveUrl` exists to guarantee.
+On Workers, beta is a Worker of the same name in the **beta account**, not a version alias and not
+a second script in the prod account. This keeps URLs deterministic, which is the property
+`resolveUrl` exists to guarantee, and it keeps beta credentials unable to touch prod scripts (18).
+This changes the current scheme, which serves beta at `beta.<name>.<domain>`. Existing wrappers
+migrate by M5, and until then DR-34 reports the shared-account beta as a blocking gap.
 
 ## 2. Skill files
 
@@ -415,6 +424,10 @@ config is computed by calling the default export once for each context: `{previe
 compares `meta.invariant` against the intersection of those three sets. Configs are already
 executed by `verify`, so no static analysis is needed. A config that throws for one context counts
 as zero coverage for that context.
+
+`VerifyReport` gains `coverage?: { invariant: string[]; byEnv: Record<'preview'|'beta'|'prod', string[]>;
+missing: { env: string; id: string }[] }`, filled when the config exports `meta`. It is carried into
+the `--json` export as `gl.coverage`.
 
 ## 7. Stage events (change to `packages/loop/src/ship.ts`)
 
@@ -792,3 +805,25 @@ The trust model is declared rather than inferred. `isolated` is valid only when 
 environment that holds no operator credentials and whose egress is enforced to the proxy. `doctor`
 can verify part of that (DR-31), and the rest is the owner's statement, recorded in the manifest
 ([18](18-release-authority.md)).
+
+## 14. Adapter contract changes (`packages/adapters`)
+
+These are the changes 09 §6 needs for server-rendered Astro on Workers, and that 18 needs for
+protected releases.
+
+```ts
+interface BuildResult {            // existing: { outDir, ... }
+  outDir: string;
+  serverEntry?: string;            // NEW: path of the Worker entry when the build is not purely static (Astro + @astrojs/cloudflare)
+  artifact: { sha: string; contentHash: string };   // NEW: written to dist/greenlight-artifact.json, read at deploy
+}
+interface DeployResult {           // existing fields kept
+  artifactId: string;              // NEW: Worker version id | image digest | Vercel deployment id (08 §5.1)
+  account: 'beta' | 'prod';        // NEW: which Cloudflare account (workers target)
+}
+```
+
+`deploy(toolDir, 'prod')` MUST refuse unless the process holds a release authorization, the
+`GREENLIGHT_RELEASE_AUTHORIZED` value defined in 18. It MUST also refuse unless the artifact's
+`sha` equals the authorized sha. The refusal is a defence in depth. The boundary itself is that
+only the protected job holds prod credentials (18).

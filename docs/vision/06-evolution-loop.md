@@ -768,8 +768,10 @@ manages. That layer depends on the tool's liveness model (`needs-traffic` versus
 ### 10.1 Inputs
 
 - **Incidents.** The incident pages for both (15 §7), each with evidence refs.
-- **Wiki state.** Only the hypothesis pages `keepalive-probe-misses-postgres`, `neon-never-sleeps`
-  and `probe-touches-wrong-layer` (15 §2). The maintainer must reconcile them.
+- **Wiki state.** The confirmed page `keepalive-probe-misses-postgres` (its 0.9 deployment was
+  verified by hash) and the hypothesis pages `neon-never-sleeps` and `probe-touches-wrong-layer`
+  (15 §2, §8). The maintainer must reconcile the confirmed Supabase lesson with the unconfirmed Neon
+  one without overgeneralizing either.
 - **Tasks:**
   - `replay/keepalive-probe-reaches-store`, a runtime app grader. A fake Supabase-shaped store
     resets its idle timer only on a real table query. The task asks the agent to add a keepalive
