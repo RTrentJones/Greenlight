@@ -1,9 +1,38 @@
 # 06 — The evolution loop
 
 The evolution loop improves managed skills (05) and routes lessons to stronger mechanisms. It is
-adapted from WikiSkill (arXiv:2608.27454, [17](17-appendix-wikiskill.md)). It is built in P6, and
-P5 builds its first half: raw capture, the maintainer and lookup. It is distinct from **the loop**,
-deploy-verify-promote, which is one of the skills it improves.
+adapted from WikiSkill (arXiv:2608.27454, [17](17-appendix-wikiskill.md)). It is distinct from **the
+loop**, deploy-verify-promote, which is one of the skills it improves.
+
+## 0. The method that drives every improvement
+
+WikiSkill is how Greenlight decides what to change, from the first milestone onward (ADR-14). It is
+not a feature added at the end. A small but complete cycle is the first working milestone, **M2** (14). M0 closes the contracts it
+needs, and M1 bootstraps the wiki and the fixtures. Every later
+roadmap item enters through the same cycle:
+
+```
+evidence → maintainer updates the wiki → proposer picks one change and its outlet
+        → outlet-specific evaluation (§5.6) → ledger → human review → merge / release / verify in production
+```
+
+The roadmap's later phases are the most likely outlets for what the cycle finds, but they are
+not a script the cycle must follow. A phase item is started when a confirmed pattern needs it.
+A cycle can also show that an item is unnecessary.
+
+**Every outcome of a valid iteration counts as a successful iteration.** An iteration has
+succeeded when all four of the following hold:
+
+1. **A validated maintainer output exists.** It may legitimately make no page changes, and it then
+   says why in `append_log`.
+2. **A validated proposal exists**, including `no_action` with a reason.
+3. **The proposal was evaluated by its outlet's acceptance rule.**
+4. **A human has reviewed the ledger row.**
+
+A justified rejection, or a justified `no_action`, is as valuable as an acceptance. Rejected
+proposals become the rejection history the next proposer reads first. No exit criterion, metric or
+review may require an accepted proposal (ADR-14), because that creates pressure to manufacture
+improvements.
 
 ## 1. Overview
 
@@ -11,10 +40,11 @@ deploy-verify-promote, which is one of the skills it improves.
 
 | role | who | sees | produces |
 |---|---|---|---|
-| **inference agent** | any agent using a managed skill, in the field or in a bench rollout | skills; in the field, hook output (05 §3); in bench rollouts, skills only | raw records, through the CLI |
+| **inference agent** | any agent using a managed skill, in the field or in a bench rollout | skills; hook output in the field and in production-mode rollouts (05 §3); skills only in isolation-mode rollouts (§4.7) | raw records and a trajectory (§4.6), through the CLI |
 | **maintainer** | an agent running `greenlight-wiki` §5.5.1 | the full wiki (including incidents and hypotheses), a raw sample, and incident evidence | `MaintainerOutput` (08 §9.1) |
-| **proposer** | an agent running `greenlight-wiki` §5.5.2 | the index, `skill-impact.md`, an outcome summary, and read-only access to pages, raw records and skills | `ProposerOutput` (08 §9.2) |
-| **gate** | `greenlight bench gate`, which is code, not an agent | bench results | the accept/reject decision, the ledger row and the version bump |
+| **proposer** | an agent running `greenlight-wiki` §5.5.2, in a sandbox holding only its bundle (§1.4) | the index, `skill-impact.md`, the **training** outcome summary, the **aggregate** validation score, and read-only access to pages, training raw records and skills | `ProposerOutput` (08 §9.2) |
+| **evaluator** | `greenlight bench gate` and `wiki remediate`, which are code, not agents | evaluation results for the proposal's outlet (§5.6) | the candidate decision, the ledger events and, on merge, the version bump |
+| **reviewer** | the owner | the ledger row, the diff or issue, the evidence | merge, release, or a recorded rejection |
 
 ### 1.2 Departures from the paper
 
@@ -24,30 +54,96 @@ deploy-verify-promote, which is one of the skills it improves.
 | benchmark given | bench built from incidents (replay) plus capability briefs | no external benchmark exists for "build a self-verifying app" |
 | graders trusted | every grader must fail on its mutants (§4.3) | the dominant failure class is a check that lies |
 | strict improvement | lexicographic: replay first, then strict improvement on both models (§5) | an average can rise while a known incident returns; skills transfer badly across models |
+| one acceptance rule (validation score) | one cycle, with an acceptance rule per outlet (§5.6) | a framework fix should not need an unrelated rise in app-building success, and a unit test cannot show that prose changes agent behaviour |
+| the task outcome is the score | graders observe the evidence the skill is responsible for (§4.6): app behaviour, action order, maintainer output, routing, or a trusted reproduction | an app can pass whether or not the agent ran the local gate first |
+| the inference agent is denied the wiki during evolution | two evaluation modes: isolation (wiki off) attributes effects to skills; production (hooks on) checks the shipped workflow (§4.7) | the paper's ablation supports isolation, but the product ships with hooks |
 | evolution per iteration over a training batch | maintainer per incident or per batch; proposer on demand | evidence arrives over weeks (03 §5) |
 | traces are task rollouts | raw records by reference (ADR-08) | most evidence lives in GitHub, CI and Tracer |
 
 ### 1.3 Algorithm
 
 ```
-procedure EVOLVE(skillScope, budget):
-  # maintenance (P5) — may run without the rest
-  B ← maintainerBundle(wiki, sampleRaw(fail ≤5, pass ≤3), incidents?)       # §2.1, §3.2
-  M ← maintainer(B)                                                          # §2.2 prompt
-  validate(M); applyAtomically(M); lint(wiki)                                # §2.3–2.4
-  # proposal (P6)
-  R_best ← lastAcceptedScore(skillScope)                                     # from ledger, else baseline run
-  if R_best.capability == 1.0 and R_best.replayAllPass: return               # paper's early stop
-  P ← proposer(index, skillImpact, outcomeSummary, readOnlyTools)            # §3.3 prompt
-  validate(P)
-  switch P.action:
-    no_action → appendLog(reason); return
-    issue     → openIssue(P); ledger(pending-human); return                  # outlets 1,2,4
-    create|patch → S' ← applyToBranch(P)
-                   G ← gate(S', models=[frontier, small], split=val, runs=3) # §5
-                   ledger(G); if G.accept: bumpVersion(S'); keepBranch else discard S'
-  # the wiki is never rolled back regardless of the outcome (paper)
+procedure ITERATE(scope, budget):
+  S  ← acceptedSkillSet(scope)                      # pinned by skillSetHash (§1.5)
+  id ← baselineIdentity(S)                           # §1.5
+
+  # 1. Training evidence, generated under the currently accepted skills.
+  T ← cachedTrainRollouts(id)
+  if T is empty or stale(T, id):                     # stale = any identity component differs
+      T ← rollouts(tasks(split=train, scope), S, models, runs=1, mode=isolation)   # §4.2
+  T ← T ∪ fieldRaw(scope)                            # field evidence is training evidence only
+
+  # 2. Maintain.
+  B ← maintainerBundle(wiki, sample(T, fail ≤5, pass ≤3), incidents?)   # §2.1, §3.2 — never val/test
+  M ← maintainer(B); validate(M); applyAtomically(M); lint(wiki)         # §2.2–2.4
+
+  # 3. Propose.
+  R ← baseline(id, split=val)                        # per model, per mode; re-run if id changed (§5.1)
+  if R.allModels.capability == 1.0 and R.allModels.replayAllPass: record(no_action, "early stop"); return
+  P ← proposer(index, skillImpact, trainSummary(T), valAggregate(R), readOnly(train traces, wiki, skills))
+  validate(P)                                        # §3.4
+
+  # 4. Evaluate by outlet (§5.6).
+  E ← evaluate(P)                                    # skill/template: rollouts; mechanism/doctor: reproduction; verify: faulty artifact
+
+  # 5. Record, then hand to a human.
+  ledgerEvent(P, E, stage ∈ {candidate-accepted, candidate-rejected, no-action})   # §6
+  openReview(P, E)                                   # PR for skill/template, issue for mechanism/doctor/verify
+
+  # 6. Later stages are appended as they happen: merged, released, verified-in-production (§6.1).
+  # On merge of a skill/template change, S changes, so the next iteration regenerates T (step 1).
+  # The wiki is never rolled back regardless of the outcome (paper).
 ```
+
+### 1.4 Evidence separation
+
+Training evidence and validation evidence MUST stay separate, both in what is generated and in what
+each role can see.
+
+| evidence | generated by | maintainer sees | proposer sees | humans see |
+|---|---|---|---|---|
+| **train rollouts** | `bench run --split train` under the accepted skill set, refreshed whenever the baseline identity changes, and after every merged skill or template change | sampled records, excerpts and verdicts | full records, verdicts and the failing check *descriptions* written for train tasks | everything |
+| **field raw records** | the live loop (05 §3) | yes | yes; field evidence is training evidence | everything |
+| **incidents** | on-incident hook, `wiki capture` | yes | through pattern pages only | everything |
+| **val results** | `bench gate` and baseline runs | **no** | **one aggregate score per model and mode, and its history from the ledger**: no per-task results, no transcripts, no check names | everything |
+| **test results** | release and monthly runs | no | no | at release, in the release notes |
+| **graders and mutants** (all splits) | humans; the maintainer may draft a grader for review | no | no | yes |
+
+The policy is enforced by mechanism. Instructions alone are not enough:
+
+- **Proposers and maintainers run in a sandbox.** The sandbox holds only their bundle and the
+  read-only CLI. It holds no checkout of the framework repo, because `bench/` sits in that repo.
+- **Graders and mutants live outside task folders**, at `bench/graders/<taskId>/` and
+  `bench/mutants/<taskId>/` (08 §10). Bundles are built from an allow-list, so these paths can never
+  be copied in.
+- **`wiki read raw:<id>` and `wiki traces` refuse val and test records.** They refuse any `bench`
+  raw record whose `split` is not `train`, with the error `raw <id> belongs to split <s>; not
+  visible to role proposer`.
+- **`outcomes.md` is assembled from train records and ledger aggregates only.** A unit test asserts
+  that no val or test task id appears in a generated bundle.
+
+### 1.5 Baseline identity
+
+A baseline and a candidate are comparable only when they were produced under the same conditions,
+apart from the change under evaluation. Each evaluation stores a `BaselineIdentity` (08 §10.3),
+made of hashes of:
+
+- the task set: `task.json`, `brief.md` and `fixture/` for every task in the split;
+- the grader set: graders and mutants;
+- the bench runner's dependencies: the lockfile and the installed `@rtrentjones/greenlight`
+  version;
+- the harness: runner version and sandbox image digest;
+- the agent: vendor and CLI version;
+- the model ids;
+- the skill set;
+- the evaluation mode;
+- in production mode, the wiki snapshot.
+
+The gate re-runs the baseline whenever **any** component other than the skill set differs from the
+stored baseline. Age alone is no longer the trigger, but a 30-day maximum age still applies to
+catch silent provider or model drift. A comparison across mismatched identities is a harness error,
+and it is never reported as a result.
+
 
 ## 2. Maintainer
 
@@ -58,7 +154,8 @@ path. The bundle contains:
 
 - `wiki/`: a full copy of the wiki in scope. That is the project wiki, plus the framework wiki when
   `--framework` is given in the framework repo.
-- `raw/`: the sampled raw records (§3.2), each with its excerpt truncated to 15,000 characters.
+- `raw/`: the sampled raw records (§3.2), each with its excerpt truncated to 15,000 characters. The
+  records come from train rollouts and field records only (§1.4).
 - `incident/` (with `--incident <n>`): the issue body and comments, the linked PRs' titles and
   diffstats, and CI run conclusions. All are fetched with `gh`, truncated and redacted.
 - `context.json`: the installed Greenlight version, the manifest cells, the list of verify check
@@ -161,9 +258,12 @@ containing:
 
 - `index.md` and `skill-impact.md`. Both are pre-loaded, because the paper's proposer reads them
   first.
-- `outcomes.md`: an outcome summary. For each managed skill in scope it gives the field metrics
-  (05 §9) for the current and previous versions, the last 20 bench results per task, and the open
-  hypotheses with their evidence counts.
+- `outcomes.md`: an outcome summary built only from evidence the proposer may see (§1.4). For each
+  managed skill in scope it gives:
+  - the field metrics (05 §9) for the current and previous versions;
+  - the **train** results per task for the current baseline identity;
+  - the **aggregate** val score per model and mode, from the ledger, with no per-task detail;
+  - the open hypotheses with their evidence counts.
 - `PROMPT.md`: the prompt in §3.3.
 
 The proposer has no pre-sampled traces, following the paper ("to avoid context window exhaustion").
@@ -207,7 +307,9 @@ Read these FIRST, before anything else:
 2. skill-impact.md — every past proposal, accepted or rejected, with its evidence. Do not propose
    something that was already tried and rejected unless you can name the evidence that is new
    since then.
-3. outcomes.md — current field metrics and bench results per skill.
+3. outcomes.md — field metrics, training results per task, and the aggregate validation score.
+   You cannot see validation or test tasks, their graders, or their transcripts. Do not try to
+   infer them; improve the behaviour the training traces show.
 
 Then investigate with the read-only commands (greenlight wiki read …, greenlight wiki traces …).
 You MUST read at least 4 execution traces (wiki read raw:<id>) before proposing a change. Read the
@@ -234,7 +336,7 @@ PURPOSE.md in the same proposal so each new or changed rule has a citation to a 
 
 Output exactly one JSON object and nothing else, matching one of:
 {"action":"create","outlet":"skill","name":"<kebab>","skill_md":"<full>","purpose_md":"<full>","patterns":[...]}
-{"action":"patch","outlet":"skill"|"template","name":"<skill or template>","file"?: "<path>","edits":[{"op":...}],"patterns":[...]}
+{"action":"patch","outlet":"skill"|"template","name":"<skill or template>","edits":[{"file":"SKILL.md"|"PURPOSE.md"|"<template path>","op":...}],"patterns":[...]}
 {"action":"issue","outlet":"mechanism"|"doctor"|"verify","title":"...","body":"<problem, evidence ids, proposed check>","patterns":[...]}
 {"action":"no_action","reason":"..."}
 Do not edit the version field; the harness sets it.
@@ -252,17 +354,21 @@ Do not edit the version field; the harness sets it.
 
 ### 3.5 Outlet routing (ADR-01)
 
-| outlet | applied by | accepted when | ledger evidence kind |
+Routing chooses the outlet. Each outlet then has its own acceptance rule (§5.6). One cycle and one
+ledger unify the process, and each outlet keeps the evidence that fits it.
+
+| outlet | applied by | candidate accepted when (§5.6) | ledger evidence kind |
 |---|---|---|---|
-| mechanism | human PR to the framework repo | merged, released, and the pattern's `catches` check passes on a deployed artifact | `field` |
-| doctor | human PR | merged, and `doctor` flags a fixture reproducing the condition | `field` (fixture run ref) |
-| template | gate (§5) plus human merge | gate accepts | `bench` |
-| verify | agent or human in the wrapper, via the loop | check added, red on the faulty build (or mutant), green on the fixed one | `field` |
-| skill | gate (§5) plus human merge | gate accepts | `bench` |
+| mechanism | human PR to the framework repo | a trusted reproduction fails on the base commit and passes on the candidate, and the framework suite passes | `repro` |
+| doctor | human PR | a fixture reproducing the condition is flagged by the candidate rule, a fixed fixture is not, and the suite passes | `repro` |
+| template | evaluator plus human merge | generated-app tests pass for every lane using the template, every template mutant fails them, and capability rollouts on those cells do not regress | `template` |
+| verify | agent or human in the wrapper, via the loop | the new assertion rejects the faulty artifact (a historical commit or mutant) and accepts the fixed one | `artifact` |
+| skill | gate (§5) plus human merge | controlled baseline/candidate rollouts meet §5.1–§5.4 in both evaluation modes (§4.7) | `bench` |
 
 `greenlight wiki remediate --proposal <id> --evidence <ref…>` records outcomes for the
-human-applied outlets. It writes a ledger row and sets the pattern's remediation to
-`verified: true`.
+human-applied outlets as ledger events (§6.1). A pattern's remediation becomes `verified: true`
+only at the `verified-in-production` stage, or at `merged` for evidence that can only be shown in
+the bench (template and skill changes). It never becomes verified at `candidate-accepted`.
 
 ## 4. Bench
 
@@ -270,35 +376,68 @@ human-applied outlets. It writes a ledger row and sets the pattern's remediation
 
 The bench lives in `bench/` in the framework repo. Task layout and `TaskSpec` are in 08 §10.
 
-| kind | id prefix | count at P6 start | measures |
-|---|---|---|---|
-| capability brief | `cap/<cell>-<app>` | 18 (≥2 per available free-tier cell) | kickoff and build |
-| replay | `replay/<pattern-slug>` | one per `confirmed` failure pattern with a reproducible class; ≈12 from seed content | the loop, build, provider skills |
-| loop change | `loop/<fixture>-<change>` | 6 | the loop on existing fixture tools |
-| portfolio | `port/<scenario>` | 4 | portfolio (structural) |
-| routing | `route/<n>` | 12 one-line requests | descriptions |
-| wiki | `wiki/<incident>` | 5 | maintainer output quality |
+| kind | id prefix | grader kind (§4.6) | count in P0 | grows to | measures |
+|---|---|---|---|---|---|
+| replay | `replay/<pattern-slug>` | `app` and/or `trajectory` | 2 (the first iteration, §10) | one per `confirmed` reproducible failure pattern | build, loop, provider skills |
+| wiki | `wiki/<incident>` | `maintainer` | 1 (the paired incidents, §10) | 5 | maintainer output quality |
+| loop change | `loop/<fixture>-<change>` | `trajectory` | 1 (`loop/fixture-preview-before-push`) | 6 | the loop's action order |
+| capability brief | `cap/<cell>-<app>` | `app` | 0 | ≥2 per available free-tier cell | kickoff and build |
+| routing | `route/<n>` | `routing` | 0 | 12 one-line requests | skill descriptions |
+| portfolio | `port/<scenario>` | `app` (structural) | 0 | 4 | portfolio |
+| mechanism | `mech/<pattern-slug>` | `repro` | 0 | as mechanism proposals arrive | framework fixes (§5.6) |
 
 `bench/splits.json` assigns each task to `train`, `val` or `test`. The proposer's traces come from
 `train`, the gate uses `val`, and `test` is reported only, at each release and monthly. Replay
-tasks are always in `val`, because the hard constraint must be checked on every gate. A new replay
-task added after a release enters `val` immediately.
+tasks are always in `val`, because the hard constraint must be checked on every gate.
+
+**How a new task enters the baseline.** A task added to any split starts as `pending`
+(`TaskSpec.state`, 08 §10). It joins gating only after a baseline run under the currently accepted
+skill set records its status on every gate model and mode. Adding a task changes the task-set hash,
+so the next gate re-baselines anyway (§1.5). A pending task is excluded from both the safety
+constraint and the efficacy objective until it has a recorded baseline.
+
+**Test-set reservation and rotation.** The `test` split is reserved for the release decision (§5.7).
+Its tasks never appear in val or train during a release cycle. Validation is reused across many
+proposals by design, so its p-values are optimistic. The test split exists to catch the overfitting
+that this reuse invites. After each release, the release notes record which test tasks a human
+inspected in detail. Those tasks move to `train`, and new tasks replace them, so the test split
+does not leak into proposer-visible evidence over time.
 
 ### 4.2 Runner
 
 `greenlight bench run [--tasks <glob>] [--model <id>] [--runs n] [--skills <dir>]` works as follows:
 
-1. Each rollout gets a throwaway sandbox: a temporary directory with a fresh `git init`, the task
-   `fixture/` if present, the skill set under test copied into `.claude/skills/`, and **no wiki**.
-   `GREENLIGHT_WIKI=off` is set and `.greenlight/wiki/` is absent.
+1. Each rollout gets a throwaway sandbox. It contains:
+   - a temporary directory with a fresh `git init`;
+   - a local bare remote `origin` (file://), so pushes are observable;
+   - the task `fixture/`, if present;
+   - the skill set under test, copied into `.claude/skills/`.
+
+   In **isolation** mode `GREENLIGHT_WIKI=off` is set and `.greenlight/wiki/` is absent. In
+   **production** mode the hooks run against a wiki snapshot whose hash is part of the baseline
+   identity (§4.7). Command shims on `PATH` record the trajectory (§4.6).
 2. The agent runs headless: `claude -p "<brief.md contents>" --output-format json` in the sandbox,
    with a per-task timeout (`timeoutMin`). It has a tool allow-list of file edit, bash and the
    `greenlight` CLI. Network is restricted to package registries and localhost. There are no real
    provider credentials; P4's proxy points provider hosts at fakes where a task needs them.
    Codex runs (P7) use the same sandbox with `codex exec`.
-3. After the agent stops, the runner copies `grader.verify.config.ts` into the sandbox, which the
-   agent never saw, and runs `greenlight preview <tool> --config <grader>`. That is the local gate
-   with the hidden spec.
+3. After the agent stops, the runner runs the task's grader from `bench/graders/<taskId>/`, which
+   was never in the sandbox while the agent ran.
+   - An `app` grader runs `greenlight preview <tool> --config <grader>`, the local gate with the
+     hidden spec.
+   - The other grader kinds run as described in §4.6.
+
+   A task may combine graders, and then every one must pass.
+   **Grading is isolated from the rollout.**
+   - The agent runs as an unprivileged user in a rollout container that has no access to
+     `bench/graders/` or `bench/mutants/`. The graders are never mounted into that container.
+   - When the agent stops or its timeout expires, the runner kills the rollout's whole process tree
+     and stops the container.
+   - The runner then mounts the sandbox's final tree read-only into a separate grading container,
+     which holds the grader. The agent therefore cannot read or replace the grader, and no leftover
+     agent process can observe grading.
+   - The trajectory file is written by the shims to a path outside the agent's writable tree,
+     through a write-only socket. The agent cannot edit its own trajectory.
 4. The score is 1 if every grader check passes and 0 otherwise. Partial credit is stored
    (passed/total checks), but gating uses the binary score, following the paper's task success.
 5. Each rollout writes a raw record of kind `bench`. Its refs point to the transcript, the
@@ -346,6 +485,36 @@ With 18 val tasks, 3 runs and 2 models, that is 108 rollouts. At about 150k toke
 that comes to roughly 16M tokens per gate. Budget controls are in §8. The maintainer and proposer
 calls cost `1 + T_ReAct` per iteration, constant in training-set size, as in the paper.
 
+### 4.6 Grading what each skill is responsible for
+
+Grading only the finished app cannot tell a skill that worked from one that was ignored. An app can
+pass whether or not the agent ran the local gate before pushing. Each task therefore declares the
+grader kinds that observe the evidence its skill is responsible for (`TaskSpec.graders`, 08 §10).
+
+| grader kind | used for | observes | passes when |
+|---|---|---|---|
+| `app` | build, kickoff, provider skills | the finished app through `preview` with the hidden verify spec | every hidden check passes |
+| `trajectory` | the loop, portfolio, any skill whose rules are about **order** | `trajectory.jsonl`: every shimmed command with argv, cwd, exit code and timestamp, plus the agent's tool calls from its JSON transcript, merged in time order (08 §10.2) | every rule in the task's `trajectory.rules` holds, for example `before(preview passed for <tool>, git push origin develop)`, `never(promote without approval)`, `after(verify failed, wiki lookup --check)` (production mode only) |
+| `maintainer` | the `greenlight-wiki` maintainer procedure | the `MaintainerOutput` and the resulting wiki | the output validates; every new or changed claim cites an `EvidenceRef` present in the bundle; no existing evidence ref is removed; status changes follow 04 §4; the task's required distinctions are present (checked structurally where possible, otherwise by an `eval` judge with a rubric and a mutant set of known-bad outputs) |
+| `routing` | skill descriptions | which skills the agent loaded for a one-line request, from transcript tool calls or the `SKILL.md` files it read | the expected skill was loaded, and no excluded skill was |
+| `repro` | mechanism and doctor outlets | a trusted reproduction, a fixture plus a script reviewed by a human, run against the base and candidate commits | it fails on the base commit and passes on the candidate |
+
+The trajectory shims wrap `git`, `greenlight`, `wrangler`, `vercel`, `gh`, `terraform`, `docker`
+and `curl`, then exec the real binary. They are a recording device and enforce nothing. Every
+grader kind ships with mutants under §4.3. For a trajectory grader, each mutant is a recorded
+trajectory that breaks one rule, for example a push recorded before any preview. The grader must
+fail on every one of those mutants.
+
+### 4.7 Evaluation modes
+
+| mode | wiki | purpose | gate use |
+|---|---|---|---|
+| **isolation** | off (`GREENLIGHT_WIKI=off`) | attribute an effect to the skill text alone, following the paper's ablation | skill changes MUST strictly improve here (§5.1) |
+| **production** | hooks on, against a pinned wiki snapshot | check the workflow as shipped, including on-start context and on-failure lookup | skill and template changes MUST NOT regress here; the hooks themselves are evaluated here |
+
+Training rollouts run in isolation mode, which keeps traces informative about the skills. Both
+modes appear in the ledger evidence, per model.
+
 ## 5. Gate
 
 ### 5.1 Procedure
@@ -353,15 +522,20 @@ calls cost `1 + T_ReAct` per iteration, constant in training-set size, as in the
 `greenlight bench gate --proposal <id>` runs these steps:
 
 1. Load the baseline, R_best. This is the stored val result of the currently accepted skill set,
-   per model. If it is older than the newest model id in use or older than 30 days, it is re-run.
-2. Run val with the candidate skill set: 3 runs × each gate model.
+   per model and per mode. It is re-run if its `BaselineIdentity` differs from the current one in
+   any component other than the skill set (§1.5), or if it is older than 30 days.
+2. Run val with the candidate skill set: 3 runs, for each gate model, in each mode.
 3. **Constraint (replay).** For each model, every replay task that passed in the baseline (in at
    least 2 of 3 runs) MUST pass in at least 2 of 3 candidate runs. Any regression rejects the
    proposal, which records `replay.regressions`.
-4. **Objective (capability).** For each model, the candidate's mean capability score must be
-   **strictly greater** than the baseline's, with a paired bootstrap p-value below 0.05 (§5.2).
-   This applies to every model under high blast radius, and see §5.4 for the others.
-5. Write a ledger row (§6) with the outcome.
+4. **Objective (capability).** For each model, the candidate's mean capability score in
+   **isolation** mode must be **strictly greater** than the baseline's, with a paired bootstrap
+   p-value below 0.05 (§5.2). This applies to every model under high blast radius; see §5.4 for the
+   others.
+5. **Production non-regression.** For each model, the candidate's production-mode score must not
+   fall below the baseline's by more than one task-mean, and production-mode replay obeys step 3.
+6. Write the `candidate-accepted` or `candidate-rejected` ledger event (§6), with one evidence
+   entry per model and mode.
 
 ### 5.2 Statistics
 
@@ -380,28 +554,110 @@ The gate always uses **two model ids**, configured in `bench/models.json`:
 - `small`: a cheaper model.
 
 The paper found skills that collapsed another model's performance (50.5 → 18.1), so a proposal
-MUST NOT regress either model on replay. Capability rules depend on blast radius (§5.4). The model
-ids are recorded in every ledger row. When `bench/models.json` changes, the next gate re-baselines
-first.
+MUST NOT regress either model on replay. Capability rules depend on blast radius (§5.4). Ledger
+evidence holds **one result per model and per mode** (08 §8, `GateEvidence.results[]`), and the
+model ids are part of the baseline identity. When `bench/models.json` changes, the next gate
+re-baselines first.
 
 ### 5.4 Strictness by blast radius
 
-| blast radius (`PURPOSE.md`) | replay | capability | release |
-|---|---|---|---|
-| **high**: deploy-verify-promote, portfolio, provider-cloudflare/github/hcp/oci | full replay pass on **both** models, with zero tolerance even for a task flaky in the baseline (it must be fixed or quarantined by a human first) | strict improvement on **both** models, p < 0.05 each | human merge of the `evo/` branch **and** human release |
-| **medium** | no regression on both models | strict improvement on `frontier`, p < 0.05; `small` must not regress by more than 1 task-mean | human merge |
-| **low** | no regression on `frontier` | strict improvement on `frontier` | human merge |
+This table is the single policy for skill and template candidates. §5.1 is the procedure, and this
+table supplies its thresholds. Every cell of the table applies to both modes unless the cell says
+otherwise.
+
+**Definitions.**
+- A replay task is **baseline-passing** for a model and mode when it passed in at least 2 of 3
+  baseline runs.
+- A task is **flaky** when it passed in exactly 1 or 2 of 3 baseline runs.
+
+| blast radius (`PURPOSE.md`) | safety: replay (every model, both modes) | efficacy: capability (isolation mode) | production-mode capability | release |
+|---|---|---|---|---|
+| **high**: deploy-verify-promote, portfolio, provider-cloudflare/github/hcp/oci | every baseline-passing task passes **3 of 3**; no flaky replay task may exist in the baseline (a human fixes or quarantines it first) | strict improvement on **both** models, p < 0.05 each | no regression beyond one task-mean, on both models | human merge **and** a release that passes §5.7 |
+| **medium** | every baseline-passing task passes ≥ 2 of 3 | strict improvement on `frontier`, p < 0.05; `small` no worse than one task-mean | no regression beyond one task-mean, on both models | human merge; §5.7 at the next release |
+| **low** | every baseline-passing task passes ≥ 2 of 3 | strict improvement on `frontier`, p < 0.05 | no regression beyond one task-mean on `frontier` | human merge; §5.7 at the next release |
+
+Replay safety applies to **both** models at every radius. This keeps §5.3's guarantee, which an
+earlier draft of this table broke for low-radius skills. The general procedure's 2-of-3 rule is the
+medium and low threshold, and high radius tightens it to 3 of 3.
+
+**Two alternative paths replace efficacy, never safety.** Both are human-reviewed and labelled in
+the ledger.
+
+- **Safety-fix path.** This path is for a proposal motivated by one or more replay tasks that fail
+  in the baseline. It is accepted when:
+  - those target tasks become baseline-passing under the candidate (at least 2 of 3; 3 of 3 for
+    high radius) on every model;
+  - every other safety rule holds;
+  - capability does not fall by more than one task-mean.
+
+  No capability gain is required. This is the path for replay-only fixes when capability is
+  unchanged or saturated, and for security repairs. The ledger label is `path: "safety-fix"`.
+- **Neutral-prerequisite path.** This path is for a change that enables a later change but cannot
+  show a gain on its own, such as renaming a section that a mechanism will reference. Safety and
+  non-regression must hold. The PR names the dependent proposal. A human must approve it
+  explicitly, with a reason recorded in the ledger. The label is `path: "neutral"`. At most one
+  neutral change may be pending per skill at a time.
+
+**What p < 0.05 does and does not mean.** The validation set is small (10–20 tasks at first) and
+is reused across many proposals. The bootstrap therefore measures evidence for one comparison. It
+is not a guarantee across the whole sequence of proposals. Two controls compensate: the held-out
+test check before release (§5.7), and per-task, per-run evidence that lets any decision be
+recomputed (§5.8).
 
 The loop skill sits at **high** (ADR-12). It drives every deploy, and a regression there reaches
 every tool at once.
 
 ### 5.5 Tie-break (optional, off by default)
 
+
 `bench/gate.json` `{"acceptShorterOnTie": true}` accepts a proposal that passes the replay
 constraint, does not change capability on either model (|Δ| < 1 task-mean, p ≥ 0.05), and reduces
 the target skill's SKILL.md line count by at least 10%. This answers the paper's note that strict
 gating rejects neutral proposals. It is limited to deletions, which are the neutral change least
 likely to hide a regression.
+
+### 5.6 Acceptance by outlet
+
+The cycle is shared, but the acceptance rule depends on the outlet, because each kind of change
+can only be shown to work by different evidence. A framework fix is not required to raise
+app-building success rates. A passing unit test is not accepted as proof that revised instructions
+change agent behaviour.
+
+| outlet | candidate is accepted when | regression guard | not required |
+|---|---|---|---|
+| **skill** | §5.1–§5.4: strict improvement in isolation mode on the skill's bench slice, per model | replay passes in both modes; production-mode non-regression | — |
+| **template** | `greenlight add` generates a tool from the candidate template for each lane using it; the generated tool passes the contract checks (09) and its own tests; every template mutant fails them | capability rollouts on cells using the template do not regress in either mode | strict capability improvement |
+| **mechanism** | a `repro` grader (§4.6) fails on the base commit and passes on the candidate; `pnpm run check-all` passes | replay tasks whose `pattern` belongs to the same class pass, a cheap subset | any bench capability change |
+| **doctor** | a fixture reproducing the condition is flagged by the candidate rule; the fixed fixture is not flagged; `check-all` passes | `doctor --strict` stays clean on the framework repo's own fixtures | any bench capability change |
+| **verify** | the new assertion fails on the faulty artifact (a historical commit, mutant or recorded response) and passes on the fixed one | the tool's existing verify spec still passes on its current prod artifact | any bench capability change |
+
+Every outlet's evidence lands in the same ledger, with its own `evidence.kind` (08 §8).
+
+### 5.7 Release check on the held-out test set
+
+Before a release that carries skill or template changes, `bench run --split test` runs the released
+candidate skill set and the previously released skill set on both models, in both modes. The
+release is blocked when any of these holds:
+
+- a test replay task regresses;
+- test capability falls by more than one task-mean on either model.
+
+The release workflow writes the result as a ledger event (`release-check`). A human may override
+a block only with a recorded reason, and only for a non-high-radius skill.
+
+### 5.8 Evaluation records
+
+Every baseline and candidate evaluation writes a content-addressed `EvaluationRecord` (08 §10.4)
+to the evidence store. The record holds:
+
+- the full `BaselineIdentity`;
+- the baseline and candidate skill-set hashes;
+- per task, per run, per model and per mode: the outcome, the per-grader results, the seed, the
+  token and dollar cost, the duration and the raw id.
+
+The ledger references the record by hash. Anyone holding the record can recompute the decision
+with `bench gate --recompute <hash>`, which re-runs §5.2 from the stored outcomes without new
+rollouts. The record is retained as long as the ledger row exists (03 §5).
 
 ## 6. Applying an accepted change
 
@@ -419,10 +675,32 @@ Only the harness performs these steps, inside `bench gate` after an accept decis
    trailers, push the branch, and open a PR labelled `greenlight-evo`. For high blast radius the PR
    body states that a release is also required.
 
-A **reject** writes the ledger row with `outcome: "rejected"` on the default branch's ledger, via a
-separate small commit that touches only the ledger and `skill-impact.md`. It then discards the
-skill branch. The wiki changes from the maintainer pass remain, because the wiki is never rolled
-back.
+A **reject** writes the `candidate-rejected` event on the default branch's ledger, via a separate
+small commit that touches only the ledger and `skill-impact.md`. It then discards the skill branch.
+The wiki changes from the maintainer pass remain, because the wiki is never rolled back.
+
+The `version` bump in step 1 is provisional on the branch. The version becomes real when the PR
+merges. A release then carries it to users.
+
+### 6.1 Ledger stages
+
+A proposal's life is a sequence of append-only ledger events keyed by `proposalId` (08 §8). Each
+stage is recorded separately, because each one proves something different:
+
+| stage | written by | proves |
+|---|---|---|
+| `no-action` | harness | the proposer found nothing worth changing, and gave a reason |
+| `candidate-rejected` | harness | the outlet's acceptance rule failed, with the evidence |
+| `candidate-accepted` | harness | the outlet's acceptance rule passed. Nothing has shipped. |
+| `merged` | harness, from the PR merge event | a human reviewed and merged it |
+| `released` | harness, from the release workflow | it is in a published CLI version (`version` field) |
+| `verified-in-production` | `wiki remediate` with field evidence | the pattern's `catches` check went red→green on a deployed artifact |
+| `withdrawn` | human | reverted or abandoned after acceptance, with a reason |
+
+`skill-impact.md` shows one row per proposal, with its latest stage and links to each event.
+Release notes list proposals reaching `released`. Patterns become `confirmed` only from
+`verified-in-production`, or, for evidence that can only be shown in the bench, from `merged`
+(04 §4).
 
 ## 7. Field monitor (ADR-05)
 
@@ -459,8 +737,95 @@ only start an investigation. The bench decides.
   over new failing raw records. The cost is small, one call plus reads.
 - **Proposer and gate:** on demand (`workflow_dispatch` of `evo.yml`), or when a monitor alarm is
   open. Never on push.
-- **Budget:** `bench/budget.json` `{ "monthlyTokens": <n>, "perGateMaxTokens": <n> }`. `bench run`
-  tracks usage from the agent's JSON output and refuses to start a gate that would exceed the
-  remaining monthly budget. It reports the expected cost before running (§4.5).
+- **Budget:** `bench/budget.json` has one schema everywhere (08 §10.5):
+  `{ "monthlyUsd": <n>, "perGateMaxUsd": <n>, "perGateMaxRollouts": <n> }`.
+  - **Tracking.** Spend is computed from each rollout's reported token usage and the model's price
+    in `bench/models.json`. It is persisted as harness-written `spend` events in the ledger, never
+    in a local file, so it survives ephemeral CI runners.
+  - **Serialization.** `evo.yml` runs in the concurrency group `greenlight-evo`, so concurrent
+    gates cannot both read the same remaining budget.
+  - **Refusal.** `bench run` reports the expected cost before running (§4.5). It refuses to start a
+    gate whose expected cost exceeds `perGateMaxUsd`, `perGateMaxRollouts` or the month's
+    remaining budget.
 - **Early stop:** if the baseline already has capability 1.0 with every replay passing on both
   models, the proposer is not run, as in the paper.
+
+## 10. The first iteration: probe the layer you are protecting
+
+The first complete cycle (M2, 14) uses two incidents from Greenlight's own history whose lessons
+look opposite. A useful learner has to find the principle that reconciles them.
+
+- **Supabase (#55).** The keepalive probe had to *reach* Postgres. A probe answered from
+  PostgREST's schema cache never reset the idle timer, and the database paused while the probe
+  reported green.
+- **Neon (Polyphony).** Idle probes had to *leave Postgres alone*. A healthcheck that queried the
+  database every 30 seconds, together with two other timers, kept a scale-to-zero database awake.
+
+**The principle to be learned** is that a probe must touch exactly the layer whose state it
+manages. That layer depends on the tool's liveness model (`needs-traffic` versus `needs-silence`,
+10).
+
+### 10.1 Inputs
+
+- **Incidents.** The incident pages for both (15 §7), each with evidence refs.
+- **Wiki state.** Only the hypothesis pages `keepalive-probe-misses-postgres`, `neon-never-sleeps`
+  and `probe-touches-wrong-layer` (15 §2). The maintainer must reconcile them.
+- **Tasks:**
+  - `replay/keepalive-probe-reaches-store`, a runtime app grader. A fake Supabase-shaped store
+    resets its idle timer only on a real table query. The task asks the agent to add a keepalive
+    target for a fixture tool.
+  - `replay/idle-probe-leaves-store-asleep`, a runtime app grader. A fake Neon-shaped store counts
+    queries over a simulated 10-minute idle window. The task asks the agent to add container
+    liveness for a fixture tool, and the grader requires zero store queries from probes while the
+    app is idle.
+  - `wiki/probe-layer-incidents`, a maintainer grader. Its required distinction is a pattern whose
+    rule is conditional on the liveness model, citing evidence from both incidents.
+  - `loop/fixture-preview-before-push`, a trajectory grader. It is a control task that checks the
+    trajectory machinery itself.
+- **Mutants:**
+  - For the two replay tasks: the historical faulty implementations, and both overgeneralized
+    rules, "every healthcheck queries the database" and "probes never touch the database". **Each
+    overgeneral rule must fail exactly one of the paired tasks.** This is what makes the pair a
+    test of learning.
+  - For the maintainer grader: an output that states either overgeneral rule, an output that drops
+    one incident's evidence, and an output with an uncited claim.
+
+**Historical faults are regression fixtures, not new repairs.** The Supabase probe bug is already
+fixed in current Greenlight (probeTable, 0.9.0). The first iteration does not pretend that a new
+code repair is needed. The faulty historical implementation becomes the fixture's mutant, and the
+current mechanism is expected to pass. Where a lesson is still unenforced, the proposer has
+something real to propose. The Neon side ("leave the store asleep") is enforced only by convention
+today, so it is the likely target.
+
+### 10.2 Procedure
+
+1. **Baseline training rollouts.** Run the train split under the current skills, in isolation mode,
+   on both models. The two replay tasks sit in train and val as separate fixture variants, a
+   Supabase-shaped tool and a Neon-shaped tool, so that the val instances are unseen.
+2. **Maintainer pass.** The maintainer works over the incidents and the failing training traces.
+   Its output is graded by `wiki/probe-layer-incidents`.
+3. **Proposer.** The proposer emits one change. The expected outlets, in rank order:
+   - `mechanism`: the manifest `liveness` field and a probe-target validation;
+   - `doctor`: DR-21 and DR-22;
+   - `skill`: a conditional rule in `greenlight-build` and the provider skills.
+
+   Any of them is valid if it routes correctly.
+4. **Control arm.** The harness also evaluates a hand-written overgeneralized skill patch, "health
+   checks must always query the database". It is labelled `control` in the ledger and never
+   merged. **The cycle passes its own check only if the evaluator rejects the control**, because
+   the Neon replay regresses. This is the first evidence that the gate can refuse a plausible but
+   wrong lesson.
+5. **Evaluate and record.** Evaluate the real proposal by its outlet's rule (§5.6). Write the ledger
+   events, and open the PR or issue for owner review.
+
+### 10.3 Exit
+
+The first iteration succeeds when:
+
+- the maintainer output passes its grader;
+- the proposal or `no_action` is valid;
+- the control is rejected;
+- the real proposal has a recorded outcome under its outlet's rule;
+- the owner has reviewed the ledger rows.
+
+Acceptance of the real proposal is **not** required (§0).
