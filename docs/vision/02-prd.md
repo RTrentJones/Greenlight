@@ -534,7 +534,10 @@ acceptance criteria for the requirement, not intent criteria.
   report.
 
 **FR-WIKI-09.**
-- Raw records are written locally.
+- Raw records are written locally, with the identity of 08 §5.1. Before automatic capture lands,
+  `wiki capture --manual` records drill and incident evidence by hand (M3).
+- `wiki capture --retain` copies minimal evidence into `wiki/evidence/` so that it outlives remote
+  retention, and `--export` bundles it (08 §5.3).
 - When `GREENLIGHT_INGEST_URL` is set, they are also posted best-effort, matching the current
   `ship` ingest behavior.
 - Tracer accepts them as a new mode of run.
@@ -574,10 +577,10 @@ acceptance criteria for the requirement, not intent criteria.
 **FR-SKILL-03.**
 - A CI check in the framework repo compares each changed `SKILL.md` `version` against the ledger.
 - A bump without a `candidate-accepted` event followed by a `merged` event fails.
-- **Temporary path until a skill's bench slice exists (M1–M3).** A human-reviewed PR may change a
-  skill and bump its version. The PR must carry a ledger event with `path: "neutral"` or
+- **Temporary path until a skill has 3 active bench tasks (05 §4).** A human-reviewed PR may change
+  a skill and bump its version. The PR must carry a ledger event with `path: "neutral"` or
   `path: "safety-fix"`, the reviewer's reason and the evidence refs that motivated it. Once the
-  skill's bench slice is active, this path closes for that skill (05 §4).
+  skill has 3 active bench tasks, this path closes for that skill.
 - Text changes without a version bump are allowed only for typo-class edits, marked `[no-bump]` in
   the commit message. The ledger records them as `outlet: skill, change.kind: patch` with `evidence`
   omitted, and the next gate run measures them.
@@ -869,7 +872,7 @@ acceptance criteria for the requirement, not intent criteria.
 | NFR-02 | **Cost.** The default path, including bench scoring, costs $0 in infrastructure; the LLM spend of one `bench gate` is bounded and reported. | `bench gate` prints the token totals from `VerifyReport.tokensIn/Out/costUsd`; the drills run on free accounts |
 | NFR-03 | **Latency.** `wiki context` and `wiki lookup` return in under 1 s on a wiki of 500 pages; `accounts` returns within 15 s online, or 1 s with a warm cache or `--offline`. | Benchmarked in CI with a generated fixture wiki |
 | NFR-04 | **Determinism.** Given the same inputs, `wiki lint --fix`, the index render, the ledger render and `proxy-config` produce byte-identical output. | Golden-file tests |
-| NFR-05 | **Strictness.** Every machine-written artifact is validated before it is trusted, unknown fields are errors, and a rejected write changes nothing. | Contract tests (13 §2.3) |
+| NFR-05 | **Strictness.** Every machine-written artifact is validated before it is trusted, unknown fields are errors, and a rejected write changes nothing. | Contract tests (13 §2.1) |
 | NFR-06 | **Portability.** Skills work for an agent that reads only standard SKILL.md frontmatter and command output. | FR-AGENT-01 lint; M7 drill |
 | NFR-07 | **Compatibility.** Existing wrappers keep working through every milestone without manifest edits; new requirements arrive as doctor warnings first. | `RTrentJones.dev` CI stays green at each release |
 | NFR-08 | **Readable output.** Human CLI output stays readable at 100 columns and without colour; every human report has a `--json` equivalent; nothing essential is conveyed by colour alone. | Snapshot tests with `NO_COLOR=1` |

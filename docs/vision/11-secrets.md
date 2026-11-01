@@ -32,6 +32,26 @@ The **sink** is chosen once per wrapper (`secrets.sink` in the manifest; 07 §2.
 - `github` is today's model. It remains supported for owners who want no new account. In that mode
   agents get no credentials at all, and every authenticated step runs in CI. The skills say so.
 
+### 1.1 Trust models
+
+What a proxy guarantees depends on where the agent runs. Two trust models are supported, and the
+documents and skills name which one applies.
+
+| | **A — isolated agent** | **B — local convenience** |
+|---|---|---|
+| where the agent runs | a separate container, VM, cloud session, or OS user with its own home directory | the operator's own shell, under `greenlight agent run --local` |
+| what it cannot reach | operator credentials and key files (`~/.ssh`, `~/.config/gh`, cloud CLI configs), credential helpers (git credential manager, `gh auth git-credential`, OS keychain), agent sockets (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`), the Docker socket, the parent process's environment and file descriptors, the release signing key (18 §3.1) | nothing is enforced. Environment variables are replaced, and that is all |
+| network | **enforced egress**: a firewall or network policy allows only the proxy and package registries. The proxy is the only route to provider hosts | routing only. `HTTPS_PROXY` is a setting the agent's tools may ignore, and direct connections succeed |
+| guarantee | an agent, even a manipulated one, cannot read a planted operator credential, inherit a credential helper, mint an approval, or reach a provider by a route around the proxy | prevents **accidental** leakage, such as a token printed into a transcript or copied into a file. It is **not** a boundary against an agent that sets out to find credentials |
+| use | default for bench sandboxes (§3.5) and cloud sessions; required for any claim in 12 that depends on the proxy | a single operator's local work, where the operator accepts the residual risk |
+
+**Allocating a pseudoterminal is not proof of human presence.** An agent with shell access can
+allocate a PTY, and refusing non-TTY stdin is only an interaction safeguard. Earlier drafts used a
+TTY check as an approval mechanism, and this document no longer does. Approval is the signed
+release artifact in 18 §3.1, made with a key the agent cannot reach under model A. Under model B
+the key MUST be held where the shell cannot use it without a human action, such as a hardware key
+that requires touch. The documentation states that model B gives no stronger guarantee.
+
 ## 2. Infisical as the source (sink `infisical`)
 
 ### 2.1 Why Infisical
@@ -49,7 +69,7 @@ and both Infisical proxy products are recent. The product claims in this section
 M5 does not commit to a general implementation up front. It first prototypes **one** credential
 integration end to end:
 - the Cloudflare beta-account token through the chosen proxy;
-- under trust model A (§3.0);
+- under trust model A (§1.1);
 - with the client compatibility tests in §4.6.
 
 The default proxy is chosen from that evidence. If Agent Proxy is unavailable or fails the tests,
@@ -64,8 +84,11 @@ secrets: {
   sink: 'infisical' | 'github';
   infisical?: { domain?: string /* self-host / EU */; projectId: string; environment: 'prod' };
   proxy?: 'infisical' | 'worker' | 'none';
+  trustModel?: 'A' | 'B';   // declared trust model (§1.1); default 'A' where an isolated runner exists
 }
 ```
+
+The normative schema is `SecretsSettings` in 08 §13.
 
 `projectId` is an enumerable identifier, not a secret, following the existing "IDs are not
 secrets" rule. Secrets live at the path `/<scope>/<ENV_VAR>`, where `scope` is `shared` for
@@ -87,26 +110,6 @@ itself authenticates to GitHub using the GitHub App installation that the sync r
 long-lived Infisical token is stored in GitHub.
 
 ## 3. The agent credential proxy
-
-### 3.0 Trust models
-
-What a proxy guarantees depends on where the agent runs. Two trust models are supported, and the
-documents and skills name which one applies.
-
-| | **A — isolated agent** | **B — local convenience** |
-|---|---|---|
-| where the agent runs | a separate container, VM, cloud session, or OS user with its own home directory | the operator's own shell, under `greenlight agent run --local` |
-| what it cannot reach | operator credentials and key files (`~/.ssh`, `~/.config/gh`, cloud CLI configs), credential helpers (git credential manager, `gh auth git-credential`, OS keychain), agent sockets (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`), the Docker socket, the parent process's environment and file descriptors, the release signing key (18 §3.1) | nothing is enforced. Environment variables are replaced, and that is all |
-| network | **enforced egress**: a firewall or network policy allows only the proxy and package registries. The proxy is the only route to provider hosts | routing only. `HTTPS_PROXY` is a setting the agent's tools may ignore, and direct connections succeed |
-| guarantee | an agent, even a manipulated one, cannot read a planted operator credential, inherit a credential helper, mint an approval, or reach a provider by a route around the proxy | prevents **accidental** leakage, such as a token printed into a transcript or copied into a file. It is **not** a boundary against an agent that sets out to find credentials |
-| use | default for bench sandboxes (§3.5) and cloud sessions; required for any claim in 12 that depends on the proxy | a single operator's local work, where the operator accepts the residual risk |
-
-**Allocating a pseudoterminal is not proof of human presence.** An agent with shell access can
-allocate a PTY, and refusing non-TTY stdin is only an interaction safeguard. Earlier drafts used a
-TTY check as an approval mechanism, and this document no longer does. Approval is the signed
-release artifact in 18 §3.1, made with a key the agent cannot reach under model A. Under model B
-the key MUST be held where the shell cannot use it without a human action, such as a hardware key
-that requires touch. The documentation states that model B gives no stronger guarantee.
 
 ### 3.1 Principle
 
@@ -148,7 +151,7 @@ its controls accordingly.
 **Node.** Node 24's built-in `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set.
 Greenlight pins Node 24, so `agent run` sets the variable and DR-31 checks it.
 
-### 3.3 Sessions
+### 3.3 Sessions and grants
 
 `greenlight agent run` (07 §2.12) creates one proxy session per agent process, in model A
 (`--isolated`) or model B (`--local`).

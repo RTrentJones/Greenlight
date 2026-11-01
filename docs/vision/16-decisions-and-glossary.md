@@ -88,8 +88,8 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
   raise alarms and seed maintainer passes. Only the bench decides whether a skill change is
   accepted.
 - **Consequences.** The bench exists from M1 and the first gated iteration runs in M2. Until a
-  skill has an active bench slice, its changes go through the temporary human-reviewed path, which
-  still writes a ledger event (FR-SKILL-03).
+  skill has 3 active bench tasks, its changes go through the temporary human-reviewed path, which
+  still writes a ledger event (05 §4, FR-SKILL-03).
 - **Alternatives considered.** Field gating with canary skill versions: rejected, because one
   operator does not produce enough runs to detect differences.
 - **Status.** Accepted.

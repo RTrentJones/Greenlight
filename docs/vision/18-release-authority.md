@@ -25,7 +25,7 @@ path to production from the agent's reach or binds that path to an approval.
 
 | identity | who | holds | MUST NOT hold |
 |---|---|---|---|
-| **owner** | the human, on their own GitHub account with 2FA and a signing key kept outside any agent environment (a hardware key, or an OS keychain the agent cannot reach under trust model A, 11 §3.0) | admin on the wrapper and tool repos; the release signing key; the right to approve environments | — |
+| **owner** | the human, on their own GitHub account with 2FA and a signing key kept outside any agent environment (a hardware key, or an OS keychain the agent cannot reach under trust model A, 11 §1.1) | admin on the wrapper and tool repos; the release signing key; the right to approve environments | — |
 | **agent** | a GitHub machine user or GitHub App installation, never the owner's account or token | a fine-grained token: `contents: write` and `pull_requests: write` on the wrapper and tool repos, `issues: write`, `metadata: read`; beta-scoped provider capabilities through the proxy (11 §4) | `workflows`, `secrets`, `administration`, `environments`, `actions: write` (dispatch and re-run), `deployments: write`; any production provider credential; the release signing key; reviewer status on any environment |
 | **beta execution** | CI jobs in the `beta` environment | beta provider credentials only (separate Cloudflare account, beta Neon branch credentials, beta Supabase schema credentials, Vercel preview scope) | any production credential |
 | **protected execution** | CI jobs in the `production` environment, at an approved commit only (§3) | production provider credentials, `TF_API_TOKEN` with apply rights, OCI signing key, docker SSH key | — |
@@ -78,6 +78,28 @@ private-repository limits in §10.
   edit a workflow file. That requires the `workflows` permission it does not hold, and the edit
   would itself be a policy change under §7.
 
+### 3.1a `GREENLIGHT_RELEASE_AUTHORIZED`
+
+When verification succeeds, the protected job exports one environment variable for its remaining
+steps:
+
+```
+GREENLIGHT_RELEASE_AUTHORIZED=<tool>@<sha>[#<artifact>]      // e.g. "blog@3f2a…c91#ver_8d1e…"
+```
+
+The value is derived only from the verified payload. The verification step is the only step that
+sets it, and it sets it only inside the protected production job. Production operations in the
+CLI and adapters refuse to run unless the variable is present and its tool, sha and artifact equal
+the operation's own. Those operations are the workers adapter's prod `deploy`, a prod D1, Neon or
+Supabase migration, `vercel deploy --prod`, an OCI or docker prod restart, and `retire`'s apply.
+
+This is **defence in depth, not the boundary**. A process that holds production credentials could
+set the variable itself. The boundary is that only the protected job holds production credentials
+(§2, §4), and that the job verifies the signed approval before anything else. The variable exists
+to catch mistakes: a prod deploy wired into a beta job, or a recovery path that forgot to check
+approval. It also makes the binding visible in logs. DR-34 checks that every production job sets
+it in a verification step that runs before any step using production credentials.
+
 ### 3.2 GitHub environment required reviewers, where supported
 
 Where the owner's plan and the repository's visibility support required reviewers on environments
@@ -112,7 +134,8 @@ artifacts are built once, recorded with their digest in the beta job, and promot
 
 | provider | why separation needs care | rule |
 |---|---|---|
-| **Cloudflare** | API token permissions for Workers scripts are account-wide, so one token cannot be limited to `<name>-beta` scripts | beta runs in a **separate free Cloudflare account** on `workers.dev` (the no-domain URLs of 08 §1.3). The beta account's token is available to beta jobs and, through the proxy, to agents. The production account's token exists only in the `production` environment. DNS, the zone and the keepalive Worker live in the production account. |
+| **Cloudflare** | API token permissions for Workers scripts are account-wide, so one token cannot be limited to `<name>-beta` scripts | beta runs in a **separate free Cloudflare account** on `workers.dev`, at
+`<name>-beta.<cloudflare.beta.accountSubdomain>.workers.dev` (08 §1.2–§1.3). The beta account's token is available to beta jobs and, through the proxy, to agents. The production account's token exists only in the `production` environment. DNS, the zone and the keepalive Worker live in the production account. |
 | **Vercel** | git integration deploys production when the production branch receives a push; tokens are team-scoped | set the project's production branch to a ref the agent cannot push (`release/prod`), protected by §3. Alternatively, add an ignored-build step that skips any production build without a verified approval. Deploy production from the protected job with `vercel deploy --prebuilt --prod` at the approved sha, from output built and digested in the beta job. Agents get no Vercel token. Preview deployments of `develop` stay on git integration. |
 | **Neon** | `NEON_API_KEY` is account-wide | agents and beta jobs get only the **beta branch connection string**, never the API key. Branch creation, deletion and migrations on the production branch run only in the protected job. |
 | **Supabase** | the access token is account-wide; schema-per-env shares one project | agents get no access token. Beta jobs get a role limited to the beta schema. Production migrations run in the protected job behind the existing migration-approval setting. |
