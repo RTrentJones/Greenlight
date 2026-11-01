@@ -45,36 +45,41 @@ behavior, and they are listed in section 1 only for completeness.
 
 ## 1. Command inventory
 
-| command | status | phase | serves |
+Milestones are defined in 14. They are not versions: a command ships in whichever release
+completes the milestone that needs it.
+
+| command | status | milestone | serves |
 |---|---|---|---|
-| `init` | changed (no-domain) | P2 | FR-KICK-04 |
-| `add` | changed (liveness, intent stub, contract templates) | P0, P1 | FR-KICK, FR-BUILD, FR-WIKI |
-| `adopt` | changed (wiki pointer block, liveness prompt) | P0 | FR-WIKI |
-| `preview` | changed (raw capture, skills map) | P5 | FR-LOOP, FR-WIKI |
-| `ship` | changed (raw capture, skills map) | P5 | FR-LOOP |
-| `verify` | changed (check ids, wiki links, `eval.check_id`) | P0, P5 | FR-LOOP, FR-WIKI |
-| `promote` | changed (policy, approval, `promote` stage) | P3, P4 | FR-LOOP, FR-PORT, FR-SEC |
-| `status` | changed (beta/prod sha pair) | P3 | FR-PORT |
-| `doctor` | changed (rules DR-12…DR-33) | P0–P5 | all |
-| `secrets gather / check` | changed (`--sink`) | P4 | FR-SEC |
-| `secrets proxy-config` | new | P4 | FR-SEC |
-| `agent sync` | changed (framework wiki, PURPOSE.md, pointer, `.agents`) | P0, P7 | FR-SKILL, FR-AGENT |
-| `agent run` | new | P4 | FR-SEC, FR-AGENT |
-| `accounts` | new | P2 | FR-KICK, FR-PORT |
-| `portfolio` | new | P3 | FR-PORT |
-| `retire` | new | P3 | FR-PORT |
-| `wiki lint / render` | new | P0 | FR-WIKI |
-| `wiki context` (alias `wiki lookup --tool <t> --start`) | new | P0 | FR-WIKI, FR-SKILL |
-| `wiki lookup` | new | P5 | FR-WIKI, FR-LOOP |
-| `wiki read` | new | P0 | FR-WIKI |
-| `wiki incident open` | new | P5 | FR-WIKI |
-| `wiki traces` | new | P6 | FR-EVO |
-| `wiki stats` (alias `wiki metrics`) | new | P5 | FR-EVO, FR-SKILL |
-| `wiki capture` | new | P5 | FR-WIKI |
-| `wiki ingest` | new | P5 | FR-WIKI, FR-EVO |
-| `wiki propose / remediate` | new | P5, P6 | FR-EVO |
-| `wiki contribute` | new | P5 | FR-WIKI |
-| `bench run / gate / check-graders / monitor / report` | new | P6 | FR-EVO |
+| `verify` | changed (check ids, wiki links, `eval.check_id`) | M0 (ids), M3 (links) | FR-LOOP, FR-WIKI |
+| `wiki lint / render` | new | M1 | FR-WIKI |
+| `wiki read` | new | M1 | FR-WIKI |
+| `wiki ingest` | new | M1 (manual bundles), M3 | FR-WIKI, FR-EVO |
+| `wiki propose / remediate` (incl. `remediate --manual`) | new | M1–M2 | FR-EVO |
+| `wiki traces` | new | M2 | FR-EVO |
+| `bench run / gate / check-graders / report` (incl. `gate --recompute`) | new | M1–M2 | FR-EVO |
+| `wiki context` (alias `wiki lookup --tool <t> --start`) | new | M3 | FR-WIKI, FR-SKILL |
+| `wiki lookup` | new | M3 | FR-WIKI, FR-LOOP |
+| `wiki capture` (incl. `--manual`, `--retain`, `--export`) | new | M1 (`--manual`), M3 | FR-WIKI |
+| `wiki incident open` | new | M3 | FR-WIKI |
+| `wiki stats` (alias `wiki metrics`) | new | M3 | FR-EVO, FR-SKILL |
+| `preview` / `ship` | changed (raw capture, skills map) | M3 | FR-LOOP, FR-WIKI |
+| `adopt` | changed (wiki pointer block, liveness prompt) | M3 | FR-WIKI |
+| `agent sync` | changed (framework wiki, PURPOSE.md, pointer, `.agents`) | M3, M7 | FR-SKILL, FR-AGENT |
+| `init` | changed (no-domain, beta account) | M4 | FR-KICK-04 |
+| `add` | changed (liveness, intent stub, contract templates) | M4 (astro), M6 (other lanes) | FR-KICK, FR-BUILD, FR-WIKI |
+| `accounts` | new | M4 (minimal), M6 | FR-KICK, FR-PORT |
+| `approve` | new | M5 | FR-LOOP, FR-SEC |
+| `promote` | changed (policy, approval verification, `promote` stage) | M5 | FR-LOOP, FR-SEC |
+| `retire` | new (lifecycle) | M5 | FR-PORT |
+| `secrets gather / check` | changed (`--sink`) | M5 | FR-SEC |
+| `secrets proxy-config` | new | M5 | FR-SEC |
+| `agent run` | new (`--isolated`, `--local`) | M5 | FR-SEC, FR-AGENT |
+| `status` | changed (beta/prod sha and artifact pair) | M6 | FR-PORT |
+| `portfolio` | new | M6 | FR-PORT |
+| `advisories`, `doctor --advisories` | new | M6 | FR-WIKI |
+| `bench monitor` | new | M6 | FR-EVO |
+| `wiki contribute` | new | M6 | FR-WIKI |
+| `doctor` | changed (rules DR-12…DR-36) | M0 onward, by rule | all |
 | `lanes`, `config`, `deploy`, `migrations scan`, `bump` | unchanged | — | — |
 
 ## 2. Changed commands
@@ -92,7 +97,7 @@ greenlight init [--domain <domain> | --no-domain] [--cf-subdomain <sub>] [--repo
 1. **No-domain mode** is selected by `--no-domain`, or by running `init` without `--domain` when
    there is no TTY to prompt, or when the operator answers the domain prompt with an empty line.
    The explicit flag exists so that scripts and skills can state intent. In this mode `init` writes
-   a manifest without `domain` and with `cloudflareAccountSubdomain: <sub>`
+   a manifest without `domain` and with `cloudflare.prod.accountSubdomain: <sub>` and `cloudflare.beta.accountSubdomain`
    (08 §1.2). If `--cf-subdomain` is absent and a Cloudflare token is available, `init` reads the
    account's workers.dev subdomain from the Cloudflare API
    (`GET /accounts/{id}/workers/subdomain`). If neither is available, it exits 3 with the message
@@ -124,17 +129,21 @@ greenlight add <name> --lane <l> --target <t> [--data <d>] [--auth <a>] [--envs 
    is required for `needs-traffic` and `needs-heal`. For `needs-traffic` (Supabase) the probe is a
    table name, which is written both to `liveness.probe` and to the keepalive target's
    `probeTable`. The entry is validated by the 08 §1.2 rules before anything is written.
-2. **Templates carry the contract (P1).** The scaffold copies the lane template, which now
+2. **Templates carry the contract (M4 for astro, M6 for other lanes).** The scaffold copies the lane template, which now
    implements C1, C2 and C7 for every lane (09 §3). The generated `verify.config.ts` already
    contains checks with ids `identity`, `live` and `ready` (09 §2).
 3. **Project wiki stubs.** `add` writes `wiki/tools/<name>/intent.md` with an empty `criteria`
    list and a `TODO: confirm with the owner` line. It also writes `liveness.md`, filled from the
    flags, and `decisions.md`, with a dated entry recording the cell choice. It appends a `log.md`
    entry with actor `harness`.
-4. **Headroom warning (P3).** Before writing anything, `add` runs the quota projection in 10 §3.3
-   for the quotas the new tool would draw on. If any quota would exceed 80%, it prints the warning
-   and asks for confirmation on a TTY. Without a TTY it requires `--accept-headroom`, and otherwise
-   exits 4.
+4. **Headroom (M4 minimal, M6 full).** Before writing anything, `add` runs the projection in 10
+   §3.3 for the quotas the new tool would draw on.
+   - **Warning.** When any projection reaches 80%, `add` prints it with its basis, and it lists
+     every `unknown` quota with the reason.
+   - **Block.** When an *observed* projection reaches 100%, `add` exits 4 unless
+     `--accept-headroom` is given.
+   - **Unknown.** An unknown or estimate-only projection never blocks, and it never prints as
+     "ok".
 5. **No domain.** When the manifest has no domain, `add` refuses targets other than `workers` and
    `vercel` and exits 2, naming FR-KICK-04.
 
@@ -206,27 +215,58 @@ greenlight verify <name> [--env <env> | --url <url>] [--spec <path>] [--wait <ms
 ### 2.7 `promote`
 
 ```
-greenlight promote <name> [--commit <sha>] [--perform] [--push] [--approval <token>]
-greenlight promote <name> --commit <sha> --approve        # mint an approval record (TTY only; 11 §4.4)
+greenlight promote <name> [--commit <sha>] [--perform] [--push]
 ```
 
 **Current behavior** (`packages/loop/src/promote.ts`) is kept: a gated `develop → main`
-fast-forward, pinned with `--commit`, which refuses if develop has moved. The additions:
+fast-forward, pinned with `--commit`, which refuses if develop has moved. Under 18, moving `main`
+no longer deploys anything by itself, so the fast-forward is a bookkeeping step. Production changes
+come only from the protected job. The additions:
 
-1. **Policy.** The effective policy is `tool.promotion ?? config.promotion ?? 'human'`.
-2. **`human`.** `--perform` requires one of two things. Either the command runs inside the
-   `promote.yml` workflow (`GITHUB_WORKFLOW` equals the promote workflow's name, and
-   `GITHUB_EVENT_NAME` is `workflow_dispatch`, with `GITHUB_ACTOR` not a bot), or `--approval`
-   carries an approval record (11 §4.4). Otherwise it exits 4 with
-   `promotion of <name> is human-only (policy: human); dispatch promote.yml or pass --approval`.
-3. **`auto-on-green`.** `--perform` is allowed when the beta verify for `--commit` passed. That
-   verify is read from the latest `ship` raw record for `(name, beta, sha)`, or from the
-   `verify --expect-sha` run in the same workflow. The schema already restricts this policy to
-   low-stakes tools (ADR-07).
-4. **Stage event.** A `promote` stage event is emitted (08 §7) with `passed` and the promoted sha.
-   Raw capture works as in `ship`.
+1. **Policy.** The effective policy is the owner-approved one: `tool.promotion ?? config.promotion
+   ?? 'human'`, **as of the commit of the last consumed approval** (18 §7). A policy edited since
+   then is reported as `pending` (08 §11.3) and does not take effect until a release carrying
+   `policyChange: true` is approved.
+2. **`human`.** `--perform` runs only inside a protected production job whose verification step
+   accepted an owner-signed approval for `(name, sha)` (18 §3.1), which it checks through
+   `GREENLIGHT_RELEASE_AUTHORIZED` (18 §3.1a). Outside such a job it exits 4 with
+   `promotion of <name> needs an owner-signed approval; run 'greenlight approve <name> --sha <sha>'
+   and have the owner sign it`. The command never accepts a GitHub actor, a TTY, or a flag as
+   evidence of approval.
+3. **`auto-on-green`.** `--perform` is allowed in the protected job when the beta verify for
+   `--commit` passed at that sha, and when the effective policy is `auto-on-green` and the release
+   changes no authority-bearing field (18 §7).
+4. **Stage event.** A `promote` stage event is emitted (08 §7) with `passed`, the promoted sha, the
+   artifact id and the approval nonce.
 
-**Exit codes:** 0; 1 (fast-forward refused, develop moved, or beta unverified); 4 (policy).
+**Exit codes:** 0; 1 (fast-forward refused, develop moved, or beta unverified); 4 (no valid
+approval, or policy).
+
+### 2.7a `approve` (new, M5)
+
+```
+greenlight approve <name> --sha <sha> [--artifact <id>] [--retire] [--policy-change] [--expires 24h] [--json]
+```
+
+This command **prepares** an approval. It never signs one, and it holds no key.
+
+1. It resolves the tool and the commit, and checks that a passing beta verify exists at `sha`. For
+   direct-to-prod tools (oci and docker) it checks for a passing local-gate receipt and the image
+   digest pushed by the tool repo's CI, which becomes `artifact`.
+2. It compares authority-bearing fields at `sha` with those at the last consumed approval (18 §7).
+   If they differ and `--policy-change` was not given, it exits 4 and lists the changed fields.
+3. With `--retire`, it adds the hash of the committed `retire/<name>.json` (10 §5.4).
+4. It prints the `ReleaseApproval` payload (18 §3.1) and the exact command for the **owner** to
+   run on a machine holding the signing key:
+   `git tag -s release/<name>/<sha12>-<nonce> <sha> -F <payload file> && git push origin
+   release/<name>/<sha12>-<nonce>`.
+5. Where the plan supports environment reviewers (18 §3.2), it also prints the link to the pending
+   deployment review.
+
+Running `approve` from an agent session is allowed and useful. The agent prepares the request, and
+only the owner can complete it.
+
+**Exit codes:** 0; 1 (beta or local gate not passed at `sha`); 4 (policy change not declared).
 
 ### 2.8 `status`
 
@@ -295,44 +335,74 @@ to `CLAUDE.md`. The additions:
    and an `AGENTS.md` block with the same content as the `CLAUDE.md` block. Before P7 the flag
    exits 2 with `codex parity is a P7 stretch item`.
 
-### 2.12 `agent run` (new, P4)
+### 2.12 `agent run` (new, M5)
 
 ```
-greenlight agent run [--proxy infisical|worker] [--ttl 8h] [--allow-promote] -- <agent command…>
+greenlight agent run [--isolated | --local] [--proxy infisical|worker] [--ttl 8h] -- <agent command…>
 ```
 
-This command launches an agent CLI (for example `claude`) as a child process behind the credential
-proxy (11 §3).
+This command launches an agent CLI (for example `claude`) behind the credential proxy (11 §3), in
+one of the two trust models of 11 §1.1.
 
-1. It resolves the proxy from `secrets.proxy` in the manifest, or from `--proxy`.
-2. It creates a proxy session (11 §3.3): a session identity with a TTL that defaults to 8h, and the
-   allow-list rendered by `secrets proxy-config`. Without `--allow-promote`, the session's GitHub
-   route denies workflow dispatch of `promote.yml` (11 §3.4).
+- **`--isolated` (model A, default where available).** The agent runs in a container, or as a
+  separate OS user, created for the session.
+  - **Mounted:** the workspace only. The home directory, `~/.ssh`, `~/.config/gh`, git credential
+    helpers, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, the Docker socket and the parent environment are
+    not mounted or inherited.
+  - **Network:** egress is allowed only to the proxy and the package registries. The rule is
+    enforced with the container's network policy or an nftables rule for the session user.
+  - **Missing runtime:** if no container runtime and no separate user is available, the command
+    exits 3. It never falls back to `--local` silently.
+- **`--local` (model B).** The agent runs as a child process of the operator's shell, with its
+  environment replaced. The command prints, every time:
+  `local mode: environment values are replaced, but the agent can still reach your credentials,
+  credential helpers and network. This prevents accidental leakage only.` The session records
+  `trustModel: B`.
+
+In both modes:
+
+1. The command resolves the proxy from `secrets.proxy`, or from `--proxy`.
+2. It creates a proxy session (11 §3.3) for the **agent identity** (18 §2). It refuses with exit 4
+   if the configured GitHub credential belongs to the owner's account.
 3. It builds the child environment:
-   - every `inject`-capable token's `envVar` set to a placeholder of the form
-     `gl-placeholder-<ENV_VAR>`;
-   - `HTTPS_PROXY`/`HTTP_PROXY` for the forward proxy, or `*_BASE_URL` overrides for the Worker
-     proxy (11 §3.2);
-   - `NODE_USE_ENV_PROXY=1`, `NODE_EXTRA_CA_CERTS` (forward proxy only);
-   - `GREENLIGHT_AGENT`, `GREENLIGHT_SESSION`.
-4. It execs the child, forwards signals, and revokes the session on exit.
-5. CI-only tokens (DR-30) are never placed in the child's environment.
+   - each agent-eligible credential's `envVar` holds a placeholder, `gl-placeholder-<ENV_VAR>`;
+   - `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` are set for split routing with the forward proxy,
+     or `baseUrlEnv` overrides for the Worker proxy;
+   - `NODE_USE_ENV_PROXY=1` and `NODE_EXTRA_CA_CERTS` are set for the forward proxy;
+   - `GREENLIGHT_AGENT`, `GREENLIGHT_SESSION` and `GREENLIGHT_TRUST_MODEL` are set.
+4. It starts the child, forwards signals, and revokes the session on exit. In `--isolated` mode it
+   also kills the session's process tree.
+5. CI-only tokens (DR-30), and every production credential, are never placed in the child's
+   environment or in the proxy session.
 
-**Exit code:** the child's exit code. If the proxy prerequisites are missing, it exits 3.
+There is no `--allow-promote` flag. Release does not go through the agent session (18).
 
-### 2.13 `secrets proxy-config` (new, P4)
+**Exit code:** the child's exit code. It exits 3 when proxy or isolation prerequisites are
+missing.
+
+### 2.13 `secrets proxy-config` (new, M5)
 
 ```
 greenlight secrets proxy-config [--format infisical|worker] [--out <dir>] [--check]
 ```
 
-This renders the union of the configured tokens' `inject` specs (08 §12) into the proxy's format
-(11 §4). `--format` defaults to `secrets.proxy` (`--proxy` is accepted as an alias). `--check` exits 1 if the rendered config differs from the deployed one, which makes it a
-drift guard for CI. Output files contain host and route rules only, never values.
+This renders the typed policy (11 §4.2, 08 §12) for every agent-eligible credential into the
+selected proxy's format. `--format` defaults to `secrets.proxy`, and `--proxy` is accepted as an
+alias.
+
+`--check` exits 1 when any of these holds:
+- the rendered policy differs from the deployed one;
+- two credentials could match one request;
+- a production credential would render;
+- any request in the mutation set (11 §4.2) would be forwarded;
+- a client in the support matrix (11 §4.6) lacks a passing test for the chosen format. That client
+  is then reported as CI-only.
+
+Output files contain rules only, never values.
 
 ## 3. New commands
 
-### 3.1 `accounts` (P2)
+### 3.1 `accounts` (M4 minimal, M6 full)
 
 ```
 greenlight accounts [--json] [--offline] [--cell <lane/target/data>]
@@ -343,20 +413,30 @@ greenlight accounts [--json] [--offline] [--cell <lane/target/data>]
 1. It loads the provider packs (`cli/src/providers.ts`) and the secret source (`secrets.sink`).
 2. For each pack, `configured` means every non-optional token name exists in the source. The check
    is done by name only, and the GitHub sink uses `gh secret list`.
-3. Unless `--offline` is given, it runs each pack's `verify()` in turn. This needs the value, so it
-   runs only behind the credential proxy (`agent run`) or in an operator shell that holds the
-   token. If the value is unavailable, `verified` is `null` and the output says why.
-4. For each quota on each pack's `fact` page, it runs the pack's `usage()` function when one exists
-   (08 §12), then computes headroom and consumers (10 §3).
+3. Unless `--offline` is given, it runs each pack's `verify()` in turn. This needs the value, so
+   it runs only where the token is held: in an operator shell or in CI. Agent sessions hold no
+   production credentials (18 §2), so in an agent session `verified` is `null`, and the command
+   reads the last report written by `doctor --live` in CI (artifact `greenlight-accounts.json`)
+   instead.
+4. **Observations (10 §3.2).** It gathers `QuotaObservation`s (08 §11.1):
+   - **observed**, from each pack's `usage()` per concrete account and resource, with history
+     where the provider exposes it;
+   - **declared**, from the manifest.
+
+   It deduplicates by resource, so two tools sharing one store count once. It includes resources
+   that exist in the account but no manifest maps (`outsideGreenlight`). It computes headroom
+   only from observations whose unit matches the fact page. Everything else is `unknown`, with a
+   reason, and an unknown is never shown as safe.
 5. It computes cell availability. A cell is available when every pack that the cell needs is
    configured. The packs a cell needs come from `mcpForTool`-style resolution: Cloudflare always,
    plus the target's pack, the data pack and HCP.
-6. It prints a table to stderr, or the `AccountsReport` (08 §11.1) to stdout with `--json`.
+6. It prints a table to stderr, or the `AccountsReport` (08 §11.2) to stdout with `--json`.
+   Per-project quotas are listed per project, naming the project and its tools.
    `--cell` narrows the report and exits 1 if that cell is unavailable. Kickoff uses this.
 
 **Writes:** nothing. **Exit codes:** 0; 1 (with `--cell`, cell unavailable); 3 (no manifest).
 
-### 3.2 `portfolio` (P3)
+### 3.2 `portfolio` (M6)
 
 ```
 greenlight portfolio [--json] [--offline] [--write]
@@ -364,9 +444,13 @@ greenlight portfolio [--json] [--offline] [--write]
 
 **Behavior.** For each tool in the manifest, plus the blog:
 
-1. **`prod` and `beta` sha.** It GETs the resolved URL plus `/__version` (C1), with a 5s timeout.
-   `verified` is true when the latest `ship` raw record or CI run for that environment at that sha
-   passed. The CI run is found through `gh run list` on the deploy workflow, filtered by `headSha`.
+1. **`prod` and `beta` sha and artifact.** It GETs the resolved URL plus `/__version` (C1), with a
+   5s timeout, and reads `sha` and, where served, the artifact id.
+   - **`verified`** is true when the latest `ship` raw record or CI run for that environment, at
+     that sha **and** artifact, passed. The CI run is found through `gh run list` on the deploy
+     workflow, filtered by `headSha`.
+   - **`approvedBy`** comes from the consumed approval's deployment record (18 §3.1 step 5).
+   - **Unknown evidence.** If the evidence cannot be fetched, `verified` is `null`, never `true`.
 2. **`waiting`.** `git rev-list --count origin/main..origin/develop`, after
    `git fetch origin main develop`. For a cross-repo tool, the command runs in the submodule. For a
    tool without beta (OCI, direct to prod), `waiting` is `null` and the cell reads `n/a (direct)`.
@@ -375,43 +459,55 @@ greenlight portfolio [--json] [--offline] [--write]
    (`infra/modules/keepalive`), when one is exposed. Otherwise it is read from the keepalive's last
    alert-issue state.
 5. **`alerts`.** Open issues carrying the alert sink's label, matched by tool name in the title.
-6. **`quotas`.** As in `accounts`.
+6. **`headroom`.** As in `accounts`.
+7. **`lifecycle`** (`active`, `retiring` or `retired`, 10 §5.1) and **`promotion`** (`effective`
+   and `pending`, §2.7).
 
-It prints one table, and `--json` emits `PortfolioReport` (08 §11.2). `--write` regenerates
+It prints one table, and `--json` emits `PortfolioReport` (08 §11.3). `--write` regenerates
 `wiki/portfolio.md` from the report: one line per tool, carrying the cell, the liveness model, the
 first criterion of `intent.md`, and the prod sha. `--offline` skips steps 1, 4 and 5.
 
 **Exit code:** 0, even when some tools are unhealthy, because the command reports rather than
 gates. It exits 3 when there is no manifest.
 
-### 3.3 `retire` (P3)
+### 3.3 `retire` (M5)
 
 ```
-greenlight retire <name> [--dry-run] [--yes] [--keep-wiki] [--data-waived]
+greenlight retire <name> --start   [--abort]
+greenlight retire <name> --plan    [--dry-run]
+greenlight retire <name> --confirm [--json]
 ```
 
-This removes a tool from the portfolio (10 §5).
+This command implements the retirement lifecycle in 10 §5. Each step is separate, and none of them
+applies infrastructure.
 
-1. It prints what will happen. With `--dry-run` it stops after this step and writes nothing: the manifest entry, the `infra/<name>.tf` file and the resources it
-   instantiates, the keepalive target, the workflows that mention the tool, and the quota that
-   will be freed. Without a TTY and without `--yes`, it exits 2.
-2. It removes the tool's entry from `greenlight.config.ts`, using the `config-io` writer that
-   `add` uses.
-3. It deletes `infra/<name>.tf` and removes the tool from the keepalive targets and the allow-list
-   in `promote.yml`.
-4. It moves `wiki/tools/<name>/` to `wiki/archive/tools/<name>/` (unless `--keep-wiki` is given),
-   adds a `decisions.md` entry with the reason prompted from the operator, and appends a `log.md`
-   entry.
-5. It does **not** apply anything. The operator pushes the change, and `infra.yml` runs plan →
-   destroy-guard → manual approval → apply. That is the existing gated apply from v0.10. The plan
-   shows the destroys, and the guard requires approval, so a retirement cannot remove resources
-   without a human seeing the plan.
-6. It prints the follow-ups: delete the GitHub secrets that are now unused (it lists them), and
-   archive the tool repo if one exists.
+1. **`--start`** moves the tool to `retiring`. It writes `lifecycle: 'retiring'` to the manifest
+   entry and stops the tool's deploys and keepalive target. It builds the inventory (10 §5.2):
+   Terraform-owned, Wrangler-managed, adopted and shared resources, plus secrets. It writes the
+   inventory to `wiki/tools/<name>/retirement.md` and asks for a data disposition for each store
+   (10 §5.3).
+   - Without a TTY, every disposition must be given as `--data <address>=export|keep|delete`.
+   - It refuses to retire a store owner while any `dataShareWith` sharer remains, and exits 4.
+   - `--abort` returns the tool to `active`, which is possible only before an authorized apply.
+2. **`--plan`** removes the tool's Terraform declarations on a branch, pushes it, and waits for
+   CI's read-only `terraform plan`. CI writes `retire/<name>.json` (`RetireAuthorization`, 10 §5.4)
+   with the plan hash and the exact destroy set. The command checks that the destroy set holds no
+   address outside the inventory and no shared store. A mismatch exits 1, with the unexpected
+   addresses listed. It then prints the next step: `greenlight approve <name> --sha <sha>
+   --retire`, signed by the owner. `--dry-run` prints the inventory and the expected destroy set
+   without pushing.
+3. **The authorized apply** runs in the protected job (18 §5 row 10). It is not part of this
+   command.
+4. **`--confirm`** checks every inventory item against state and the provider APIs (10 §5.5) and
+   records outcomes. When every item has an outcome, it removes the manifest entry, moves
+   `wiki/tools/<name>/` to `wiki/archive/tools/<name>/`, keeps `retirement.md` as the record, and
+   lists the secrets that are safe to delete. Items it cannot check are reported as `unverified`,
+   and the tool stays `retiring`.
 
-**Exit codes:** 0; 2; 3 (no such tool).
+**Exit codes:** 0; 1 (unexpected destroy set, or unverified items on `--confirm`); 2; 3 (no such
+tool); 4 (shared store, or missing disposition).
 
-### 3.4 `wiki lint` and `wiki render` (P0)
+### 3.4 `wiki lint` and `wiki render` (M1)
 
 ```
 greenlight wiki lint [--fix] [--strict] [--online] [--similar] [--json] [--framework]
@@ -431,7 +527,7 @@ greenlight wiki render
 - **`render`** regenerates `skill-impact.md` from `ledger.jsonl`, the index, and the criteria
   tables. `render` and `lint --fix` share an implementation.
 
-### 3.5 `wiki capture` (P5)
+### 3.5 `wiki capture` (M1 `--manual`, M3)
 
 ```
 greenlight wiki capture --kind <kind> --tool <name> --env <env> --passed <bool>
@@ -454,7 +550,7 @@ that keepalive alerts, CI steps and bench runners can write raw records. It appl
 (`TRACER_URL` plus an ingest token, the existing `stageEventToIngest` path), it also POSTs the
 record. This is best-effort, with a 5s timeout, and never fails the command.
 
-### 3.6 `wiki lookup` (P5)
+### 3.6 `wiki lookup` (M3)
 
 ```
 greenlight wiki lookup [--check <id|name>]… [--class <class>] [--cell <lane/target/data>] [--tool <name>]
@@ -487,7 +583,7 @@ greenlight wiki lookup --role maintainer|proposer [--skill <name>] [--json]
 target skill's files (06 §2, §3). These are the only invocations that may return incident pages.
 They are used by the `greenlight-wiki` skill and never by building skills.
 
-### 3.6a `wiki context` (P0) — the on-start hook
+### 3.6a `wiki context` (M3) — the on-start hook
 
 ```
 greenlight wiki context <name> [--json]
@@ -507,7 +603,7 @@ It never includes incidents. With `--json` the output is
 manifest entry and `no project wiki for <name>: run greenlight wiki lint --fix to stub it`, and
 exits 0, so that a hook never blocks work.
 
-### 3.6b `wiki read` (P0)
+### 3.6b `wiki read` (M1)
 
 ```
 greenlight wiki read <page-id> [--json]
@@ -518,7 +614,7 @@ is not found locally. A `superseded` id is followed to its replacement, with a n
 `hypothesis` page is printed with a banner reading `HYPOTHESIS — not guidance`. Incident ids are
 refused (exit 4) unless `--role maintainer` is also given.
 
-### 3.6c `wiki incident open` (P5) — the on-incident hook
+### 3.6c `wiki incident open` (M3) — the on-incident hook
 
 ```
 greenlight wiki incident open --tool <name> --ref <EvidenceRef> [--title <t>]
@@ -530,7 +626,7 @@ first timeline entry. It also captures the ref as a raw record (`wiki capture --
 `--from-run`) and appends a log entry. `close` sets `closed`. It does not mark anything
 `confirmed`, because confirmation is a maintainer step that needs red-to-green evidence (04 §4).
 
-### 3.6d `wiki traces` (P6)
+### 3.6d `wiki traces` (M2)
 
 ```
 greenlight wiki traces [--failing|--passing] [--tool <name>] [--skill <name>@<version>] [--limit 20]
@@ -541,7 +637,7 @@ This is the proposer's read-only trace access. It follows the paper: no pre-samp
 proposer reads them on demand (06 §3). The list form prints `rawId`, tool, kind, passed, skills and
 age. `show` prints one redacted raw record. Neither form writes anything.
 
-### 3.6e `wiki stats` (alias `wiki metrics`) (P5)
+### 3.6e `wiki stats` (alias `wiki metrics`) (M3)
 
 ```
 greenlight wiki stats [--metric first-pass|rollback|push-to-healthy|settle-retries|cold-edit] [--skill <name>]
@@ -562,7 +658,7 @@ Metrics are grouped by `--by`, defaulting to the skill version. These numbers ar
 monitor (ADR-05). The evolution monitor workflow `evo-monitor.yml` uses them to raise a
 `greenlight-evo-alarm` issue (06 §7). They never gate a change.
 
-### 3.7 `wiki ingest` (P5)
+### 3.7 `wiki ingest` (M1 manual bundles, M3)
 
 ```
 greenlight wiki ingest [--sample 5:3] [--since <date>] [--tool <name>] [--incident <incident-id|EvidenceRef>]   # prepare
@@ -599,7 +695,7 @@ bundle and writes `maintainer-output.json` (08 §9.1).
 **Exit codes:** 0; 1 (validation failed, nothing written); 4 (an attempt to write `ledger.jsonl` or
 `skill-impact.md`).
 
-### 3.8 `wiki propose` and `wiki remediate` (P5 issue path, P6 skill path)
+### 3.8 `wiki propose` and `wiki remediate` (M1–M2)
 
 ```
 greenlight wiki propose [--skill <name>] [--pattern <id>]…                    # prepare proposer bundle
@@ -646,7 +742,7 @@ as ingest.
 Ledger writes happen only inside these commands and `bench gate`. Those code paths are what
 "harness" means in LR-14.
 
-### 3.9 `wiki contribute` (P5)
+### 3.9 `wiki contribute` (M6)
 
 ```
 greenlight wiki contribute <page-id> [--repo RTrentJones/greenlight]
@@ -657,7 +753,7 @@ opening anything, it runs LR-19 (`check-seam`), LR-20 (secret detector) and LR-0
 any failure exits 1. It forces `status: hypothesis` on the copy (12 T-02). The PR body lists the
 evidence refs, and the PR goes through normal human review. Nothing in this command merges.
 
-### 3.10 `bench` (P6)
+### 3.10 `bench` (M1–M2; `monitor` M6)
 
 ```
 greenlight bench run [--split val] [--tasks <glob>] [--model <id>]… [--runs 3] [--skills-ref <git-ref>] [--json]

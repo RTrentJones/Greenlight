@@ -1,733 +1,505 @@
 # 14 — Roadmap
 
-This document orders the work into eight phases, `P0` to `P7`. Each phase is broken down into
-items small enough for one pull request. For each item it gives the files it touches, the tests
-that prove it, and the requirement and rule IDs it satisfies. All eight phases are in scope:
+## 1. How this roadmap works
 
-- `P0`–`P5` are the core and run in order.
-- `P6`, the evolution loop, is in scope but runs last, because it builds on everything before it
-  and costs the most.
-- `P7`, Codex parity, is a stretch goal.
+The WikiSkill cycle (06 §0, ADR-14) is the method that drives Greenlight's improvements. It is
+also the first thing built. The roadmap therefore has two parts:
 
-From `P0` onward the work follows the constraints that keep `P7` possible (FR-AGENT-01, ADR-02).
+- **M0–M2 build the smallest complete cycle.** M0 closes the contracts it needs. M1 bootstraps a
+  small wiki and a handful of mutation-tested, credential-free fixtures. M2 runs one complete
+  iteration: training rollouts → maintainer → one atomic proposal → outlet-specific evaluation →
+  ledger → owner review.
+- **M3–M7 are the work that cycle is expected to drive.** Each item lists the pattern or proposal
+  that motivates it. An item is started when the cycle produces or confirms that motivation, and
+  it is evaluated by its outlet's acceptance rule (06 §5.6). A cycle may show that an item is
+  unnecessary or should take another form. The item is then closed with that ledger reference
+  (13 §6), and that counts as progress.
 
-## 1. Release model
+**The first cycle comes before portfolio operations, before the new secret platform, and before
+automatic evidence capture.** None of those is a prerequisite for evaluating local fixtures. The
+first fixtures run on a laptop or a CI runner with no provider accounts and no secrets.
 
-Every phase ships through the normal framework release. `node scripts/release.mjs <version>` bumps
-the npm version and `MODULE_REF` together (lockstep), and consumers pick the release up with
-`pnpm update @rtrentjones/greenlight && pnpm greenlight bump`. Because the framework wiki and skills
-now ship inside the package (ADR-04), every release also carries the matching wiki and skill
-versions.
+**No milestone promises a version number (ADR-19).** A release is cut, and numbered, when a
+milestone's items merge. Every exit drill runs against a clean installation of that milestone's
+own release, using only the prerequisites listed for it (13 §1, principle 6). No drill may rely on
+an unpublished command, a later schema or a later milestone's tooling.
 
-The current release is `0.10.1`. The plan assigns one minor version per phase:
+**No exit criterion requires an accepted proposal.** An iteration passes when it reaches a
+reviewed, reproducible decision. A justified rejection or `no_action` passes (ADR-14).
 
-| phase | release | consumer action after `pnpm update` |
+**Release-authority gaps block deployment work, not the cycle.** M0 records the gaps in 18 as
+blocking issues. Every deployment-related item before M5 links to them. That covers anything that
+deploys beyond a local preview or a beta in the separate beta account. The cycle itself (M1–M2)
+deploys nothing.
+
+### 1.1 Mapping from the earlier phases
+
+| earlier phase (first draft) | where its work lives now | why it moved |
 |---|---|---|
-| P0 | 0.11.0 | `greenlight agent sync`; commit the seeded `wiki/` |
-| P1 | 0.12.0 | re-run `greenlight add` dry-run diff for existing tools (optional); fix new DR warnings |
-| P2 | 0.13.0 | add `liveness` to every tool (DR-20 becomes an error in 0.14) |
-| P3 | 0.14.0 | none required |
-| P4 | 0.15.0 | `greenlight secrets migrate --to infisical` (optional; GitHub-only remains valid) |
-| P5 | 0.16.0 | none required; raw capture starts automatically |
-| P6 | 0.17.0 | none; the bench runs in the framework repo |
-| P7 | 0.18.0 | `greenlight agent sync` again to write `.agents/` |
-
-**Upgrades across a 0.x minor must be explicit.** The pattern `caret-zero-major` (15
-§2.4) shows that `^0.10.0` will not pick up 0.11.0. Each phase's release notes therefore MUST tell
-consumers to run `pnpm add @rtrentjones/greenlight@^0.<n>.0`. DR-33 flags the gap once the wiki
-exists.
+| P0 memory | M1 (wiki engine, cycle seeds), M3 (project wikis, PURPOSE.md, context) | the cycle needs a minimal wiki first; project memory is an expected outlet of the cycle |
+| P1 contract in templates | M4 (astro), M6 (other lanes) | one creation path first, proven end to end |
+| P2 vibe-code flow | M4 | depends on the Astro runtime design (09) and beta-only provisioning (18) |
+| P3 portfolio | M6 (portfolio, quota), M5 (retirement) | not needed to evaluate fixtures; retirement needs the plan-bound lifecycle (ADR-18) |
+| P4 secrets | M5 | one credential integration is prototyped with an explicit trust model before a general platform is chosen |
+| P5 learning from failures | M1–M3 | maintainer and ledger are part of the first cycle; automatic capture is not |
+| P6 evolution loop | M0–M2 (first cycle), M6 (scale) | the method comes first (ADR-14) |
+| P7 Codex | M7 | unchanged, still a stretch goal |
 
 ## 2. Dependency graph
 
 ```
-P0 memory ──▶ P1 contract ──▶ P2 vibe-code ──▶ P3 portfolio ──▶ P4 secrets ──▶ P5 learning ──▶ P6 evolution
-   │                              ▲   │                              │              ▲
-   │                              │   └──────────────▶ (P3 reads accounts) ──────────┘ (P5 uses proxy env)
-   └──── P0 portability constraints ─────────────────────────────────────────────▶ P7 Codex (stretch)
+M0 contracts ──▶ M1 wiki + fixtures ──▶ M2 first iteration ──┬──▶ M3 cold edits + incident prevention ──┐
+                                                              │                                        ├──▶ M6 scale
+                                                              └──▶ M4 one creation path ───────────────┤
+                                                                         │                             │
+                                                                         └──▶ M5 release authority, ───┘
+                                                                              retirement, credentials
+M7 Codex (stretch) ◀── M3 (portable skills, CLI-first queries)
 ```
 
-The hard dependencies are:
-
-- P1 needs P0's contract pages, because templates and doctor rules cite them.
-- P2 needs P1's templates, so that kickoff scaffolds a contract-compliant tool, and P0's `intent`
-  schema.
-- P3 needs P2's `accounts` and quota usage probes.
-- P4 needs P2's kickoff, because Infisical setup is a kickoff step, and P3's portfolio, because
-  promotion approval is surfaced there.
-- P5 needs P4, so that captured traces contain placeholders rather than secrets, and P0's wiki
-  parser.
-- P6 needs P5's raw capture and maintainer, and P1's templates, because bench fixtures come from
-  them.
-- P7 needs only P0's portability constraints, so it can be pulled forward at any point after P0.
+- M3 and M4 can proceed in parallel after M2.
+- M5 depends on M4, because the creation path is the first thing that needs a protected production
+  path. Its blocking issues exist from M0.
+- M6 depends on M2 having shown **discrimination** (the control rejected) and an affordable cost
+  per iteration (01 §5).
 
 ## 3. Sequencing summary
 
-| phase | goal | PR items | depends on | release | exit drill |
-|---|---|---|---|---|---|
-| P0 | durable memory for every project and skill | 9 | — | 0.11.0 | cold edit, Claude (§P0.4) |
-| P1 | every new tool is self-verifying by construction | 7 | P0 | 0.12.0 | `add` per lane passes C1/C2 on first preview |
-| P2 | idea → beta URL on free accounts, no domain | 9 | P0, P1 | 0.13.0 | newcomer drill (§P2.4) |
-| P3 | see and control the whole portfolio | 6 | P2 | 0.14.0 | portfolio matches reality; retire frees resources |
-| P4 | agents never hold raw credentials | 8 | P2, P3 | 0.15.0 | newcomer drill with no raw secret; unapproved promote refused |
-| P5 | failures become patterns and links | 7 | P0, P4 | 0.16.0 | reintroduced fault links to the right pattern |
-| P6 | skills improve only by measured change | 9 | P1, P5 | 0.17.0 | one full evolution run with ≥1 accepted change |
-| P7 | Codex can do everything Claude can (stretch) | 4 | P0 | 0.18.0 | cold edit and newcomer drill with Codex |
+| milestone | goal | items | prerequisites | exit drill (13 §3) |
+|---|---|---|---|---|
+| M0 | contracts the first iteration needs | 8 | — | contracts close |
+| M1 | a small wiki and fixtures that discriminate | 9 | M0 | fixtures discriminate |
+| M2 | one complete WikiSkill iteration | 5 | M1 | first iteration, with control arm |
+| M3 | cold edits and incident prevention, driven by the cycle | 9 | M2 | cold edit, two tools |
+| M4 | one creation path: Astro + Workers + D1, no domain, beta only | 9 | M2 (M3 for context tooling) | newcomer drill |
+| M5 | release authority, retirement and credentials, through evaluated proposals | 8 | M4 | release-authority and isolation suite |
+| M6 | scale the established loop | 9 | M3, M4, M5; M2 discrimination shown | scale |
+| M7 | Codex parity (stretch) | 4 | M3 | Codex cold edit and newcomer |
 
 ---
 
-## P0 — Memory
+## M0 — Contracts for the first iteration
 
-**Goal.** Give every project and every skill a durable, checkable memory before building anything
-that depends on it. The phase delivers the wiki schema and tooling, the seeded framework wiki, the
-project wikis for the six live tools, and a `PURPOSE.md` for every existing skill, the loop skill
-included.
+**Goal.** Every schema and interface the first iteration touches is closed, validated and tested,
+so that M1 and M2 can be built without inventing contracts on the way. The executable boundaries
+of every later milestone are fixed.
 
-### P0.1 Work breakdown
+**How the cycle selects this work.** The cycle cannot run yet. M0 is the only milestone whose
+items are fixed in advance, and they are limited to what 06 §10 requires.
 
-**P0-01 — `packages/wiki`: page parsing and schemas.**
-- Files: `packages/wiki/{package.json,tsconfig.json,src/index.ts,src/schema.ts,src/parse.ts,src/ids.ts}`;
-  the root `pnpm-workspace.yaml` already globs `packages/*`.
-- Content: zod schemas for every page type in 08 §3, an `EvidenceRef` parser, and id normalization
-  (`patterns/x` ↔ `pattern/x`, 04 §2.1).
-- Tests: `packages/wiki/src/__tests__/schema.test.ts`, which covers every page type valid and
-  invalid, rejects unknown fields, and rejects a `superseded` page without `supersededBy`.
-- Satisfies: FR-WIKI area, LR-01, LR-02, LR-06.
-- The package is `private` and bundled into the CLI via tsup `noExternal`, like the other framework
-  libraries. `check-boundaries` MUST be extended so that `packages/wiki` imports only from
-  `packages/shared`.
+### M0 items
 
-**P0-02 — `wiki lint` and `--fix`.**
-- Files: `packages/wiki/src/lint.ts`, `cli/src/commands/wiki.ts` (subcommand `lint`), and the
-  dispatch case in `cli/src/bin.ts`.
-- Content: rules LR-01 to LR-21, except LR-14, which is stubbed until P6 writes ledgers. `--fix`
-  regenerates the index, fixes ids and writes back-links. `--online` resolves `EvidenceRef`s through
-  `gh`.
-- Tests: `packages/wiki/src/__tests__/lint.test.ts`, with one fixture wiki per rule that passes and
-  one that fails, and a golden-file test for the generated index.
-- Satisfies: FR-WIKI, DR-28.
+**M0-01 — Verify check `id` and the `meta` export.** (FR-BUILD-03)
+- Files: `packages/verify/src/types.ts`, `validate.ts`, `index.ts`, `export.ts`, and the
+  verify-config loader in `cli/src/commands/verify.ts`.
+- Change: accept `id` on `VerifySpecBase` and `ApiCheck` (08 §6), and reject duplicates. Copy the id
+  to `VerifyCheck` and to `eval.check_id`. The loader preserves the named `meta` export. A
+  function-form config is evaluated once per context (`preview`, `beta`, `prod`) to report its
+  invariant coverage.
+- Tests: 13 §2.1, verify `id` and `meta` row. The regression case is the current
+  `unsupported field "id"`.
 
-**P0-03 — Wiki in the package, and the version check.**
-- Files: `cli/scripts/copy-assets.mjs` (copy `wiki/` → `cli/dist/assets/wiki/` and write `VERSION`),
-  `scripts/check-plugin-sync.mjs` (mirror `wiki/` to `plugin/wiki`), and `cli/src/commands/agent.ts`
-  (materialize `.greenlight/wiki/framework/`).
-- Tests: `cli/src/__tests__/agent-kit.test.ts` (materialization), plus a new case in
-  `doctor.test.ts`.
-- Satisfies: FR-WIKI, FR-SKILL, DR-12, DR-13.
+**M0-02 — Evidence identity and the raw record.** (FR-WIKI-09, FR-LOOP-05)
+- Files: `packages/shared/src/evidence.ts` (new), plus `packages/loop/src/ship.ts` for the
+  `StageEvent` fields only.
+- Change: implement `EvidenceIdentity` (08 §5.1): source repo, wrapper/config revision,
+  environment, run, attempt, change identity, `dirty` and `treeHash`, artifact identity,
+  `skills.installed` and `skills.used` (`"unknown"` when the agent cannot report it). Implement
+  `RawRecord` (08 §5.2). `StageEvent` gains `rawId` and `skills` as optional fields only.
+- Tests: 13 §2.1; the dirty-tree and attempt cases of 13 §2.9.
 
-**P0-04 — `doctor` runs wiki lint.**
-- Files: `cli/src/commands/doctor.ts`.
-- Content: add the `wiki lint` result as one check with sub-findings. Errors fail, and warnings
-  fail only under `--strict`.
-- Tests: `doctor.test.ts`.
-- Satisfies: DR-28.
+**M0-03 — Task, baseline and evaluation schemas.** (FR-EVO-11, FR-EVO-12, FR-EVO-17)
+- Files: `packages/wiki/src/schema/bench.ts` (new package skeleton, 03 §3).
+- Change: implement `TaskSpec` with every kind (`capability`, `replay`, `loop`, `wiki`, `routing`,
+  `portfolio`, `mechanism`), grader kinds and `state` (`pending`, `active`, `quarantined`).
+  Implement `TrajectoryEvent` (08 §10.2), `BaselineIdentity` (08 §10.3), `EvaluationRecord`
+  (08 §10.4) and `Budget` (08 §10.5).
+- Tests: 13 §2.1, `TaskSpec` row.
 
-**P0-05 — Seed the framework wiki.**
-- Files: `wiki/**`, holding the pages drafted in 15 §2–§5: 20 patterns, 12 decisions, 7 contract
-  pages, fact skeletons and 2 incidents.
-- Content: shrink each provider skill's footgun paragraph to a one-line rule plus a link, under the
-  one-home rule (04 §7).
-- Tests: `wiki lint` is clean, and `check-seam` passes on `wiki/` (LR-19).
-- Satisfies: FR-WIKI.
+**M0-04 — Ledger events.** (FR-EVO-06, FR-EVO-15)
+- Files: `packages/wiki/src/schema/ledger.ts`.
+- Change: one append-only event per stage (`no-action`, `candidate-rejected`,
+  `candidate-accepted`, `merged`, `released`, `verified-in-production`, `withdrawn`, `spend`,
+  `release-check`). Each event carries `path` (`standard`, `safety-fix` or `neutral`) and
+  `control`. Gate evidence carries one result per model and mode (08 §8).
+- Tests: stage-order and single-result-rejection cases (13 §2.1, §2.7).
 
-**P0-06 — `PURPOSE.md` for every existing skill.**
-- Files: `.claude/skills/*/PURPOSE.md` for `deploy-verify-promote` and the nine provider skills,
-  plus the mirrors under `plugin/skills/`.
-- Content: the frontmatter per 08 §2.2. `deploy-verify-promote` gets `blast-radius: high` and
-  `hooks: [on-start, on-failure, on-complete, on-incident]`. Provider skills get
-  `blast-radius: medium` and `hooks: [on-failure]`. Each `cites` the seeded patterns behind its
-  rules.
-- Tests: LR-11, LR-12 and LR-13 are clean.
-- Satisfies: FR-SKILL.
+**M0-05 — Maintainer and proposer I/O.** (FR-EVO-03)
+- Files: `packages/wiki/src/schema/io.ts`.
+- Change: `MaintainerOutput` (08 §9.1), and `ProposerOutput` with multi-file patches, where each
+  edit names `SKILL.md`, `PURPOSE.md` or a template path (08 §9.2).
+- Tests: 13 §2.1, multi-file patch row.
 
-**P0-07 — Portability pass on skills.**
-- Files: `.claude/skills/*/SKILL.md`.
-- Content:
-  - Remove any frontmatter beyond `name`, `description` and `version`.
-  - Move any rule that depends on Claude Code tools into a sentence that works for any agent.
-  - Add the portability rule to `docs/development.md`.
-  - Add a lint step, `pnpm check-skill-portability`, which fails on extra frontmatter keys.
-- Tests: the new script runs inside `check-all`.
-- Satisfies: FR-AGENT-01.
+**M0-06 — Pattern schema with `affects` and `relevance`.** (FR-WIKI-08)
+- Files: `packages/wiki/src/schema/pages.ts`.
+- Change: 08 §3. `affects` and `relevance` replace `applies`. Decision and contract pages carry
+  `skills[]`, so that LR-11 back-links hold for every cited page.
+- Tests: 13 §2.1, page-schema row.
 
-**P0-08 — Project wiki scaffolding.**
-- Files: `cli/src/commands/wiki.ts` (`wiki init`), templates under `cli/assets/wiki-project/`, and
-  `adopt.ts` and `add.ts`, which call `wiki init <name>` and write the pointer block into the tool
-  repo's `CLAUDE.md` (04 §2.2).
-- Tests: `add.test.ts` and `adopt.test.ts` assert that the stubs and pointer block exist.
-- Satisfies: FR-WIKI, LR-21.
+**M0-07 — Executable boundaries.**
+- Files: this document, and `docs/vision/13-test-and-acceptance.md`.
+- Change: confirm that each milestone's drill uses only its listed prerequisites. A CI script,
+  `scripts/check-roadmap-prereqs.mjs`, parses the "prerequisites" and "drill uses" lists below and
+  fails if a drill names a command or schema introduced in a later milestone.
+- Tests: the script runs in `check-all`.
 
-**P0-09 — Project wiki for the six live tools (wrapper PR).**
-- Files: in `RTrentJones.dev`, `wiki/**` from 15 §6–§7.
-- Content: shrink the verify-config header comments in `verify/*.config.ts` and
-  `apps/blog/verify.config.ts` to one line plus a link to `intent.md`.
-- Tests: `pnpm greenlight doctor --strict` is green in the wrapper.
-- Satisfies: FR-WIKI.
+**M0-08 — Release-authority blocking issues.** (FR-LOOP-06, FR-SEC-05)
+- Files: none in the repo. The item creates GitHub issues on the framework repo, labelled
+  `blocks-deploy`, one per row group of 18's matrix. Every deployment-related item in M3–M6 links
+  to them.
 
-### P0.2 Dependencies and release
-
-P0 has no dependencies, and it releases as 0.11.0. P0-09 lands in the wrapper after the 0.11.0 bump.
-
-### P0.3 Risks
-
-- **Seeding copies knowledge rather than moving it.** That would create a fifth copy that drifts.
-  Mitigation: every seed PR also shrinks its source (P0-05, P0-09), and review checks this.
-- **Lint is too strict for hand-written pages.** Mitigation: the length limits are warnings
-  (LR-04). Only structural rules are errors.
-
-### P0.4 Exit drill
-
-A fresh Claude Code session receives the wrapper and the request "add a check that BAMCP's demo BAM
-still loads after a cold start". It reads `wiki/tools/bamcp/intent.md`, adds a check with an `id`,
-adds the criterion's check-id mapping, and gets a green `greenlight preview bamcp`. No operator
-hint beyond the request is allowed. The drill passes if the change is correct and nothing the agent
-needed was missing from the wiki. Missing knowledge found by the drill becomes a P0 fix.
+**Prerequisites:** none. **Drill uses:** `pnpm test`, the contract fixtures. **Exit drill:**
+13 §3 M0.
 
 ---
 
-## P1 — The self-verifying app contract in templates
+## M1 — Bootstrap the wiki and the evaluation fixtures
 
-**Goal.** Every tool created by `greenlight add` satisfies clauses C1, C2 and C7 of the app contract
-(09) by construction. `doctor` enforces the clauses that can be checked statically.
+**Goal.** The minimum wiki and bench needed for one iteration exist and are shown to discriminate.
+Everything is local and credential-free, and it starts from the existing skills and the existing
+framework tests.
 
-### P1.1 Work breakdown
+**How the cycle selects this work.** The items are fixed by 06 §10.1. The seed content is limited
+to the patterns that iteration needs, plus the evidence that their remediations are verified.
 
-**P1-01 — astro template.**
-- Files: `tools/_template-astro/src/pages/__version.ts` (serves `GREENLIGHT_SHA`),
-  `src/pages/health/live.ts` and `src/pages/health.ts`, plus a new
-  `tools/_template-astro/verify.config.ts` whose checks carry `id`s and C7 markers.
-- Tests: `template-astro.test.ts` builds the template and runs verify against a local preview.
-- Satisfies: FR-BUILD, C1, C2, C7.
+### M1 items
 
-**P1-02 — next template.**
-- Files: `tools/_template-next/app/__version/route.ts` (`VERCEL_GIT_COMMIT_SHA`, falling back to
-  `GREENLIGHT_SHA`), `app/health/live/route.ts`, and `app/health/route.ts`, which checks the
-  database only when `data != none`.
-- Tests: `template-next.test.ts`.
-- Satisfies: C1, C2, C7.
+**M1-01 — Minimal `packages/wiki`.** (FR-WIKI-01, FR-WIKI-04)
+- Modules: `parse`, `ids`, `lint` (LR-01, LR-02, LR-03, LR-05, LR-06, LR-08, LR-11, LR-12, LR-14,
+  LR-19, LR-20 only), `patch` (the atomic op engine), `ledger` (append and render) (03 §3).
+- Tests: 13 §2.2. Lint fixtures cover only the rules listed here. The remaining rules land in M3.
 
-**P1-03 — mcp templates (workers and oci).**
-- Files: `tools/_template-mcp/{workers,oci}/…`, serving `/mcp/__version`, `/mcp/health/live` and
-  `/mcp/health`, which matches BAMCP and Polyphony prod.
-- Tests: `template-mcp.test.ts`.
-- Satisfies: C1, C2, C7.
+**M1-02 — Seed the cycle's wiki.** (FR-WIKI-10)
+- Content: 3–5 `confirmed` patterns, each with a verified remediation and lint-clean, for example
+  `settle-greenlights-previous-deploy` and `keepalive-probe-cached`. Add the hypotheses
+  `keepalive-probe-misses-postgres`, `neon-never-sleeps` and `probe-touches-wrong-layer`, and the
+  two incident pages (15 §2, §7). Framework prose is anonymized, and evidence links are kept
+  through the LR-19 exception.
+- Tests: the seed passes `wiki lint --strict` (13 §2.2, "seeds pass actual lint").
 
-**P1-04 — agent template alignment.**
-- Files: `tools/_template-agent/src/index.ts`.
-- Content: split the existing `/health` into `/health/live` and `/health`, and add a per-producer
-  freshness field (C4) and recorded-success semantics (C5).
-- Tests: `template-agent.test.ts`, which already exists, is extended.
-- Satisfies: C2, C4, C5.
+**M1-03 — Fixture tools and fake stores.**
+- Files: `bench/fixtures/supabase-shaped/`, `bench/fixtures/neon-shaped/` (fake stores that count
+  queries and model idle timers), `bench/fixtures/loop-tool/`.
+- Tests: unit tests for the fakes' idle and query accounting.
 
-**P1-05 — Doctor rules DR-24, DR-25, DR-26.**
-- Files: `cli/src/commands/doctor.ts`, plus `packages/verify/src/inspect.ts`, a new module that
-  loads a verify config statically without running it.
-- Rules:
-  - DR-24 warns when a tool's verify config has no `/__version` check, or no
-    `requireIdentity: true` on a prod path.
-  - DR-25 warns when a tool with a cron or feed lacks a `maxAgeHours` assertion. A tool is detected
-    as having one through `wrangler.toml` triggers, `vercel.json` crons, or the `agent` lane.
-  - DR-26 warns when a function-form config branches on `ctx.env` but no check is marked
-    environment-invariant.
-- Tests: `doctor.test.ts`.
+**M1-04 — First tasks, graders and mutants.** (FR-EVO-02, FR-EVO-12)
+- Tasks:
+  - `replay/keepalive-probe-reaches-store`;
+  - `replay/idle-probe-leaves-store-asleep`;
+  - `wiki/probe-layer-incidents` (maintainer grader);
+  - `loop/fixture-preview-before-push` (trajectory grader).
 
-**P1-06 — Doctor rules DR-20 to DR-23 (liveness), warn-only in P1.**
-- Files: `cli/src/commands/doctor.ts`.
-- Content: replace the inline "keepalive coverage" computation at `doctor.ts:290` with liveness
-  rules that read the manifest `liveness` field. That field is added to the schema in P2-01, so in
-  P1 the rules infer the model from `data` and `target` and only warn.
-- Tests: `doctor.test.ts`.
-- Satisfies: FR-PORT.
+  Each task has train and val variants (06 §10).
+- Graders live in `bench/graders/<taskId>/` and mutants in `bench/mutants/<taskId>/`. The mutants
+  include both overgeneralized rules and the historical faults.
+- Tests: `bench check-graders` (13 §2.7).
 
-**P1-07 — Contract pages wired to their enforcers.**
-- Files: `wiki/contract/c*.md`, updated so `enforcedBy` names the template paths and DR ids.
-- Tests: `wiki lint`.
+**M1-05 — Bench runner with isolated rollout and grading.** (FR-EVO-01, FR-EVO-10)
+- Files: `cli/src/commands/bench.ts`, `packages/wiki/src/bench/{runner,sandbox,shims,grade}.ts`,
+  and `bench/runner/Dockerfile`.
+- Change:
+  - the rollout container, unprivileged and with no grader mount;
+  - trajectory shims that write through a channel the agent cannot edit;
+  - process-tree kill, then a separate grading container over a read-only mount;
+  - isolation mode only (production mode lands in M3).
+- Tests: the rollout isolation and trajectory cases of 13 §2.7.
 
-### P1.2 Dependencies, release, exit
+**M1-06 — Training rollouts and baselines.** (FR-EVO-09, FR-EVO-11)
+- Change: `bench run --split train` under the accepted skill set, keyed by `BaselineIdentity`.
+  `bench run --split val` writes baselines. Invalidation follows 06 §1.5.
+- Tests: the baseline invalidation case of 13 §2.7.
 
-- **Dependencies:** P0 (contract pages, lint).
-- **Release:** 0.12.0.
-- **Exit:** for each lane (astro, next, mcp/workers, mcp/oci, agent), `greenlight add t-<lane> …`
-  followed by `greenlight preview t-<lane>` passes C1 and C2 on the first run, with no edits.
+**M1-07 — Maintainer and proposer bundles with split isolation.** (FR-WIKI-06, FR-EVO-03,
+FR-EVO-04, FR-EVO-10)
+- Files: `cli/src/commands/wiki.ts` (`ingest`, `propose`, `read`, `traces`).
+- Change: bundles built from an allow-list (06 §1.4), with prompts as in 06 §2.2 and §3.3. The
+  sandbox holds the bundle only.
+- Tests: the split isolation case of 13 §2.7.
 
-### P1.3 Risks
+**M1-08 — Gate, policy table and recompute.** (FR-EVO-05, FR-EVO-17)
+- Files: `packages/wiki/src/bench/gate.ts`.
+- Change: 06 §5.1–§5.4 and §5.6, writing `EvaluationRecord`s, and
+  `bench gate --recompute <hash>`.
+- Tests: policy boundary vectors (13 §2.8) and the recompute case (13 §2.7).
 
-- **Template changes surprise existing adopted tools.** Mitigation: they do not, because templates
-  apply only to new tools. Existing tools see new DR warnings, which are fixable one at a time.
-- **Vercel previews do not carry the sha.** Mitigation: the next template's `/__version` reads
-  `VERCEL_GIT_COMMIT_SHA`, which Vercel sets on git-integration builds. A local preview reports
-  `null`, and the check is skipped there, matching HeistMind's existing behavior.
+**M1-09 — Per-gate budget caps.** (FR-EVO-18)
+- Change: `perGateMaxUsd` and `perGateMaxRollouts` from `bench/budget.json`. Spend is written as
+  ledger `spend` events. The `greenlight-evo` concurrency group is declared in a workflow stub.
+  Monthly budgets land in M6.
+- Tests: 13 §2.7, budget case.
 
----
-
-## P2 — The vibe-code flow
-
-**Goal.** Someone with only free accounts, and no domain, goes from a one-sentence idea to a beta
-URL. Their acceptance criteria are recorded and executable, their complaints become checks, and
-prod changes only when they say so.
-
-### P2.1 Work breakdown
-
-**P2-01 — Manifest schema changes.**
-- Files: `packages/shared/src/schema.ts`.
-- Content: make `domain` optional; add `cloudflareAccountSubdomain`, `promotion`, `liveness`,
-  `wiki` and `kind`; add the consistency rules in 08 §1.2.
-- Tests: `packages/shared/src/__tests__/schema.test.ts`, covering every new rule in both directions.
-- Satisfies: FR-KICK-04, FR-PORT.
-
-**P2-02 — No-domain URL resolution and adapters.**
-- Files:
-  - `packages/shared/src/url.ts` (08 §1.3);
-  - `packages/adapters/src/index.ts`: for workers, beta becomes the `<name>-beta` Worker; for
-    vercel, `url()` reads the project alias;
-  - `cli/src/commands/init.ts`, which accepts an absent `--domain`, asks for the workers.dev
-    subdomain, and skips zone tokens;
-  - the `infra/modules/*` emit paths in `cli/src/tf-emit.ts`, which emit no DNS when the domain is
-    absent.
-- Tests: `url.test.ts`, `tf-emit.test.ts`, and an `init` no-domain case.
-- Satisfies: FR-KICK-04, ADR-09.
-
-**P2-03 — Verify check `id`.**
-- Files: `packages/verify/src/{types.ts,validate.ts,export.ts,api.ts,mcp.ts}` (08 §6).
-- Tests: `verify-config.test.ts`, covering a duplicate id, a wrong-typed id, and the id appearing
-  in the report and as `eval.check_id`.
-- Satisfies: FR-BUILD, LR-15.
-
-**P2-04 — Provider usage probes.**
-- Files: `cli/src/providers.ts`, where each pack gains an optional `usage` function (08 §12).
-- Content: implement usage probes only where the provider exposes a documented usage API; packs
-  without one report `null`. Each function references a fact page quota key.
-- Tests: `providers.test.ts`, with mocked fetch.
-- Satisfies: FR-PORT.
-
-**P2-05 — `greenlight accounts`.**
-- Files: `cli/src/commands/accounts.ts` and `bin.ts`.
-- Content: read configured tokens with `secrets check` semantics, run `verify()` unless `--offline`,
-  run usage probes, and compute the cells available from the providers configured. The output is
-  08 §11.1.
-- Tests: `accounts.test.ts`, which covers human output and `--json` and asserts that no token value
-  ever appears in output.
-- Satisfies: FR-KICK, FR-PORT.
-
-**P2-06 — `greenlight-kickoff` skill.**
-- Files: `.claude/skills/greenlight-kickoff/{SKILL.md,PURPOSE.md}` and the plugin mirror.
-- Content: the procedure in 05 §5.2.
-- Tests: LR-11, LR-12 and LR-13; skill portability.
-- Satisfies: FR-KICK.
-
-**P2-07 — `greenlight-build` skill.**
-- Files: `.claude/skills/greenlight-build/{SKILL.md,PURPOSE.md}`.
-- Content: the procedure in 05 §5.3. It includes the rules "criterion → check id before code" and
-  "complaint → criterion (source: feedback) → check → fix".
-- Satisfies: FR-BUILD.
-
-**P2-08 — Loop skill v3.**
-- Files: `.claude/skills/deploy-verify-promote/{SKILL.md,PURPOSE.md}`.
-- Content: add the hooks (05 §3): on-start reads `intent` and `liveness`; on-failure runs
-  `wiki lookup`, which is wired in P5 and is a no-op until then; on-complete updates `intent.md`.
-  Add the rule that **promotion is the owner's call** unless the tool's `promotion` is
-  `auto-on-green`.
-- Versioning: bump to `version: "3"` by hand, because this is the last manual bump. From P6 onward
-  only the harness bumps versions.
-- Satisfies: FR-LOOP.
-
-**P2-09 — Liveness rules become errors for new tools.**
-- Files: `doctor.ts`.
-- Content: DR-20 is an error for tools added at or after 0.13.0, detected by the absence of an
-  entry in `.greenlight/legacy-tools.json`, which `bump` writes once. DR-21 is an error.
-- Tests: `doctor.test.ts`.
-
-### P2.2 Dependencies, release
-
-P2 depends on P0 and P1, and it releases as 0.13.0.
-
-### P2.3 Risks
-
-- **No-domain mode breaks the deterministic-URL invariant for Vercel.** Mitigation: the adapter
-  supplies the alias, and `resolveUrl` throws for vercel without a domain, just as it does for
-  `preview`. Callers go through `adapter.url()`.
-- **Usage APIs differ by plan or change without notice.** Mitigation: headroom is `null` rather
-  than a guess, and fact pages carry `verified` dates (LR-17).
-
-### P2.4 Exit drill (the newcomer drill)
-
-The operator recruits, or role-plays, someone who has never used Greenlight. That person has a
-GitHub account and a free Cloudflare account, no domain, and nothing else. They give a fresh Claude
-Code session, with the plugin installed, one sentence such as "a page where my book club votes on
-next month's pick".
-
-The drill passes when all of the following hold:
-
-- A beta URL on workers.dev serves the app.
-- `intent.md` lists the criteria the person confirmed, each with a check id.
-- At least one complaint made after trying beta appears as a `source: feedback` criterion with a
-  passing check.
-- Prod is unchanged until the person says to release.
-
-The operator records the time from the first sentence to a green beta. It is the BR success metric
-"idea to beta".
+**Prerequisites:** M0. **Drill uses:** `bench check-graders`, `bench run`, `wiki lint`, docker,
+two model ids in `bench/models.json`. No provider accounts. **Exit drill:** 13 §3 M1.
 
 ---
 
-## P3 — Portfolio operations
+## M2 — The first complete WikiSkill iteration
 
-**Goal.** The owner sees every project's state in one place, including what is verified and waiting
-for release, and can retire a project cleanly. No new project can starve an existing one of quota
-without a warning first.
+**Goal.** One iteration of 06 §10 runs end to end and produces a reproducible, owner-reviewed
+decision. The control arm shows that the evaluator can refuse a plausible but wrong lesson.
 
-### P3.1 Work breakdown
+**How the cycle selects this work.** This milestone *is* the cycle. Its output decides what M3 and
+M4 start with.
 
-**P3-01 — `greenlight portfolio`.**
-- Files: `cli/src/commands/portfolio.ts`.
-- Content: for each tool, compare beta and prod shas from `/__version` against the deterministic
-  URLs, count commits on `develop` that are not on `main` via `gh api compare`, read the last ship
-  from stage events or Tracer, read keepalive state from the latest keepalive issue or run, and list
-  open alert issues. The output is 08 §11.2.
-- Tests: `portfolio.test.ts`, with mocked fetch and `gh`.
-- Satisfies: FR-PORT.
+### M2 items
 
-**P3-02 — Quota headroom rule DR-27.**
-- Files: `doctor.ts` and `accounts.ts`.
-- Content: `doctor --live` warns when any quota has under 20% headroom. `add` refuses, with
-  `--force` to override, when the new tool's declared `liveness.quotas` would push a quota past 80%
-  usage, as measured or as declared.
-- Tests: `doctor.test.ts` and `add.test.ts`.
+**M2-01 — `ITERATE` orchestration.** (FR-EVO-09)
+- Files: `cli/src/commands/bench.ts` (`bench iterate`), and `.github/workflows/evo.yml` with
+  `workflow_dispatch` only and concurrency group `greenlight-evo`.
+- Change: 06 §1.3 steps 1–5, with the ledger events and review hand-off of step 5.
 
-**P3-03 — `greenlight retire <name>`.**
-- Files: `cli/src/commands/retire.ts`.
-- Content: remove the manifest entry through `config-io.ts`, delete `infra/<name>.tf`, move
-  `wiki/tools/<name>/` to `wiki/archive/tools/<name>/` with a final log entry, and remove the
-  keepalive target. Then print the push instruction. The existing `infra.yml` destroy guard requires
-  manual approval for the resulting destroy. `retire` never applies anything itself.
-- Tests: `retire.test.ts`, covering the files changed and the refusal when another tool has
-  `dataShareWith` pointing at this one.
-- Satisfies: FR-PORT.
+**M2-02 — Outlet evaluation for the first iteration's likely outlets.** (FR-EVO-14)
+- Change: the skill rule (controlled rollouts), the doctor rule and the mechanism rule (a `repro`
+  grader against base and candidate commits), and the verify rule (rejection of the faulty
+  artifact). The template rule waits for M4, since no template is in play yet.
 
-**P3-04 — `greenlight-portfolio` skill.**
-- Files: `.claude/skills/greenlight-portfolio/{SKILL.md,PURPOSE.md}`.
-- Content: the procedures for "what is waiting", "release X" (prepare, show the evidence, ask, then
-  dispatch only on an explicit yes), and "retire Y" (05 §5.4).
-- Satisfies: FR-PORT, FR-LOOP.
+**M2-03 — Control arm.** (FR-EVO-19)
+- Files: `bench/controls/probe-layer-overgeneral.json`, a hand-written skill patch labelled
+  `control`.
 
-**P3-05 — Promote workflow emits a `promote` stage event.**
-- Files: `cli/src/commands/promote.ts` and `packages/loop/src/promote.ts` (StageEvent stage
-  `promote`, 08 §7).
-- Tests: `promote` unit tests.
+**M2-04 — Review hand-off.**
+- Change: a PR for skill and template outlets, or an issue for mechanism, doctor and verify. Each
+  carries the ledger event, the evaluation record hash and the recompute command. The owner's
+  review is recorded as a ledger annotation.
 
-**P3-06 — Portfolio summary page.**
-- Files: `cli/src/commands/wiki.ts`.
-- Content: `wiki lint --fix` regenerates `wiki/portfolio.md` from the manifest and each tool's
-  `intent` one-liner.
+**M2-05 — Run the iteration.**
+- Run it, record it in `wiki/drills/m2-<date>.md`, and render `skill-impact.md`.
 
-### P3.2 Dependencies, release, exit, risks
+**Prerequisites:** M1. **Drill uses:** `bench iterate`, `bench gate --recompute`, and the M1
+fixtures. **Exit drill:** 13 §3 M2. Acceptance of the real proposal is not required.
 
-- **Dependencies:** P2 (accounts, usage probes, liveness field).
-- **Release:** 0.14.0.
-- **Exit:** the operator checks the portfolio table for the six live tools by hand against
-  reality once. A throwaway tool `t-retire`, added and shipped to beta, is retired, and after the
-  approved infra apply its Worker, DNS and keepalive target are gone.
-- **Risk:** `gh api compare` rate limits on large portfolios. Mitigation: cache per run, and show
-  `waiting: null` on failure rather than erroring.
+**After M2.** The ledger from M2 decides where M3 and M4 start. For example, if the proposal
+routed to `doctor`, DR-21 and DR-22 are evaluated first in M3. If it was `no_action`, M3 begins
+with the cold-edit items.
 
 ---
 
-## P4 — Centralized secrets
+## M3 — Cold edits and incident prevention, driven by the cycle
 
-**Goal.** One readable source of secrets, with CI and runtime as projections of it. Agents work
-behind a credential-injecting proxy and never hold raw values. The agent cannot dispatch a
-promotion without approval, enforced as a mechanism.
+**Goal.** An agent that has never seen a project can change it safely, and known incidents stay
+prevented. The cycle evaluates each item.
 
-### P4.1 Work breakdown
+**Motivation.** These patterns are expected to motivate the items, and each is confirmed or
+refuted by the cycle:
+- `fix-merged-not-running`;
+- `preview-prod-path-drift`;
+- `ok-before-success`;
+- `freshness-across-producers`;
+- `dcr-disabled-silently`;
+- the M2 outcome.
 
-**P4-01 — `inject` and `scrub` on token specs.**
-- Files: `cli/src/providers.ts` (08 §12).
-- Content: add `inject` for Cloudflare, Vercel, Neon, Supabase, Gemini, HCP and GitHub. OCI and
-  docker get none, so they are CI-only.
-- Tests: `providers.test.ts`, checking that every injectable token has non-empty `hosts` and
-  `allow`, and default-deny semantics.
-- Satisfies: FR-SEC.
+### M3 items
 
-**P4-02 — Secret sinks.**
-- Files: `cli/src/commands/secrets.ts` and a new `cli/src/secret-sinks/{github.ts,infisical.ts}`.
-- Content: `secrets gather --sink infisical|github`, defaulting to the sink in
-  `.greenlight/secrets.json`, which holds no values. The Infisical sink writes through the Infisical
-  API using a machine identity, and configures Infisical's GitHub sync so Actions secrets stay
-  populated.
-- Tests: a secrets test with mocked HTTP, asserting values travel only in request bodies, never in
-  argv or logs.
+**M3-01 — `wiki context` and `wiki lookup`.** (FR-LOOP-01, FR-LOOP-02, FR-WIKI-05, FR-LOOP-08)
+- Change: the on-start bundle and the failure lookup keyed to check ids, with failure-report links.
+- Outlet evaluated: `mechanism`, by a `repro` on a fixture with a failing check.
 
-**P4-03 — `secrets migrate --to infisical`.**
-- Content: for each token name in the manifest, prompt for the value with hidden input and write it
-  to Infisical. Actions secrets cannot be read, so the owner re-enters each value once.
-- Tests: secrets test.
+**M3-02 — Criteria tooling and project wikis for the six live tools.** (FR-BUILD-04, FR-WIKI-03,
+FR-WIKI-10)
+- Change: `intent.md`, `liveness.md` and decisions for the six tools (15 §6), mapped to check ids.
+  The tool-repo pointer block.
+- Outlet evaluated: `verify` for each new check id, by rejection of a faulty artifact.
 
-**P4-04 — `secrets proxy-config`.**
-- Files: `cli/src/commands/secrets.ts` (`proxy-config`) and `cli/src/proxy/{infisical.ts,worker.ts}`.
-- Content: render the union of `inject` specs into Infisical Agent Proxy service definitions, or
-  into the route table for the Worker proxy.
-- Tests: golden files.
+**M3-03 — PURPOSE.md for every existing skill.** (FR-SKILL-01, FR-SKILL-02, FR-SKILL-07)
+- Change: sidecars citing confirmed pages. Provider-skill footgun sections shrink to rules plus
+  links.
 
-**P4-05 — Worker proxy (fallback implementation).**
-- Files: `infra/modules/agent-proxy/` (Terraform plus Worker source) and `packages/agent-proxy/`.
-- Content: a reverse proxy at `vault.<domain>`, or `vault.<sub>.workers.dev`. It authenticates with
-  per-session tokens that have a TTL, enforces the per-route allow-list, scrubs responses, and
-  writes audit lines (11 §4).
-- Tests: Worker unit tests (miniflare), including a mutation test proving that forbidden routes are
-  refused.
-- Satisfies: FR-SEC, ADR-06.
+**M3-04 — Manual and minimal redacted capture.** (FR-LOOP-03, FR-SEC-06)
+- Change:
+  - `wiki capture --manual` records drill and incident evidence by hand (03 §5.3);
+  - `wiki capture --retain` and `--export` keep minimal evidence in `wiki/evidence/` (08 §5.3);
+  - a minimal redacted capture from `preview` and `verify` with the identity of 08 §5.1.
 
-**P4-06 — `greenlight agent run -- <cmd>`.**
-- Files: `cli/src/commands/agent.ts`.
-- Content: start, or connect to, the configured proxy, set the placeholder environment variables,
-  `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1` and the CA bundle, then exec the command.
-- Tests: agent test, asserting the child's environment holds placeholders only.
+  Automatic sinks (Tracer, the ingest POST) wait for M6.
+- Tests: the planted-secret test (13 §2.6) and the identity cases (13 §2.9).
 
-**P4-07 — Promotion guard DR-32.**
-- Content: the GitHub `inject` allow-list excludes
-  `POST /repos/*/actions/workflows/promote.yml/dispatches`. The `greenlight-portfolio` skill
-  instead asks the owner to approve. Approval flows through the `promote` GitHub environment's
-  required reviewers, which `infra/modules/github` sets for the wrapper, so the owner clicks
-  approve in GitHub.
-- DR-32 fails when `promote.yml` lacks an `environment:` with required reviewers on a tool whose
-  `promotion` is `human`.
-- Tests: `doctor.test.ts`, plus a proxy test.
+**M3-05 — The temporary human-reviewed skill-version path.** (FR-SKILL-03)
+- Change: 05 §4. It applies until a skill has 3 active bench tasks, and it writes a `neutral` or
+  `safety-fix` ledger event with the reviewer's reason.
 
-**P4-08 — Doctor rules DR-30 and DR-31.**
-- DR-30 lists CI-only tokens, informationally.
-- DR-31 fails when an agent session environment (detected via `GREENLIGHT_AGENT`) contains a value
-  matching a known token shape, or lacks `NODE_USE_ENV_PROXY=1` while `HTTPS_PROXY` is set.
-- Tests: `doctor.test.ts`.
+**M3-06 — Production-mode evaluation.** (FR-EVO-13)
+- Change: `--mode production` with a pinned wiki snapshot. The loop skill's slice is baselined in
+  both modes.
 
-### P4.2 Dependencies, release, exit, risks
+**M3-07 — Routing and repro graders; held-out release check.** (FR-EVO-12, FR-EVO-16)
+- Change: `routing` tasks for skill descriptions, generalized `repro` graders, and 06 §5.7 in the
+  release workflow.
 
-- **Dependencies:** P2 (kickoff runs Infisical setup) and P3 (portfolio surfaces approvals).
-- **Release:** 0.15.0.
-- **Exit:** the P2 newcomer drill runs under `greenlight agent run`. A scan of the agent's
-  environment and of the captured transcript finds no raw credential. The agent's attempt to call
-  the promote dispatch directly is refused by the proxy, and the refusal appears in the audit log.
-- **Risks:**
-  - Infisical's Agent Proxy may not be on the free tier, which was unconfirmed at the time of
-    writing. Mitigation: the Worker proxy (P4-05) is a complete fallback, and the decision is made
-    at the start of P4 (16 §2).
-  - TLS interception widens the trust surface. Mitigation: prefer the Worker reverse proxy where
-    clients support a base-URL override, and document which clients do (11 §4).
+**M3-08 — Remaining lint rules and local advisories.** (FR-WIKI-01, FR-WIKI-08)
+- Change:
+  - LR-04, LR-07, LR-09, LR-10, LR-13, LR-15 to LR-18 and LR-21;
+  - `doctor --advisories`, reporting only locally known fixes (DR-33);
+  - the opt-in `greenlight advisories` feed, which fetches the newest release's wiki index.
+
+**M3-09 — Framework wiki packaging.** (FR-WIKI-02)
+- Change: copy the wiki into the npm package and materialize it with `agent sync`. DR-12 and DR-13
+  apply.
+
+**Prerequisites:** M2. **Drill uses:** `wiki context`, `wiki capture --manual`, `preview`,
+`verify`, and the live wrapper on the M3 release. **Exit drill:** 13 §3 M3.
 
 ---
 
-## P5 — Learning from failures
+## M4 — One creation path: Astro + Workers + D1, no domain, beta only
 
-**Goal.** Every gate run leaves durable, redacted evidence. Failing checks link to the pattern that
-explains them. Incidents can be compiled into patterns by a maintainer pass.
+**Goal.** A newcomer with free accounts and no domain goes from an idea to a working, stateful
+beta. Nothing production-side is created before an approval.
 
-### P5.1 Work breakdown
+**Motivation.** Expected patterns: `preview-prod-path-drift`, `supabase-pause` (for the cell
+choice), and the cycle's evidence from M3. The newcomer drill's raw records then become training
+evidence, and its scripted form becomes the capability task `cap/astro-workers-d1-vote`.
 
-**P5-01 — Raw capture.**
-- Files: `packages/wiki/src/raw.ts`, plus hooks in `cli/src/commands/{preview,ship,verify}.ts`.
-- Content: write `RawRecord` (08 §5) after each run, with `refs` taken from `GITHUB_RUN_ID` and
-  `GITHUB_REPOSITORY` when present. Excerpts are truncated to 15,000 characters and redacted (11 §6).
-- Tests: `raw.test.ts`. A planted-secret test plants every provider-pack `envVar` value shape and
-  every scrub pattern, and fails the build if any survives. This test is a merge blocker.
-- Satisfies: FR-WIKI, FR-SEC.
+### M4 items
 
-**P5-02 — StageEvent extension.**
-- Files: `packages/loop/src/ship.ts`, `cli/src/commands/ship.ts` (`skillVersions()`) and
-  `cli/src/commands/preview.ts`.
-- Content: add `skills`, `agent` and `rawId` (08 §7). `skillVersion` is kept.
-- Tests: `ship` tests, plus a compatibility test showing that old consumers parsing only the old
-  fields still work.
+**M4-01 — Astro runtime on the Cloudflare adapter.** (FR-BUILD-02, FR-KICK-06)
+- Change: the exact runtime in 09:
+  - `@astrojs/cloudflare` and a server output (the removed `hybrid` mode is not used);
+  - extensionless endpoints at `/__version`, `/health/live` and `/health`;
+  - D1 bindings, migrations and local emulation;
+  - SHA injection at deploy.
+- The adapter in `packages/adapters` builds and deploys the Worker output, not a static `dist/`.
+- Outlet evaluated: `template`, by generated-app tests plus template mutants (06 §5.6).
 
-**P5-03 — Tracer ingest of raw records.**
-- Files: `cli/src/commands/ship.ts` (`stageEventToIngest`).
-- Content: include `rawId` and `skills` as OpenInference attributes. In the Tracer repo, add a
-  `wiki` suite view of first-pass rate by skill version. That part is optional and tracked
-  separately.
-- Tests: `ship` test.
+**M4-02 — No-domain mode.** (FR-KICK-04)
+- Change: `init` without a domain; `resolveUrl` for `workers.dev` (08 §1.3); `doctor` skips
+  apex-only checks; preview URLs disabled for workers.dev deployments of private routes (09).
 
-**P5-04 — `greenlight wiki lookup`.**
-- Files: `packages/wiki/src/lookup.ts` and `cli/src/commands/wiki.ts`.
-- Content: given a check id, check name, class or cell, return `confirmed` patterns whose `applies`
-  includes the installed version, following `supersededBy` links.
-- Kill switch: `GREENLIGHT_WIKI=off` makes `wiki lookup` return nothing and turns every skill hook
-  that reads the wiki into a no-op. P5-05's report links and P5-01's `wikiHits` respect it. The bench
-  runner sets it for every rollout (ADR-10). Owners can also set it to rule the wiki out while
-  debugging.
-- Tests: `lookup.test.ts`.
-- Satisfies: FR-WIKI, ADR-10.
+**M4-03 — Beta-only provisioning in a separate beta account.**
+- Change: per 18, the beta job creates beta D1 and Workers in the beta account. No production
+  resource is created by any job before an approval.
+- This item links to the M0 blocking issues. Production remains unreachable until M5.
 
-**P5-05 — Verify failure reports link to patterns.**
-- Files: `cli/src/commands/verify.ts` and `cli/src/commands/ship.ts`.
-- Content: on a failing check, run the lookup and append `see: <path>` lines to the human report,
-  and `eval.wiki_refs` to `--json`. Record `wikiHits` on the raw record.
-- Tests: `verify.test.ts`.
+**M4-04 — Liveness in the manifest, and doctor rules.** (FR-PORT-02, FR-PORT-03)
+- Change: `liveness`, DR-20 to DR-24 and DR-26, evaluated by fixtures (`doctor` outlet).
 
-**P5-06 — DR-33: open pattern fixed in a newer version.**
-- Files: `doctor.ts`.
-- Tests: `doctor.test.ts`, using a fixture pattern with `applies: "<0.9"` and an installed 0.8.4.
+**M4-05 — Minimal `accounts`.** (FR-KICK-01, FR-KICK-02)
+- Change: configured and verified providers, plus available cells. Quota fields are `unknown`
+  until M6.
 
-**P5-07 — Maintainer ingest.**
-- Files: `packages/wiki/src/ingest.ts` (bundle builder plus `MaintainerOutput` validator and
-  applier, 08 §9.1), the `wiki ingest` subcommand, and the maintainer section of the
-  `greenlight-wiki` skill (05 §5.5, 06 §2).
-- Tests: `ingest.test.ts`, with golden files for each patch op, refusal on zero or multiple target
-  matches, and atomic rejection.
-- Satisfies: FR-EVO, FR-WIKI.
+**M4-06 — Kickoff and build skills.** (FR-SKILL-04, FR-KICK-03, FR-KICK-05, FR-BUILD-01,
+FR-BUILD-05)
+- Change: managed from creation, with PURPOSE.md, hooks and blast radius. They use the temporary
+  path until they have 3 active bench tasks.
 
-### P5.2 Dependencies, release, exit, risks
+**M4-07 — Identity, auth and persistence checks for the vote app.** (FR-BUILD-06)
+- Change: the template's contract checks plus the scenario's criteria:
+  - a vote persists across independent clients;
+  - a duplicate vote is rejected;
+  - an unidentified voter is rejected.
 
-- **Dependencies:** P0 (parser) and P4 (placeholders in traces).
-- **Release:** 0.16.0.
-- **Exit:** in a throwaway tool, the keepalive probe for a needs-traffic target is pointed at a
-  cache path. Verify, or the keepalive dry run, fails. The report links to
-  `pattern/keepalive-probe-misses-postgres`, and `wiki ingest` over the resulting raw records produces
-  a lint-clean update to that pattern's evidence.
-- **Risk:** redaction misses a new token shape. Mitigation: agents hold only placeholders after P4,
-  so redaction is the backstop rather than the primary control, and the planted-secret test grows
-  with every new provider pack.
+**M4-08 — `cap/astro-workers-d1-vote` capability task.**
+- Change: a hidden grader and mutants (auth removed, unique constraint dropped, stale sha), added
+  as `pending`.
+
+**M4-09 — First beta handoff.** (FR-KICK-08)
+
+**Prerequisites:** M2, and M3-01 for `wiki context`. **Drill uses:** the M4 release, a new
+Cloudflare account pair (beta and prod), and a GitHub account. **Exit drill:** 13 §3 M4.
 
 ---
 
-## P6 — The evolution loop (in scope, ordered last)
+## M5 — Release authority, retirement and credentials, through evaluated proposals
 
-**Goal.** Every managed skill, the loop skill `deploy-verify-promote` included, changes only through
-a measured, gated proposal with a ledger row. The bench contains a replay task for every confirmed,
-locally reproducible failure pattern, and every grader is shown to fail on its mutants.
+**Goal.** Human release control holds over every production mutation, retirement deletes exactly
+what was authorized, and agents work with credentials under a declared trust model.
 
-### P6.1 Work breakdown
+**Motivation.** Expected patterns: `unplanned-compute-replacement`, `neon-state-rm`, and the
+review findings recorded as the M0 blocking issues. Each item below is submitted as a proposal and
+evaluated by its outlet. Most are mechanism outlets with `repro` graders drawn from 13 §4.
 
-**P6-01 — Bench runner.**
-- Files: `bench/` and `packages/bench/src/{task.ts,run.ts,sandbox.ts}`.
-- Content: validate `TaskSpec` (08 §10), materialize the fixture into a temp directory, run the
-  agent headless with the brief and the plugin (Claude Code `claude -p`, behind the P4 proxy
-  pointed at fake upstreams), then run the hidden grader through `greenlight preview`. Wiki lookup
-  is disabled during rollouts (ADR-10).
-- Configuration, all committed and schema-validated by `packages/bench`:
-  - `bench/models.json` lists the gate model pair (Q4), each with a vendor, a model id and an
-    optional per-rollout token cap;
-  - `bench/gate.json` holds the gate parameters: runs (3), bootstrap resamples (1,000), alpha
-    (0.05), the per-blast-radius strictness from 06 §5.4, and whether the shorten-on-tie rule is
-    enabled (default off);
-  - `bench/budget.json` sets `maxRolloutsPerRun` and `maxRolloutsPerMonth`. The runner refuses to
-    start a run that would exceed either limit, and the remaining monthly budget is printed before
-    every run.
-- Rollouts run with `GREENLIGHT_WIKI=off`.
-- Tests: runner unit tests with a stub agent; schema tests for the three config files; a test that
-  the budget refusal triggers.
-- Satisfies: FR-EVO.
+### M5 items
 
-**P6-02 — Mutation checks.**
-- Files: `packages/bench/src/mutants.ts` and `scripts/check-graders.mjs`, which runs in `check-all`
-  whenever `bench/**` changes.
-- Content: each grader must fail on every mutant.
-- Tests: mutants on a fixture task.
-- Satisfies: FR-EVO.
+**M5-01 — Protected execution identity and the approval artifact.** (FR-LOOP-06, FR-SEC-05)
+- Change: 18.
+  - Production credentials exist only for the protected identity's jobs.
+  - The owner approval artifact is bound to the tool and sha.
+  - `greenlight approve` is the owner-side command. It runs outside any agent sandbox.
+  - DR-34 and DR-35.
+- Evaluated by: 13 §4.1.
 
-**P6-03 — Replay tasks.**
-- Files: `bench/tasks/replay/*`.
-- Content: one replay task for each `confirmed` failure pattern in 15 §2 that is reproducible
-  locally. Where the runtime cannot be reproduced locally, the task is graded structurally,
-  `fidelity: structural` (06 §4.4).
-- Tests: `check-graders`.
+**M5-02 — Every channel in the matrix.**
+- Change: promotion by name and numeric id; Git refs through every API; Cloudflare prod script
+  uploads, which are unavailable to the agent because beta lives in a separate account; Vercel
+  production deploys from the protected job only; OCI deploys gated on approval
+  (`decision/oci-direct-to-prod` is superseded); infra apply.
+- Evaluated by: 13 §4.1.
 
-**P6-04 — Capability briefs.**
-- Files: `bench/tasks/cap/*`.
-- Content: about 30 briefs across the free-tier cells, split train/val/test in `bench/splits.json`
-  with a 10-brief val split to start.
-- Tests: `check-graders`.
+**M5-03 — Recovery from the last approved artifact.**
+- Change: remediate workflows redeploy only the last approved immutable artifact (DR-36).
 
-**P6-05 — Proposer.**
-- Files: `packages/wiki/src/propose.ts`, the `wiki propose` subcommand, and the proposer section of
-  the `greenlight-wiki` skill (06 §3).
-- Content: validate `ProposerOutput` (08 §9.2). `issue` actions open GitHub issues, and
-  `create`/`patch` actions stage a branch.
-- Label: every issue and branch the proposer opens carries the GitHub label `greenlight-evo`, so
-  evolution work can be filtered and never mistaken for human work. `wiki propose` creates the
-  label if it is missing.
-- Tests: `propose.test.ts`.
+**M5-04 — Promotion policy as an owner-approved edit.** (FR-LOOP-07)
+- Change: DR-32. A policy commit grants nothing until the owner approves it.
 
-**P6-06 — Gate.**
-- Files: `packages/bench/src/gate.ts` and the `bench gate` subcommand.
-- Content: the lexicographic gate (06 §5): replay first as a hard constraint, then strict
-  capability improvement, using a paired bootstrap with 1,000 resamples and p < 0.05, three runs,
-  and two models. The blast-radius strictness per `PURPOSE.md` is applied (06 §5.4).
-- Tests: `gate.test.ts`, using synthetic score vectors.
-- Satisfies: FR-EVO, ADR-11, ADR-12.
+**M5-05 — Retirement lifecycle.** (FR-PORT-04)
+- Change: the inventory, ownership verdicts, data disposition, plan-bound deletion authorization,
+  `active → retiring → retired`, and explicit Wrangler and adopted outcomes (10, ADR-18). The guard
+  in `init.ts` gains the authorized-set exception and keeps every other refusal.
+- Evaluated by: 13 §4.3.
 
-**P6-07 — Ledger writer and version bump.**
-- Files: `packages/wiki/src/ledger.ts`.
-- Content: only `bench gate` and `wiki remediate` call it. It appends a `LedgerRow` (08 §8),
-  renders `skill-impact.md`, and on acceptance bumps `version` in both `SKILL.md` and `PURPOSE.md`.
-  LR-14 is enabled.
-- Tests: `ledger.test.ts`.
+**M5-06 — Trust models.** (FR-SEC-04)
+- Change: model A, an isolated sandbox with enforced egress; model B, documented local
+  convenience. `agent run` and `doctor` state the model.
+- Evaluated by: 13 §4.2.
 
-**P6-08 — `wiki remediate` for outlets 1–4.**
-- Content: record field evidence (red-to-green on a deployed artifact) against a pattern's
-  remediation, and set `verified: true`.
-- Tests: unit tests.
+**M5-07 — One credential integration, prototyped.** (FR-SEC-01, FR-SEC-03, FR-SEC-08)
+- Change: one integration chosen by the cycle's proposal, either Infisical Agent Proxy or the
+  Worker reverse proxy. It is implemented with the typed policy language (08 §12) and tested
+  against every client the skills use (11). The general fallback and `--sink` default are decided
+  from its evidence, not in advance (Q3).
+- Evaluated by: the typed-policy cases of 13 §2.6.
 
-**P6-09 — Evolution workflows.** Two workflows go in the framework repo.
-- `.github/workflows/evo.yml` runs one evolution iteration, or `--iterations n`, on manual dispatch
-  only: maintainer pass, proposer, gate, ledger. Accepted changes land on a `greenlight-evo/<proposalId>`
-  branch, and a PR labeled `greenlight-evo` is opened for a human to merge (ADR-12). The workflow
-  reads model credentials through the P4 proxy and respects `bench/budget.json`.
-- `.github/workflows/evo-monitor.yml` runs on a monthly cron plus manual dispatch. It re-runs the
-  test split on the models in `bench/models.json` and compares field metrics (first-pass rate and
-  rollback rate per skill version, from stage events or Tracer) against the previous skill version.
-  When the test split regresses, or a field metric drops past the threshold in `bench/gate.json`, it
-  opens an issue labeled `greenlight-evo-alarm`. The alarm is what triggers a maintainer pass (ADR-05);
-  the monitor itself never changes a skill.
-- Tests: `actionlint` on both workflows; a dry-run mode (`EVO_DRY_RUN=1`) exercised in `check-all`
-  with a stub agent.
+**M5-08 — CI-only tokens and secrets settings.** (FR-SEC-02, FR-SEC-07)
+- Change: DR-30 and `SecretsSettings` (08 §13).
 
-### P6.2 Applies to every managed skill
-
-The loop skill, the kickoff, build, portfolio and wiki skills, and all nine provider skills are
-managed equally. Each `PURPOSE.md` declares a `bench-slice`. A proposal against a skill runs:
-
-- that skill's slice;
-- every replay task, regardless of slice, because a change to any skill can reintroduce any
-  incident;
-- for `blast-radius: high` skills (the loop), the full val split.
-
-### P6.3 Dependencies, release, exit, risks
-
-- **Dependencies:** P1 (templates are bench fixtures) and P5 (raw capture, maintainer).
-- **Release:** 0.17.0. Accepted skill changes ship in later patch releases, which a human cuts.
-- **Exit:** one full evolution run from the then-current skills completes. At least one proposal is
-  accepted with a ledger row whose patterns are cited by the changed skill's `PURPOSE.md`, and the
-  test split is reported against the starting skills.
-- **Risks:**
-  - Cost. Mitigation: the 10-brief val split to start, early stopping at R = 1.0, a monthly cap,
-    and on-demand runs only.
-  - Overfitting to the bench. Mitigation: a held-out test split, new briefs seeded from field
-    patterns, and graders that check behavior rather than layout.
+**Prerequisites:** M4. **Drill uses:** the M5 release, a scratch wrapper, the beta and prod
+accounts, and a trust-model-A sandbox. **Exit drill:** 13 §3 M5.
 
 ---
 
-## P7 — Codex parity (stretch)
+## M6 — Scale the established loop
 
-**Goal.** Codex can do everything Claude Code can in a Greenlight repo.
+**Goal.** Broaden coverage once the small loop has shown reliable discrimination and an
+affordable cost per iteration (01 §5). Until both hold, M6 does not start.
 
-### P7.1 Work breakdown
+### M6 items
 
-**P7-01 — `agent sync` writes `.agents/skills/` and an `AGENTS.md` block.**
-- Files: `cli/src/commands/agent.ts`.
-- Tests: `agent-kit.test.ts`.
-- Satisfies: FR-AGENT.
+- **M6-01 — Other lanes' templates and contract** (next, mcp workers and oci, agent).
+  (FR-BUILD-02, FR-KICK-06) Each lane is evaluated by the template rule.
+- **M6-02 — Portfolio view.** (FR-PORT-01, FR-PORT-06)
+- **M6-03 — Quota accounting.** (FR-PORT-05, FR-KICK-07) Observations keyed by account, resource,
+  quota, period and unit (08 §11.1). Observed, declared and estimated values stay separate, and
+  unknown is never treated as safe. Tested by 13 §2.10.
+- **M6-04 — Broader bench.** Capability briefs per available cell, routing and portfolio tasks.
+  Test-split rotation as in 06 §4.1.
+- **M6-05 — Monthly budgets and scheduled monitoring.** (FR-EVO-18, FR-EVO-07) Monthly caps,
+  persistent `spend` events, `evo-monitor.yml`, and the `greenlight-evo-alarm` label.
+- **M6-06 — Automatic capture sinks.** (FR-WIKI-09, FR-LOOP-03) Tracer and the ingest POST.
+  Automated cold-edit metrics.
+- **M6-07 — Contribution path.** (FR-WIKI-07)
+- **M6-08 — Advisory feed hardening.** Signature and version pinning for `greenlight advisories`.
+- **M6-09 — Remaining provider skills' bench slices.**
 
-**P7-02 — `check-agent-sync` guard (DR-14).**
-- Content: `.agents/skills/` is byte-identical to `.claude/skills/` in every repo that has both.
-- Files: `scripts/check-agent-sync.mjs` and `doctor.ts`.
+**Prerequisites:** M3, M4, M5, and the M2 discrimination and cost metrics. **Exit drill:**
+13 §3 M6.
 
-**P7-03 — Codex cloud secrets path.**
-- Content: document, and make the skills state explicitly, that Codex cloud strips secrets before
-  the agent phase. Authenticated verify therefore runs in CI `ship`, or through the proxy when
-  Codex's network policy allows it.
-- Files: the skills and `docs/agentic-loop.md`.
+---
 
-**P7-04 — `GREENLIGHT_AGENT=codex` attribution.**
-- Content: the skills set this variable, so stage events and raw records attribute runs to the
-  right vendor.
+## M7 — Codex parity (stretch)
 
-### P7.2 Exit
+- **M7-01** — `agent sync` writes `.agents/skills/` and `AGENTS.md`. (FR-AGENT-04)
+- **M7-02** — DR-14 covers the third copy.
+- **M7-03** — The Codex cloud secrets path, through CI `ship` or the proxy. (FR-AGENT-05)
+- **M7-04** — Codex rollouts in the bench runner (`codex exec`), recorded as a separate agent in
+  the baseline identity.
 
-The P0 cold-edit drill passes with Codex on a different tool, and the P2 newcomer drill passes with
-Codex driving.
+**Prerequisites:** M3. **Exit drill:** 13 §3 M7.
+
+## 4. Risks across the roadmap
+
+| risk | mitigation |
+|---|---|
+| The first fixtures are too few to discriminate | The control arm is the test of discrimination. If it is not rejected, M2 fails and the fixtures are extended before anything else |
+| The cycle produces only `no_action` | That is a valid result. It means either the skills are adequate for these tasks or the tasks are too easy, and the ledger says which. M3 and M4 items still proceed when motivated by confirmed patterns |
+| Cost per iteration is too high | Per-gate caps from M1; the cost is reported every iteration; M6 is held until the cost is acceptable |
+| Release authority work stalls deployment features | Beta-only work in a separate account proceeds; production stays unreachable until M5 by design |
+| The Astro adapter version changes | 09 pins the adapter major version, and M4-01's template tests catch breakage |

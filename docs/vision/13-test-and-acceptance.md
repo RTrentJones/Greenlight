@@ -99,7 +99,7 @@ Specific cases:
 |---|---|
 | `accounts` | all configured; one provider missing; verify failure; `--offline` makes no network calls (fetch mocked to throw); usage unknown reported as null |
 | `add --liveness` | missing flag lists valid models; inconsistent model rejected; headroom > 80% requires `--accept-headroom`; stubs created |
-| `init` without domain | succeeds; no zone id requested; manifest has `cloudflareAccountSubdomain` |
+| `init` without domain | succeeds; no zone id requested; manifest has `cloudflare.prod.accountSubdomain` and `cloudflare.beta.accountSubdomain` |
 | `portfolio` | beta ahead; beta equal; unreachable source yields null fields and a reason, and the command exit stays 0 |
 | `retire` | `--dry-run` produces the inventory with an ownership verdict for each resource and changes nothing; a `dataShareWith` store is marked `shared` and never appears in the authorization; the real run writes the branch, the authorization (exact addresses plus plan hash) and `retirement.md`, never runs terraform, and lists secrets without deleting them (detail in §4.3) |
 | `wiki context` | prints sections in order; never prints an incident page, even when the incident's `cells` match |
