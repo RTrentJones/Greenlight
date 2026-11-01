@@ -31,7 +31,8 @@ const git = (argv: string[], over: Partial<ShimMessage> = {}): ShimMessage => ({
   git: {
     branch: 'develop',
     refs: 'develop origin develop\nmain origin main',
-    config: 'push.default current\nalias.pd push origin develop\nbranch.develop.pushremote origin',
+    config:
+      'push.default=current\nalias.pd=push origin develop\nbranch.develop.pushRemote=origin\nremote.origin.url=/srv/origin.git',
   },
   origin: { before: `${A} refs/heads/develop`, after: `${B} refs/heads/develop` },
   ...over,
@@ -48,6 +49,12 @@ describe('shim messages → trajectory events (the shim meta contract)', () => {
       pushDefault: 'current',
       aliases: { pd: 'push origin develop' },
       branchPushRemotes: { develop: 'origin' },
+      config: {
+        'push.default': 'current',
+        'alias.pd': 'push origin develop',
+        'branch.develop.pushRemote': 'origin',
+        'remote.origin.url': '/srv/origin.git',
+      },
     });
   });
 
@@ -62,13 +69,18 @@ describe('shim messages → trajectory events (the shim meta contract)', () => {
       at,
     );
     expect(noop.meta?.pushed).toBe('false');
-    const otherRef = shimMessageToEvent(
-      git(['push', 'origin', 'HEAD:main'], {
-        origin: { before: `${A} refs/heads/develop`, after: `${B} refs/heads/develop` },
+    // An alias from the command's own environment (GIT_CONFIG_*) resolves to the push it runs.
+    const viaEnv = shimMessageToEvent(
+      git(['ship'], {
+        env: {
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'alias.ship',
+          GIT_CONFIG_VALUE_0: 'push origin develop',
+        },
       }),
       at,
     );
-    expect(otherRef.meta).toMatchObject({ dstRef: 'main', pushed: 'false' });
+    expect(viaEnv.meta).toMatchObject({ subcommand: 'push', dstRef: 'develop', pushed: 'true' });
     const failed = shimMessageToEvent(git(['push', 'origin', 'develop'], { exit: 1 }), at);
     expect(failed.meta?.pushed).toBe('true'); // the ref moved: the exit code is not the evidence
     expect(movedRefs(`${A} refs/heads/x`, `${A} refs/heads/x\n${B} refs/heads/y`)).toEqual([
@@ -130,7 +142,10 @@ describe('ShimChannel', () => {
     temps.push(dir);
     const ch = await ShimChannel.listen(join(dir, 'shim.sock'), { sequencer: new Sequencer() });
     expect(statSync(join(dir, 'shim.sock')).mode & 0o777).toBe(0o600);
-    await send(ch.socketPath, `${JSON.stringify(git(['status']))}\n`);
+    await send(
+      ch.socketPath,
+      `${JSON.stringify(git(['status'], { origin: { before: '', after: '' } }))}\n`,
+    );
     await send(ch.socketPath, 'not json\n');
     await send(
       ch.socketPath,

@@ -464,6 +464,7 @@ export async function createProcessSandbox(
     gitCtx: join(o.runnerDir, 'git-ctx.sh'),
     socket: join(setup.channelDir, 'shim.sock'),
     origin,
+    baseEnv: { HOME: home, PATH: hostPath, TZ: 'UTC', GIT_CONFIG_NOSYSTEM: '1' },
     real: {
       git: [git],
       greenlight: [process.execPath, join(setup.cliDir, 'greenlight.mjs')],

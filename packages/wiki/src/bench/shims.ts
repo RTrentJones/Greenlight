@@ -21,9 +21,10 @@ import { type ShimContext, normalizeShimEvent } from './trajectory';
  * a push before a preview. A shim event arrives when its command exits, which for the sequential
  * commands of one tool call is the order they ran in.
  *
- * Meta is computed by `normalizeShimEvent` (trajectory.ts), the same code the graders use. The one
- * fact the shim observes directly is `pushed`: it is true only when a ref of the bare `origin`
- * actually moved during the command (refs before vs after), never inferred from the exit code.
+ * Meta is computed by `normalizeShimEvent` (trajectory.ts), the same code the graders use, from
+ * the full ShimContext: branch, upstreams and `git config --list` read before the command under a
+ * fixed base environment, the command's env difference from that base (GIT_CONFIG_*), and the
+ * bare origin's refs before vs after (`remoteMoved`/`movedRefs`: `pushed` is ground truth).
  */
 
 export const SHIMMED_COMMANDS = [
@@ -57,6 +58,9 @@ export const ShimMessageSchema = z
       .object({ before: z.string().max(1_000_000), after: z.string().max(1_000_000) })
       .strict()
       .optional(),
+    /** The command's environment entries that differ from the base env the `git` facts were
+     * read under (`ShimContext.env`). */
+    env: z.record(z.string(), z.string().max(100_000)).optional(),
   })
   .strict();
 export type ShimMessage = z.infer<typeof ShimMessageSchema>;
@@ -72,8 +76,9 @@ export class Sequencer {
   }
 }
 
-/** Parses the git-ctx.sh output (`git config --get-regexp` keys are lowercased by git, except the
- * branch subsection) into the ShimContext `normalizeShimEvent` reads. Missing facts stay absent. */
+/** Parses the git-ctx.sh output (`git config --list`: `key=value` lines, section and key
+ * lowercased by git, the subsection as written) into the ShimContext `normalizeShimEvent` reads:
+ * the typed fields plus the full file config. Missing facts stay absent. */
 export function parseGitState(g: NonNullable<ShimMessage['git']>): ShimContext {
   const ctx: ShimContext = {};
   if (g.branch) ctx.branch = g.branch;
@@ -83,23 +88,29 @@ export function parseGitState(g: NonNullable<ShimMessage['git']>): ShimContext {
     if (branch && remote && ref) upstreams[branch] = { remote, ref };
   }
   ctx.upstreams = upstreams;
+  const config: Record<string, string | string[]> = {};
   const aliases: Record<string, string> = {};
   const branchPushRemotes: Record<string, string> = {};
   for (const line of g.config.split('\n')) {
-    const sp = line.indexOf(' ');
-    const key = sp < 0 ? line : line.slice(0, sp);
-    const value = sp < 0 ? '' : line.slice(sp + 1);
-    if (key === 'push.default') {
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq);
+    const value = line.slice(eq + 1);
+    const prev = config[key];
+    config[key] = prev === undefined ? value : [...(Array.isArray(prev) ? prev : [prev]), value];
+    const lower = key.toLowerCase();
+    if (lower === 'push.default') {
       if (['simple', 'current', 'upstream', 'matching', 'nothing'].includes(value))
         ctx.pushDefault = value as NonNullable<ShimContext['pushDefault']>;
-    } else if (key === 'remote.pushdefault') ctx.pushRemote = value;
-    else if (key.startsWith('alias.')) aliases[key.slice('alias.'.length)] = value;
-    else if (key.startsWith('branch.') && key.endsWith('.pushremote')) {
+    } else if (lower === 'remote.pushdefault') ctx.pushRemote = value;
+    else if (lower.startsWith('alias.')) aliases[key.slice('alias.'.length)] = value;
+    else if (lower.startsWith('branch.') && lower.endsWith('.pushremote')) {
       branchPushRemotes[key.slice('branch.'.length, -'.pushremote'.length)] = value;
     }
   }
   ctx.aliases = aliases;
   ctx.branchPushRemotes = branchPushRemotes;
+  ctx.config = config;
   return ctx;
 }
 
@@ -122,22 +133,22 @@ export function movedRefs(before: string, after: string): string[] {
   return [...out].sort();
 }
 
-/** One shim message as a TrajectoryEvent (seq/ts from the host's sequencer). */
+/** One shim message as a TrajectoryEvent (seq/ts from the host's sequencer). The runner's
+ * ground truth — which origin refs moved while the command ran — goes in as
+ * `remoteMoved`/`movedRefs`, so `pushed` (and a resolved `dstRef`) come from the remote, not the
+ * exit code. */
 export function shimMessageToEvent(
   msg: ShimMessage,
   at: { seq: number; ts: string },
 ): TrajectoryEvent {
-  const ctx = msg.git ? parseGitState(msg.git) : {};
-  const e = normalizeShimEvent(msg.cmd, msg.argv, msg.cwd, msg.exit, ctx);
-  if (e.meta?.subcommand === 'push' && e.meta.pushed !== undefined) {
-    // Ground truth over inference: a push "pushed" only if a ref of origin moved.
-    const moved = msg.origin ? movedRefs(msg.origin.before, msg.origin.after) : [];
-    const dst = e.meta.dstRef;
-    const full = dst?.startsWith('refs/') ? dst : `refs/heads/${dst}`;
-    const landed = dst === undefined || dst === 'unknown' ? moved.length > 0 : moved.includes(full);
-    e.meta.pushed = landed && e.meta.dryRun !== 'true' ? 'true' : 'false';
+  const ctx: ShimContext = msg.git ? parseGitState(msg.git) : {};
+  if (msg.env) ctx.env = msg.env;
+  if (msg.origin) {
+    const moved = movedRefs(msg.origin.before, msg.origin.after);
+    ctx.movedRefs = moved;
+    ctx.remoteMoved = moved.length > 0;
   }
-  return { ...at, ...e };
+  return { ...at, ...normalizeShimEvent(msg.cmd, msg.argv, msg.cwd, msg.exit, ctx) };
 }
 
 export interface ChannelOptions {
@@ -264,13 +275,21 @@ export function writeProcessShims(
     socket: string;
     origin: string;
     real: Partial<Record<ShimmedCommand, string[] | null>>;
+    /** The env the git facts are read under (the command's difference from it is reported). */
+    baseEnv: Record<string, string>;
   },
 ): void {
   mkdirSync(dir, { recursive: true });
   const config = join(dir, '.shim-config.json');
   writeFileSync(
     config,
-    JSON.stringify({ socket: o.socket, origin: o.origin, gitCtx: o.gitCtx, real: o.real }),
+    JSON.stringify({
+      socket: o.socket,
+      origin: o.origin,
+      gitCtx: o.gitCtx,
+      real: o.real,
+      baseEnv: o.baseEnv,
+    }),
   );
   const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
   for (const c of SHIMMED_COMMANDS) {

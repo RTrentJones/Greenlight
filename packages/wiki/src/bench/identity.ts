@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { skillSetHash } from '../bundle';
 import {
   type BaselineIdentity,
   BaselineIdentitySchema,
@@ -112,20 +113,11 @@ export function depsHash(input: {
   );
 }
 
-/** Over every managed skill's `SKILL.md` and `PURPOSE.md` (an absent sidecar hashes as absent), in
- * skill-name order. Other files in a skill directory are not part of the skill set. */
-export function skillSetHash(skillsDir: string): string {
-  const h = createHash('sha256');
-  const names = existsSync(skillsDir)
-    ? readdirSync(skillsDir)
-        .filter((n) => existsSync(join(skillsDir, n, 'SKILL.md')))
-        .sort()
-    : [];
-  for (const n of names) {
-    h.update(`${n}\0${fileHash(join(skillsDir, n, 'SKILL.md'))}\0`);
-    h.update(`${fileHash(join(skillsDir, n, 'PURPOSE.md'))}\n`);
-  }
-  return h.digest('hex');
+/** The managed skill set (08 §10.3), as the proposer and gate name it: `skillSetHash` of
+ * bundle.ts (canonical JSON of every skill's SKILL.md and PURPOSE.md, by name). An empty skill
+ * directory hashes as the empty set. */
+export function skillSetHashOf(skillsDir: string): string {
+  return skillSetHash(skillsDir) ?? sha256(canonicalJson([]));
 }
 
 export interface IdentityInput {
@@ -161,7 +153,7 @@ export function computeIdentity(i: IdentityInput): BaselineIdentity {
     harness: { runnerVersion: i.runnerVersion ?? RUNNER_VERSION, imageDigest: i.imageDigest },
     agent: { vendor: i.agent.vendor, version: i.agent.version },
     models: [...i.models],
-    skillSetHash: skillSetHash(i.skillsDir),
+    skillSetHash: skillSetHashOf(i.skillsDir),
     mode: i.mode,
     wikiSnapshotHash: i.mode === 'isolation' ? null : (i.wikiSnapshotHash ?? null),
     proxyPolicyHash: i.proxyPolicyHash ?? null,

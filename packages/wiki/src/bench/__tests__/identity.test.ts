@@ -10,7 +10,7 @@ import {
   depsHash,
   hashTree,
   sameIdentity,
-  skillSetHash,
+  skillSetHashOf,
 } from '../identity';
 import { findCachedTrain, globToRegExp, resolveModels } from '../runner';
 
@@ -153,9 +153,9 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
 
   it('a file outside SKILL.md/PURPOSE.md is not part of the skill set', () => {
     const w = world();
-    const h = skillSetHash(join(w.root, 'skills'));
+    const h = skillSetHashOf(join(w.root, 'skills'));
     writeFileSync(join(w.root, 'skills', 'provider-neon', 'notes.txt'), 'x');
-    expect(skillSetHash(join(w.root, 'skills'))).toBe(h);
+    expect(skillSetHashOf(join(w.root, 'skills'))).toBe(h);
   });
 
   it('a cached record must cover every requested rollout', () => {

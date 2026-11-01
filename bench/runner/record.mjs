@@ -7,7 +7,8 @@
 // sequence number on arrival, and turns it into a TrajectoryEvent with `normalizeShimEvent`, so
 // the meta a rule matches on is computed by the same code the graders use. `git` is the raw
 // repository state read BEFORE the command ran (the branch a push is made from), with the
-// command's own global options (`-c`, `-C`, …) and the agent's GIT_CONFIG_* environment applied;
+// file config read under a fixed base environment; `env` is the command's environment entries
+// that differ from that base (so `normalizeShimEvent` layers GIT_CONFIG_* and `-c` itself);
 // `origin` is the bare origin's refs before and after, so `pushed` reflects a ref that really moved.
 //
 //   docker:  record.mjs --docker <cmd> <cwd> <base64 env -0> <args…>
@@ -40,11 +41,46 @@ function decodeEnv(b64) {
     .filter((kv) => kv.indexOf('=') > 0);
 }
 
+const SH_CD = 'cd -- "$0" || exit 126; exec "$@"';
+
+/** The env entries of `env` (KEY=VALUE strings) that differ from `base` (a key of base the
+ * command lacks is reported as ''). */
+function envDiff(env, base) {
+  const out = {};
+  const seen = new Set();
+  for (const kv of env) {
+    const i = kv.indexOf('=');
+    const k = kv.slice(0, i);
+    const v = kv.slice(i + 1);
+    seen.add(k);
+    if (base[k] !== v) out[k] = v;
+  }
+  for (const k of Object.keys(base)) if (!seen.has(k)) out[k] = '';
+  return out;
+}
+
 function parseArgs(argv) {
   const [mode, ...rest] = argv;
   if (mode === '--docker') {
     const [cmd, cwd, envB64, ...args] = rest;
     const env = decodeEnv(envB64);
+    const base = { HOME: '/home/agent', PATH: '/usr/bin:/bin' };
+    const baseList = Object.entries(base).map(([k, v]) => `${k}=${v}`);
+    // `doas -u agent env -i <env> /bin/sh -c 'cd "$0" && exec "$@"' <cwd> <argv…>`
+    const as = (list) => (argvReal) => [
+      '/usr/bin/doas',
+      '-n',
+      '-u',
+      'agent',
+      '/usr/bin/env',
+      '-i',
+      ...list,
+      '/bin/sh',
+      '-c',
+      SH_CD,
+      cwd,
+      ...argvReal,
+    ];
     return {
       cmd,
       cwd,
@@ -54,30 +90,22 @@ function parseArgs(argv) {
       real: DOCKER_REAL[cmd] ?? null,
       gitCtx: '/opt/runner/git-ctx.sh',
       gitBin: '/usr/bin/git',
-      // `doas -u agent env -i <agent env> /bin/sh -c 'cd "$0" && exec "$@"' <cwd> <argv…>`
-      asAgent: (argvReal) => [
-        '/usr/bin/doas',
-        '-n',
-        '-u',
-        'agent',
-        '/usr/bin/env',
-        '-i',
-        ...env,
-        '/bin/sh',
-        '-c',
-        'cd -- "$0" || exit 126; exec "$@"',
-        cwd,
-        ...argvReal,
-      ],
+      asAgent: as(env),
+      asBase: as(baseList),
+      envDiff: envDiff(env, base),
       spawnCwd: '/',
     };
   }
   if (mode === '--process') {
     const [configPath, cmd, ...args] = rest;
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    const cwd = process.cwd();
+    const base = config.baseEnv ?? {};
+    const env = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
+    const baseList = Object.entries(base).map(([k, v]) => `${k}=${v}`);
     return {
       cmd,
-      cwd: process.cwd(),
+      cwd,
       args,
       socket: config.socket,
       origin: config.origin,
@@ -85,38 +113,17 @@ function parseArgs(argv) {
       gitCtx: config.gitCtx,
       gitBin: config.real?.git?.[0] ?? 'git',
       asAgent: (argvReal) => argvReal,
-      spawnCwd: process.cwd(),
+      asBase: (argvReal) => ['/usr/bin/env', '-i', ...baseList, ...argvReal],
+      envDiff: envDiff(env, base),
+      spawnCwd: cwd,
     };
   }
   throw new Error('record.mjs: expected --docker or --process');
 }
 
-/** git's global options before the subcommand (they change which config and repo apply). */
-const GLOBAL_VALUE = new Set([
-  '-C',
-  '-c',
-  '--git-dir',
-  '--work-tree',
-  '--namespace',
-  '--config-env',
-]);
-function globalOptions(args) {
-  const out = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (GLOBAL_VALUE.has(a)) {
-      if (args[i + 1] === undefined) break;
-      out.push(a, args[i + 1]);
-      i++;
-    } else if (/^--(git-dir|work-tree|namespace|config-env)=/.test(a)) out.push(a);
-    else if (a.startsWith('-')) continue;
-    else break;
-  }
-  return out;
-}
-
-function run(o, argvReal) {
-  const full = o.asAgent(argvReal);
+/** Runs a fact query as the agent under the fixed base environment; returns stdout. */
+function query(o, argvReal) {
+  const full = o.asBase(argvReal);
   const r = spawnSync(full[0], full.slice(1), {
     cwd: o.spawnCwd,
     encoding: 'utf8',
@@ -127,7 +134,7 @@ function run(o, argvReal) {
 }
 
 function gitState(o) {
-  const text = run(o, ['/bin/sh', o.gitCtx, 'state', o.cwd, o.gitBin, ...globalOptions(o.args)]);
+  const text = query(o, ['/bin/sh', o.gitCtx, 'state', o.cwd, o.gitBin]);
   const section = (name) => {
     const m = text.split(`@${name}\n`)[1];
     if (m === undefined) return '';
@@ -142,7 +149,7 @@ function gitState(o) {
 }
 
 const originRefs = (o) =>
-  o.origin ? run(o, ['/bin/sh', o.gitCtx, 'origin', o.origin, o.gitBin]) : '';
+  o.origin ? query(o, ['/bin/sh', o.gitCtx, 'origin', o.origin, o.gitBin]) : '';
 
 function send(socket, line) {
   return new Promise((resolve) => {
@@ -185,7 +192,10 @@ async function main() {
     });
   }
   const event = { v: 1, cmd: o.cmd, argv: o.args, cwd: o.cwd, exit };
-  if (git) event.git = git;
+  if (git) {
+    event.git = git;
+    event.env = o.envDiff;
+  }
   if (isGit) event.origin = { before, after: originRefs(o) };
   await send(o.socket, JSON.stringify(event));
   process.exit(exit);
