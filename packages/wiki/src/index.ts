@@ -12,3 +12,8 @@ export {
 } from '@rtrentjones/greenlight-shared';
 // M1-05 (a): the LLM harness on the Gemini free tier (06 §4.8).
 export * from './llm';
+// M1-08/09: gate, policy table, statistics, recompute and budget (06 §5).
+export * from './bench/stats';
+export * from './bench/policy';
+export * from './bench/gate';
+export * from './bench/budget';

@@ -1,0 +1,6 @@
+{
+  "alpha": 0.05,
+  "runs": 3,
+  "resamples": 1000,
+  "acceptShorterOnTie": false
+}
