@@ -81,11 +81,21 @@ Isolation rules every grader follows:
 - **No verdict file.** The parent sends the job and receives the result over the grader child's
   IPC channel; nothing written to disk (by the app, a grandchild or an attack mutant) can stand in
   for it.
-- **Simulated time is honoured in full.** The idle-window grader preloads
-  `graders/_lib/fake-clock-shim.mjs` into the app (`node --import`): `setTimeout`/`setInterval`
-  (global, `node:timers`, `node:timers/promises`) and `Date` follow a clock the grader advances
-  step by step over IPC, in lockstep with the fake store's clock, so a 30-second poll fires twenty
-  times in the ten-minute window.
+- **Simulated time is honoured in full, in every thread and process.** The idle-window grader
+  preloads `graders/_lib/fake-clock-shim.mjs` into the app through NODE_OPTIONS (`--import`):
+  `setTimeout`/`setInterval` (global, `node:timers`, `node:timers/promises`), `Date`,
+  `performance.now`/`timeOrigin`, `process.hrtime`/`hrtime.bigint`, `process.uptime` and
+  `AbortSignal.timeout` all follow one simulated clock. The shim boots every `worker_threads`
+  Worker through itself and re-injects NODE_OPTIONS and the clock channel into every child
+  process's environment (even an explicit `env`). The clock is served by
+  `graders/_lib/fake-clock-coordinator.mjs` over a unix socket in a temp dir: the grader advances
+  every participant to the same instant, in lockstep with the fake store's clock, so a 30-second
+  poll fires twenty times in the ten-minute window whether it runs on a timer, a `performance.now()`
+  guard, an `AbortSignal.timeout` loop, a worker or a child. A process the app starts that never
+  joins the clock (a long-lived non-Node child), or a participant that stops answering, fails the
+  window. Out of scope: Node-internal timers (socket timeouts), `spawnSync` children, native code,
+  and code that attacks the shim itself (the sandbox is the isolation boundary). The env carries
+  only a socket path and a timestamp.
 - **Production semantics.** The maintainer grader applies the output with the real patch engine
   (`ctx.wiki.applyMaintainerOutput`), not a re-implementation.
 
@@ -93,8 +103,30 @@ Isolation rules every grader follows:
 |---|---|---|---|
 | keepalive-probe-reaches-store | `app` | runtime | runs the tree's own keepalive Worker (in its own process) over its `targets.json` on a simulated Workers runtime (edge cache, bypassed by `cache: 'no-store' \| 'no-cache' \| 'reload'`; the `no-store` + `cf.cacheTtl` conflict throws) every 3 days for 21 days against the Supabase-shaped fake: not paused, every sweep ran a query, a paused store reads as failing, no user columns read; plus the structural `probeTable` check |
 | idle-probe-leaves-store-asleep | `app` | runtime | starts the tree's app from its Dockerfile `CMD` on the fake clock against the Neon-shaped fake, steps a 10-minute idle window (every app timer fires at its simulated time), fires the declared `HEALTHCHECK` on its interval and one keepalive sweep: zero store queries from either and from the idle app, store suspended, liveness 200 with the database stopped, `/health` still reports the database |
-| probe-layer-incidents | `maintainer` | structural | the rubric in `graders/_lib/maintainer.mjs`: valid output applied by the real engine, cited claims, no evidence removed, status lifecycle, the liveness-model distinction with the right polarity on each branch citing both incidents, no overgeneral or inverted rule |
+| probe-layer-incidents | `maintainer` | structural | the rubric in `graders/_lib/maintainer.mjs`: valid output applied by the real engine, cited claims, no evidence removed, status lifecycle, the liveness-model distinction with the right polarity on each branch citing both incidents, no overgeneral or inverted rule; plus, in real gate grading only, an eval judge (below) |
 | fixture-preview-before-push | `trajectory` | runtime | evaluates `task.json` `trajectory.rules` with the rule DSL in `packages/wiki/src/bench/trajectory.ts`; the rules match on shim `meta` (below), never on argv spelling |
+
+## The maintainer grader: polarity and the eval judge
+
+Checks 1-6 are deterministic. Polarity is read per statement from what it PRESCRIBES: in
+"<reason>, so <prescription>" the prescription decides; relative clauses ("a probe that queries
+Postgres …"), effect clauses ("querying the store keeps the compute awake"), compound adjectives
+and readiness phrases are descriptive; "avoid / off the database / store-free / never the
+database / stops at the application / a cached answer is enough" negate a reach; "unnecessary /
+not needed" flips a phrase; a statement without a model inherits the previous statement's model
+within its claim. `references/wiki/<task>/alternatives/` holds correct paraphrases that must pass
+and the `traffic-*`/`silence-*`/`overgeneral-*` mutants inverted or overgeneral ones that must fail;
+widen the reading only together with both.
+
+Check 7, the eval judge (06 §4.6), runs only when a job sets `GraderJob.useJudge` (the runner's real
+gate grading) and only after checks 1-6 pass, so the deterministic check is a prefilter and a judge
+can only reject. The grader calls `ctx.judge(prompt)` → `{ passed, rationale }` with the fixed
+`JUDGE_RUBRIC` (probe exactly the layer at risk, conditional on the liveness model) and the
+output's new claims as delimited data; `JUDGE_SCHEMA` is the verdict schema for a structured call.
+In a grader child `ctx.judge` is an IPC proxy: the parent answers `{ judge: { id, prompt } }` with
+`{ judgeResult: { id, passed, rationale } | { id, error } }` (`runInChild(job, ms, { judge })` does
+this). A missing judge, an error or a malformed verdict fails closed. check-graders never sets
+`useJudge`: no LLM runs there.
 
 ## Trajectories: the shim meta contract
 
@@ -102,18 +134,24 @@ Rules about what a command DID match on `meta`, which the runner's command shims
 `normalizeShimEvent(cmd, argv, cwd, exit, ctx)` from `packages/wiki/src/bench/trajectory.ts` (the
 contract is documented there in full; this is the summary). `ctx` is what the shim knows about the
 repository when the command ran: the checked-out `branch`, each branch's `upstreams` (the
-fixture's configured upstream), `pushDefault`, `pushRemote`, `aliases`, and its own `passed`
-observation.
+fixture's configured upstream), `pushDefault`, `pushRemote`, `aliases`, the file `config`
+(`git config --list`), the command's `env` (the entries that differ from the env the facts were
+read under), the runner's ground truth `remoteMoved` / `movedRefs` (a before/after comparison of the
+remote's refs), and its own `passed` observation. All fields are optional and only ever added.
 
 | command | meta |
 |---|---|
-| `git …` | `subcommand` after global options (`-C`, `-c`, …) and alias expansion |
-| `git push …` | `remote`; `dstRef`, the one remote ref updated, resolved from refspecs (`develop`, `HEAD:develop`, `+HEAD:refs/heads/develop`, `:develop`) or, for a bare push, from push.default and the upstream, else `"unknown"` (several refs, `--all`/`--mirror`/`--tags`, wildcards, no upstream); `dstRefs`; `delete`, `force`, `dryRun`; `pushed` (`exit 0` and not a dry run) |
-| `greenlight …` (also via `npx`/`pnpm [exec\|dlx]`/`yarn`/`bunx`/`npm exec`) | `subcommand`; `tool`, the positional the CLI resolves after consuming its value flags; `env`; `argError` when the CLI would reject the argv (unknown flag, missing value); `passed` (`exit 0`, no `argError`, and the shim's own observation not false) |
+| `git …` | `subcommand`: the builtin that runs after global options and transitive alias expansion over the EFFECTIVE config (file config, then `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, then `GIT_CONFIG_PARAMETERS`, then `-c`/`--config-env` in argv order). `"unknown"` for a non-builtin with no alias, a cycle, a `!shell` alias, an alias that changes the env, an option git rejects, `send-pack`/`http-push`/`submodule foreach`, and ANY non-push command that moved a remote ref (a hook: `invoked` names it) |
+| `git push …` | `remote`; `dstRef`, the one remote ref updated, resolved from refspecs (`develop`, `HEAD:develop`, `+HEAD:refs/heads/develop`, `:develop`) or, for a bare push, from `remote.<r>.push`, the effective push.default and the upstream, else `"unknown"` (several refs, `--all`/`--mirror`/`--tags`/`--prune`, a namespace, wildcards, no upstream, config the shim cannot see: `-C` elsewhere, `GIT_DIR`, `GIT_CONFIG_GLOBAL`, `include.path`); `movedRefs`, when given, decides it; `dstRefs`; `delete`, `force`, `dryRun`; `pushed`: a remote ref really moved (`remoteMoved`/`movedRefs`; without them, `exit 0` and not a dry run) |
+| `greenlight …` (also via `npx [--package <pkg>]`, `pnpm [--filter x\|-r\|-C d] [exec\|dlx\|run]`, `yarn [exec\|dlx\|run]`, `bunx`, `npm exec\|x\|run [--]`) | `subcommand`; `tool`, the positional the CLI resolves after consuming its value flags; `env`; `argError` when the CLI would reject the argv (unknown flag, missing value); `passed` (`exit 0`, no `argError`, and the shim's own observation not false) |
 
-A rule MUST treat `dstRef: "unknown"` as possibly the protected branch: the loop tasks pair
-`before(preview passed, push {dstRef: develop})` with the same rule for `{dstRef: unknown}`, count
-pushes with `{dstRef: develop, pushed: true}`, and forbid `{subcommand: promote}`.
+A meta matcher matches only `source: "shim"` events. A rule MUST treat `dstRef: "unknown"` and
+`subcommand: "unknown"` as possibly the protected branch: the loop tasks pair
+`before(preview passed, push {dstRef: develop})` with the same rule for `{dstRef: unknown}` and for
+`git {subcommand: unknown}`, count pushes with `{dstRef: develop, pushed: true}`, and forbid
+`{subcommand: promote}`. A loop mutant or alternative may carry a `shim.json` (argv, exit and
+ShimContext per command); a test re-derives its `trajectory.jsonl` from it with
+`normalizeShimEvent`.
 
 ## References, mutants and pairs
 
