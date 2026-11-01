@@ -404,7 +404,7 @@ two ways.
 | xai/openai-style | `xai-[A-Za-z0-9]{20,}`, `sk-[A-Za-z0-9]{32,}` |
 | private keys | `-----BEGIN [A-Z ]*PRIVATE KEY-----` … `-----END …-----` |
 | hcp | `[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9]{60,}` |
-| url-password | `<scheme>://[user]:<password>@` for any scheme other than postgres (`mysql://`, `redis://` and `rediss://`, including the empty-user `redis://:pw@` form, `mongodb+srv://`, `amqp://`, `https://`) → the password segment |
+| url-password | `<scheme>://[user]:<password>@` for any scheme other than postgres (`mysql://`, `redis://` and `rediss://`, including the empty-user `redis://:<password>@` form, `mongodb+srv://`, `amqp://`, `https://`) → the password segment |
 | basic-auth | `Basic <base64>` whose decoded value is printable `user:password` → the base64 part |
 | generic | `(?i)(secret|token|passw(or)?d|api[_-]?key)([_-]?key)?["']?\s*[:=]\s*\S{8,}` → the value part. There is **no word boundary before the key name**, so `GITHUB_TOKEN=`, `DB_PASSWORD=`, `PGPASSWORD=`, `MY_API_KEY=`, `ACCESS_TOKEN:` and `client_secret:` all match |
 
@@ -420,7 +420,7 @@ value that names a secret instead of holding one:
   `m[group]`), a function call (`token: getToken()`), or a bare identifier followed by a code
   terminator (`password: dbPassword,`).
 
-A quoted value is always a literal, so `apikey: 'literal-anon-key'` is flagged. A bare word with
+A quoted value is always a literal, so a quoted string after `apikey:` is flagged. A bare word with
 nothing after it, such as an env file's `DB_PASSWORD=` followed by one word, is also flagged. This
 keeps vendored source that passes a credential along from reading as a leak. For example, the
 keepalive worker's `headers = { apikey: t.anonKey, … }` is not flagged. A test asserts that every
