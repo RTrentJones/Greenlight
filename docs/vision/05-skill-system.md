@@ -54,7 +54,7 @@ behaviour is mechanism, and the same passage works for any agent (FR-AGENT-01).
 
 | hook | when | command(s) | reads | writes |
 |---|---|---|---|---|
-| **on-start** | before touching a tool | `greenlight wiki lookup --tool <name> --start` | `wiki/tools/<name>/intent.md`, `liveness.md`, the first 40 lines of `decisions.md`, and `confirmed` framework and project patterns whose `cells` match the tool and whose `applies` includes the installed version, as one-line index entries only | nothing |
+| **on-start** | before touching a tool | `greenlight wiki context <name>` (equivalent: `wiki lookup --tool <name> --start`) | `wiki/tools/<name>/intent.md`, `liveness.md`, the first 40 lines of `decisions.md`, and `confirmed` framework and project patterns whose `cells` match the tool and that `affects`/`relevance` make applicable (04 §6), as one-line index entries only | nothing |
 | **on-failure** | a gate (`preview`, `verify`, `ship`) exits non-zero | none extra; the failure report already carries `see:` links (03 §6.3); `greenlight wiki lookup --check <id>` to expand one | the linked `confirmed` pattern pages, in full | the CLI records `wikiHits` on the raw record |
 | **on-complete** | the change passed the local gate and was pushed | the agent edits `wiki/tools/<name>/intent.md` (new or changed criteria → check ids) and appends to `decisions.md`, then runs `greenlight wiki lint --tool <name>` | the same pages | intent criteria, decision entries |
 | **on-incident** | an alert issue, a rollback, or the same gate failing three times on one change | `greenlight wiki capture --from-issue <n>` / `--from-run <id>` | — | raw records; an `incidents/<yyyy-mm>-<slug>.md` stub in the project wiki with the timeline and evidence refs, and no root-cause claims |
@@ -77,8 +77,11 @@ and proposer roles. A building agent MUST NOT be given:
 
 `wiki lookup` enforces this. It never returns those page types or statuses unless `--role
 maintainer` is passed, and the `greenlight-wiki` skill is the only skill that passes it. During
-bench rollouts, `GREENLIGHT_WIKI=off` makes every lookup return nothing, so that traces measure
-skills alone (06 §4.2).
+**isolation-mode** bench rollouts, `GREENLIGHT_WIKI=off` makes every lookup return nothing, so
+that traces measure skills alone. **Production-mode** rollouts run the hooks against a pinned wiki
+snapshot, so the shipped workflow, hooks included, is evaluated as well (06 §4.7). The hooks
+themselves are judged there. For example, a trajectory rule requires `wiki lookup` after a failed
+verify (08 §10.2).
 
 ### 3.3 Which skills use which hooks
 
@@ -103,9 +106,24 @@ draft ──▶ gated ──▶ released
 
 - **A new skill** enters as `draft` with `version: "1"`. It becomes `gated` when it has a bench
   slice of at least 3 tasks, all passing on both gate models, and a `PURPOSE.md` with at least one
-  `confirmed` citation per rule-bearing heading (LR-13). Until P6 exists, the gate is a human PR
-  whose description lists those tasks and their results. The harness still writes the ledger row,
-  through `greenlight wiki remediate --manual` (07).
+  `confirmed` citation per rule-bearing heading (LR-13).
+- **Unmeasured skills use the human-reviewed version path.** The bench grows from a handful of
+  tasks in M1 (06 §4.1), so most skills have no bench slice at first. Until a skill's slice has at
+  least 3 `active` tasks, a change to it follows this temporary path:
+  1. The change is an owner-reviewed PR. The PR body states that the change is **unmeasured**,
+     names the evidence that motivated it (pattern ids, field or repro refs), and lists the tasks
+     that will measure it once they exist.
+  2. On merge, the harness writes the ledger events through `greenlight wiki remediate --manual
+     --proposal <id> --evidence <refs>` (07). These are `candidate-accepted` with
+     `path: "neutral"`, or `path: "standard"` when a `repro` or `field` evidence item exists,
+     followed by `merged`. The evidence kind is `field` or `repro`, never `bench`.
+  3. The version is bumped by the harness at merge, as on every other path.
+  4. `skill-impact.md` marks the row **unmeasured**. No document, release note or metric may
+     describe it as a measured improvement.
+
+  When the slice reaches 3 active tasks, the next change to that skill MUST use the gate (06 §5).
+  The first gate run also re-baselines the skill, so its unmeasured history is measured from then
+  on.
 - **A patch** changes one skill at a time. That rule is the paper's atomicity requirement, and it is
   what makes outcome attribution possible (§9).
 - **A release** carries every skill version that changed since the previous release. `CHANGELOG.md`
@@ -117,7 +135,8 @@ draft ──▶ gated ──▶ released
 ## 5. Catalog
 
 Each entry gives the skill's purpose, routing description, inputs, procedure outline, hooks, gates,
-outputs, bench slice, blast radius, and the citations to seed at P0. The pages they cite are listed
+outputs, bench slice, blast radius, and the citations to seed at M3 (M1 for the skills the first
+iteration exercises: deploy-verify-promote, greenlight-build, provider-supabase, provider-neon). The pages they cite are listed
 in [15](15-seed-content.md).
 
 ### 5.1 `deploy-verify-promote` (the loop)
@@ -131,7 +150,7 @@ in [15](15-seed-content.md).
 - **Input:** a manifest tool name.
 - **Procedure:** this keeps the current v2 procedure (`.claude/skills/deploy-verify-promote/SKILL.md`)
   and adds the hook steps marked ★.
-  1. ★ **On start:** `greenlight wiki lookup --tool <name> --start`. Read the intent criteria and
+  1. ★ **On start:** `greenlight wiki context <name>`. Read the intent criteria and
      the liveness model before editing anything. If the change contradicts a criterion, ask the
      owner before proceeding.
   2. Branch in the tool's code repo.
@@ -143,17 +162,24 @@ in [15](15-seed-content.md).
   6. ★ **When a gate fails:** read the `see:` patterns in the report before changing anything else.
      Fix the cause the pattern names, then re-run the same gate. After three failures of the same
      gate on one change, run on-incident and tell the owner.
-  7. **Push.** CI ships to beta (or to prod for oci, which is direct-to-prod).
+  7. **Push.** CI ships to beta. For an `oci` or `docker` tool, which has no standing beta, the
+     push builds an immutable image and verifies it in the CI preview environment. **Nothing
+     reaches production until the owner approves that image** ([18](18-release-authority.md)).
+     The direct-to-prod-on-push behaviour is removed.
   8. ★ **On complete:** map each new or changed criterion to its check ids in `intent.md`. Append
      a dated entry to `decisions.md` for any choice a future agent would otherwise question. Run
      `greenlight wiki lint --tool <name>`.
   9. **Report to the owner:** the beta URL, what changed, and which check ids prove it.
-  10. **Promote** only after the owner says so: dispatch `promote.yml` for the verified sha. For a
-      tool with `promotion: auto-on-green`, CI promotes and the agent only reports (ADR-07).
+  10. **Promote** only after the owner approves. The agent asks the owner to approve the verified
+      sha (or image digest) through the protected approval path in [18](18-release-authority.md).
+      The agent cannot complete that approval itself, and nothing it can do (a TTY, a pseudoterminal,
+      a dispatch call) counts as approval. For a tool with an owner-approved
+      `promotion: auto-on-green`, CI promotes and the agent only reports (ADR-07).
   11. **Watch:** `greenlight status <name>`.
 - **Hooks:** all four.
 - **Gates it relies on:** `preview`, `ship` (SHA-gated verify plus rollback), `promote --commit`,
-  and from P4 the proxy's promote-dispatch denial.
+  and the release-authority boundary of [18](18-release-authority.md): production mutation runs only
+  as the protected identity, for an owner-approved artifact.
 - **Outputs:** commits, verify checks with ids, intent and decision entries, stage events, raw
   records.
 - **Bench slice:** `loop/*` (change tasks on existing fixtures) and all `replay/*` tasks.
@@ -163,7 +189,8 @@ in [15](15-seed-content.md).
   - `pattern/fix-merged-not-running`;
   - `pattern/probe-touches-wrong-layer`;
   - `pattern/preview-prod-path-drift`;
-  - `decision/oci-direct-to-prod`;
+  - `decision/oci-direct-to-prod` (to be superseded under 18: oci keeps no standing beta, but prod
+    requires an approved image);
   - `decision/promotion-is-human`;
   - `contract/c1-identity`.
 
@@ -253,16 +280,24 @@ in [15](15-seed-content.md).
      - beta ahead of prod, with commit counts and verified state;
      - quotas above 80%.
   2. Release: run only after an explicit owner instruction naming the tool. Confirm that beta is
-     verified at the sha that will be promoted, dispatch `promote.yml` with `name=<tool>`, follow it
-     with `greenlight status`, and report the prod verify result. Append a dated release entry to
-     `wiki/tools/<name>/decisions.md`.
-  3. Retire: run only after an explicit owner instruction. `greenlight retire <name>` removes the
-     manifest entry and archives `wiki/tools/<name>/` to `wiki/archive/tools/<name>/`. Push, then
-     tell the owner that `infra.yml` will ask them to approve the destroy.
+     verified at the sha that will be promoted. Then request owner approval through the protected
+     path ([18](18-release-authority.md)). The skill prepares the request (tool, sha, artifact id,
+     verify evidence), and the owner completes it outside the agent's reach. Follow the resulting
+     run with `greenlight status`, and report the prod verify result. Append a dated release entry
+     to `wiki/tools/<name>/decisions.md`.
+  3. Retire: run only after an explicit owner instruction. Follow the retirement lifecycle in
+     [10](10-free-tier-and-portfolio.md) §5 and [18](18-release-authority.md):
+     - inventory the resources;
+     - record the data disposition;
+     - `greenlight retire <name>` moves the tool to `retiring`;
+     - the owner approves the plan-bound deletion of exactly the listed resources;
+     - the tool becomes `retired` only once teardown is confirmed.
+
+     The generic destroy guard is never removed or bypassed.
   4. Incidents: for each open alert, run on-incident.
 - **Hooks:** all four.
-- **Gates:** `promote.yml`, the proxy's promote-dispatch denial (P4), and the `infra.yml` destroy
-  guard.
+- **Gates:** the release-authority boundary and plan-bound deletion authorization (18), and the
+  `infra.yml` destroy guard.
 - **Bench slice:** `port/*` (structural tasks on fixture portfolios: the summary is graded against
   the known state; a release attempted without approval must be refused).
 - **Blast radius:** high, because the skill releases and destroys.
@@ -342,7 +377,7 @@ bench slice is `replay/*` tasks for their provider plus `cap/*` tasks in cells t
 | `plugin/skills/` | `cli/scripts/copy-assets.mjs` during `pnpm build:packages` | `check-plugin-sync` (byte-identical), now also covering `PURPOSE.md` and `plugin/wiki/` |
 | npm package `cli/assets/skills/`, `cli/assets/wiki/` | same script | release workflow fails if assets differ from source |
 | wrapper `.claude/skills/` | `greenlight agent sync [<name>]` copies all managed skills that apply: the loop, kickoff, build, portfolio and wiki always; provider skills per tool, as today in `cli/src/commands/agent.ts` | DR-13 (skill version equals the bundled version), DR-14 (copy is byte-identical to the bundled one) |
-| wrapper `.agents/skills/` (P7) | same command, second destination | DR-14 extended |
+| wrapper `.agents/skills/` (M7) | same command, second destination | DR-14 extended |
 | tool repo | `agent sync <name>` writes the pointer block and the provider skills relevant to that tool | — |
 
 `agent sync` MUST NOT overwrite a wrapper skill that carries `owner: project`. Those are project
@@ -375,9 +410,13 @@ under the same gate.
 
 ## 9. Attributing outcomes to skill text
 
-- **Field data.** Every stage event and raw record carries `skills`, a map from skill name to
-  version (08 §5, §7). `greenlight wiki metrics [--skill <name>]` aggregates raw records into the
-  following for each skill version:
+- **Field data.** Every stage event and raw record carries `skills.installed` (name, version and
+  content hash) and `skills.used` (08 §5.1). `skills.used` is the set observed in the agent's
+  transcript, or `'unknown'` when no transcript is available. Attribution uses **`used`** when it is
+  known. A record whose `used` is unknown counts toward an "unattributed" bucket, and it is never
+  credited to every installed skill. Changes, attempts and cold sessions are told apart by
+  `changeId`, `(runId, attempt)` and the session ref (03 §5.1). `greenlight wiki metrics [--skill
+  <name>]` aggregates attributed records into the following for each skill version:
   - first-pass rate: the share of changes whose first `preview` and first `ship` passed;
   - rollback rate;
   - median push-to-healthy time;
@@ -387,7 +426,10 @@ under the same gate.
   Because changes are atomic (one skill per accepted proposal), a shift between two adjacent
   versions can be read as that change's effect. It is still observational, so it is used only as a
   monitor (06 §7, ADR-05).
-- **Bench data.** Each ledger row carries the before and after capability score per model and the
-  replay result (08 §8). That is the causal evidence, and it is what accepts or rejects a change.
+- **Bench data.** Each `candidate-*` ledger event carries one `GateResult` per model and mode,
+  holding capability before and after plus the replay result, and the hash of the
+  `EvaluationRecord` (08 §8, §10.4). That is the causal evidence, and it is what accepts or rejects
+  a skill change. Rows on the human-reviewed version path (§4) carry no bench evidence, and they are
+  shown as unmeasured.
 - **Display.** `skill-impact.md` shows, for each version, the ledger evidence that admitted it and
   the field metrics since it shipped, so a regression is visible next to the change that caused it.
