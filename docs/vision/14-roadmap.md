@@ -196,7 +196,11 @@ to the patterns that iteration needs, plus the evidence that their remediations 
 
 **M1-05 — Bench runner with isolated rollout and grading.** (FR-EVO-01, FR-EVO-10)
 - Files: `cli/src/commands/bench.ts`, `packages/wiki/src/bench/{runner,sandbox,shims,grade}.ts`,
-  and `bench/runner/Dockerfile`.
+  `packages/wiki/src/llm/{gemini,react}.ts` (06 §4.8), `bench/models.json`, and
+  `bench/runner/Dockerfile`.
+- Model provider: the Gemini free tier, through the Greenlight harness (ADR-20). This needs a
+  `GEMINI_API_KEY` from Google AI Studio, with no billing. It is the only credential the bench
+  uses.
 - Change:
   - the rollout container, unprivileged and with no grader mount;
   - trajectory shims that write through a channel the agent cannot edit;

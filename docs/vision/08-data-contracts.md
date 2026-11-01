@@ -356,7 +356,7 @@ interface RawRecord extends EvidenceIdentity {
   kind: 'preview' | 'ship' | 'verify' | 'keepalive' | 'alert' | 'bench' | 'session';
   passed: boolean;
   startedAt: string; durationMs: number;
-  agent?: { vendor: 'claude' | 'codex' | 'other'; version?: string; model?: string; sessionRef?: string };
+  agent?: { vendor: 'greenlight-harness' | 'gemini-cli' | 'claude' | 'codex' | 'other'; version?: string; model?: string; servedBy?: string; sessionRef?: string };
   bench?: {                    // REQUIRED iff kind == 'bench'
     task: string; split: 'train' | 'val' | 'test'; model: string; mode: 'isolation' | 'production';
     skillSetHash: string; evaluationId: string; run: number; seed: string;
@@ -654,7 +654,13 @@ are retained by the rule in §5.3.
 ### 10.5 Budget
 
 ```ts
-interface Budget { monthlyUsd: number; perGateMaxUsd: number; perGateMaxRollouts: number; }
+interface Budget {
+  monthlyUsd: number;          // 0 on the free tier (ADR-20); dollar fields matter only for paid models
+  perGateMaxUsd: number;
+  perGateMaxRollouts: number;
+  perGateMaxRequests: number;  // free-tier binding constraint: total LLM requests one gate may make
+  splitAcrossDays: boolean;    // allow a gate to resume on later days when today's rpd is exhausted (06 §4.8)
+}
 ```
 
 `bench/budget.json` is the only budget schema, and the CLI, the evolution loop and the roadmap all
@@ -868,3 +874,29 @@ interface RetireAuthorization {
   expiresAt: string;
 }
 ```
+
+### 10.6 Models (`bench/models.json`)
+
+```ts
+interface ModelsConfig {
+  provider: 'gemini';                      // default (ADR-20); 'anthropic' | 'openai' reserved for paid opt-in
+  keyEnv: string;                          // 'GEMINI_API_KEY'
+  roles: {
+    frontier: ModelEntry;                  // default gemini-3.8-flash
+    small: ModelEntry;                     // default gemini-3.6-flash
+    maintainer: string;                    // role → one of the entries above, by name
+    proposer: string;
+    judge: string;
+  };
+  temperature: number;                     // 0.2
+}
+interface ModelEntry {
+  id: string;                              // verified by `bench models --check` against models.list
+  fallback?: string;                       // retry target; a fallback-served gate rollout is invalid (06 §4.8)
+  limits: { rpm: number; rpd: number; tpm?: number };   // free-tier limits, from the fact page `fact/gemini-free`
+  priceUsdPerMTok?: { input: number; output: number };  // absent = free
+}
+```
+
+The limit values are copied from `fact/gemini-free` (15 §5) when it is seeded, and that page's
+`verified` date governs them. They are never hard-coded in the harness.

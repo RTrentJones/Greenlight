@@ -368,6 +368,33 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
   because version promises would again constrain what the cycle is allowed to find.
 - **Status.** Accepted.
 
+### ADR-20 — The Gemini free tier is the default model provider for the cycle
+
+- **Context.** Every role in the WikiSkill cycle needs an LLM: rollouts, the maintainer, the
+  proposer, and the judge. The owner directed that these use Gemini free-tier API calls, which
+  matches the free-tier-first constraint and the agent lane's existing provider.
+- **Decision.**
+  - All roles default to Gemini on the free tier, through a small Greenlight harness: a ReAct loop
+    over `generateContent` with function calling, with skills injected into the system prompt (06
+    §4.8).
+  - The gate pair defaults to `gemini-3.8-flash` (frontier) and `gemini-3.6-flash` (small),
+    verified against `models.list` at every gate.
+  - Paid providers remain an opt-in through `bench/models.json`.
+- **Consequences.**
+  - Requests per minute and per day are the budget, so large gates may span days.
+  - Fallback-served rollouts are invalid for gating.
+  - Free-tier prompts may be used by Google, so everything sent must be publishable: bundles are
+    redacted, and a flagged bundle is refused rather than sent.
+  - The harness version is part of the baseline identity.
+  - The results measure skills under a Gemini agent. Transfer to Claude Code or Codex is not
+    assumed. It can be measured later by running the same tasks with `--agent claude`, as the paper's
+    cross-model transfer results suggest it should be.
+- **Alternatives considered.**
+  - Claude headless (`claude -p`): it has a cost, and it does not meet the owner's direction.
+  - Gemini CLI as the agent: it ties evaluation to that CLI's own prompt and tools, and its skill
+    support would need verifying. It is kept as a possible `--agent gemini-cli` later.
+- **Status.** Accepted.
+
 ## 2. Open questions
 
 | id | question | recommended answer | decides |
@@ -375,7 +402,7 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
 | Q1 | Where does the project wiki live? | the wrapper, with pointers in tool repos (ADR-03) | M3 layout |
 | Q2 | Is promotion strictly human, or opt-in automatic for low-stakes tools? | human by default; `auto-on-green` only for public tools with no store or a non-pausing store, and only after the owner approves the policy commit (ADR-07) | M4 schema, M5 enforcement |
 | Q3 | Hosted or self-hosted Infisical, and is Agent Proxy on the free tier? | decide in M5 from a prototype: one credential integration with an explicit trust model and client compatibility tests comes before choosing a general fallback | M5 |
-| Q4 | Which two models form the gate pair, and what are the caps? | one current frontier model and one small or cheap model; `bench/budget.json` `{monthlyUsd, perGateMaxUsd, perGateMaxRollouts}`, starting with per-gate caps sized for the M2 iteration | M1 caps, M6 monthly |
+| Q4 | Which two models form the gate pair, and what are the caps? | **Answered by ADR-20:** Gemini free tier, `gemini-3.8-flash` and `gemini-3.6-flash`; `bench/budget.json` caps requests per gate (`perGateMaxRequests`) against the free-tier `rpd`, with dollar caps at 0 | M1 |
 | Q5 | Does Tracer become required? | no; it stays optional (ADR-08) | M6 |
 | Q6 | Who writes replay graders? | a human writes the first grader for each pattern class; the maintainer may propose graders for later instances, subject to the mutation check | M1 |
 | Q7 | Do template edits go through the automated gate? | yes, by the template acceptance rule (generated-app tests plus mutants), with a human merge (ADR-16) | M4 |

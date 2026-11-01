@@ -416,9 +416,12 @@ does not leak into proposer-visible evidence over time.
    In **isolation** mode `GREENLIGHT_WIKI=off` is set and `.greenlight/wiki/` is absent. In
    **production** mode the hooks run against a wiki snapshot whose hash is part of the baseline
    identity (§4.7). Command shims on `PATH` record the trajectory (§4.6).
-2. The agent runs headless: `claude -p "<brief.md contents>" --output-format json` in the sandbox,
-   with a per-task timeout (`timeoutMin`). It has a tool allow-list of file edit, bash and the
-   `greenlight` CLI. Network is restricted to package registries and localhost. There are no real
+2. The agent runs headless through the **Greenlight harness** (§4.8). This is the default, and it
+   calls the Gemini API on the free tier. It runs in the sandbox, as a ReAct loop with the skills
+   under test injected in full into the system prompt, which is the paper's own setting.
+   `--agent claude` substitutes `claude -p "<brief.md contents>" --output-format json` for owners
+   who choose to pay for it. Either agent runs with a per-task timeout (`timeoutMin`) and a tool
+   allow-list of file edit, bash and the `greenlight` CLI. Network is restricted to package registries and localhost. There are no real
    provider credentials; the M5 proxy points provider hosts at fakes where a task needs them.
    Codex runs (M7) use the same sandbox with `codex exec`.
 3. After the agent stops, the runner runs the task's grader from `bench/graders/<taskId>/`, which
@@ -548,10 +551,17 @@ modes appear in the ledger evidence, per model.
 
 ### 5.3 Two models
 
-The gate always uses **two model ids**, configured in `bench/models.json`:
+The gate always uses **two model ids**, configured in `bench/models.json` (08 §10.6). Both
+default to Gemini models on the free tier (ADR-20):
 
-- `frontier`: the model owners are expected to use;
-- `small`: a cheaper model.
+- `frontier`: the strongest free-tier Gemini model, defaulting to `gemini-3.8-flash`, the model
+  the agent lane already uses;
+- `small`: a smaller or older free-tier model, defaulting to `gemini-3.6-flash`, the agent lane's
+  fallback.
+
+`bench models --check` calls the Gemini `models.list` endpoint and fails before any rollout if a
+configured id is unavailable or deprecated. Model ids rotate (15 `gemini-overload-fallback`), so
+this check runs at the start of every gate.
 
 The paper found skills that collapsed another model's performance (50.5 → 18.1), so a proposal
 MUST NOT regress either model on replay. Capability rules depend on blast radius (§5.4). Ledger
@@ -831,3 +841,61 @@ The first iteration succeeds when:
 - the owner has reviewed the ledger rows.
 
 Acceptance of the real proposal is **not** required (§0).
+
+### 4.8 The Greenlight harness on Gemini (ADR-20)
+
+**Why a harness of Greenlight's own.** Every role in the cycle needs an LLM: the inference agent
+in rollouts, the maintainer, the proposer, and the `eval` judge in maintainer grading. Using the
+Gemini free tier for all of them keeps the cycle at $0, matching the free-tier goal. A vendor
+coding CLI would tie skill evaluation to that CLI's private prompt and tool set. A small
+Greenlight harness makes the inference agent's context exactly "the skills under test plus the
+brief", as in the paper, and the same code runs locally and in CI.
+
+**Shape.** `packages/wiki/src/llm/` has two parts:
+
+- `gemini.ts`: a client over `generateContent` with function calling. It carries the agent
+  lane's retry policy: retry a 429 or 5xx twice with backoff, then one round on the fallback model.
+  Unlike the agent lane, it records which model served each call. If the fallback served a gate
+  rollout, that rollout is invalid for gating: the evaluation record marks it `served-by-fallback`,
+  and the gate re-runs it later or aborts. Mixing models would break the baseline identity.
+- `react.ts`: a ReAct loop with a fixed tool set per role.
+
+| role | tools | system prompt |
+|---|---|---|
+| inference agent | `read_file`, `write_file`, `list_dir`, `bash` (inside the sandbox, through the shims), `finish` | the skills under test, in full, then the task brief |
+| maintainer | `read_file` over the bundle, `finish(MaintainerOutput)` | §2.2 |
+| proposer | `read_file` and `wiki read`/`wiki traces` (split-filtered, §1.4), `finish(ProposerOutput)` | §3.3 |
+| eval judge | none; one structured-output call | the maintainer task's rubric |
+
+The harness's own version is part of the `BaselineIdentity` (`agent.vendor: "greenlight-harness"`,
+`agent.version`, 08 §10.3). Changing its system-prompt scaffolding re-baselines, exactly like a
+model change.
+
+**Free-tier rate limits are the budget.** At $0 the binding constraint is requests per minute and
+per day, not dollars.
+
+- `bench/models.json` records each model's limits (`rpm`, `rpd`, `tpm`).
+- The harness throttles to stay under them.
+- `bench run` refuses a gate whose expected request count exceeds the day's remaining `rpd`.
+
+A gate that cannot finish within one day's quota is split across days. This is safe because the
+baseline identity pins every input, and rollouts are independent. `spend` ledger events record
+requests and tokens, with `usd: 0`. The dollar fields of `Budget` (08 §10.5) remain for owners who
+choose paid models.
+
+**Determinism.** Rollouts use temperature 0.2 and a recorded seed where the API honours one. The
+paired bootstrap already treats runs as noisy (§5.2), so the low temperature narrows the noise
+without pretending to remove it.
+
+**Free-tier data use.** Google may use free-tier prompts and responses to improve its products.
+Everything the harness sends must therefore be publishable:
+
+- Bench rollouts are credential-free by construction.
+- Maintainer and proposer bundles are redacted (11 §6) before sending, and they contain only
+  evidence that is already in public repos or the owner's own wiki.
+- `bench run` refuses to send a bundle containing a string the redaction detector flags. It does
+  not send a redacted copy silently, because a refusal is the visible signal that capture leaked
+  something.
+
+An owner who needs prompts kept out of training uses a paid Gemini tier or another provider, which
+is configured through `bench/models.json`.
