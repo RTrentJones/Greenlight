@@ -195,6 +195,90 @@ describe('applyMaintainerOutput', () => {
     expect(!result.ok && result.errors.join('\n')).toMatch(msg);
   });
 
+  it('refuses two updates of one page under its singular and plural ids (no lost edit)', () => {
+    const wiki = loadWiki(writeTree(goodFiles()));
+    const out = output({
+      create_pages: [],
+      update_pages: [
+        { id: 'pattern/maybe-cause', ops: [{ op: 'append', text: '\nfirst\n' }] },
+        { id: 'patterns/maybe-cause', ops: [{ op: 'append', text: '\nsecond\n' }] },
+      ],
+    });
+    const result = applyMaintainerOutput(wiki, out, { actor: 'maintainer:m', now: NOW });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.errors.join('\n')).toMatch(
+      /"pattern\/maybe-cause" and "patterns\/maybe-cause" \(pattern\/maybe-cause\) appears more than once/,
+    );
+  });
+
+  it('refuses a create and an update of one path under different spellings', () => {
+    const wiki = loadWiki(writeTree(goodFiles()));
+    const content = PATTERN_HYPOTHESIS.replace('pattern/maybe-cause', 'pattern/new-lesson');
+    const out = output({
+      create_pages: [{ id: 'pattern/new-lesson', content }],
+      update_pages: [{ id: './patterns/new-lesson.md', ops: [{ op: 'append', text: 'x' }] }],
+    });
+    const result = applyMaintainerOutput(wiki, out, { actor: 'maintainer:m', now: NOW });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.errors.join('\n')).toMatch(/appears more than once/);
+  });
+
+  it('rejects an output that writes a secret (LR-20 on the scratch wiki), naming no value', () => {
+    const root = writeTree(goodFiles());
+    const before = snapshot(root);
+    const token = `${'gh'}p_${'Ab3'.repeat(13)}`;
+    const out = output({
+      update_pages: [
+        { id: 'pattern/maybe-cause', ops: [{ op: 'append', text: `\nUse ${token}.\n` }] },
+      ],
+    });
+    const result = applyMaintainerOutput(loadWiki(root), out, { actor: 'maintainer:m', now: NOW });
+    expect(result.ok).toBe(false);
+    const errors = !result.ok ? result.errors.join('\n') : '';
+    expect(errors).toMatch(/^LR-20 patterns\/maybe-cause\.md: line \d+: github-shaped secret$/m);
+    expect(errors).not.toContain(token);
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it('rejects a secret in the log entry and a known secret value', () => {
+    const wiki = loadWiki(writeTree(goodFiles()));
+    const value = 'owner-known-value-123';
+    const r1 = applyMaintainerOutput(wiki, output({ append_log: `pasted ${value}` }), {
+      actor: 'maintainer:m',
+      now: NOW,
+      lint: { kind: 'project', secretValues: [value] },
+    });
+    expect(!r1.ok && r1.errors.join('\n')).toMatch(/^LR-20 log\.md: .*value-shaped secret/m);
+  });
+
+  it('rejects a seam leak (LR-19) on a framework wiki, and only in files it writes', () => {
+    const wiki = loadWiki(writeTree(goodFiles()));
+    const lint = { kind: 'framework' as const, seam: { toolNames: ['polyphony'] } };
+    const leak = output({
+      update_pages: [
+        {
+          id: 'pattern/maybe-cause',
+          ops: [{ op: 'replace', target: 'Something drifts', text: 'The polyphony-api drifts' }],
+        },
+      ],
+    });
+    const r1 = applyMaintainerOutput(wiki, leak, { actor: 'maintainer:m', now: NOW, lint });
+    expect(!r1.ok && r1.errors).toEqual([
+      `LR-19 patterns/maybe-cause.md: body names the owner's tool "polyphony"`,
+    ]);
+    // The same terms on a project wiki do not apply; a clean framework output passes.
+    expect(
+      applyMaintainerOutput(wiki, leak, {
+        actor: 'maintainer:m',
+        now: NOW,
+        lint: { ...lint, kind: 'project' },
+      }).ok,
+    ).toBe(true);
+    expect(
+      applyMaintainerOutput(wiki, output(), { actor: 'maintainer:m', now: NOW, lint }).ok,
+    ).toBe(true);
+  });
+
   it('refuses a maintainer-created confirmed page', () => {
     // A confirmed strategy is schema-valid (LR-05 binds failures only), so only the status rule bites.
     const confirmedStrategy = PATTERN_HYPOTHESIS.replace('pattern/maybe-cause', 'pattern/sure')

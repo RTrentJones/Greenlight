@@ -309,10 +309,61 @@ describe('finding content', () => {
     ]);
   });
 
-  it('word-bounds tool names', () => {
-    const ctx = { ...goodContext(), seam: { toolNames: ['drift'] } };
-    // "drifts" is not the tool "drift".
-    expect(lint(loadTree(goodFiles()), ctx)).toEqual([]);
+  it.each([
+    ['a longer word', 'Something drifts between environments.', 'drift', false],
+    ['a word prefix', 'Like a museum exhibit.', 'muse', false],
+    ['a hyphenated compound', 'The polyphony-api health check passed.', 'polyphony', true],
+    ['a compound suffix', 'The env-polyphony value was stale.', 'polyphony', true],
+    ['a snake_case compound', 'Set POLYPHONY_URL first.', 'polyphony', true],
+    ['a dotted host', 'Served at polyphony.example.dev.', 'polyphony', true],
+  ])('treats tool names as whole tokens (%s)', (_n, sentence, tool, flagged) => {
+    const files = edit(
+      'decisions/never-pause.md',
+      'stay up unattended.',
+      `stay up unattended. ${sentence}`,
+    )(goodFiles());
+    const ctx = { ...goodContext(), seam: { toolNames: [tool] } };
+    const hits = lint(loadTree(files), ctx).filter((f) => f.page === 'decisions/never-pause.md');
+    expect(hits.map((f) => f.rule)).toEqual(flagged ? ['LR-19'] : []);
+  });
+
+  it('exempts ref and graderTask fields only while they are evidence refs or task ids', () => {
+    const asProse = edit(
+      'patterns/probe-cached.md',
+      `graderTask: replay/${OWNER_TOOL}-probe`,
+      `graderTask: run the ${OWNER_TOOL} probe by hand`,
+    )(goodFiles());
+    expect(lint(loadTree(asProse), goodContext())).toEqual([
+      {
+        rule: 'LR-19',
+        severity: 'error',
+        page: 'patterns/probe-cached.md',
+        message: `catches.graderTask names the owner's tool "${OWNER_TOOL}"`,
+      },
+    ]);
+    const ref = (to: string) =>
+      edit(
+        'patterns/probe-cached.md',
+        `ref: "pr:owner/${OWNER_TOOL}#9"`,
+        `ref: "${to}"`,
+      )(goodFiles());
+    // A repository file ref stays traceable; a prose ref naming the tool does not.
+    expect(lint(loadTree(ref(`owner/${OWNER_TOOL}:verify/x.config.ts`)), goodContext())).toEqual(
+      [],
+    );
+    expect(lint(loadTree(ref(`the ${OWNER_TOOL} spec`)), goodContext())).toMatchObject([
+      { rule: 'LR-19', message: `remediation.ref names the owner's tool "${OWNER_TOOL}"` },
+    ]);
+  });
+
+  it('attributes schema issues by their rule tag, not their message text', () => {
+    const files = edit(
+      'patterns/maybe-cause.md',
+      'status: hypothesis',
+      'status: superseded',
+    )(goodFiles());
+    const findings = lint(loadTree(files), goodContext());
+    expect(findings.map((f) => f.rule)).toContain('LR-06');
   });
 
   it('reports a schema-enforced LR-05 condition under LR-05, with the field', () => {

@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { z } from 'zod';
 import { idToPath, normalizeId } from './ids';
 import { appendLogEntry, reconcileIndex } from './index-gen';
+import { type LintContext, lintScratch } from './lint';
 import { INDEX_FILE, LOG_FILE, type Wiki, withWrites } from './load';
 import { PageParseError, type ParsedPage, parsePage } from './parse';
 import {
@@ -110,18 +111,37 @@ function checkPage(
  * Checks: the output schema; creates name new ids and start as `hypothesis` (a maintainer cannot
  * create a confirmed page, 07 §3.7); every op target occurs once; every resulting page parses.
  * The submitted index is reconciled with the generated one (06 §2.3), and the log entry records
- * any corrections.
+ * any corrections. Finally LR-19 (seam) and LR-20 (secrets) run on the scratch wiki (06 §2.4), and
+ * any finding in a file this output writes rejects it. LR-20's shape detector always runs; LR-19
+ * runs when `lint` is a framework context with seam terms.
  */
 export function applyMaintainerOutput(
   wiki: Wiki,
   output: unknown,
-  opts: { actor: string; now?: Date },
+  opts: {
+    actor: string;
+    now?: Date;
+    lint?: Pick<LintContext, 'kind' | 'seam' | 'secretValues'>;
+  },
 ): ApplyResult {
   const parsed = MaintainerOutputSchema.safeParse(output);
   if (!parsed.success) return { ok: false, errors: zodErrors(parsed.error.issues) };
   const out = parsed.data;
   const errors: string[] = [];
   const writes: Changeset['writes'] = [];
+  // Defence in depth behind the schema's canonical-id check: one write per path.
+  const claimed = new Map<string, string>();
+  const claim = (path: string, at: string): boolean => {
+    const prior = claimed.get(path);
+    if (prior !== undefined) {
+      errors.push(
+        `${at}: ${path} is already written by ${prior}; one create or one update per page`,
+      );
+      return false;
+    }
+    claimed.set(path, at);
+    return true;
+  };
 
   for (const [i, c] of out.create_pages.entries()) {
     const at = `create_pages.${i}`;
@@ -135,6 +155,7 @@ export function applyMaintainerOutput(
       errors.push(`${at}: page "${id}" already exists`);
       continue;
     }
+    if (!claim(path, at)) continue;
     const { page, problems } = checkPage(id, path, c.content);
     errors.push(...problems.map((p) => `${at}: ${p}`));
     if (page && page.frontmatter.status !== 'hypothesis') {
@@ -150,6 +171,7 @@ export function applyMaintainerOutput(
       errors.push(`${at}: page "${u.id}" does not exist`);
       continue;
     }
+    if (!claim(page.path, at)) continue;
     let content: string;
     try {
       content = applyOps(page.raw, u.ops);
@@ -172,6 +194,16 @@ export function applyMaintainerOutput(
   const ts = (opts.now ?? new Date()).toISOString();
   const log = appendLogEntry(wiki.log, { ts, actor: opts.actor, operation: 'ingest', body });
   writes.push({ path: INDEX_FILE, content: index }, { path: LOG_FILE, content: log });
+
+  const written = new Set(writes.map((w) => w.path));
+  const findings = lintScratch(withWrites(wiki, writes), {
+    kind: opts.lint?.kind ?? 'project',
+    ...(opts.lint?.seam ? { seam: opts.lint.seam } : {}),
+    ...(opts.lint?.secretValues ? { secretValues: opts.lint.secretValues } : {}),
+  }).filter((f) => written.has(f.page));
+  if (findings.length > 0) {
+    return { ok: false, errors: findings.map((f) => `${f.rule} ${f.page}: ${f.message}`) };
+  }
   return { ok: true, changeset: { writes }, indexCorrections: corrections };
 }
 

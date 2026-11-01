@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { EVIDENCE_REF_RE } from '@rtrentjones/greenlight-shared';
 import { isArchivedPath, normalizeId, pathToId, resolveId, resolveLink } from './ids';
 import { generateIndex, indexedPages, parseIndex, reconcileIndex } from './index-gen';
 import { ledgerProblems, renderSkillImpact } from './ledger';
@@ -12,8 +13,10 @@ import {
   withWrites,
 } from './load';
 import type { PageIssue } from './parse';
-import type { Changeset } from './patch';
 import { findSecrets } from './redact';
+
+/** Structurally `Changeset` from patch.ts, declared here because patch.ts imports lint (06 §2.4). */
+type Changeset = { writes: { path: string; content: string }[] };
 
 /**
  * Wiki lint (vision 04 §5). This milestone implements the offline structural rules LR-01, LR-02,
@@ -83,13 +86,15 @@ type Rule = (wiki: Wiki, ctx: LintContext) => Draft[];
 
 // ---- LR-01 / LR-03 / LR-05 / LR-06 from parse failures -------------------------------------
 
-/** The page schema enforces some rules' conditions itself; its issues are reported under the rule
- * they belong to, not as a generic LR-01 schema failure. */
+/** Rules the page schema enforces itself; it tags those issues with zod `params: { rule }`. */
+const SCHEMA_RULES: ReadonlySet<string> = new Set<RuleId>(['LR-03', 'LR-05', 'LR-06']);
+
+/** The page schema enforces some rules' conditions itself and tags each such issue with the rule
+ * (`schema/pages.ts`); those are reported under that rule, everything else as LR-01. */
 function ruleOfIssue(issue: PageIssue): RuleId {
-  if (issue.message.includes('(LR-05)')) return 'LR-05';
-  if (issue.message.startsWith('supersededBy is required iff')) return 'LR-06';
-  if (issue.message.startsWith('evidence ref must be')) return 'LR-03';
-  return 'LR-01';
+  return issue.rule !== undefined && SCHEMA_RULES.has(issue.rule)
+    ? (issue.rule as RuleId)
+    : 'LR-01';
 }
 
 const issueText = (i: PageIssue): string => (i.path ? `${i.path}: ${i.message}` : i.message);
@@ -281,24 +286,39 @@ function seamPatterns(terms: SeamTerms): { re: RegExp; label: string }[] {
   return [
     ...(terms.domains ?? []).map(literal("the owner's domain")),
     ...(terms.emails ?? []).map(literal("the owner's email")),
-    // Bounded by non-identifier characters, so a tool called "muse" flags neither "museum" nor a
-    // compound identifier such as a class "env-muse".
+    // A whole token, where "-", "_" and "." delimit as well as spaces: a tool called "muse" does
+    // not flag "museum", but "polyphony-api" and "env-polyphony" still name "polyphony".
     ...(terms.toolNames ?? []).map((v) => ({
-      re: new RegExp(`(?<![\\w-])${escapeRegExp(v)}(?![\\w-])`, 'i'),
+      re: new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(v)}(?![A-Za-z0-9])`, 'i'),
       label: `the owner's tool "${v}"`,
     })),
   ];
 }
 
+/** A bench task id (`replay/<slug>`, `loop/<slug>`, … — the kind prefixes of 08 §10.1). */
+const BENCH_TASK_ID_RE = /^(?:cap|replay|loop|wiki|route|port|mech)\/[a-z0-9][a-z0-9-]*$/;
+
+/** A file in a repository, `<owner>/<repo>:<path>` (a `verify` remediation pointing at the spec
+ * that enforces it): a repository reference, so it may name the owner's repo like evidence does. */
+const REPO_FILE_REF_RE = /^[\w.-]+\/[\w.-]+:[\w./-]+$/;
+
+const isRepoRef = (v: string): boolean => EVIDENCE_REF_RE.test(v) || REPO_FILE_REF_RE.test(v);
+
 /** Frontmatter fields that may name the owner's repositories, so evidence stays traceable (LR-19
- * exception, 04 §5 and 15 §1.8). Paths are matched with array indices removed. */
-const EVIDENCE_FIELDS = new Set([
-  'evidence',
-  'timeline.evidence',
-  'remediation.ref',
-  'enforcedBy.ref',
-  'catches.graderTask',
+ * exception, 04 §5 and 15 §1.8). Paths are matched with array indices removed. `evidence` fields
+ * are schema-checked `EvidenceRef`s; the other fields are free strings, so they are exempt only
+ * while their value has the shape that justifies the exemption (an evidence ref or repository
+ * file ref, or a bench task id) — a prose `ref` naming the owner's tool is still a seam leak. */
+const EVIDENCE_FIELDS: ReadonlyMap<string, (v: string) => boolean> = new Map([
+  ['evidence', () => true],
+  ['timeline.evidence', () => true],
+  ['remediation.ref', isRepoRef],
+  ['enforcedBy.ref', isRepoRef],
+  ['catches.graderTask', (v: string) => BENCH_TASK_ID_RE.test(v)],
 ]);
+
+const exempt = (field: string, text: string): boolean =>
+  EVIDENCE_FIELDS.get(field)?.(text) ?? false;
 
 /** Every string value in `value` with its dotted field path (array indices dropped). */
 function* strings(value: unknown, path: string[] = []): Generator<{ field: string; text: string }> {
@@ -315,7 +335,7 @@ const seamHolds: Rule = (wiki, ctx) => {
   const out: Draft[] = [];
   for (const page of wiki.pages.values()) {
     const texts = [
-      ...[...strings(page.frontmatter)].filter((s) => !EVIDENCE_FIELDS.has(s.field)),
+      ...[...strings(page.frontmatter)].filter((s) => !exempt(s.field, s.text)),
       { field: 'body', text: page.body },
     ];
     for (const { field, text } of texts) {
@@ -361,6 +381,14 @@ const ALL_RULES: readonly Rule[] = [
   seamHolds,
   noSecrets,
 ];
+
+/** LR-19 and LR-20 only: the checks a maintainer output must pass on the scratch wiki before
+ * anything is written (06 §2.4). */
+export function lintScratch(wiki: Wiki, ctx: LintContext): Finding[] {
+  return [seamHolds, noSecrets]
+    .flatMap((rule) => rule(wiki, ctx))
+    .map((d) => ({ ...d, severity: RULES[d.rule] }));
+}
 
 /** Runs every implemented rule; findings sorted by file, then rule. */
 export function lint(wiki: Wiki, ctx: LintContext): Finding[] {

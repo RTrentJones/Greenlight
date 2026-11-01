@@ -90,6 +90,8 @@ export interface GenerateRequest {
   signal?: AbortSignal;
   /** Total request cap shared across calls (`perGateMaxRequests`). */
   budget?: RequestBudget;
+  /** Overrides `GeminiClientOptions.allowFallback` for this call. */
+  allowFallback?: boolean;
 }
 
 export interface GenerateResult {
@@ -99,16 +101,22 @@ export interface GenerateResult {
   functionCalls: FunctionCall[];
   finishReason: string | null;
   usage: Usage;
-  /** The model id that actually answered. */
+  /** The model that actually answered: the API's `modelVersion` when it reports one, else the
+   * endpoint id. A `modelVersion` that differs from the configured id is alias drift, and the gate
+   * policy (`servedBy !== model`) treats it like a fallback: the rollout is not gateable. */
   servedBy: string;
+  /** The configured id the caller asked for. */
   requested: string;
+  /** The model id whose endpoint was called (`requested`, or the fallback). */
+  endpoint: string;
+  /** True when the fallback's endpoint served the call. */
   fallbackUsed: boolean;
   modelVersion?: string;
   attempts: AttemptRecord[];
 }
 
 /** Returns the findings for one string; any finding (non-empty array, or `true`) refuses the send.
- * The real detector is `packages/wiki/src/redact.ts` (11 §6); it is injected so this module does
+ * The real detector is `findSecrets` from `packages/shared/src/redact.ts` (11 §6); it is injected so this module does
  * not depend on it. */
 export type SecretDetector = (text: string) => ReadonlyArray<unknown> | boolean;
 
@@ -126,7 +134,7 @@ export class RedactionRefusedError extends Error {
 }
 
 export class GeminiHttpError extends Error {
-  override readonly name = 'GeminiHttpError';
+  override readonly name: string = 'GeminiHttpError';
   constructor(
     message: string,
     readonly status: number | 'network' | 'timeout',
@@ -135,6 +143,23 @@ export class GeminiHttpError extends Error {
     readonly attempts: AttemptRecord[],
   ) {
     super(message);
+  }
+}
+
+/** The primary model stayed unavailable after its retries and the fallback is disabled (gate and
+ * baseline rollouts). Transient and resumable: nothing was served, so the caller records the
+ * rollout as pending and re-runs it later (06 §4.8: a gate may be split across days). */
+export class FallbackDisabledError extends GeminiHttpError {
+  override readonly name = 'FallbackDisabledError';
+  readonly resumable = true;
+  constructor(cause: GeminiHttpError) {
+    super(
+      `${cause.message}; fallback disabled, so the call is deferred (resume it later)`,
+      cause.status,
+      true,
+      cause.model,
+      cause.attempts,
+    );
   }
 }
 
@@ -155,6 +180,11 @@ export interface GeminiClientOptions {
   /** Rate limiters by model id; the primary and fallback each pass through their own. Share one map
    * between clients so a gate's calls draw on the same per-project quota. */
   limiters?: Map<string, RateLimiter>;
+  /** Default true. Gate and baseline rollouts MUST pass false: a fallback-served rollout is invalid
+   * for gating anyway (06 §4.8), and serving it would burn the small model's daily quota for
+   * nothing. With it off, a transient failure that survives the retries throws
+   * `FallbackDisabledError` instead. */
+  allowFallback?: boolean;
   temperature?: number;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
@@ -187,26 +217,32 @@ function proxyHint(env: Record<string, string | undefined>, keyEnv: string): str
   return ` (no ${keyEnv} set)`;
 }
 
-/** Every outgoing string with its location: system text, text parts, function-call args and
- * function responses (tool results are the likeliest place for captured secrets). */
+/** Every string leaf of `value` with its path. A leaf under an object key is scanned as
+ * `key=value`, so a key-name shape (`password=…`) still sees its key; the leaf is not JSON-escaped,
+ * so a value's own quotes and newlines reach the detector as written. */
+function stringLeaves(value: unknown, at: string, key?: string): { at: string; text: string }[] {
+  if (typeof value === 'string')
+    return [{ at, text: key === undefined ? value : `${key}=${value}` }];
+  if (Array.isArray(value)) return value.flatMap((v, i) => stringLeaves(v, `${at}[${i}]`));
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value).flatMap(([k, v]) => stringLeaves(v, `${at}.${k}`, k));
+  }
+  return [];
+}
+
+/** Every outgoing string with its location: the system text, every string leaf of every part —
+ * including fields the harness does not model (`inlineData`, `fileData`, `executableCode`, …),
+ * which are preserved and replayed verbatim — and the tool declarations. */
 export function outgoingTexts(req: GenerateRequest): { at: string; text: string }[] {
   const out: { at: string; text: string }[] = [];
   if (req.systemInstruction) out.push({ at: 'systemInstruction', text: req.systemInstruction });
   req.contents.forEach((c, i) => {
     c.parts.forEach((p, j) => {
-      const at = `contents[${i}].parts[${j}]`;
-      if (typeof p.text === 'string') out.push({ at: `${at}.text`, text: p.text });
-      if (p.functionCall)
-        out.push({ at: `${at}.functionCall`, text: JSON.stringify(p.functionCall.args ?? {}) });
-      if (p.functionResponse)
-        out.push({ at: `${at}.functionResponse`, text: JSON.stringify(p.functionResponse) });
+      out.push(...stringLeaves(p, `contents[${i}].parts[${j}]`));
     });
   });
   for (const [k, t] of (req.tools ?? []).entries()) {
-    out.push({
-      at: `tools[${k}]`,
-      text: `${t.description}\n${JSON.stringify(t.parameters ?? {})}`,
-    });
+    out.push(...stringLeaves(t, `tools[${k}]`));
   }
   return out;
 }
@@ -286,6 +322,7 @@ export class GeminiClient {
     } catch (e) {
       const fb = this.model.fallback;
       if (!(e instanceof GeminiHttpError) || !e.transient || !fb || fb === primary) throw e;
+      if (!(req.allowFallback ?? this.o.allowFallback ?? true)) throw new FallbackDisabledError(e);
       try {
         return await this.round(fb, body, req, attempts, primary);
       } catch (f) {
@@ -414,8 +451,9 @@ export class GeminiClient {
         }),
       finishReason: cand.finishReason ?? null,
       usage,
-      servedBy: model,
+      servedBy: data.modelVersion || model,
       requested,
+      endpoint: model,
       fallbackUsed: model !== requested,
       ...(data.modelVersion ? { modelVersion: data.modelVersion } : {}),
       attempts,

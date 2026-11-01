@@ -4,3 +4,10 @@ export { loadConfig } from './load';
 export { resolveUrl, type ResolveUrlOptions } from './url';
 export { scanSql, scanSqlFiles, type SqlFinding, type SqlSeverity } from './sql-scan';
 export * from './evidence';
+export {
+  findSecrets,
+  isCodeExpression,
+  MIN_VALUE_LENGTH,
+  redact,
+  type SecretFinding,
+} from './redact';

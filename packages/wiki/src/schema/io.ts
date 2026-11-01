@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeId } from '../ids';
 import { KebabSlug, PatchOpSchema } from './common';
 
 /** Maintainer and proposer I/O (vision 08 §9, roadmap M0-05). The paper's JSON edit protocol,
@@ -16,12 +17,17 @@ export const MaintainerOutputSchema = z
   })
   .strict()
   .superRefine((m, ctx) => {
-    const ids = [...m.create_pages.map((p) => p.id), ...m.update_pages.map((p) => p.id)];
-    const dup = ids.find((id, i) => ids.indexOf(id) !== i);
-    if (dup) {
+    // Compared by canonical id: `pattern/x` and `patterns/x` name one page (one file), so two
+    // entries for them would write the same path twice and silently lose the first edit.
+    const raw = [...m.create_pages.map((p) => p.id), ...m.update_pages.map((p) => p.id)];
+    const ids = raw.map(normalizeId);
+    const at = ids.findIndex((id, i) => ids.indexOf(id) !== i);
+    if (at >= 0) {
+      const first = raw[ids.indexOf(ids[at] as string)];
+      const spelled = first === raw[at] ? `"${raw[at]}"` : `"${first}" and "${raw[at]}"`;
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `page "${dup}" appears more than once; one create or one update per page`,
+        message: `page ${spelled} (${ids[at]}) appears more than once; one create or one update per page`,
       });
     }
   });

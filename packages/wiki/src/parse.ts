@@ -25,6 +25,8 @@ export interface PageIssue {
   /** JSON path into the frontmatter (`remediation.0.verified`), or `''` for the page as a whole. */
   path: string;
   message: string;
+  /** The lint rule the schema tagged this issue with (zod custom `params.rule`), if any. */
+  rule?: string;
 }
 
 export class PageParseError extends Error {
@@ -76,7 +78,15 @@ export function parsePage(path: string, text: string): ParsedPage {
   if (!result.success) {
     throw new PageParseError(
       path,
-      result.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      result.error.issues.map((i) => {
+        const rule =
+          i.code === 'custom' ? (i.params as { rule?: unknown } | undefined)?.rule : undefined;
+        return {
+          path: i.path.join('.'),
+          message: i.message,
+          ...(typeof rule === 'string' ? { rule } : {}),
+        };
+      }),
     );
   }
   return { path, frontmatter: result.data, frontmatterBlock: block, body, raw: text };

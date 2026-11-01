@@ -3,3 +3,4 @@ export * from './gemini';
 export * from './limits';
 export * from './models';
 export * from './react';
+export * from './quota';
