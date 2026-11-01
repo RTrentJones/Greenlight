@@ -1,5 +1,6 @@
 import type { BlastRadius, GatePath, PolicyInput, PolicyTask } from '../../../bench/policy';
 import type { BenchOutcome, GateMode } from '../../../bench/stats';
+import { type IdentityTask, identityTasks } from '../../../schema/bench';
 
 /**
  * Policy boundary vectors (vision 13 §2.8): evidence at every threshold edge of the 06 §5.4 table.
@@ -373,4 +374,18 @@ export function buildVector(
           0.001;
   }
   return { input, baseline };
+}
+
+/** The BaselineIdentity `tasks` a record is run under for a policy task list (08 §10.3): sorted
+ * by id, modes resolved (default both), one `app` grader each. Gate tests bind records to it. */
+export function identityTasksFor(tasks: readonly PolicyTask[] = TASKS): IdentityTask[] {
+  return identityTasks(
+    tasks.map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      state: t.state,
+      modes: [...(t.modes ?? ['isolation', 'production'])],
+      graders: ['app' as const],
+    })),
+  );
 }

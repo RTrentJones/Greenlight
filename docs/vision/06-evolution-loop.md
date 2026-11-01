@@ -128,7 +128,9 @@ A baseline and a candidate are comparable only when they were produced under the
 apart from the change under evaluation. Each evaluation stores a `BaselineIdentity` (08 §10.3),
 made of hashes of:
 
-- the task set: `task.json`, `brief.md` and `fixture/` for every task in the split;
+- the task set: `task.json`, `brief.md` and `fixture/` for every task in the split, plus the task
+  list itself (each task's id, kind, state, modes and graders) in plain form, so the gate can
+  check its task list against it;
 - the grader set: graders and mutants;
 - the bench runner's dependencies: the lockfile and the installed `@rtrentjones/greenlight`
   version;
@@ -142,7 +144,9 @@ made of hashes of:
 The gate re-runs the baseline whenever **any** component other than the skill set differs from the
 stored baseline. Age alone is no longer the trigger, but a 30-day maximum age still applies to
 catch silent provider or model drift. A comparison across mismatched identities is a harness error,
-and it is never reported as a result.
+and it is never reported as a result. The same holds for the gate's task list: it must equal the
+task list in every record's identity, so which tasks are gated, excluded or quarantined is fixed by
+the evaluation, not by whoever calls the gate.
 
 
 ## 2. Maintainer
@@ -395,6 +399,14 @@ tasks are always in `val`, because the hard constraint must be checked on every 
 skill set records its status on every gate model and mode. Adding a task changes the task-set hash,
 so the next gate re-baselines anyway (§1.5). A pending task is excluded from both the safety
 constraint and the efficacy objective until it has a recorded baseline.
+
+**Quarantine is a re-baseline.** A task (typically a flaky replay, §5.4) leaves gating only when a
+human sets `state: "quarantined"` with a `quarantineReason` in its `task.json`. The decision is
+human and recorded: the reason sits in the task file, which `taskSetHash` hashes, and the state is
+part of the identity's task list (08 §10.3). Quarantining therefore changes the identity, so the
+next gate re-baselines under it; the gate refuses a task list whose states differ from the
+records' identity, so a task cannot be quarantined after the fact to let a regressing candidate
+through. Returning a task to `active` is the same: a new identity and a re-baseline.
 
 **Test-set reservation and rotation.** The `test` split is reserved for the release decision (§5.7).
 Its tasks never appear in val or train during a release cycle. Validation is reused across many
@@ -690,17 +702,19 @@ to the evidence store. The record holds:
 
 - the full `BaselineIdentity`;
 - the baseline and candidate skill-set hashes;
-- per task, per run, per model and per mode: the outcome, the per-grader results, the seed, the
-  token and dollar cost, the duration and the raw id.
+- per task, per run, per model and per mode: the outcome, the per-grader results (and, when a
+  grader crashed instead of returning a verdict, `graderError`: the evaluation is then invalid,
+  never a fail or a regression), the seed, the token and dollar cost, the duration and the raw id.
 
 Every gate decision also writes a content-addressed `GateInputRecord` (08 §10.4) beside the
 evaluation records (`wiki/evidence/eval/<hash>.json`). It holds everything else the decision
 depends on: the event `ts`, outlet, blast radius, path, the bootstrap seed actually used, the
 resolved `bench/gate.json`, the two model ids, the evaluated modes and whether they were declared
 (§5.1), the accepted and candidate skill-set hashes, the task list sorted by id with each task's
-kind, state and modes, the hash of every baseline and candidate evaluation record (one per mode
-per side), the safety-fix targets, the neutral reason, the tie-break line counts and, for a
-template, the lane and mutant results.
+kind, state and modes (which must equal every listed record's identity task list, §1.5), the
+hash of every baseline and candidate evaluation record (one per mode per side), the safety-fix
+targets, the neutral reason, the tie-break line counts and, for a template, the lane and mutant
+results.
 
 The ledger's bench or template evidence references the gate input by `gateInput` and lists every
 evaluation record it read in `evaluationRecords`. Anyone holding the gate input and those records
@@ -708,7 +722,9 @@ can recompute the decision with `bench gate --recompute <gateInputHash>`, which 
 the stored outcomes without new rollouts and needs no other input: the bootstrap resamples tasks
 in id order, so the order of the task files cannot change the p-value, and the baseline is named
 by hash, so a second comparable baseline from another accepted skill set is never ambiguous. The
-recompute fails if the rebuilt gate input does not hash to the given one. The gate input and every
+recompute fails if the rebuilt gate input does not hash to the given one, and a gate input
+resealed with a different task list (a task quarantined after the fact) fails the identity check
+before it reaches the policy. The gate input and every
 record it lists are retained as long as the ledger row exists (03 §5).
 
 ## 6. Applying an accepted change
