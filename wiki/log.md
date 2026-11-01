@@ -1,0 +1,7 @@
+# Log
+
+## 2026-11-01T00:00:00.000Z — human:RTrentJones — seed
+Seeded the framework wiki for the first WikiSkill iteration (roadmap M1-02, vision 15 §8.1).
+Confirmed, with the evidence that justifies each: pattern/keepalive-probe-misses-postgres (0.9.0 deployed; Worker byte-identical to the release by SHA-256, config named the probe table, table answered anonymously; issue:RTrentJones/RTrentJones.dev#55), pattern/settle-greenlights-previous-deploy (verify --expect-sha refuses a mismatched /__version on every SHA-gated ship; greenlight@0.8.0), pattern/dcr-disabled-silently (DCR checks fail against the deployed server when registration is disabled; commit:RTrentJones/RTrentJones.dev@6c50cb8), pattern/unplanned-compute-replacement (the plan guard fails a plan that replaces running compute; pr:RTrentJones/greenlight#27), pattern/spec-typo-disables-assertion (strict validation fails an unknown or mistyped field before any check runs; commit:RTrentJones/greenlight@baae675).
+Hypotheses: pattern/neon-never-sleeps, pattern/probe-touches-wrong-layer, pattern/keepalive-probe-cached (no deployed red→green evidence yet). Incidents incident/2026-08-keepalive-green-database-paused and incident/2026-09-idle-app-neon-never-sleeps; decisions decision/neon-default-over-supabase, decision/incidents-hidden, decision/wiki-never-rolls-back.
+Agent-drafted from docs/vision/15; the unresolved Polyphony commit ref was dropped rather than guessed, and affects ranges were corrected against CHANGELOG.md.

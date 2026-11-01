@@ -15,6 +15,7 @@ import { secretsCommand } from './commands/secrets';
 import { shipCommand } from './commands/ship';
 import { statusCommand } from './commands/status';
 import { verifyCommand } from './commands/verify';
+import { wikiCommand } from './commands/wiki';
 
 const HELP = `greenlight <command>
 
@@ -38,6 +39,12 @@ const HELP = `greenlight <command>
   migrations scan [<dir>] [--strict]            dangerous-SQL gate for migrations (pre-apply)
   bump                                          re-pin a consumer's infra ?ref + dep to the installed version
   doctor [--live] [--strict]                    consistency checks (--live: probes; --strict: fail on warnings)
+  wiki lint [--strict] [--fix] [--root <dir>]   lint the wiki (LR rules); --fix regenerates index + skill-impact
+  wiki ingest [--sample a:b] [--incident <id>] [--seed <s>] [--out <dir>]
+                                                write a maintainer bundle; --apply <file> applies its output
+  wiki propose [--skill <name>]                 write a proposer bundle; --apply <file> validates the proposal
+  wiki read <page-id|raw:<id>|skill:<name>>     read-only access (val/test bench records refused)
+  wiki traces --skill <name> --failed [--limit n]  list visible raw records, newest first
   help                                          show this message
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
@@ -87,6 +94,8 @@ async function main(): Promise<number> {
       return bumpCommand(args);
     case 'doctor':
       return doctorCommand(args);
+    case 'wiki':
+      return wikiCommand(args);
     default:
       throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
   }
