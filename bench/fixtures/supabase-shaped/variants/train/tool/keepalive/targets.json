@@ -1,0 +1,10 @@
+[
+  {
+    "name": "mapmaker",
+    "env": "prod",
+    "url": "https://mapmaker.example.test",
+    "kind": "oci",
+    "probePath": "/health/live",
+    "remediate": true
+  }
+]

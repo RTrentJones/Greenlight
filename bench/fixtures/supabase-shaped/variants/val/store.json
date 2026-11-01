@@ -1,0 +1,33 @@
+{
+  "tool": "tripnote",
+  "env": "prod",
+  "publicUrl": "https://trpn-fixture-ref.supabase.co",
+  "anonKey": "sb_publishable_tripnote_fixture_anon",
+  "idleLimitMs": 604800000,
+  "schemas": {
+    "public": {
+      "accounts": {
+        "columns": ["id", "email", "full_name", "home_city"],
+        "sensitive": ["email", "full_name", "home_city"],
+        "anon": false,
+        "rows": [
+          { "id": "a_1", "email": "lin@example.test", "full_name": "Lin", "home_city": "Oslo" }
+        ]
+      },
+      "trips": {
+        "columns": ["id", "account_id", "destination", "starts_on"],
+        "sensitive": ["account_id"],
+        "anon": true,
+        "rows": [
+          { "id": 7, "account_id": "a_1", "destination": "Bergen", "starts_on": "2026-12-01" }
+        ]
+      },
+      "heartbeat": {
+        "columns": ["id", "note"],
+        "sensitive": [],
+        "anon": true,
+        "rows": [{ "id": 1, "note": "keepalive" }]
+      }
+    }
+  }
+}
