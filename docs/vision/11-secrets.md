@@ -416,15 +416,58 @@ value that names a secret instead of holding one:
 - a placeholder or reference: `$VAR`, `${{ secrets.X }}`, `<token>`, `%TOKEN%`, an interpolation
   such as `var.${name}_token`, `gl-placeholder-*`, or a value containing `placeholder`;
 - an env-var name, such as `token: 'SUPABASE_ACCESS_TOKEN'`;
-- an **unquoted code expression**: a member access or index (`apikey: t.anonKey,`,
-  `m[group]`), a function call (`token: getToken()`), or a bare identifier followed by a code
-  terminator (`password: dbPassword,`).
+- an **unquoted code expression** made of source-looking identifiers (below).
 
-A quoted value is always a literal, so a quoted string after `apikey:` is flagged. A bare word with
-nothing after it, such as an env file's `DB_PASSWORD=` followed by one word, is also flagged. This
-keeps vendored source that passes a credential along from reading as a leak. For example, the
-keepalive worker's `headers = { apikey: t.anonKey, … }` is not flagged. A test asserts that every
-file under `bench/fixtures/` and `bench/tasks/*/fixture/` scans clean. The detector MUST have a test that plants one
+A quoted value is always a literal, so a quoted string after `apikey:` is flagged. An unquoted value
+is a code expression only when it is one of:
+
+1. a JS/TS word (`undefined`, `null`, `true`, `false`, `string`, `number`, `boolean`);
+2. a member access, index or call whose name part (before any `(` or `[`) is a chain of
+   source-looking identifiers: `apikey: t.anonKey,`, `env?.GEMINI_API_KEY`, `m[group]`,
+   `token: getToken()`, `z.string().min(1)`;
+3. a bare, lowercase-led, source-looking identifier immediately followed by `,` `;` `)` `]` or
+   `}`: `password: dbPassword,`. A bare word with nothing after it (a YAML `password:` followed by
+   one word) is a literal.
+
+**Source-looking identifier.** Each chain segment of two or more characters (one-letter segments
+such as `t` are local variables) is split on `_`/`$` and camelCase humps. It must have at most one
+digit run, of at most 4 digits; no mixed-case acronym longer than 4 letters (a whole ALL_CAPS piece
+such as `GITHUB` is one word); at most one single-letter word; no word with 5 or more consecutive
+consonants (`y` counts as a vowel); and, with two or more words, a mean word length of at least 3.
+These target what random base62 does and code does not (a capital every ~2.4 letters, a digit every
+~6 characters, consonant clusters), because per-character entropy cannot separate 8–40 character
+strings. `Zk3q9TnW2vLp8RxY` fails (four digit runs, four one-letter words); `serviceRoleKey`,
+`oauth2Token` and `process.env.GITHUB_TOKEN` pass. Measured over lowercase-led random base62 tokens (the
+only ones a bare identifier could be), about 4.2% of 8-character, 2.2% of 16-character and 0.3% of
+24-character tokens still pass; 47 of the ~5,200 lowercase-led identifiers and member chains of 8+
+characters in this repo fail (`healthcheck`, `vi.spyOn`), which costs a false positive only when one
+is the bare value of a secret-named key. Value matching (rule 1 above) covers every secret the
+caller holds regardless.
+
+**Context rules.** These override the code-expression exemption:
+
+- **`key=value` text is never code.** When the `=` has no spaces around it (`token=…` in a log
+  line, a query string, an env file) or the line starts with an ALL_CAPS name and `=`
+  (`PGPASSWORD = …`, `export DB_PASSWORD=…`), the value is a literal even if it reads like an
+  identifier or a dotted chain (`PGPASSWORD=correct.horse.battery.staple`). Only a complete call or
+  index (`getToken()`, `os.environ["X"]`) stays code there. Trailing `,` `;`, a closer whose opener
+  is not in the value (`(token=…)`), and a following query parameter (`&page=2`) are not part of
+  the reported value.
+- **Quoted literals inside a code expression are scanned.** The expression runs to the end of the
+  line, or to a `,` `;` or unopened closing bracket at depth 0. A literal right after `||` or `??`,
+  or after a depth-0 ternary `?` / `:`, is a value the key may take and is flagged like a direct
+  quoted value (`process.env.X || "…"`). Any other literal (a call argument, an index) is flagged
+  unless every alphanumeric run in it is a number or a source-looking identifier:
+  `decrypt("Zk3q…")` is flagged; `Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')`,
+  `getItem('supabase.auth.token')` and `min(8, 'Password must be at least 8 chars')` are not. In
+  both cases the literal must be 8 or more non-whitespace characters, not a placeholder and not an
+  env-var name.
+
+This keeps vendored source that passes a credential along from reading as a leak. For example, the
+keepalive worker's `headers = { apikey: t.anonKey, … }` is not flagged. Tests assert that every
+file under `bench/fixtures/` and `bench/tasks/*/fixture/` scans clean, and that the repo's own
+source (`packages/*/src/**/*.ts` and `cli/src/**/*.ts` outside `__tests__`, `bench/fixtures/**`,
+`bench/graders/**`) scans clean. The detector MUST have a test that plants one
 example of every shape, plus every manifest secret name with a random value, into a sample log, and
 asserts zero survivors. This is a merge blocker for raw capture in M3 (14). The shapes are illustrative and MUST be
 confirmed against each provider's documented token format when they are implemented.
