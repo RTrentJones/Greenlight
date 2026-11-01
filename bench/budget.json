@@ -1,0 +1,7 @@
+{
+  "monthlyUsd": 0,
+  "perGateMaxUsd": 0,
+  "perGateMaxRollouts": 48,
+  "perGateMaxRequests": 480,
+  "splitAcrossDays": true
+}

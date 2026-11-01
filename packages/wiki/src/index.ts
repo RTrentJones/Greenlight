@@ -10,3 +10,5 @@ export {
   type RawRecord,
   type RetainedEvidence,
 } from '@rtrentjones/greenlight-shared';
+// M1-05 (a): the LLM harness on the Gemini free tier (06 §4.8).
+export * from './llm';
