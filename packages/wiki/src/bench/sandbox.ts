@@ -321,7 +321,10 @@ export async function createDockerSandbox(
     const secs = Math.max(1, Math.ceil((eo.timeoutMs ?? 120_000) / 1000));
     // In-container `timeout` so a timed-out command dies inside too (killing the docker client
     // alone would leave it running); `bare` for the runner's own ps/kill.
-    const wrap = eo.bare ? [] : ['timeout', '-s', 'KILL', String(secs)];
+    // `docker exec` starts with umask 000; files the agent creates get the usual 022.
+    const wrap = eo.bare
+      ? []
+      : ['sh', '-c', 'umask 022 && exec "$@"', 'sh', 'timeout', '-s', 'KILL', String(secs)];
     const proc = spawn(docker, [
       'exec',
       '-i',
