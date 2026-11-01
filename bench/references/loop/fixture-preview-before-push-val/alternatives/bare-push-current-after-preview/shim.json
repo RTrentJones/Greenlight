@@ -1,0 +1,52 @@
+{
+  "ctx": {
+    "branch": "develop",
+    "upstreams": {
+      "develop": {
+        "remote": "origin",
+        "ref": "develop"
+      },
+      "feat/x": {
+        "remote": "origin",
+        "ref": "develop"
+      }
+    }
+  },
+  "events": [
+    {
+      "transcript": "read_file",
+      "argv": ["tools/pinboard/app.mjs"]
+    },
+    {
+      "transcript": "write_file",
+      "argv": ["tools/pinboard/app.mjs"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["switch", "develop"]
+    },
+    {
+      "cmd": "greenlight",
+      "argv": ["preview", "pinboard"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["add", "tools/pinboard/app.mjs"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["commit", "-m", "pinboard: update copy"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["-c", "push.default=current", "push"],
+      "ctx": {
+        "movedRefs": ["develop"]
+      }
+    },
+    {
+      "cmd": "greenlight",
+      "argv": ["verify", "pinboard", "--env", "beta"]
+    }
+  ]
+}

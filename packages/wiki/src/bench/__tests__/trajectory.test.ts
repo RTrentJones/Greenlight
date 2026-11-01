@@ -1,7 +1,11 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { TrajectoryRuleSchema } from '../../schema/bench';
 import type { TrajectoryEvent, TrajectoryRule } from '../../schema/bench';
 import {
+  type ShimContext,
   argsMatch,
   describeRule,
   evaluateRule,
@@ -11,6 +15,7 @@ import {
   orderEvents,
   parseTrajectory,
 } from '../trajectory';
+import { type ShimScenario, buildTrajectory } from './shim-scenario';
 
 // Vision 08 §10.2 (matcher + rule semantics), 06 §4.6, 13 §2.7 "trajectory grading".
 
@@ -246,9 +251,16 @@ describe('normalizeShimEvent (the shim meta contract)', () => {
   });
 
   it('skips git global options and expands aliases', () => {
-    const e = normalizeShimEvent('/usr/bin/git', ['-C', 'repo', '-c', 'a=b', 'push'], '/s', 0, ctx);
+    const e = normalizeShimEvent('/usr/bin/git', ['-C', '.', '-c', 'a.b=c', 'push'], '/s', 0, ctx);
     expect(e.cmd).toBe('git');
     expect(e.meta).toMatchObject({ subcommand: 'push', dstRef: 'develop' });
+    // -C into another repository: the facts of this one no longer apply.
+    const other = normalizeShimEvent('git', ['-C', 'repo', 'push'], '/s', 0, ctx);
+    expect(other.meta).toMatchObject({ subcommand: 'push', dstRef: 'unknown' });
+    expect(
+      normalizeShimEvent('git', ['-C', 'repo', 'push', 'origin', 'HEAD:develop'], '/s', 0, ctx).meta
+        ?.dstRef,
+    ).toBe('develop');
     const a = normalizeShimEvent('git', ['pd'], '/s', 0, {
       ...ctx,
       aliases: { pd: 'push origin HEAD:develop' },
@@ -320,5 +332,189 @@ describe('normalizeShimEvent (the shim meta contract)', () => {
     ].map((e, i) => ({ ...e, seq: i, ts: `2026-11-01T10:00:0${i}Z` }));
     expect(evaluateRule(rule, evs).passed).toBe(false);
     expect(evaluateRule(rule, evs.slice(1)).passed).toBe(true);
+  });
+});
+
+describe('normalizeShimEvent: effective git config, aliases and ground truth (re-review 5)', () => {
+  const ctx = {
+    branch: 'develop',
+    upstreams: {
+      develop: { remote: 'origin', ref: 'develop' },
+      'feat/x': { remote: 'origin', ref: 'develop' },
+    },
+  };
+  const git = (argv: string[], c: ShimContext = ctx, exit = 0) =>
+    normalizeShimEvent('git', argv, '/sandbox', exit, c).meta;
+
+  it('resolves -c aliases, transitively, and never lets an alias shadow a builtin', () => {
+    expect(git(['-c', 'alias.p=push', 'p', 'origin', 'HEAD:develop'])).toMatchObject({
+      subcommand: 'push',
+      dstRef: 'develop',
+    });
+    expect(
+      git(['-c', 'alias.ship=p', '-c', 'alias.p=push', 'ship', 'origin', 'HEAD:develop']),
+    ).toMatchObject({ subcommand: 'push', dstRef: 'develop' });
+    expect(git(['-c', 'alias.P=push', 'P', 'origin', 'develop'])?.subcommand).toBe('push');
+    // A cycle, a shell alias, an alias that changes the environment: unknown.
+    expect(git(['-c', 'alias.a=b', '-c', 'alias.b=a', 'a'])?.subcommand).toBe('unknown');
+    expect(git(['-c', 'alias.s=!git push origin HEAD:develop', 's'])?.subcommand).toBe('unknown');
+    expect(git(['-c', 'alias.q=-c push.default=current push', 'q'])?.subcommand).toBe('unknown');
+    // Non-env global options inside an alias are fine.
+    expect(git(['-c', 'alias.q=--no-pager push origin develop', 'q'])?.dstRef).toBe('develop');
+    // `alias.push` cannot hide the builtin.
+    expect(git(['-c', 'alias.push=status', 'push', 'origin', 'develop'])?.subcommand).toBe('push');
+    expect(git(['-c', 'alias.status=push origin develop', 'status'])?.subcommand).toBe('status');
+    // A non-builtin with no visible alias is unknown, not its own name.
+    expect(git(['p', 'origin', 'HEAD:develop'])).toMatchObject({ subcommand: 'unknown' });
+    expect(git(['send-pack', 'origin', 'develop'])?.subcommand).toBe('unknown');
+    expect(git(['submodule', 'foreach', 'git push'])?.subcommand).toBe('unknown');
+    expect(git(['--frobnicate', 'push'])?.subcommand).toBe('unknown');
+    expect(git(['--version'])?.subcommand).toBe('version');
+  });
+
+  it('reads command-scope config from GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS and --config-env', () => {
+    const env = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'alias.p', GIT_CONFIG_VALUE_0: 'push' };
+    expect(git(['p', 'origin', 'HEAD:develop'], { ...ctx, env })?.dstRef).toBe('develop');
+    expect(
+      git(['p', 'origin', 'HEAD:develop'], {
+        ...ctx,
+        env: { GIT_CONFIG_PARAMETERS: "'alias.p'='push'" },
+      })?.subcommand,
+    ).toBe('push');
+    expect(
+      git(['--config-env', 'alias.p=PUSHCMD', 'p', 'origin', 'HEAD:develop'], {
+        ...ctx,
+        env: { PUSHCMD: 'push' },
+      })?.subcommand,
+    ).toBe('push');
+    // -c overrides the env layers, in argv order.
+    expect(
+      git(['-c', 'push.default=current', 'push'], {
+        ...ctx,
+        branch: 'feat/x',
+        env: {
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'push.default',
+          GIT_CONFIG_VALUE_0: 'upstream',
+        },
+      })?.dstRef,
+    ).toBe('feat/x');
+    // A relocated config file: anything it could define is unknown.
+    expect(git(['p'], { ...ctx, env: { GIT_CONFIG_GLOBAL: '/x' } })?.subcommand).toBe('unknown');
+    expect(git(['push'], { ...ctx, env: { GIT_CONFIG_GLOBAL: '/x' } })?.dstRef).toBe('unknown');
+    expect(git(['-c', 'include.path=/x', 'push'])?.dstRef).toBe('unknown');
+    expect(git(['push', 'origin', 'HEAD'], { ...ctx, env: { GIT_DIR: '/o' } })?.dstRef).toBe(
+      'unknown',
+    ); // HEAD of another repository
+    expect(
+      git(['push', 'origin', 'main:develop'], { ...ctx, env: { GIT_DIR: '/o' } })?.dstRef,
+    ).toBe('develop');
+  });
+
+  it('push.default and remote.<r>.push from the effective config decide a bare push', () => {
+    // The reviewer's case: feat/x tracks origin/develop, but push.default=current pushes feat/x.
+    expect(git(['-c', 'push.default=current', 'push'], { ...ctx, branch: 'feat/x' })?.dstRef).toBe(
+      'feat/x',
+    );
+    expect(git(['-c', 'push.default=matching', 'push'])?.dstRef).toBe('unknown');
+    expect(git(['-c', 'push.default=bogus', 'push'])?.dstRef).toBe('unknown');
+    expect(git(['-c', 'remote.origin.push=HEAD:main', 'push'])?.dstRef).toBe('main');
+    expect(git(['-c', 'remote.origin.push=refs/heads/*:refs/heads/*', 'push'])?.dstRef).toBe(
+      'unknown',
+    );
+    expect(git(['-c', 'remote.origin.push=HEAD:main', 'push', 'origin', 'develop'])?.dstRef).toBe(
+      'unknown',
+    );
+    expect(git(['-c', 'branch.develop.merge=refs/heads/main', 'push'])?.dstRef).toBe('main');
+    expect(git(['push', '--prune', 'origin', 'develop'])?.dstRef).toBe('unknown');
+    expect(git(['--namespace=x', 'push', 'origin', 'develop'])?.dstRef).toBe('unknown');
+    expect(
+      git(['push'], { ...ctx, config: { 'push.default': 'current' }, branch: 'feat/x' })?.dstRef,
+    ).toBe('feat/x');
+  });
+
+  it('pushed means a remote ref moved when the runner says so', () => {
+    const p = ['push', 'origin', 'develop'];
+    expect(git(p, { ...ctx, remoteMoved: false })?.pushed).toBe('false');
+    expect(git(p, { ...ctx, remoteMoved: true })?.pushed).toBe('true');
+    expect(git(p, { ...ctx, remoteMoved: true }, 1)?.pushed).toBe('true');
+    expect(git(p)?.pushed).toBe('true'); // fallback without ground truth: exit 0
+    // movedRefs is ground truth for dstRef too.
+    expect(git(p, { ...ctx, movedRefs: ['refs/heads/main'] })).toMatchObject({
+      dstRef: 'main',
+      pushed: 'true',
+    });
+    expect(git(['push'], { ...ctx, movedRefs: [] })).toMatchObject({
+      dstRef: 'develop',
+      pushed: 'false',
+    });
+    // A non-push command that moved a ref (a hook, a shell alias) becomes unknown.
+    expect(git(['commit', '-m', 'x'], { ...ctx, movedRefs: ['develop'] })).toEqual({
+      subcommand: 'unknown',
+      invoked: 'commit',
+      dstRef: 'develop',
+      pushed: 'true',
+    });
+    expect(git(['commit', '-m', 'x'], { ...ctx, remoteMoved: false })).toEqual({
+      subcommand: 'commit',
+    });
+  });
+
+  it('recognizes greenlight behind pnpm run / --filter exec / npx --package', () => {
+    const cases: [string, string[]][] = [
+      ['pnpm', ['run', 'greenlight', 'preview', 'x']],
+      ['pnpm', ['--filter', 'web', 'exec', 'greenlight', 'preview', 'x']],
+      ['pnpm', ['-F', 'web', 'exec', 'greenlight', 'preview', 'x']],
+      ['pnpm', ['-r', 'exec', 'greenlight', 'preview', 'x']],
+      ['pnpm', ['-C', 'sub', 'greenlight', 'preview', 'x']],
+      ['npx', ['--package', '@rtrentjones/greenlight', 'greenlight', 'preview', 'x']],
+      ['npx', ['-p', '@rtrentjones/greenlight@0.10.1', 'greenlight', 'preview', 'x']],
+      ['npm', ['run', 'greenlight', '--', 'preview', 'x']],
+      ['npm', ['exec', '--package=@rtrentjones/greenlight', '--', 'greenlight', 'preview', 'x']],
+      ['yarn', ['run', 'greenlight', 'preview', 'x']],
+    ];
+    for (const [cmd, argv] of cases) {
+      const e = normalizeShimEvent(cmd, argv, '/s', 0);
+      const label = `${cmd} ${argv.join(' ')}`;
+      expect(e.cmd, label).toBe('greenlight');
+      expect(e.meta, label).toMatchObject({ subcommand: 'preview', tool: 'x' });
+    }
+    // A shell string is not unwrapped (its words are not argv).
+    expect(normalizeShimEvent('npx', ['-c', 'greenlight preview x'], '/s', 0).cmd).toBe('npx');
+  });
+
+  it('a meta matcher only matches shim events', () => {
+    const e: TrajectoryEvent = {
+      seq: 0,
+      ts: '2026-11-01T10:00:00Z',
+      source: 'transcript',
+      cmd: 'greenlight',
+      argv: ['preview', 'x'],
+      cwd: '/s',
+      meta: { subcommand: 'preview', tool: 'x', passed: 'true' },
+    };
+    const m = { cmd: 'greenlight', meta: { subcommand: 'preview' } };
+    expect(matches(m, e)).toBe(false);
+    expect(matches(m, { ...e, source: 'shim' })).toBe(true);
+    expect(matches({ cmd: 'greenlight', args: ['preview'] }, e)).toBe(true);
+  });
+
+  it('every bench shim.json re-derives exactly the meta recorded in its trajectory.jsonl', () => {
+    const bench = join(dirname(fileURLToPath(import.meta.url)), '../../../../../bench');
+    const found: string[] = [];
+    const walk = (d: string) => {
+      for (const n of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, n.name);
+        if (n.isDirectory()) walk(p);
+        else if (n.name === 'shim.json') found.push(d);
+      }
+    };
+    walk(join(bench, 'mutants'));
+    walk(join(bench, 'references'));
+    expect(found.length).toBeGreaterThanOrEqual(26);
+    for (const d of found) {
+      const scenario = JSON.parse(readFileSync(join(d, 'shim.json'), 'utf8')) as ShimScenario;
+      expect(readFileSync(join(d, 'trajectory.jsonl'), 'utf8'), d).toBe(buildTrajectory(scenario));
+    }
   });
 });
