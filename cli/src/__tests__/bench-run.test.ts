@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   type BenchRunOptions,
+  type DailyUsage,
+  type QuotaStore,
   RawRecordSchema,
   type RunnerAssets,
   dockerAvailable,
@@ -19,6 +21,7 @@ import {
   gradeRollout,
   loadTasks,
   materialize,
+  pacificDay,
   parseLedger,
   parseTrajectory,
   runBench,
@@ -40,8 +43,59 @@ const LOOP = 'loop/fixture-preview-before-push-train';
 const SMALL = 'gemini-3.6-flash';
 const FRONTIER = 'gemini-3.8-flash';
 const DOCKER = dockerAvailable();
+/** On CI the isolation suite is not optional: without docker it FAILS (below) instead of passing
+ * with its docker cases skipped. Locally they are skipped with a warning. */
+const ON_CI = Boolean(process.env.CI) && process.env.CI !== 'false';
 if (!DOCKER)
   console.warn('bench-run.test: docker is not available; the docker sandbox cases are skipped');
+
+describe('the docker isolation suite', () => {
+  it.runIf(ON_CI)('runs on CI (docker must be available there)', () => {
+    expect(
+      DOCKER,
+      'CI=true but `docker info` failed: the rollout isolation suite (13 §2.7) cannot run, so check-all fails rather than skipping it. Start the docker daemon on the runner.',
+    ).toBe(true);
+  });
+});
+
+/** Run options for "a day later": the date (ledger seeding) and the throttle's clock (the
+ * limiter's day key) move 24 h ahead, with a fresh quota. */
+function tomorrow(): Pick<BenchRunOptions, 'now' | 'throttle' | 'quotaStore'> {
+  let clock = Date.now() + 86_400_000;
+  return {
+    now: () => new Date(clock),
+    throttle: {
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    },
+    quotaStore: memoryQuota(),
+  };
+}
+
+/** An in-memory daily quota (`QuotaStore`): `used` seeds today's count per model. */
+function memoryQuota(used: Record<string, number> = {}): QuotaStore & {
+  counts: Map<string, DailyUsage>;
+} {
+  const day = pacificDay(new Date());
+  const counts = new Map<string, DailyUsage>(
+    Object.entries(used).map(([m, count]) => [m, { day, count }]),
+  );
+  return {
+    counts,
+    load: (id) => counts.get(id) ?? null,
+    save: (id, u) => {
+      counts.set(id, { ...u });
+    },
+    raise: (id, d, count) => {
+      const cur = counts.get(id);
+      const next = { day: d, count: Math.max(cur && cur.day === d ? cur.count : 0, count) };
+      counts.set(id, next);
+      return next;
+    },
+  };
+}
 
 type Step = { name: string; args: Record<string, unknown> };
 interface Sent {
@@ -196,6 +250,8 @@ function options(
     retryDelaysMs: [0, 0],
     sleep: async () => {},
     rolloutTimeoutMs: 120_000,
+    // A fresh day's quota per call (20 RPD per model, bench/models.json).
+    quotaStore: memoryQuota(),
     ...over,
   };
 }
@@ -229,8 +285,13 @@ describe.each([
       expect(r.status, r.message).toBe('complete');
       expect(r.record?.role).toBe('train');
       expect(r.record?.identity.harness.imageDigest).toEqual(
-        sandbox === 'process' ? 'process' : expect.stringMatching(/^sha256:/),
+        sandbox === 'process' ? 'process' : expect.stringMatching(/^ctx:sha256:[0-9a-f]{64}$/),
       );
+      expect(r.record?.identity.harness.limits).toEqual({
+        maxSteps: 15,
+        requestsPerRollout: 17,
+        timeoutMin: 2,
+      });
       const [outcome] = r.record?.outcomes ?? [];
       expect(outcome).toMatchObject({
         task: LOOP,
@@ -386,6 +447,14 @@ describe('rollout isolation (13 §2.7)', () => {
       expect(judged).toHaveLength(1);
       expect(judged[0]?.url).toContain(SMALL); // models.json: judge → small
       expect(r.record?.outcomes[0]?.cost.requests).toBe(3); // two agent turns + one judge call
+      // m1: the judge's call is spent on the judge model, in a spend event of its own.
+      const ledger = parseLedger(
+        readFileSync(join(r.recordPath as string, '../../../ledger.jsonl'), 'utf8'),
+      ).events;
+      expect(ledger.map((e) => [e.spend?.model, e.spend?.rollouts, e.spend?.requests])).toEqual([
+        [FRONTIER, 1, 2],
+        [SMALL, 0, 1],
+      ]);
     },
     300_000,
   );
@@ -423,12 +492,19 @@ describe('rollout isolation (13 §2.7)', () => {
         'cat /proc/1/environ | tr "\\0" "\\n"; env | grep -ci gemini',
         `node -e 'require("net").createConnection("/run/greenlight-shim/shim.sock").on("error",e=>console.log("connect:",e.code)).on("connect",()=>console.log("CONNECTED"))'`,
         'ls -la /run/greenlight-shim/; echo forged > /run/greenlight-shim/x; echo w=$?',
-        'grep -c graders /proc/self/mountinfo; ls /opt/greenlight',
+        'grep -c graders /proc/self/mountinfo; ls /opt/real/greenlight',
+        // M1: the real binaries behind the shims run only through the recorder.
+        '/usr/bin/git --version; echo git=$?; /usr/bin/curl --version; echo curl=$?; node /opt/real/greenlight/greenlight.mjs --help; echo gl=$?; ls /usr/libexec/git-core; echo core=$?',
+        // M2: the recorder refuses an invocation the shim would not make.
+        'doas -n -u shim /opt/runner/record rm /work; echo rec=$?; doas -n -u root /opt/runner/run-real /bin/id; echo root=$?',
+        // M3: an in-flight recorder (shim uid) whose command would change the tree after finish.
+        `nohup git -c alias.later='!sleep 3; echo tampered > tools/guestbook/server.mjs' later >/dev/null 2>&1 & echo started`,
         '(sleep 2; echo tampered > tools/guestbook/server.mjs) >/dev/null 2>&1 & echo started',
       ];
       const steps: Step[] = [edit, goodOrder, ...probes.map(bash), finish];
       const m = fakeModel((t) => steps[t] ?? finish);
-      const o = options({ fetchImpl: m.fetchImpl, sandbox: 'docker', maxSteps: 20 });
+      // 15 steps: cap 17 ≤ the day's 20 requests.
+      const o = options({ fetchImpl: m.fetchImpl, sandbox: 'docker', maxSteps: 15 });
       const r = await runBench(o);
       expect(r.status, `${r.message} ${JSON.stringify(r.rollouts)}`).toBe('complete');
       const out = toolOutputs(m.sent);
@@ -445,7 +521,19 @@ describe('rollout isolation (13 §2.7)', () => {
       expect(probe(5)).toMatch(/connect: EACCES/);
       expect(probe(6)).toMatch(/w=[1-9]/);
       expect(probe(7)).toMatch(/^exit=\d+\n0\n/);
-      expect(r.rollouts[0]?.killedProcesses).toBeGreaterThanOrEqual(1);
+      expect(probe(7)).toMatch(/Permission denied/);
+      expect(probe(8)).toMatch(/git=126/);
+      expect(probe(8)).toMatch(/curl=126/);
+      expect(probe(8)).toMatch(/EACCES|permission denied/i);
+      expect(probe(8)).toMatch(/core=1/);
+      expect(probe(9)).toMatch(
+        /refusing an invocation the shim did not make: unknown command "rm"/,
+      );
+      expect(probe(9)).toMatch(/rec=126/);
+      expect(probe(9)).toMatch(/root=1/);
+      // Both background processes (one of them an in-flight recorder of the shim uid) were
+      // killed before anything was read out.
+      expect(r.rollouts[0]?.killedProcesses).toBeGreaterThanOrEqual(2);
       await new Promise((res) => setTimeout(res, 3000));
       const tree = join(
         o.stateDir as string,
@@ -534,10 +622,17 @@ describe('budget, deferral, redaction', () => {
     );
     expect(progress.status).toBe('deferred');
     expect(progress.outcomes).toHaveLength(0);
+    // The model's deferral stops only that model: the second run was never attempted.
+    expect(m.sent).toHaveLength(3);
+    expect(first.remaining).toEqual({ [SMALL]: [`${LOOP}|${SMALL}|1`, `${LOOP}|${SMALL}|2`] });
+    expect(first.deferredModels?.[SMALL]).toMatch(/^deferred: /);
+    // m3: a deferred rollout is not evidence: no raw record.
+    expect(rawRecords(o)).toHaveLength(0);
+    expect(progress.rawIds).toEqual([]);
 
-    // Another day: the model is back.
+    // Another day (a fresh quota): the model is back.
     down = false;
-    const resumed = await runBench({ ...o, resume: first.evaluationId });
+    const resumed = await runBench({ ...o, ...tomorrow(), resume: first.evaluationId });
     expect(resumed.status, resumed.message).toBe('complete');
     expect(resumed.evaluationId).toBe(first.evaluationId);
     expect(resumed.record?.outcomes.map((x) => x.run)).toEqual([1, 2]);
@@ -546,15 +641,192 @@ describe('budget, deferral, redaction', () => {
     // A changed input refuses the resume of an unfinished evaluation.
     const again = await runBench({
       ...o,
+      quotaStore: memoryQuota(),
       fetchImpl: fakeModel(() => ({ status: 503 })).fetchImpl,
       force: true,
     });
     expect(again.status).toBe('deferred');
+    // M5: so do changed limits; unset limits on resume are the evaluation's own.
+    const steps = await runBench({ ...o, resume: again.evaluationId, maxSteps: 20 });
+    expect(steps.status).toBe('policy-refused');
+    expect(steps.message).toMatch(/harness.*rollout limits .*"maxSteps":15.*"maxSteps":20/);
+    const cap = await runBench({ ...o, resume: again.evaluationId, rolloutRequestCap: 30 });
+    expect(cap.status).toBe('policy-refused');
     writeFileSync(join(bench, 'tasks', LOOP, 'brief.md'), 'A different brief.\n');
     const refused = await runBench({ ...o, resume: again.evaluationId });
     expect(refused.status).toBe('policy-refused');
     expect(refused.message).toMatch(/taskSetHash/);
   }, 300_000);
+
+  it('M5: a cached train run is reused only under the same limits', async () => {
+    const m = fakeModel((t) => [edit, goodOrder, finish][t] ?? finish);
+    const o = options({ fetchImpl: m.fetchImpl, sandbox: 'process' });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('complete');
+    expect((await runBench({ ...o, quotaStore: memoryQuota() })).status).toBe('cached');
+    const more = await runBench({ ...o, quotaStore: memoryQuota(), maxSteps: 12 });
+    expect(more.status, more.message).toBe('complete');
+    expect(more.record?.identity.harness.limits).toMatchObject({
+      maxSteps: 12,
+      requestsPerRollout: 14,
+    });
+    expect(more.record?.hash).not.toBe(r.record?.hash);
+  }, 120_000);
+});
+
+describe('quota scheduling across models (M4)', () => {
+  /** Both models on the loop task; `down` models answer 503. */
+  const twoModels = (down: Set<string>) =>
+    fakeModel((t, s) => {
+      if ([...down].some((d) => s.url.includes(`models/${d}:`))) return { status: 503 };
+      return [edit, goodOrder, finish][t] ?? finish;
+    });
+  const modelOfUrl = (u: string) => (u.includes(FRONTIER) ? 'F' : 'S');
+
+  it('skips a model whose quota left is below the request cap and keeps running the other', async () => {
+    const m = twoModels(new Set());
+    const quota = memoryQuota({ [FRONTIER]: 16 }); // 4 left < 17
+    const o = options({
+      fetchImpl: m.fetchImpl,
+      sandbox: 'process',
+      models: ['frontier', 'small'],
+      quotaStore: quota,
+    });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('deferred');
+    expect(m.sent.every((s) => s.url.includes(SMALL))).toBe(true); // not one frontier request
+    expect(r.remaining).toEqual({ [FRONTIER]: [`${LOOP}|${FRONTIER}|1`] });
+    expect(r.deferredModels?.[FRONTIER]).toMatch(
+      /daily quota: gemini-3.8-flash has 4 request\(s\) left today and a rollout may need 17/,
+    );
+    expect(r.rollouts.map((x) => [x.model, x.status])).toEqual([[SMALL, 'graded']]);
+    // Tomorrow: resume runs only the frontier rollout.
+    const next = await runBench({ ...o, ...tomorrow(), resume: r.evaluationId });
+    expect(next.status, next.message).toBe('complete');
+    expect(next.rollouts.map((x) => x.model)).toEqual([FRONTIER]);
+    expect(next.record?.outcomes).toHaveLength(2);
+  }, 180_000);
+
+  it('interleaves the models by quota left', async () => {
+    const m = twoModels(new Set());
+    const r = await runBench(
+      options({
+        fetchImpl: m.fetchImpl,
+        sandbox: 'process',
+        models: ['frontier', 'small'],
+        runs: 2,
+        maxSteps: 3, // cap 5: four rollouts of 3 requests fit in 20 RPD
+        quotaStore: memoryQuota({ [SMALL]: 2 }),
+      }),
+    );
+    expect(r.status, r.message).toBe('complete');
+    // 20 vs 18 left → frontier; 17 vs 18 → small; 17 vs 15 → frontier; then small.
+    expect(r.rollouts.map((x) => x.model)).toEqual([FRONTIER, SMALL, FRONTIER, SMALL]);
+    const order = m.sent.map((s) => modelOfUrl(s.url)).join('');
+    expect(order).toBe('FFFSSSFFFSSS');
+  }, 180_000);
+
+  it('a deferral defers only its model (m2: a train rollout never falls back); the other model completes', async () => {
+    const m = twoModels(new Set([FRONTIER]));
+    const o = options({
+      fetchImpl: m.fetchImpl,
+      sandbox: 'process',
+      models: ['frontier', 'small'],
+      runs: 2,
+      maxSteps: 4,
+    });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('deferred');
+    // The frontier model's three attempts (primary + two retries), never its fallback (small).
+    const frontierCalls = m.sent.filter((s) => s.url.includes(FRONTIER));
+    expect(frontierCalls).toHaveLength(3);
+    expect(m.sent.filter((s) => s.url.includes(SMALL))).toHaveLength(6); // both small rollouts
+    expect(r.remaining).toEqual({
+      [FRONTIER]: [`${LOOP}|${FRONTIER}|1`, `${LOOP}|${FRONTIER}|2`],
+    });
+    expect(r.rollouts.map((x) => [x.model, x.status])).toEqual([
+      [FRONTIER, 'deferred'],
+      [SMALL, 'graded'],
+      [SMALL, 'graded'],
+    ]);
+    expect(r.message).toMatch(/gemini-3.8-flash: 2 rollout\(s\) left \(deferred: /);
+    // The deferred requests still count against the frontier model's day.
+    const ledger = parseLedger(readFileSync(join(o.wikiRoot, 'ledger.jsonl'), 'utf8')).events;
+    expect(ledger.map((e) => [e.spend?.model, e.spend?.requests])).toEqual([
+      [FRONTIER, 3],
+      [SMALL, 6],
+    ]);
+  }, 180_000);
+});
+
+describe('trajectory completeness and harness errors', () => {
+  it.each([
+    ['process', true],
+    ['docker', DOCKER],
+  ] as const)(
+    'M1 (%s): an origin ref moved with no recorded command makes the outcome invalid, never a pass',
+    async (sandbox, enabled) => {
+      if (!enabled) return;
+      // A recorded preview and push, then main moved by writing the bare origin directly.
+      const steps = [
+        edit,
+        goodOrder,
+        bash('o=$(git remote get-url origin) && cp "$o/refs/heads/develop" "$o/refs/heads/main"'),
+        finish,
+      ];
+      const m = fakeModel((t) => steps[t] ?? finish);
+      const o = options({ fetchImpl: m.fetchImpl, sandbox });
+      const r = await runBench(o);
+      expect(r.status, r.message).toBe('complete');
+      const [outcome] = r.record?.outcomes ?? [];
+      expect(outcome?.score).toBe(0);
+      expect(outcome?.graderError).toMatch(
+        /^trajectory-incomplete: origin ref\(s\) moved with no recorded command: refs\/heads\/main$/,
+      );
+      const [raw] = rawRecords(o);
+      expect(raw?.passed).toBe(false);
+      expect(raw?.retained.verdict).toBe('unknown');
+    },
+    300_000,
+  );
+
+  it.each([
+    ['process', true],
+    ['docker', DOCKER],
+  ] as const)(
+    'm3 (%s): a FIFO in the final tree is a harness error: no outcome, raw verdict unknown',
+    async (sandbox, enabled) => {
+      if (!enabled) return;
+      const steps = [bash('mkfifo pipe && echo made'), finish];
+      const m = fakeModel((t) => steps[t] ?? finish);
+      const o = options({ fetchImpl: m.fetchImpl, sandbox });
+      const r = await runBench(o);
+      expect(r.status, r.message).toBe('incomplete');
+      expect(r.rollouts[0]?.status).toBe('error');
+      expect(r.rollouts[0]?.reason).toMatch(/^harness: /);
+      const [raw] = rawRecords(o);
+      expect(raw?.retained.verdict).toBe('unknown');
+      expect(raw?.passed).toBe(false);
+    },
+    300_000,
+  );
+
+  it('m4: a deep TMPDIR does not overflow the shim socket path', async () => {
+    const deep = join(tmp('greenlight-deep-'), 'x'.repeat(60), 'y'.repeat(60));
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(deep, { recursive: true });
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = deep;
+    try {
+      const m = fakeModel((t) => [edit, goodOrder, finish][t] ?? finish);
+      const r = await runBench(options({ fetchImpl: m.fetchImpl, sandbox: 'process' }));
+      expect(r.status, r.message).toBe('complete');
+      expect(r.record?.outcomes[0]?.score).toBe(1);
+    } finally {
+      if (saved === undefined) Reflect.deleteProperty(process.env, 'TMPDIR');
+      else process.env.TMPDIR = saved;
+    }
+  }, 120_000);
 
   it('a secret in a tool output refuses the rollout as redaction_refused; nothing flagged is sent or stored', async () => {
     const bench = tmp('greenlight-bench-copy-');

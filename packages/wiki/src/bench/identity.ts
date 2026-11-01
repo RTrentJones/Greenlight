@@ -26,7 +26,7 @@ import { canonicalJson } from '../schema/common';
 
 /** The runner's own version: its prompt scaffolding, tool set and sandbox contract. Part of
  * `harness.runnerVersion`; bump it on any change that could change an agent's behaviour. */
-export const RUNNER_VERSION = '0.1.0';
+export const RUNNER_VERSION = '0.2.0';
 
 const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
 
@@ -139,6 +139,9 @@ export interface IdentityInput {
   wikiSnapshotHash?: string | null;
   proxyPolicyHash?: string | null;
   runnerVersion?: string;
+  /** The rollout limits (`harness.limits`): max ReAct steps, the per-rollout request cap, and the
+   * rollout timeout override in minutes (null: each task's own `timeoutMin`). */
+  limits: NonNullable<BaselineIdentity['harness']['limits']>;
 }
 
 export function computeIdentity(i: IdentityInput): BaselineIdentity {
@@ -150,7 +153,11 @@ export function computeIdentity(i: IdentityInput): BaselineIdentity {
     splitsHash: splitsHash(i.benchDir, i.tasks),
     graderSetHash: graderSetHash(i.benchDir, ids),
     depsHash: depsHash(i),
-    harness: { runnerVersion: i.runnerVersion ?? RUNNER_VERSION, imageDigest: i.imageDigest },
+    harness: {
+      runnerVersion: i.runnerVersion ?? RUNNER_VERSION,
+      imageDigest: i.imageDigest,
+      limits: { ...i.limits },
+    },
     agent: { vendor: i.agent.vendor, version: i.agent.version },
     models: [...i.models],
     skillSetHash: skillSetHashOf(i.skillsDir),

@@ -133,6 +133,53 @@ export function movedRefs(before: string, after: string): string[] {
   return [...out].sort();
 }
 
+/**
+ * Origin refs that moved during the rollout without a recorded command to account for them
+ * (vision 06 §4.6: the shims are a recording device, so the runner checks the recording is
+ * complete). `start`/`end` are the host's own listings of the bare origin before the agent ran
+ * and after every process was killed; `observed` are the before/after listings of every recorded
+ * git command.
+ *
+ * For every ref, each value seen anywhere (in any recorded listing, and at the end) must be its
+ * starting value or the value some recorded command left it at (a ref that command moved). So a
+ * push made by writing `/srv/origin.git` directly, or by a binary the shims do not cover, is
+ * caught whether it happened between two recorded commands (their listings disagree) or after
+ * the last one (the end disagrees). Concurrent recorded commands are tolerated: every value one
+ * of them observes was left by another recorded command. A move that is undone before anything
+ * looks again is invisible, and so is a move made BY a recorded command's own child process (it
+ * is attributed to that command): both are documented residual risks (06 §4.6).
+ */
+export function unexplainedRefMoves(
+  start: string,
+  end: string,
+  observed: readonly { before: string; after: string }[],
+): string[] {
+  const s = refMap(start);
+  const allowed = new Map<string, Set<string>>();
+  const allow = (ref: string, v: string) => {
+    const set = allowed.get(ref) ?? new Set([s.get(ref) ?? '']);
+    set.add(v);
+    allowed.set(ref, set);
+  };
+  for (const o of observed) {
+    const after = refMap(o.after);
+    for (const ref of movedRefs(o.before, o.after)) allow(ref, after.get(ref) ?? '');
+  }
+  const ok = (ref: string, v: string) => (allowed.get(ref) ?? new Set([s.get(ref) ?? ''])).has(v);
+  const bad = new Set<string>();
+  const check = (listing: string) => {
+    const m = refMap(listing);
+    for (const [ref, sha] of m) if (!ok(ref, sha)) bad.add(ref);
+    for (const ref of s.keys()) if (!m.has(ref) && !ok(ref, '')) bad.add(ref);
+  };
+  for (const o of observed) {
+    check(o.before);
+    check(o.after);
+  }
+  check(end);
+  return [...bad].sort();
+}
+
 /** One shim message as a TrajectoryEvent (seq/ts from the host's sequencer). The runner's
  * ground truth — which origin refs moved while the command ran — goes in as
  * `remoteMoved`/`movedRefs`, so `pushed` (and a resolved `dstRef`) come from the remote, not the
@@ -160,31 +207,57 @@ export interface ChannelOptions {
   mode?: number;
   /** Max bytes per connection (default 2 MB); a longer message is rejected. */
   maxBytes?: number;
+  /** Max events per rollout (default 10,000); more truncates the trajectory. */
+  maxEvents?: number;
+  /** Max bytes over all connections of the rollout (default 8 MB); more truncates. */
+  maxTotalBytes?: number;
 }
 
+export const MAX_SHIM_EVENTS = 10_000;
+export const MAX_SHIM_TOTAL_BYTES = 8 * 1024 * 1024;
+
 /** A unix-socket server receiving shim messages. Every accepted message becomes one event at its
- * arrival position; anything malformed is rejected (counted with its reason), never repaired. */
+ * arrival position; anything malformed is rejected (counted with its reason), never repaired.
+ * Past the per-rollout caps the channel stops accepting and records why in `truncated`: the
+ * trajectory is then incomplete, and the rollout's outcome invalid (never a pass). */
 export class ShimChannel {
   readonly events: TrajectoryEvent[] = [];
   readonly rejected: string[] = [];
+  /** The before/after origin listings of every accepted git event (`unexplainedRefMoves`). */
+  readonly originListings: { before: string; after: string }[] = [];
+  /** Why the trajectory was cut short, if it was. */
+  truncated: string | undefined;
   private closed = false;
+  private totalBytes = 0;
 
   private constructor(
     readonly socketPath: string,
     private readonly server: Server,
+    private readonly maxEvents: number,
   ) {}
 
   static listen(socketPath: string, o: ChannelOptions): Promise<ShimChannel> {
     const max = o.maxBytes ?? 2_000_000;
+    const maxTotal = o.maxTotalBytes ?? MAX_SHIM_TOTAL_BYTES;
     if (existsSync(socketPath)) rmSync(socketPath, { force: true });
     let channel: ShimChannel | undefined;
     const server = createServer((sock) => {
       const chunks: Buffer[] = [];
       let size = 0;
       sock.on('data', (b: Buffer) => {
+        if (!channel || channel.truncated) {
+          sock.destroy();
+          return;
+        }
         size += b.length;
+        channel.totalBytes += b.length;
+        if (channel.totalBytes > maxTotal) {
+          channel.truncated ??= `shim messages over ${maxTotal} bytes in one rollout`;
+          sock.destroy();
+          return;
+        }
         if (size > max) {
-          channel?.rejected.push(`message over ${max} bytes`);
+          channel.rejected.push(`message over ${max} bytes`);
           sock.destroy();
           return;
         }
@@ -192,7 +265,7 @@ export class ShimChannel {
       });
       sock.on('error', () => {});
       sock.on('end', () => {
-        if (!channel || channel.closed || size > max) return;
+        if (!channel || channel.closed || channel.truncated || size > max) return;
         for (const line of Buffer.concat(chunks).toString('utf8').split('\n')) {
           if (!line.trim()) continue;
           channel.accept(line, o.sequencer);
@@ -210,13 +283,18 @@ export class ShimChannel {
           rej(e);
           return;
         }
-        channel = new ShimChannel(socketPath, server);
+        channel = new ShimChannel(socketPath, server, o.maxEvents ?? MAX_SHIM_EVENTS);
         res(channel);
       });
     });
   }
 
   private accept(line: string, sequencer: Sequencer): void {
+    if (this.truncated) return;
+    if (this.events.length >= this.maxEvents) {
+      this.truncated = `more than ${this.maxEvents} shim events in one rollout`;
+      return;
+    }
     let raw: unknown;
     try {
       raw = JSON.parse(line);
@@ -230,6 +308,20 @@ export class ShimChannel {
       return;
     }
     this.events.push(shimMessageToEvent(r.data, sequencer.next()));
+    if (r.data.origin) this.originListings.push({ ...r.data.origin });
+  }
+
+  /** Why this rollout's trajectory cannot be trusted as complete, or undefined: truncated, a
+   * rejected message (a recorded command whose event is lost), or an origin ref that moved with
+   * no recorded command to explain it (`start`/`end`: the host's own origin listings). */
+  integrity(start: string, end: string): string | undefined {
+    if (this.truncated) return `trajectory-truncated: ${this.truncated}`;
+    if (this.rejected.length > 0)
+      return `trajectory-incomplete: ${this.rejected.length} shim message(s) rejected (${this.rejected[0]})`;
+    const refs = unexplainedRefMoves(start, end, this.originListings);
+    if (refs.length > 0)
+      return `trajectory-incomplete: origin ref(s) moved with no recorded command: ${refs.join(', ')}`;
+    return undefined;
   }
 
   /** Stops accepting: a message arriving after the rollout ended is dropped. */

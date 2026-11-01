@@ -482,17 +482,33 @@ does not leak into proposer-visible evidence over time.
    **Grading is isolated from the rollout.**
    - The agent runs as an unprivileged user in a rollout container that has no access to
      `bench/graders/` or `bench/mutants/`. The graders are never mounted into that container.
-   - When the agent stops or its timeout expires, the runner kills the rollout's whole process tree
-     and stops the container.
+   - When the agent stops or its timeout expires, the runner kills every process in the container
+     but its inert PID 1, as root with `CAP_KILL`, including the recorder processes of the shim
+     user that may still be in flight, and repeats until no process is alive. A kill loop that
+     does not converge is a harness error. Only then are the origin refs and the final tree read
+     out, from a container in which nothing runs, and the container is removed.
+   - The final tree is exported once. It is checked before it is unpacked on the host (regular
+     files, directories and symlinks only, nothing below a symlink, nothing escaping, a size cap)
+     and host code never follows a symlink out of it. The sandbox's diff is computed on the host
+     from that same exported tree, in a repository with no config the agent wrote, so the diff and
+     the graded tree are one snapshot.
    - The runner then mounts the sandbox's final tree read-only into a separate grading container,
      which holds the grader. The agent therefore cannot read or replace the grader, and no leftover
      agent process can observe grading.
-   - The trajectory file is written by the shims to a path outside the agent's writable tree,
-     through a write-only socket. The agent cannot edit its own trajectory.
+   - The trajectory file is written by the host, outside the agent's writable tree, from events the
+     shims send through a socket only the shim user can connect to. The agent cannot edit its own
+     trajectory. Whether the recording is complete is checked, not assumed (§4.6).
+   - The rollout limits (`maxSteps`, default 15; the per-rollout request cap, default
+     `maxSteps + 2`; any timeout override) are part of the baseline identity (`harness.limits`,
+     §1.5): runs under different limits are never compared, cached or resumed into one another.
 4. The score is 1 if every grader check passes and 0 otherwise. Partial credit is stored
    (passed/total checks), but gating uses the binary score, following the paper's task success.
-5. Each rollout writes a raw record of kind `bench`. Its refs point to the transcript, the
-   sandbox's diff and the grader report, stored as CI artifacts.
+   A rollout whose trajectory is incomplete or truncated (§4.6) carries a `graderError` instead:
+   it is invalid at the gate, never a pass and never a plain 0.
+5. Each rollout that ran to an end writes a raw record of kind `bench`. Its refs point to the
+   transcript, the sandbox's diff and the grader report, stored as CI artifacts. A rollout without
+   a trustworthy verdict (a harness or model error, a grader error, an incomplete trajectory)
+   records `retained.verdict: unknown`; a deferred rollout writes no raw record.
 
 ### 4.3 Mutants
 
@@ -555,6 +571,40 @@ and `curl`, then exec the real binary. They are a recording device and enforce n
 grader kind ships with mutants under §4.3. For a trajectory grader, each mutant is a recorded
 trajectory that breaks one rule, for example a push recorded before any preview. The grader must
 fail on every one of those mutants.
+
+**Completeness of the recording.** A recording device that can be bypassed would let an
+unrecorded action pass a `never(...)` or `before(...)` rule. Two measures close the obvious
+bypasses, and a check catches what they miss:
+
+- *Only the recorder can run the real binaries.* In the rollout image the real `git` (with
+  `git-core`), `curl` and the `greenlight` CLI are executable by the shim group only; the shim runs
+  the command as the agent's uid with that group added. The agent's own processes are not in the
+  group, so a direct `/usr/bin/git push` fails with "Permission denied".
+- *The recorder validates its own invocation.* doas cannot restrict the agent → shim rule to
+  argument patterns, so the recorder refuses any invocation the shim wrapper would not produce, and
+  reports truthfully whatever it does run.
+- *The origin is checked.* The host lists the bare origin's refs before the agent runs and after
+  every process is killed. Every value a ref took, in any recorded before/after listing and at the
+  end, must be its starting value or a value some recorded git command left it at. A ref moved any
+  other way (written into `/srv/origin.git` directly, pushed by a client of the agent's own) makes
+  the outcome `graderError: trajectory-incomplete`. So does a shim message the host had to reject.
+  More than 10,000 events or 8 MB of shim messages in one rollout is `trajectory-truncated`. All
+  three are invalid at the gate, never a pass.
+
+**Residual risk (accepted).** These close the paths by which an agent could act unrecorded *on
+the origin*, which is what the loop task's rules observe. They do not make the recording complete
+in general:
+
+- A recorded command's own children inherit the shim group: a git hook, an alias `!cmd`, or the
+  app `greenlight preview` starts can run the real binaries. A push they make inside the recorded
+  command's window is attributed to that command (its before/after listing shows the move); one
+  they make after it ended is caught by the origin check.
+- A ref moved and moved back between two listings leaves no trace. It also leaves the origin as it
+  was, and a rule matches only recorded events, so it cannot fake a recorded push or preview.
+- Actions with no origin effect and no shimmed binary (an HTTP request from `node` to localhost,
+  say) are never recorded. Rules that need them must observe them some other way (an `app` grader
+  on the fake store's counters, for example).
+- The process sandbox (local development) has none of these protections.
 
 ### 4.7 Evaluation modes
 
@@ -962,11 +1012,12 @@ brief", as in the paper, and the same code runs locally and in CI.
   configured id is kept as `requested`. If the fallback served a gate rollout, or the alias drifted
   to another `modelVersion`, that rollout is invalid for gating: the evaluation record marks it
   `served-by-fallback`, and the gate re-runs it later or aborts. Mixing models would break the
-  baseline identity. **Gate and baseline rollouts therefore run with the fallback disabled**
-  (`allowFallback: false`). After the retries, the client throws a transient, resumable
-  `FallbackDisabledError`, and the ReAct loop reports it as `deferred`. The runner re-runs the
-  rollout on a later day instead of sending it to the small model, which would spend the small
-  model's quota on a rollout the gate cannot use.
+  baseline identity. **Every bench rollout therefore runs with the fallback disabled**
+  (`allowFallback: false`), train rollouts included: a fallback-served train outcome would be
+  evidence about the wrong model in the proposer's samples. After the retries, the client throws a
+  transient, resumable `FallbackDisabledError`, and the ReAct loop reports it as `deferred`. The
+  runner re-runs the rollout on a later day instead of sending it to the small model, which would
+  spend the small model's quota on a rollout the evaluation cannot use.
 - `react.ts`: a ReAct loop with a fixed tool set per role.
 
 | role | tools | system prompt |
@@ -987,10 +1038,22 @@ per day, not dollars.
 - The harness throttles to stay under them. The daily count persists in
   `.greenlight/quota/<model>.json` (`FileQuotaStore`, under a lock), so separate processes on one
   day share one quota. A fresh runner seeds that count from today's `spend` events.
-- `bench run` refuses a gate whose expected request count exceeds the day's remaining `rpd`.
+- `bench run` refuses a gate whose expected request count exceeds the day's remaining `rpd`
+  unless the budget allows splitting it across days.
+- **Quota is scheduled per model, per rollout.** Before each rollout the runner requires the
+  model's remaining daily quota to cover the rollout's whole request cap (`maxSteps + 2` by
+  default, plus one call on the judge model for a maintainer gate rollout), so no rollout is
+  started that the day could cut off and throw away. A model below it is skipped for the day while
+  the other keeps running; the model with the most quota left runs next, so the two interleave.
+  A rollout deferred anyway (the model stayed unavailable, another process spent the quota) defers
+  only its own model. The run returns `deferred` with the rollouts left per model, and
+  `--resume` continues on a later day. Judge calls are charged to the judge model's own `spend`
+  event, not to the rollout's model.
 - `bench/README-models.md` holds the budget arithmetic for the first M2 gate. That gate runs
   isolation mode only and includes the baseline re-run: 48 rollouts and about 12 requests per
-  rollout, so 600 requests, or about 15 days at 20 RPD per model.
+  rollout, so 600 requests. Because the full cap of 17 is reserved per rollout, 20 RPD admits about
+  one rollout per model per day, so the gate takes about 24 days rather than the 15 the request
+  count alone suggests.
 
 A gate that cannot finish within one day's quota is split across days. This is safe because the
 baseline identity pins every input, and rollouts are independent. `spend` ledger events record

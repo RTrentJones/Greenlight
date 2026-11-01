@@ -40,6 +40,7 @@ function world() {
       agent: { vendor: 'greenlight-harness', version: '0.1.0' },
       models: ['gemini-3.8-flash', 'gemini-3.6-flash'],
       mode: 'isolation',
+      limits: { maxSteps: 15, requestsPerRollout: 17, timeoutMin: null },
       ...over,
     };
   };
@@ -63,7 +64,8 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
       graders: ['trajectory'],
     });
     expect(a.wikiSnapshotHash).toBeNull();
-    expect(a.harness.runnerVersion).toBe('0.1.0');
+    expect(a.harness.runnerVersion).toBe('0.2.0');
+    expect(a.harness.limits).toEqual({ maxSteps: 15, requestsPerRollout: 17, timeoutMin: null });
   });
 
   // 13 §2.7 "baseline invalidation": each input changes the identity, in the field that names it.
@@ -114,6 +116,21 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
     ['the runner lockfile', (w) => appendFileSync(join(w.root, 'lock.yaml'), '#'), ['depsHash']],
     ['the CLI build', () => ({ cliBuildHash: 'b'.repeat(64) }), ['depsHash']],
     ['the sandbox image digest', () => ({ imageDigest: 'sha256:def' }), ['harness']],
+    [
+      'the max steps (a 10-step run says nothing about a 20-step one)',
+      () => ({ limits: { maxSteps: 20, requestsPerRollout: 17, timeoutMin: null } }),
+      ['harness'],
+    ],
+    [
+      'the per-rollout request cap',
+      () => ({ limits: { maxSteps: 15, requestsPerRollout: 30, timeoutMin: null } }),
+      ['harness'],
+    ],
+    [
+      'the rollout timeout',
+      () => ({ limits: { maxSteps: 15, requestsPerRollout: 17, timeoutMin: 5 } }),
+      ['harness'],
+    ],
     [
       'the agent version',
       () => ({ agent: { vendor: 'greenlight-harness', version: '0.2.0' } }),
