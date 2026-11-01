@@ -83,42 +83,56 @@ id: pattern/keepalive-probe-misses-postgres
 type: pattern
 title: A Supabase keepalive that never reaches Postgres
 updated: 2026-11-01
-status: confirmed
+status: hypothesis
 kind: failure
 class: proxy-check
 atRisk: Supabase free-tier idle timer, measured as Postgres activity
-probed: PostgREST's in-memory schema cache at /rest/v1/
+probed: PostgREST's in-memory schema cache at /rest/v1/, then Cloudflare's edge cache, then nothing (the Worker threw before sending)
 cells: ["*/*/supabase"]
-affects: "<0.9.0"          # framework versions that carry the defect
-relevance: framework-version
+affects: "<0.10.1"
+relevance: both
 evidence:
   - issue:RTrentJones/RTrentJones.dev#55
+  - issue:RTrentJones/RTrentJones.dev#86
   - commit:RTrentJones/greenlight@c97222a07dc82904193ed241f266cb6a15cce29e
+  - commit:RTrentJones/greenlight@938973a9046fc1f10a2bb5c5c85577f25fbefdb3
+  - commit:RTrentJones/greenlight@b23a3010054dba6a3b80a9be90a6ebc3afba2ccd
+  - commit:RTrentJones/greenlight@217d1f05645c0b052438536cdd807f9d303682a3
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
 catches:
-  description: the probe is a query that only Postgres can answer, and only a 2xx with a row counts as healthy
+  description: the probe is a query that only Postgres can answer, sent uncached, and only a 2xx with a row counts as healthy; a sweep on the deployed Worker is shown reaching the probe table
   checkSignature: "keepalive.*supabase.*probeTable"
   graderTask: replay/keepalive-probe-reaches-store
 remediation:
-  - { outlet: mechanism, ref: "greenlight@0.9.0", verified: true }
+  - { outlet: mechanism, ref: "greenlight@0.9.0", verified: false }
+  - { outlet: mechanism, ref: "greenlight@0.10.0", verified: false }
+  - { outlet: mechanism, ref: "greenlight@0.10.1", verified: false }
 skills: [provider-supabase, deploy-verify-promote]
 ---
 ## Symptom
 The keepalive Worker reported a Supabase-backed tool healthy on every sweep, but the project paused
-anyway after a week. The next sweep got a 530 from the paused project and opened an issue.
+anyway after a week. It happened twice: in August, and again seven days after the unpause, with
+two clean sweeps inside that window.
 
 ## Root cause
-The probe requested `/rest/v1/`. PostgREST answers that path from its schema cache without sending
-anything to Postgres. Supabase measures idleness at the database, so the idle timer never reset.
+Three faults in a row kept the probe from reaching Postgres. Before 0.9.0 it requested
+`/rest/v1/`, which PostgREST answers from its schema cache. In 0.9.x it queried a real table, but
+the Worker's subrequest could be answered by Cloudflare's cache, so it never left the edge. In
+0.10.0 the uncacheable subrequest combined `cache: 'no-store'` with `cf.cacheTtl`, which the
+Workers runtime rejects, so every sweep threw before the probe was sent.
 
 ## Fix / workaround
-Since 0.9.0 a Supabase keepalive target must declare `probeTable`, and the probe becomes
-`GET /rest/v1/<table>?select=<col>&limit=1`. Use a dedicated one-row table that is readable
-anonymously, so the probe does not expose user data.
+Name a dedicated one-row probe table readable anonymously; the probe becomes
+`GET /rest/v1/<table>?select=<col>&limit=1` (0.9.0). Send it with `cache: 'no-store'` only
+(0.10.0 made it uncacheable; 0.10.1 dropped the `cf` override that made it throw). A hand-written
+health route that stops at a cache repeats the fault in app code, whatever the framework version.
 
 ## How it is caught
-The keepalive refuses a Supabase target without `probeTable`. Only a 2xx response counts as
-healthy, so a revoked grant or a rotated key now fails loudly.
+The keepalive refuses a Supabase target without `probeTable`, and only a 2xx counts as healthy.
+The 0.9.0 check of the deployed Worker (byte-identical to the release, table named, table answering
+anonymously) did not show a sweep reaching Postgres, and the database paused again. This stays a
+hypothesis until a sweep on 0.10.1 or later is shown reaching the probe table on the deployed
+Worker.
 ```
 
 ### 2.2 `patterns/keepalive-probe-cached.md`
@@ -265,11 +279,14 @@ class: artifact-identity
 atRisk: the commit being shipped
 probed: whatever artifact the URL served during the settle window
 cells: ["*/*/*"]
-affects: "<0.8.0"          # framework versions that carry the defect
+affects: "<0.8.0"
 relevance: framework-version
 evidence:
   - commit:RTrentJones/greenlight@04280a63432a861e51e2b5e4d4bb71a209787bc1
   - commit:RTrentJones/greenlight@debcf1e4fc87ed6209e2c63ee182afa77f0aade5
+  - commit:RTrentJones/RTrentJones.dev@2545b52af0ad00089897bca3576690bbb801c945
+  - commit:RTrentJones/RTrentJones.dev@514dca49280f6e457810328d67d3c28a01ebd479
+  - commit:RTrentJones/RTrentJones.dev@4ba03e3291e56504c595c826e4b063bf3e0fff61
 catches:
   description: /__version must equal the shipped sha before any content check runs (requireIdentity)
   checkSignature: "identity|__version"
@@ -290,8 +307,11 @@ settle loop gates on identity before any content check. Set `requireIdentity: tr
 missing endpoint fails instead of reading as "unverified".
 
 ## How it is caught
-The identity probe fails hard when the URL serves a different sha. DR-24 warns about tools whose
-spec has no identity check.
+The identity probe fails hard when the URL serves a different sha, on every SHA-gated ship. On a
+deployed web app whose new build took minutes to go live, the gate refused the previous deployment
+("deployed sha != expected") instead of passing it; against deployments serving the expected sha
+the same gate passes.
+A spec with no identity check is the remaining gap, and a doctor rule is planned to flag it.
 ```
 
 ### 2.6 `patterns/oci-restart-window.md`
@@ -564,23 +584,27 @@ class: capability-regression
 atRisk: interactive MCP clients onboarding via OAuth Dynamic Client Registration
 probed: an authenticated tools/list using a pre-issued machine token
 cells: ["mcp/*/*"]
-affects: "*"          # framework versions that carry the defect
+affects: "*"
 relevance: app-code
 evidence:
   - commit:RTrentJones/RTrentJones.dev@6c50cb82cf0f199e1f344599b1ac2e380f3c651e
+  - commit:RTrentJones/RTrentJones.dev@ff5021c935dc42d6905f9f8c1439de33c5495ebb
+  - commit:RTrentJones/RTrentJones.dev@95fe0a8ceae1b2f9672ff7d538af5e4f1f97b8d6
+  - commit:RTrentJones/RTrentJones.dev@bccf129f1a6279babeeaad735867ad4b22f3620d
 catches:
   description: assert the authorization-server metadata advertises registration_endpoint AND an empty POST to it answers 400 (not 404)
   checkSignature: "oauth-authorization-server|register"
 remediation:
-  - { outlet: verify, ref: "verify/bamcp.config.ts", verified: true }
+  - { outlet: verify, ref: "RTrentJones/RTrentJones.dev:verify/bamcp.config.ts", verified: true }
 skills: [deploy-verify-promote]
 ---
 ## Symptom
 An OAuth MCP server's gate stayed green while interactive MCP connectors could no longer connect.
+Registration answered 404.
 
 ## Root cause
-Dynamic Client Registration was disabled. Verify authenticated with a static machine token, which
-never exercises the path an interactive client takes to register.
+Auth hardening disabled Dynamic Client Registration. Verify authenticated with a static machine
+token, which never exercises the path an interactive client takes to register.
 
 ## Fix / workaround
 Re-enable DCR. Verify the onboarding path itself: the metadata advertises `registration_endpoint`,
@@ -588,7 +612,10 @@ the endpoint answers an empty registration with 400, and RFC 9728 protected-reso
 served.
 
 ## How it is caught
-The server's api checks fail if DCR is not advertised or answers 404.
+The server's api checks run against the deployed server on every ship, and fail if DCR is not
+advertised or the registration endpoint answers 404. The deployed server answered `/register` with
+404 before the re-enable and serves registration after it. The metadata check was added the next
+day and the empty-registration check later; both pass against the deployed server.
 ```
 
 ### 2.13 `patterns/unplanned-compute-replacement.md`
@@ -599,38 +626,44 @@ id: pattern/unplanned-compute-replacement
 type: pattern
 title: A Terraform apply that replaces running compute without anyone planning it
 updated: 2026-11-01
-status: confirmed
+status: hypothesis
 kind: failure
 class: iac-hazard
-atRisk: running containers and databases (state, uptime, free-tier allocation)
+atRisk: running containers (uptime, and the free-tier allocation the replacement must fit into)
 probed: n/a — apply ran unattended on push
-cells: ["*/oci/*", "*/*/neon", "*/*/supabase"]
-affects: "<0.10.0"          # framework versions that carry the defect
+cells: ["*/oci/*"]
+affects: "<0.10.1"
 relevance: framework-version
 evidence:
   - pr:RTrentJones/greenlight#27
-  - commit:RTrentJones/greenlight@7cdecab738968fa5818cb934e04ff7c213b2613a
+  - commit:RTrentJones/greenlight@ec04f9ef4a477fa5a274f8f7fa32d73c9ff29212
+  - commit:RTrentJones/RTrentJones.dev@6ac5304ace802be813aae9313d9db2c5d6234768
 catches:
-  description: infra.yml fails a plan that destroys or replaces guarded resource types unless a human approves
+  description: infra.yml fails a plan that replaces a running container instance unless the run was dispatched with allow_compute_replace=true
 remediation:
-  - { outlet: mechanism, ref: "greenlight@0.10.0", verified: true }
-skills: [provider-hcp, provider-oci, provider-neon]
+  - { outlet: mechanism, ref: "greenlight@0.10.1", verified: false }
+skills: [provider-hcp, provider-oci]
 ---
 ## Symptom
-A routine infra change could plan a destroy-and-recreate of running compute, and apply-on-push
-would execute it.
+An env change on a container tool planned a delete-then-create of its instance, and apply-on-push
+executed it. The tool was down until the new instance booted, and on the free tier the create
+failed with `LimitExceeded`, leaving it down until a second apply.
 
 ## Root cause
 Some attribute changes force replacement. Unattended apply had no step at which a human saw that a
-plan contained a destroy.
+plan replaced running compute, and the deleted instance's cores are released minutes after the
+delete, so the immediate create can exceed the free-tier allocation.
 
 ## Fix / workaround
-`infra.yml` runs plan, then a destroy guard over the saved plan, then manual approval, then apply.
-This covers guarded resource types such as container instances and Neon branches and endpoints.
-Run state surgery (`state rm`) as one atomic step that fails loudly.
+Since 0.10.1 the generated `infra.yml` fails the plan job on a replacement of a running container
+instance unless the run is dispatched with `allow_compute_replace=true`. Existing wrappers keep
+their own `infra.yml` and copy the guard step and dispatch input from the template. The separate
+destroy guard for stateful stores (since 0.8) is unrelated to this one.
 
 ## How it is caught
-The destroy guard fails the workflow on any unplanned replacement of a guarded type.
+The compute guard in the plan job. So far it has only been seen passing: the one replacement since
+it was added was dispatched with `allow_compute_replace=true` and still hit `LimitExceeded`. This
+stays a hypothesis until the guard is shown failing an unplanned replacement on a real plan.
 ```
 
 ### 2.14 `patterns/spec-typo-disables-assertion.md`
@@ -647,15 +680,18 @@ class: spec-validity
 atRisk: the behavior the assertion was written to guard
 probed: nothing — the misspelled field was ignored and the check passed
 cells: ["*/*/*"]
-affects: "<0.6.0"          # framework versions that carry the defect
+affects: "<0.10.0"
 relevance: framework-version
 evidence:
+  - commit:RTrentJones/greenlight@5d4181045434950da2e26ddb8f35a89273b53d65
   - commit:RTrentJones/greenlight@baae67534d2686116abfa8a7c40733c221755efd
+  - commit:RTrentJones/RTrentJones.dev@95fe0a8ceae1b2f9672ff7d538af5e4f1f97b8d6
+  - commit:RTrentJones/RTrentJones.dev@bccf129f1a6279babeeaad735867ad4b22f3620d
 catches:
   description: every spec is validated strictly before running; unknown, wrong-typed or out-of-range fields fail the gate
   checkSignature: "spec is valid"
 remediation:
-  - { outlet: mechanism, ref: "packages/verify/src/validate.ts", verified: true }
+  - { outlet: mechanism, ref: "greenlight@0.10.0", verified: true }
 skills: [deploy-verify-promote, greenlight-build]
 ---
 ## Symptom
@@ -667,11 +703,15 @@ turned an assertion into a no-op while the gate read green.
 
 ## Fix / workaround
 Strict specs: an unknown, wrong-typed or uncompilable field fails as `spec is valid — checks[i]:
-unsupported field "…"`. Eleven follow-up fixes closed related gaps (non-negative budgets, integer
-counts, own-property paths, future timestamps).
+unsupported field "…"`. Follow-up fixes closed related gaps (non-negative budgets, integer counts,
+own-property paths, future timestamps).
 
 ## How it is caught
-Validation runs before any network call. Machine-written wiki artifacts follow the same rule (08).
+Validation runs before any network call, so the guard fails on the faulty configuration itself.
+On deployed tools: specs carrying fields the previous release ignored could not fail on it, while
+on 0.10.0 the same specs were enforced and failed against two deployed tools that lacked the asserted
+signals. Machine-written wiki artifacts follow the same rule: unknown frontmatter keys are
+rejected.
 ```
 
 ### 2.15 `patterns/alert-suppressed-by-open-issue.md`
@@ -1578,19 +1618,29 @@ repo's `bench/`, which is never visible to rollout agents, proposers or maintain
 
 ### 8.1 Seed status at M1
 
-Five framework patterns enter as `confirmed`. Each has deployed red→green evidence, or a guard that
-fails on the faulty configuration:
+Three framework patterns enter as `confirmed`. Each has deployed red→green evidence for its
+specific claim, recorded with its commits in the wiki's `log.md` (04 §4):
 
 | pattern | why it is confirmed |
 |---|---|
-| `keepalive-probe-misses-postgres` | 0.9.0 deployed; the deployed Worker was verified byte-identical to the release by SHA-256, its configuration named the probe table, and the probe table answered an anonymous request with a row (§7.1) |
-| `settle-greenlights-previous-deploy` | `verify --expect-sha` refuses an artifact whose `/__version` differs, on every SHA-gated ship |
-| `dcr-disabled-silently` | the DCR checks run against the deployed server on every ship and fail when registration is disabled |
-| `unplanned-compute-replacement` | the generated plan guard fails a plan that replaces running compute |
-| `spec-typo-disables-assertion` | strict spec validation fails a config with an unknown or mistyped field before any check runs |
+| `settle-greenlights-previous-deploy` | on a deployed web app the identity gate refused the previous deployment (`deployed sha != expected`) while the new build was still going live, and deployments serving the expected sha pass the same gate |
+| `dcr-disabled-silently` | the deployed server answered `/register` with 404 while verify passed on a static token, and served registration after the re-enable; the verify guard (metadata plus an empty registration answering 400) passes against the deployed server |
+| `spec-typo-disables-assertion` | fields the previous release ignored were enforced by 0.10.0's strict validation and failed against deployed tools that lacked the asserted signals |
 
-The other fifteen patterns enter as `hypothesis`, and they are inputs to the cycle. Confirming them
-is work the cycle does, through the outlets in 06 §5.6. Seeding does not confirm them.
+Two patterns the first seed confirmed were re-reviewed and are `hypothesis`:
+
+- `keepalive-probe-misses-postgres`. The 0.9.0 checks of the deployed Worker (§7.1: byte-identical
+  to the release, configuration naming the table, table answering anonymously) did not show a
+  sweep reaching Postgres, and the database paused again on 2026-08-31 because the probe was
+  served from Cloudflare's cache. 0.10.0 then made every sweep throw before sending, and 0.10.1
+  fixed that. It stays a hypothesis until a sweep on 0.10.1 or later is shown reaching the probe
+  table on the deployed Worker.
+- `unplanned-compute-replacement`. The guard (0.10.1, #27) has only been seen detecting a
+  replacement on a run dispatched with `allow_compute_replace=true`, never failing an unplanned
+  one.
+
+The other patterns enter as `hypothesis`, and they are inputs to the cycle. Confirming them is work
+the cycle does, through the outlets in 06 §5.6. Seeding does not confirm them.
 
 ### 8.2 Replay tasks
 
@@ -1648,8 +1698,9 @@ both, is invalid, and `bench check-graders` refuses it.
 - **Input bundle:**
   - the incident pages §7.1 and §7.2;
   - failing train traces from both replay tasks under the current skills;
-  - the pages `keepalive-probe-misses-postgres` (confirmed), `neon-never-sleeps` (hypothesis) and
-    `probe-touches-wrong-layer` (hypothesis).
+  - the pages `keepalive-probe-misses-postgres` (confirmed in the task's frozen fixture snapshot;
+    a hypothesis in the live seed since the re-review in §8.1), `neon-never-sleeps` (hypothesis)
+    and `probe-touches-wrong-layer` (hypothesis).
 - **Required distinction.** The output must contain, as a new page or an update to
   `probe-touches-wrong-layer`, a rule that is **conditional on the liveness model**:
   - for `needs-traffic` the probe reaches the store;

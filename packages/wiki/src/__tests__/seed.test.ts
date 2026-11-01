@@ -19,17 +19,19 @@ const ctx = {
   seam: OWNER_SEAM_TERMS,
 };
 
+// Each confirmation is justified in log.md against deployed red→green evidence (04 §4). The
+// keepalive and compute-replacement pages have no such evidence yet (re-review 2026-11-01).
 const CONFIRMED = [
   'pattern/dcr-disabled-silently',
-  'pattern/keepalive-probe-misses-postgres',
   'pattern/settle-greenlights-previous-deploy',
   'pattern/spec-typo-disables-assertion',
-  'pattern/unplanned-compute-replacement',
 ];
 const HYPOTHESES = [
   'pattern/keepalive-probe-cached',
+  'pattern/keepalive-probe-misses-postgres',
   'pattern/neon-never-sleeps',
   'pattern/probe-touches-wrong-layer',
+  'pattern/unplanned-compute-replacement',
 ];
 
 describe('framework wiki seed', () => {
@@ -45,7 +47,7 @@ describe('framework wiki seed', () => {
     expect(readFileSync(join(SEED, 'ledger.jsonl'), 'utf8')).toBe('');
   });
 
-  it('seeds exactly the five confirmed patterns and the named hypotheses (15 §8.1)', () => {
+  it('seeds exactly the three confirmed patterns and the named hypotheses (15 §8.1)', () => {
     const status = (s: string) =>
       [...wiki.pages.values()]
         .filter((p) => p.frontmatter.type === 'pattern' && p.frontmatter.status === s)
