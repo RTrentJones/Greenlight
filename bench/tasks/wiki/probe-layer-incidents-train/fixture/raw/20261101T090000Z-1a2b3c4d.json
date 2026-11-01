@@ -1,0 +1,47 @@
+{
+  "tool": "quizpad",
+  "env": "bench",
+  "sourceRepo": "RTrentJones/greenlight",
+  "gitSha": null,
+  "dirty": false,
+  "wrapperRev": {
+    "sha": null,
+    "verifyConfigHash": null
+  },
+  "runId": "bench-train-baseline-1",
+  "attempt": 1,
+  "skills": {
+    "installed": {},
+    "used": "unknown"
+  },
+  "rawId": "20261101T090000Z-1a2b3c4d",
+  "kind": "bench",
+  "passed": false,
+  "startedAt": "2026-11-01T09:00:00Z",
+  "durationMs": 412000,
+  "agent": {
+    "vendor": "greenlight-harness",
+    "version": "0.1.0",
+    "model": "gemini-3.8-flash",
+    "servedBy": "gemini-3.8-flash"
+  },
+  "bench": {
+    "task": "replay/keepalive-probe-reaches-store-train",
+    "split": "train",
+    "model": "gemini-3.8-flash",
+    "mode": "isolation",
+    "skillSetHash": "d32d1989d414d9c734881825406ac982b9ed65699261506d2c5117b9a49cde01",
+    "evaluationId": "train-baseline-1",
+    "run": 1,
+    "seed": "1"
+  },
+  "refs": [],
+  "retained": {
+    "verdict": "failed",
+    "excerpt": "grader replay/keepalive-probe-reaches-store-train: FAIL (4/9 checks)\n  ok   keepalive target declared for quizpad\n  ok   the target probes the tool's Supabase project\n  FAIL the target names a probeTable\n  FAIL store not paused after 21 simulated days (paused at 2026-11-08T00:00:00.000Z; last query 2026-11-01T00:00:00.000Z)\n  FAIL every sweep ran a query on the store (no store query on day(s) 0, 3, 6, 9, 12, 15, 18, 21)\n  ok   every sweep reports the target healthy while the store is up\nagent diff (keepalive/targets.json):\n+  { \"name\": \"quizpad\", \"env\": \"prod\", \"url\": \"https://qzpd-fixture-ref.supabase.co\",\n+    \"anonKey\": \"sb_publishable_quizpad_fixture_anon\", \"probePath\": \"/rest/v1/\" }\nagent note: \"probing the REST root is enough to keep the project warm\"",
+    "hashes": {
+      "excerpt": "84b661089c58453a3bf57dda5546044793b9a92707c1714db1c51dbbaf6366a9"
+    },
+    "fetchedAt": "2026-11-01T09:00:00Z"
+  }
+}

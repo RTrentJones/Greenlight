@@ -1,0 +1,8 @@
+services:
+  ledgerline:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      STORE_URL: ${STORE_URL}
+    restart: unless-stopped

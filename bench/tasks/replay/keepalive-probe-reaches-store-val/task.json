@@ -1,0 +1,45 @@
+{
+  "id": "replay/keepalive-probe-reaches-store-val",
+  "kind": "replay",
+  "graders": ["app"],
+  "cell": "next/vercel/supabase",
+  "skills": ["provider-supabase", "deploy-verify-promote"],
+  "fidelity": "runtime",
+  "pattern": "pattern/keepalive-probe-misses-postgres",
+  "split": "val",
+  "state": "pending",
+  "timeoutMin": 20,
+  "modes": ["isolation", "production"],
+  "mutants": [
+    {
+      "id": "historical-root-probe",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a probe of the PostgREST root /rest/v1/, answered from the schema cache (the 0.8 keepalive), from a probe that runs a store query"
+    },
+    {
+      "id": "historical-cached-probe",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a probe the Workers edge cache can answer (the 0.9 keepalive, no cache: no-store) from one that reaches the store on every sweep"
+    },
+    {
+      "id": "historical-cachettl-throw",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a probe that throws before it leaves the Worker (the 0.10.0 cache: no-store + cf.cacheTtl pair) from one that reaches the store"
+    },
+    {
+      "id": "overgeneral-b",
+      "grader": "app",
+      "kind": "tree",
+      "description": "\"probes never touch the database\" (the keepalive aimed at the app's store-free liveness route) from a probe that resets the store's idle timer"
+    },
+    {
+      "id": "user-columns-probe",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a probe that reads user columns (select=* on an app table) from one that reads a dedicated probe table"
+    }
+  ]
+}

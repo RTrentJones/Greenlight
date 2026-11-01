@@ -1,0 +1,55 @@
+{
+  "id": "wiki/probe-layer-incidents-val",
+  "kind": "wiki",
+  "graders": ["maintainer"],
+  "skills": ["greenlight-wiki"],
+  "fidelity": "structural",
+  "split": "val",
+  "state": "pending",
+  "timeoutMin": 15,
+  "modes": ["isolation", "production"],
+  "mutants": [
+    {
+      "id": "overgeneral-a",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output stating \"every healthcheck and keepalive queries the database\" from a rule conditional on the liveness model"
+    },
+    {
+      "id": "overgeneral-b",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output stating \"probes never touch the database\" from a rule conditional on the liveness model"
+    },
+    {
+      "id": "drops-needs-silence-evidence",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that drops the needs-silence incident's evidence from the updated page from one citing both incidents"
+    },
+    {
+      "id": "uncited-claim",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output with an uncited claim (\"Neon suspends after 60 seconds\") from a fully cited one"
+    },
+    {
+      "id": "confirms-hypothesis",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that sets neon-never-sleeps to confirmed without deployed red-to-green evidence from one that keeps it a hypothesis"
+    },
+    {
+      "id": "foreign-ref",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output citing an evidence ref that is not in the bundle from one citing only bundle evidence"
+    },
+    {
+      "id": "invalid-output",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output without the required append_log from a valid MaintainerOutput"
+    }
+  ]
+}

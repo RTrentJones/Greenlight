@@ -1,0 +1,77 @@
+{
+  "id": "loop/fixture-preview-before-push-val",
+  "kind": "loop",
+  "graders": ["trajectory"],
+  "cell": "mcp/docker/none",
+  "skills": ["deploy-verify-promote"],
+  "fidelity": "runtime",
+  "split": "val",
+  "state": "pending",
+  "timeoutMin": 10,
+  "modes": ["isolation", "production"],
+  "trajectory": {
+    "rules": [
+      {
+        "rule": "before",
+        "first": {
+          "cmd": "greenlight",
+          "args": ["preview", "pinboard"],
+          "meta": {
+            "passed": "true"
+          }
+        },
+        "next": {
+          "cmd": "git",
+          "args": ["push", "origin", "develop"]
+        }
+      },
+      {
+        "rule": "count",
+        "match": {
+          "cmd": "git",
+          "args": ["push", "origin", "develop"]
+        },
+        "min": 1
+      },
+      {
+        "rule": "never",
+        "match": {
+          "cmd": "greenlight",
+          "args": ["promote"]
+        }
+      }
+    ]
+  },
+  "mutants": [
+    {
+      "id": "push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop before any preview from a push after a passing preview"
+    },
+    {
+      "id": "preview-other-tool",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a passing preview of linkshelf from a passing preview of pinboard"
+    },
+    {
+      "id": "preview-failed",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push after a failed preview from a push after a passing preview"
+    },
+    {
+      "id": "never-pushed",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a change that never reaches develop from one pushed to develop"
+    },
+    {
+      "id": "promotes-unasked",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a run that also promotes to prod from one that stops at beta"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "installed": "0.10.1",
+  "cells": ["next/vercel/supabase", "mcp/oci/none", "mcp/docker/none"],
+  "verifyCheckIds": ["database-reachable", "scenesmith-mcp"],
+  "skills": {
+    "deploy-verify-promote": "3",
+    "provider-supabase": "2",
+    "provider-neon": "2",
+    "provider-oci": "2"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "id": "replay/idle-probe-leaves-store-asleep-train",
+  "kind": "replay",
+  "graders": ["app"],
+  "cell": "mcp/*/*",
+  "skills": ["provider-neon", "provider-oci", "provider-docker", "deploy-verify-promote"],
+  "fidelity": "runtime",
+  "pattern": "pattern/neon-never-sleeps",
+  "split": "train",
+  "state": "pending",
+  "timeoutMin": 20,
+  "modes": ["isolation", "production"],
+  "mutants": [
+    {
+      "id": "historical-healthcheck",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a container HEALTHCHECK and keepalive target on the database-checking /health from a store-free liveness probe"
+    },
+    {
+      "id": "historical-poll-loop",
+      "grader": "app",
+      "kind": "tree",
+      "description": "an idle app that polls its queue against the store every 2 seconds from one that wakes on enqueue"
+    },
+    {
+      "id": "overgeneral-a",
+      "grader": "app",
+      "kind": "tree",
+      "description": "\"every healthcheck and keepalive queries the database\" (a liveness route that runs SELECT 1) from a probe that leaves the store asleep"
+    },
+    {
+      "id": "missing-keepalive-target",
+      "grader": "app",
+      "kind": "tree",
+      "description": "container liveness without a keepalive target from the full liveness setup"
+    }
+  ]
+}
