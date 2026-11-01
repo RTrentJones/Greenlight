@@ -170,10 +170,11 @@ to the patterns that iteration needs, plus the evidence that their remediations 
 - Tests: 13 §2.2. Lint fixtures cover only the rules listed here. The remaining rules land in M3.
 
 **M1-02 — Seed the cycle's wiki.** (FR-WIKI-10)
-- Content: 3–5 `confirmed` patterns, each with a verified remediation and lint-clean, for example
-  `settle-greenlights-previous-deploy` and `keepalive-probe-cached`. Add the hypotheses
-  `keepalive-probe-misses-postgres`, `neon-never-sleeps` and `probe-touches-wrong-layer`, and the
-  two incident pages (15 §2, §7). Framework prose is anonymized, and evidence links are kept
+- Content: the 3–5 `confirmed` patterns of 15 §8, each with a verified remediation and lint-clean:
+  `keepalive-probe-misses-postgres` (its 0.9 deployment was verified by hash),
+  `settle-greenlights-previous-deploy`, `dcr-disabled-silently`, `unplanned-compute-replacement` and
+  `spec-typo-disables-assertion`. Add the hypotheses `neon-never-sleeps`, `probe-touches-wrong-layer`
+  and `keepalive-probe-cached`, and the two incident pages (15 §2, §7). Seed status follows 15. Framework prose is anonymized, and evidence links are kept
   through the LR-19 exception.
 - Tests: the seed passes `wiki lint --strict` (13 §2.2, "seeds pass actual lint").
 
