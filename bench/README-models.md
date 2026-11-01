@@ -75,9 +75,10 @@ By default a `RateLimiter` counts only in memory, so each new process would star
 `.greenlight/quota/<model>.json`, which is gitignored. The limiter re-reads and increments that
 file under a lock on every request, so two `bench run`s on one machine share one quota.
 `seedQuotaFromLedger` raises today's count to the requests recorded in the ledger's `spend`
-events, so a fresh CI runner starts from the real spend. A `spend` event does not name its model,
-so by default every request counts against every model. This is a conservative upper bound: it can
-stop a gate early, but it cannot overspend.
+events, so a fresh CI runner starts from the real spend. `bench run` writes one `spend` event per
+model per invocation and names the model (`spend.model`), so each event is charged to that model's
+quota only. An event without a model (a ledger written before the field existed) counts against
+every model: a conservative upper bound that can stop a gate early, but cannot overspend.
 
 ## Budget
 

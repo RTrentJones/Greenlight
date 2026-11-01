@@ -12,7 +12,7 @@ export default {
       access: 'public',
       envs: ['beta', 'prod'],
       port: 4321,
-      preview: { command: 'node tools/linkshelf/app.mjs', port: 4321, path: '/' },
+      preview: { command: 'node app.mjs', port: 4321, path: '/' },
     },
     {
       name: 'pinboard',
@@ -23,7 +23,7 @@ export default {
       access: 'public',
       envs: ['beta', 'prod'],
       port: 4320,
-      preview: { command: 'node tools/pinboard/app.mjs', port: 4320, path: '/pins' },
+      preview: { command: 'node app.mjs', port: 4320, path: '/pins' },
     },
   ],
 };

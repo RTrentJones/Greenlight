@@ -754,6 +754,36 @@ describe('FileQuotaStore', () => {
     expect(seeded.get('gemini-3.8-flash')?.count).toBe(15);
     expect(seeded.get('gemini-3.6-flash')?.count).toBe(12);
   });
+
+  it('charges a spend event that names its model to that model only', () => {
+    const now = new Date('2026-11-01T20:00:00Z');
+    const ids = ['gemini-3.8-flash', 'gemini-3.6-flash'];
+    const spend = (requests: number, model?: string) =>
+      spendEvent({
+        ts: '2026-11-01T18:00:00Z',
+        usd: 0,
+        rollouts: 1,
+        requests,
+        tokensIn: 1,
+        tokensOut: 1,
+        ...(model ? { model, evaluationId: `e-${requests}` } : {}),
+      });
+    const events = [
+      spend(9, 'gemini-3.6-flash'),
+      spend(4, 'gemini-3.8-flash'),
+      spend(3, 'some-other-model'),
+      spend(2), // unnamed: every model
+    ];
+    expect(events[0]?.spend?.model).toBe('gemini-3.6-flash');
+    const u = usageFromLedger(events, ids, { now });
+    expect(u.get('gemini-3.6-flash')?.count).toBe(11);
+    expect(u.get('gemini-3.8-flash')?.count).toBe(6);
+    // A named model wins over the caller's attribution.
+    const v = usageFromLedger(events, ids, { now, modelOf: () => 'gemini-3.8-flash' });
+    expect(v.get('gemini-3.6-flash')?.count).toBe(9);
+    const s = new FileQuotaStore({ root: tmp() });
+    expect(seedQuotaFromLedger(s, events, ids, { now }).get('gemini-3.6-flash')?.count).toBe(11);
+  });
 });
 
 describe('checkModels: methods and deprecation', () => {

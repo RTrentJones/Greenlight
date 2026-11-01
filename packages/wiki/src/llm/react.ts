@@ -95,7 +95,8 @@ export type ReactErrorKind =
   | 'step_limit'
   | 'budget_exhausted'
   | 'rate_limited'
-  /** The primary model was unavailable and the fallback is disabled: resume the rollout later. */
+  /** The model stayed unavailable after its retries (transient) with no fallback to use, or the
+   * fallback disabled: nothing was served, so resume the rollout later. */
   | 'deferred'
   | 'redaction_refused'
   | 'model_error'
@@ -179,6 +180,9 @@ function toError(e: unknown): ReactError {
   if (e instanceof BudgetExhaustedError) return { kind: 'budget_exhausted', message: e.message };
   if (e instanceof RateLimitExhaustedError) return { kind: 'rate_limited', message: e.message };
   if (e instanceof FallbackDisabledError) return { kind: 'deferred', message: e.message };
+  // A transient failure that survived the retries on a model with no fallback is just as
+  // resumable as a disabled fallback: nothing was served, so the caller re-runs it later.
+  if (e instanceof GeminiHttpError && e.transient) return { kind: 'deferred', message: e.message };
   if (e instanceof GeminiHttpError) return { kind: 'model_error', message: e.message };
   const err = e as Error;
   if (err?.name === 'AbortError') return { kind: 'aborted', message: err.message };

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -187,6 +187,11 @@ export interface GraderJob {
    * the child's `{ judge: { id, prompt } }` IPC requests with `{ judgeResult: { id, passed,
    * rationale } }` or `{ judgeResult: { id, error } }` (`runInChild`'s `judge` option does). */
   useJudge?: boolean;
+  /** Run every child that executes agent code (`spawnApp`, `spawnNode`) as this uid/gid. The
+   * bench grading container runs the grader as root and the agent's app as the unprivileged agent
+   * user, so app code can read neither the grader's files nor its process (environ, fds). */
+  appUid?: number;
+  appGid?: number;
 }
 
 /**
@@ -223,16 +228,22 @@ interface Child {
   onMessage(fn: (message: unknown) => void): void;
 }
 
+interface ChildIdentity {
+  uid?: number;
+  gid?: number;
+}
+
 function startChild(
   bin: string,
   args: string[],
-  opts: { cwd: string; env: Record<string, string>; ipc: boolean },
+  opts: { cwd: string; env: Record<string, string>; ipc: boolean } & ChildIdentity,
   register: (fn: () => unknown) => void,
 ): Child {
   let out = '';
   const proc: ChildProcess = spawn(bin, args, {
     cwd: opts.cwd,
     env: opts.env,
+    ...(opts.uid !== undefined ? { uid: opts.uid, gid: opts.gid ?? opts.uid } : {}),
     stdio: opts.ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
   });
   const append = (b: Buffer | string) => {
@@ -275,6 +286,7 @@ async function spawnApp(
   opts: SpawnAppOptions,
   env: EnvFn,
   register: (fn: () => unknown) => void,
+  who: ChildIdentity = {},
 ): Promise<SpawnedApp> {
   const port = opts.port ?? (await freePort());
   const [first, ...rest] = opts.command;
@@ -286,7 +298,7 @@ async function spawnApp(
   const child = startChild(
     isNode ? process.execPath : first,
     rest,
-    { cwd: opts.cwd, env: env(extra), ipc: Boolean(opts.ipc) },
+    { cwd: opts.cwd, env: env(extra), ipc: Boolean(opts.ipc), ...who },
     register,
   );
   const url = `http://127.0.0.1:${port}`;
@@ -318,11 +330,12 @@ function spawnNode(
   opts: SpawnNodeOptions,
   env: EnvFn,
   register: (fn: () => unknown) => void,
+  who: ChildIdentity = {},
 ): SpawnedNode {
   const child = startChild(
     process.execPath,
     [opts.script, ...(opts.args ?? [])],
-    { cwd: opts.cwd, env: env(opts.env ?? {}), ipc: true },
+    { cwd: opts.cwd, env: env(opts.env ?? {}), ipc: true, ...who },
     register,
   );
   const exited = new Promise<{ code: number | null; output: string }>((res) => {
@@ -357,6 +370,8 @@ export function createGraderContext(
     JSON.parse(readFileSync(join(job.benchDir, 'tasks', job.taskId, 'task.json'), 'utf8')),
   );
   const cleanups: (() => unknown)[] = [];
+  const who: ChildIdentity =
+    job.appUid !== undefined ? { uid: job.appUid, gid: job.appGid ?? job.appUid } : {};
   const onCleanup = (fn: () => unknown) => {
     cleanups.push(fn);
   };
@@ -365,6 +380,8 @@ export function createGraderContext(
   const env: EnvFn = (extra = {}) => {
     if (!home) {
       const h = mkdtempSync(join(tmpdir(), 'greenlight-grader-home-'));
+      // An app running as another uid still needs a writable HOME.
+      if (job.appUid !== undefined) chmodSync(h, 0o777);
       home = h;
       onCleanup(() => rmSync(h, { recursive: true, force: true }));
     }
@@ -412,8 +429,8 @@ export function createGraderContext(
       if (typeof handle.stop === 'function') onCleanup(() => handle.stop?.());
       return handle;
     },
-    spawnApp: (o) => spawnApp(o, env, onCleanup),
-    spawnNode: (o) => spawnNode(o, env, onCleanup),
+    spawnApp: (o) => spawnApp(o, env, onCleanup, who),
+    spawnNode: (o) => spawnNode(o, env, onCleanup, who),
     sandboxEnv: env,
     wiki: graderWiki,
     evaluateTrajectory(rules = task.trajectory, events = trajectory ?? []) {

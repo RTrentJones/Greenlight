@@ -3,6 +3,7 @@ import { describeMatrix } from '@rtrentjones/greenlight-shared';
 import { addCommand } from './commands/add';
 import { adoptCommand } from './commands/adopt';
 import { agentCommand } from './commands/agent';
+import { benchCommand } from './commands/bench';
 import { bumpCommand } from './commands/bump';
 import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
@@ -45,6 +46,13 @@ const HELP = `greenlight <command>
   wiki propose [--skill <name>]                 write a proposer bundle; --apply <file> validates the proposal
   wiki read <page-id|raw:<id>|skill:<name>>     read-only access (val/test bench records refused)
   wiki traces --skill <name> --failed [--limit n]  list visible raw records, newest first
+  bench run [--split s] [--tasks g] [--models frontier,small] [--runs n] [--sandbox docker|process]
+            [--role train|baseline] [--resume <id>] [--force] [--max-requests n]
+                                                isolated rollouts → raw records + EvaluationRecord
+  bench check-graders [taskId…] [--verbose]     every grader passes its reference, fails its mutants
+  bench models --check                          verify bench/models.json against models.list
+  bench gate --recompute <gateInputHash>        re-derive a recorded gate decision
+  bench activate <taskId…>                      activate pending tasks that have a baseline
   help                                          show this message
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
@@ -96,6 +104,8 @@ async function main(): Promise<number> {
       return doctorCommand(args);
     case 'wiki':
       return wikiCommand(args);
+    case 'bench':
+      return benchCommand(args);
     default:
       throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
   }
