@@ -13,3 +13,4 @@ export {
 export * from './bench/stats';
 export * from './bench/policy';
 export * from './bench/gate';
+export * from './bench/budget';
