@@ -376,7 +376,7 @@ the bench (template and skill changes). It never becomes verified at `candidate-
 
 The bench lives in `bench/` in the framework repo. Task layout and `TaskSpec` are in 08 §10.
 
-| kind | id prefix | grader kind (§4.6) | count in P0 | grows to | measures |
+| kind | id prefix | grader kind (§4.6) | count in M1 | grows to | measures |
 |---|---|---|---|---|---|
 | replay | `replay/<pattern-slug>` | `app` and/or `trajectory` | 2 (the first iteration, §10) | one per `confirmed` reproducible failure pattern | build, loop, provider skills |
 | wiki | `wiki/<incident>` | `maintainer` | 1 (the paired incidents, §10) | 5 | maintainer output quality |
@@ -419,8 +419,8 @@ does not leak into proposer-visible evidence over time.
 2. The agent runs headless: `claude -p "<brief.md contents>" --output-format json` in the sandbox,
    with a per-task timeout (`timeoutMin`). It has a tool allow-list of file edit, bash and the
    `greenlight` CLI. Network is restricted to package registries and localhost. There are no real
-   provider credentials; P4's proxy points provider hosts at fakes where a task needs them.
-   Codex runs (P7) use the same sandbox with `codex exec`.
+   provider credentials; the M5 proxy points provider hosts at fakes where a task needs them.
+   Codex runs (M7) use the same sandbox with `codex exec`.
 3. After the agent stops, the runner runs the task's grader from `bench/graders/<taskId>/`, which
    was never in the sandbox while the agent ran.
    - An `app` grader runs `greenlight preview <tool> --config <grader>`, the local gate with the

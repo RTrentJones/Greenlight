@@ -154,11 +154,14 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
 
 - **Context.** `domain` is required today, and a domain is the one paid item on the default path.
 - **Decision.** `domain` becomes optional. Without it, workers tools resolve to
-  `<name>.<sub>.workers.dev`, with beta as a separate `<name>-beta` Worker. Vercel tools use
+  `<name>.<sub>.workers.dev`, with beta as a separate `<name>-beta` Worker in the beta account. Vercel tools use
   adapter-supplied aliases. oci and docker require a domain.
 - **Consequences.**
-  - Cloudflare Access cannot protect workers.dev beta URLs, so beta in no-domain mode is public.
-    Kickoff states this.
+  - Beta runs as a `<name>-beta` Worker in the separate beta account (ADR-15, 18 §4). A `private`
+    tool's beta is protected by Cloudflare Access on its workers.dev route, with `preview_urls`
+    disabled so version URLs cannot bypass it (09 §6.6, 10 §6). The Access-on-workers.dev setting
+    must be confirmed against Cloudflare's current docs at M4. A public tool's beta is public, and
+    kickoff states this.
   - A domain can be added later through a migration documented in 10.
 - **Alternatives considered.** Requiring a domain: rejected, because the free-tier promise would be
   false.

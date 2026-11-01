@@ -81,13 +81,14 @@ interface Liveness {
 | env | domain set (current) | domain absent (new) |
 |---|---|---|
 | prod, workers | `https://<name>.<domain>` | `https://<name>.<prodSub>.workers.dev` |
-| beta, workers | `https://<name>.<betaSub>.workers.dev` (beta account; a `beta.<name>.<domain>` custom domain is not available because the zone lives in the prod account) | `https://<name>.<betaSub>.workers.dev` |
+| beta, workers | `https://<name>-beta.<betaSub>.workers.dev` (beta account; a `beta.<name>.<domain>` custom domain is not available because the zone lives in the prod account) | `https://<name>-beta.<betaSub>.workers.dev` |
 | prod, vercel | `https://<name>.<domain>` | `https://<vercelProject>.vercel.app` (from adapter) |
 | beta, vercel | `https://beta.<name>.<domain>` | adapter-supplied branch alias for `develop` |
-| blog | apex / `https://blog.<betaSub>.workers.dev` | `https://blog.<prodSub>.workers.dev` / `https://blog.<betaSub>.workers.dev` |
+| blog | apex / `https://blog-beta.<betaSub>.workers.dev` | `https://blog.<prodSub>.workers.dev` / `https://blog-beta.<betaSub>.workers.dev` |
 
-On Workers, beta is a Worker of the same name in the **beta account**, not a version alias and not
-a second script in the prod account. This keeps URLs deterministic, which is the property
+On Workers, beta is a Worker named `<name>-beta` in the **beta account**. It is not a version
+alias, and it is not a second script in the prod account. The `-beta` suffix keeps logs, metrics
+and audit records unambiguous when both accounts are viewed together. This keeps URLs deterministic, which is the property
 `resolveUrl` exists to guarantee, and it keeps beta credentials unable to touch prod scripts (18).
 This changes the current scheme, which serves beta at `beta.<name>.<domain>`. Existing wrappers
 migrate by M5, and until then DR-34 reports the shared-account beta as a blocking gap.
@@ -827,3 +828,43 @@ interface DeployResult {           // existing fields kept
 `GREENLIGHT_RELEASE_AUTHORIZED` value defined in 18. It MUST also refuse unless the artifact's
 `sha` equals the authorized sha. The refusal is a defence in depth. The boundary itself is that
 only the protected job holds prod credentials (18).
+
+## 15. Release and retirement records
+
+These schemas are owned by 18 §3.1 and 10 §5.4. They are copied here verbatim so that the contracts
+are complete. Where a copy differs, the owning document wins.
+
+**Release tag** `release/<tool>/<sha12>-<nonce8>`, an annotated tag signed by an owner key listed in
+`GREENLIGHT_RELEASE_SIGNERS`. Its message is:
+
+```ts
+interface ReleaseApproval {
+  v: 1;
+  tool: string;              // manifest name
+  sha: string;               // 40-hex commit approved
+  repo: string;              // "<owner>/<repo>" holding the commit (tool repo for cross-repo tools)
+  artifact?: string;         // immutable artifact id when built before approval: OCI image digest
+                             // ("sha256:…"), Worker version id, or Vercel prebuilt output hash
+  env: 'prod';
+  expiresAt: string;         // ISO; ≤ 72h after creation
+  nonce: string;             // 8 hex, also in the tag name, single use
+  policyChange?: true;       // REQUIRED for promotion-policy, workflow, signer or CODEOWNERS edits (§7)
+  retire?: string;           // sha256 of retire/<tool>.json when approving a retirement (10 §5.4)
+}
+```
+
+**Retire authorization** `retire/<name>.json`, approved by a release tag whose payload adds
+`retire: "<sha256 of the file>"`:
+
+```ts
+interface RetireAuthorization {
+  v: 1; tool: string;
+  wrapperSha: string;            // commit the plan was made at
+  planHash: string;              // sha256 of the saved plan file
+  destroy: string[];             // exact Terraform addresses
+  wrangler: { kind: 'worker' | 'kv'; name: string; id: string }[];
+  detach: { provider: string; resource: string }[];
+  data: { address: string; disposition: 'export' | 'keep' | 'delete' }[];
+  expiresAt: string;
+}
+```

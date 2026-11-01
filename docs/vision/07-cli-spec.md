@@ -87,7 +87,7 @@ completes the milestone that needs it.
 ### 2.1 `init`
 
 ```
-greenlight init [--domain <domain> | --no-domain] [--cf-subdomain <sub>] [--repo o/r]
+greenlight init [--domain <domain> | --no-domain] [--cf-subdomain <sub>] [--cf-beta-subdomain <sub>] [--repo o/r]
                 [--sink infisical|github] [--force] [--no-push] [--no-tokens] [--no-verify]
 ```
 
@@ -102,12 +102,17 @@ greenlight init [--domain <domain> | --no-domain] [--cf-subdomain <sub>] [--repo
    account's workers.dev subdomain from the Cloudflare API
    (`GET /accounts/{id}/workers/subdomain`). If neither is available, it exits 3 with the message
    `no-domain mode needs the account's workers.dev subdomain: pass --cf-subdomain or provide CLOUDFLARE_API_TOKEN`.
-2. With no domain, the base-token gathering skips the zone id. The emitted `infra.yml` omits DNS
+2. **Beta account.** Beta always runs in a separate free Cloudflare account (18 §4). That holds with
+   or without a domain. `init` gathers the beta account's token as `CLOUDFLARE_API_TOKEN_BETA`,
+   available to beta jobs and agent sessions, separately from the production token, which is
+   stored for the `production` environment only. It writes
+   `cloudflare.beta.accountSubdomain`, taken from `--cf-beta-subdomain` or from the beta account's
+   `GET /accounts/{id}/workers/subdomain`. If neither is available it exits 3 and names the flag.
+   With no domain, the base-token gathering skips the zone id. The emitted `infra.yml` omits DNS
    resources, because the workers.dev and vercel.app hosts need none.
-3. `--sink` chooses where `secrets gather` writes (§2.10). The default is `github` until P4 ships,
+3. `--sink` chooses where `secrets gather` writes (§2.10). The default is `github` until M5 ships,
    and `infisical` after that (ADR-06). The choice is recorded in `greenlight.config.ts` as a
-   comment-free field `secrets: { sink }`. This is an additive ConfigSchema field, which 08 does
-   not list because it has no effect beyond the CLI.
+   comment-free field `secrets: { sink }`, part of `SecretsSettings` (08 §13).
 4. `init` writes `wiki/index.md`, `wiki/log.md` and `wiki/portfolio.md` stubs (04 §2.2) when they
    are absent.
 
@@ -331,9 +336,9 @@ to `CLAUDE.md`. The additions:
    wiki/tools/<name>/intent.md and liveness.md before changing a tool).`
 4. **With `<name>` for an adopted tool**, it also writes the pointer block into the submodule's
    `CLAUDE.md` (§2.3).
-5. **`--codex` (P7)** also writes `.agents/skills/<skill>/` (byte-identical to `.claude/skills/`)
-   and an `AGENTS.md` block with the same content as the `CLAUDE.md` block. Before P7 the flag
-   exits 2 with `codex parity is a P7 stretch item`.
+5. **`--codex` (M7)** also writes `.agents/skills/<skill>/` (byte-identical to `.claude/skills/`)
+   and an `AGENTS.md` block with the same content as the `CLAUDE.md` block. Before M7 the flag
+   exits 2 with `codex parity is an M7 stretch item`.
 
 ### 2.12 `agent run` (new, M5)
 
@@ -534,7 +539,20 @@ greenlight wiki capture --kind <kind> --tool <name> --env <env> --passed <bool>
                         [--sha <sha>] [--ref <EvidenceRef>]… [--excerpt-file <path>] [--verify-json <path>]
 greenlight wiki capture --from-issue <issue:o/r#n> [--tool <name>]
 greenlight wiki capture --from-run <run:o/r/id> [--tool <name>]
+greenlight wiki capture --manual --tool <name> --env <env> --passed <bool> --note <text> [--ref <EvidenceRef>]…
+greenlight wiki capture --retain <rawId>
+greenlight wiki capture --export <dir>
 ```
+
+- **`--manual`** (M1) records evidence a human gathered by hand, such as a drill run before
+  automatic capture exists. The record's `kind` is `session` and `excerpt` is the redacted note,
+  and its identity fields (08 §5) are filled from the working tree. This is what milestone drills
+  use until automatic capture lands in M3.
+- **`--retain <rawId>`** copies a raw record to `wiki/evidence/<rawId>.json`, which is committed
+  and immutable. Ledger events and confirmed pages must cite retained evidence or resolvable refs
+  (08 §5.3).
+- **`--export <dir>`** writes all retained evidence plus the ledger as a tarball, with a manifest of
+  hashes (08 §5.3).
 
 `--from-issue` and `--from-run` build the record from GitHub through `gh`. For an issue, `kind` is
 `alert` when the issue carries the alert label and `session` otherwise. `passed` is false while the
@@ -560,8 +578,11 @@ greenlight wiki lookup [--check <id|name>]… [--class <class>] [--cell <lane/ta
 **Selection:**
 
 1. Candidates are the pages in both wikis with `type: pattern` and `status: confirmed` (plus
-   `hypothesis` only if `--include-hypothesis` is given, which is never done in skills). Pages
-   whose `applies` excludes the installed CLI version are dropped.
+   `hypothesis` only if `--include-hypothesis` is given, which is never done in skills). Pages are
+   filtered by `relevance` and `affects` (04 §6):
+   - a `framework-version` lesson is dropped when the installed CLI is outside `affects`;
+   - an `app-code` or `both` lesson is kept regardless of version, because the fault can recur in
+     code the owner writes.
 2. A page scores 3 for each `--check` that matches `catches.checkSignature` (regex, tested
    against the id first, then the name), 2 for a `--class` match, and 1 for a `--cell` glob match.
    Ties are broken by the most recent `updated`.
@@ -732,12 +753,21 @@ greenlight wiki remediate --manual --pattern <id> --outlet mechanism|doctor|temp
 fixing the framework directly as with the keepalive probe. It creates the proposal record on the
 fly, then proceeds as below.
 
-**`remediate`** records field evidence for the outlets that cannot be benched (`mechanism`,
-`doctor` and `verify`). It requires a before ref that is a failing run of check `<id>` and an
-after ref that is a passing run of the same check on a **deployed** artifact, both resolvable
-through `gh` or Tracer. Given those, it writes a ledger row (`FieldEvidence`, `accepted`). It
-also sets `remediation.verified: true` on the cited patterns through the same atomic write path
-as ingest.
+**`remediate`** records evidence for the outlets that are not gated by rollouts (`mechanism`,
+`doctor` and `verify`). It writes one ledger **event** per stage (06 §6.1), never a single
+"accepted" row:
+
+- **`candidate-accepted`.** The outlet's rule passed (06 §5.6): a reproduction that fails on the
+  base commit and passes on the candidate, or an assertion shown failing on the faulty artifact
+  and passing on the fixed one.
+- **`merged`** and **`released`**, recorded from the PR merge and the release workflow.
+- **`verified-in-production`.** This stage needs a before ref that is a failing run of check
+  `<id>`, and an after ref that is a passing run of the same check on a **deployed** artifact.
+  Both must resolve through `gh` or Tracer (08 §5.3). An unreachable ref yields `unknown`, never
+  verified.
+
+Only the `verified-in-production` stage sets `remediation.verified: true` on the cited patterns,
+through the same atomic write path as ingest.
 
 Ledger writes happen only inside these commands and `bench gate`. Those code paths are what
 "harness" means in LR-14.
@@ -756,8 +786,9 @@ evidence refs, and the PR goes through normal human review. Nothing in this comm
 ### 3.10 `bench` (M1–M2; `monitor` M6)
 
 ```
-greenlight bench run [--split val] [--tasks <glob>] [--model <id>]… [--runs 3] [--skills-ref <git-ref>] [--json]
+greenlight bench run [--split train|val|test] [--tasks <glob>] [--model <id>]… [--runs 3] [--mode isolation|production|both] [--skills-ref <git-ref>] [--json]
 greenlight bench gate <proposalId> [--models <a>,<b>] [--runs 3] [--alpha 0.05]
+greenlight bench gate --recompute <evaluationRecordHash>
 greenlight bench check-graders [--tasks <glob>]          # alias: bench mutants
 greenlight bench monitor [--since <date>]
 greenlight bench report [--proposal <id>] [--json]
@@ -765,16 +796,25 @@ greenlight bench report [--proposal <id>] [--json]
 
 - **`run`** executes the selected tasks (08 §10). The run proceeds as follows:
   - Each task gets a throwaway sandbox: a copy of `fixture/` or an empty dir, the skills at
-    `--skills-ref`, and **no** wiki (both wikis are absent and `--no-wiki` is set on verify).
+    `--skills-ref`. In isolation mode no wiki is present and `GREENLIGHT_WIKI=off` is set. In
+    production mode the hooks run against a pinned wiki snapshot (06 §4.7). The rollout runs under
+    trust model A with the trajectory shims of 06 §4.6, and grading runs in a separate container
+    after the rollout's process tree is killed (06 §4.2).
   - Each task gets a fake-upstream proxy (11 §3.5).
   - The agent runs headless with the brief (`claude -p` driving the plugin). The agent command is
-    configurable through `GREENLIGHT_BENCH_AGENT` for P7.
-  - The hidden grader runs through `greenlight preview` in the sandbox.
-  - Each rollout produces a `bench` raw record.
+    configurable through `GREENLIGHT_BENCH_AGENT` for M7.
+  - The task's graders (06 §4.6) run from `bench/graders/<taskId>/` in the grading container,
+    over a read-only copy of the final tree and the trajectory. An `app` grader runs `greenlight
+    preview --config <grader>`.
+  - `--mode isolation|production|both` selects the evaluation mode; the default is `isolation`.
+  - Each rollout produces a `bench` raw record carrying its task, split, model, mode, skill-set
+    hash and run id (08 §5).
   - It prints pass rates per task and per split.
-- **`gate`** implements 06 §5: the replay hard constraint, the capability strict improvement with a
-  paired bootstrap, two models, and blast-radius strictness. It then writes exactly one ledger
-  row. On acceptance, it bumps the target skill's `version` in both `SKILL.md` and `PURPOSE.md`,
+- **`gate`** implements 06 §5: the single policy table (06 §5.4), the two models, and both
+  evaluation modes. It writes a content-addressed `EvaluationRecord` (06 §5.8), and one
+  `candidate-accepted` or `candidate-rejected` ledger event that references it. `--recompute
+  <hash>` re-derives the decision from a stored record without new rollouts, and exits 1 if the
+  recomputed decision differs from the recorded one. On acceptance, it bumps the target skill's `version` in both `SKILL.md` and `PURPOSE.md`,
   commits on the proposal branch, and opens a PR for human merge. The gate accepts into a release
   candidate, and a human releases.
   - **Exit codes:** 0 accepted; 1 rejected; 4 the proposal touches files outside its declared
@@ -795,14 +835,35 @@ greenlight bench report [--proposal <id>] [--json]
   commands;
 - `bench/gate.json` holds `alpha`, `runs`, the blast-radius strictness table and the monitor
   regression threshold;
-- `bench/budget.json` holds the monthly token or dollar cap and the per-proposal cap.
+- `bench/budget.json` is `{ "monthlyUsd": <n>, "perGateMaxUsd": <n>, "perGateMaxRollouts": <n> }`
+  (08 §10.5). This is the only budget schema in the pack.
 
-`bench run`, `gate` and `monitor` read these files and record their spend in
-`.greenlight/bench-spend.jsonl`. The workflows are:
+`bench run`, `gate` and `monitor` read these files. They record spend as harness-written `spend`
+events in the ledger, never in a local file, so spend survives ephemeral CI runners. All three run
+in the concurrency group `greenlight-evo`, so two gates cannot read the same remaining budget. The
+workflows are:
 
 - `evo.yml`, dispatched with a proposal id, runs `bench gate` and posts `bench report`. It runs on
   issues labelled `greenlight-evo`;
 - `evo-monitor.yml`, scheduled monthly, runs `bench monitor`.
+
+### 3.11 `advisories` (M6)
+
+```
+greenlight advisories [--json] [--offline]
+greenlight doctor --advisories
+```
+
+This command is opt-in, because it reaches the network. It fetches the newest published
+`@rtrentjones/greenlight` package's tarball from the npm registry without installing it, and reads
+its `wiki/index.md` and pattern frontmatter (04 §6). It then reports every pattern whose `affects`
+covers the installed version and whose remediation is released in a newer version. The result is
+cached for 24 hours in `.greenlight/advisories.json`. With `--offline`, or when the registry cannot
+be reached, it prints `advisories: not checked` and exits 0. It never prints "none" in that case.
+`doctor --advisories` runs it and lists the results as DR-33 findings with the source `advisory`.
+
+**Exit codes:** 0, including when advisories exist, because the command reports rather than gates;
+3 when there is no manifest.
 
 ## 4. Doctor rules
 
@@ -825,7 +886,7 @@ emit: **E** means fail, which always exits 1. **W** means warn, which exits 1 on
 | DR-09 | version-ref drift | infra `?ref=` pins are uniform and equal to the installed CLI version | W |
 | DR-10 | submodule drift | submodules match their recorded commit | W |
 | DR-11 | preview receipt | `.greenlight/preview-<HEAD>` exists (skipped in CI) | W |
-| DR-15 | `<name>: DNS` | prod host resolves | E, L |
+| DR-15 | `<name>: DNS` | prod host resolves; in no-domain mode, a `private` tool's beta `workers.dev` host is behind Cloudflare Access and `preview_urls` is disabled (10 §6) | E, L |
 | DR-16 | `<name>: live` | prod URL reachable (5xx → warn) | E/W, L |
 
 DR-08 is superseded by DR-22 and DR-23 once `liveness` lands. It keeps printing for tools without
@@ -834,24 +895,27 @@ they probe the workers.dev or vercel.app URL instead.
 
 ### 4.2 New rules
 
-| id | title | condition (fails or warns when…) | sev | phase |
+| id | title | condition (fails or warns when…) | sev | milestone |
 |---|---|---|---|---|
-| DR-12 | framework wiki version | `.greenlight/wiki/framework/VERSION` ≠ installed CLI version, or the dir is missing | W | P0 |
-| DR-13 | skill version vs CLI | an installed managed skill's `version` ≠ the version shipped in the installed package (stale `agent sync`) | W | P0 |
-| DR-14 | skill copy sync | `.claude/skills/<s>` ≠ package copy; in P7 also ≠ `.agents/skills/<s>` | W (E in the framework repo, as `check-plugin-sync`) | P0/P7 |
-| DR-20 | liveness declared | a tool has no `liveness` (E for tools added after P0; W for existing tools until migrated) | E/W | P1 |
-| DR-21 | liveness consistent | `liveness.model` contradicts data/target (beyond what the schema can see: e.g. a Neon project wired directly in `infra/<tool>.tf` with `liveness: always-on`), or a `needs-silence` tool's keepalive probe or container healthcheck path reaches a route that queries the store (the probe path equals the tool's readiness route `ready` (C2), or the compose healthcheck targets `/health`) | E | P1 |
-| DR-22 | needs-traffic keepalive | a `needs-traffic` tool has no keepalive target with `probeTable` (or an explicit store-reaching `probePath`) | E | P1 |
-| DR-23 | needs-heal keepalive | a `needs-heal` tool has no keepalive target probing `liveness.probe`, or (oci) no `greenlight-remediate-<tool>.yml` | E | P1 |
-| DR-24 | identity check | the tool's verify config has no check with id `identity` / no `requireIdentity: true` on the prod branch of the spec | W (E for tools added after P1) | P1 |
-| DR-25 | freshness checks | an `agent`-lane tool, or a tool whose intent or liveness declares a producer, has no `maxAgeHours` assertion per producer (C4) | W | P1 |
-| DR-26 | env-invariant marking | a function-shaped verify config does not export `invariant` ids (C7), so preview passes cannot be distinguished from prod guarantees | W | P1 |
-| DR-27 | quota headroom | any quota consumed by the portfolio is ≥ 80% (warn) or ≥ 95% (fail) | W/E, L | P3 |
-| DR-28 | wiki lint | runs `wiki lint` on the project wiki; any LR error → E, any LR warning → W (so LR-15 intent coverage, LR-16 liveness match and LR-21 missing tool pages surface here) | E/W | P0 |
-| DR-30 | CI-only tokens | lists tokens without `inject` (OCI signing, docker SSH, dispatch token, …), always informational; fails if one is configured in the agent proxy | S / E | P4 |
-| DR-31 | proxy environment | with `secrets.proxy` set: Node ≥ 24 without `NODE_USE_ENV_PROXY=1` in the agent-run env, or the proxy CA is not trusted (forward proxy) | W | P4 |
-| DR-32 | promotion policy guard | `auto-on-green` on a tool the schema would reject (stale manifest), or `promote.yml` lacks the policy check step, or the proxy allow-list permits dispatching `promote.yml` without approval | E | P3/P4 |
-| DR-33 | fixed upstream | an open pattern applies to the installed CLI and a newer published CLI fixes it (`remediation.ref` is `greenlight@X` with X > installed). Prints "pattern <id> is fixed in X; you run Y" | W | P0 |
+| DR-12 | framework wiki version | `.greenlight/wiki/framework/VERSION` ≠ installed CLI version, or the dir is missing | W | M1 |
+| DR-13 | skill version vs CLI | an installed managed skill's `version` ≠ the version shipped in the installed package (stale `agent sync`) | W | M1 |
+| DR-14 | skill copy sync | `.claude/skills/<s>` ≠ package copy; in M7 also ≠ `.agents/skills/<s>` | W (E in the framework repo, as `check-plugin-sync`) | M1/M7 |
+| DR-20 | liveness declared | a tool has no `liveness` (E for tools added after M4; W for existing tools until migrated) | E/W | M4 |
+| DR-21 | liveness consistent | `liveness.model` contradicts data/target (beyond what the schema can see: e.g. a Neon project wired directly in `infra/<tool>.tf` with `liveness: always-on`), or a `needs-silence` tool's keepalive probe or container healthcheck path reaches a route that queries the store (the probe path equals the tool's readiness route `ready` (C2), or the compose healthcheck targets `/health`) | E | M4 |
+| DR-22 | needs-traffic keepalive | a `needs-traffic` tool has no keepalive target with `probeTable` (or an explicit store-reaching `probePath`) | E | M4 |
+| DR-23 | needs-heal keepalive | a `needs-heal` tool has no keepalive target probing `liveness.probe`, or (oci) no `greenlight-remediate-<tool>.yml` | E | M4 |
+| DR-24 | identity check | the tool's verify config has no check with id `identity` / no `requireIdentity: true` on the prod branch of the spec | W (E for tools added after M4) | M4 |
+| DR-25 | freshness checks | an `agent`-lane tool, or a tool whose intent or liveness declares a producer, has no `maxAgeHours` assertion per producer (C4) | W | M4 |
+| DR-26 | env-invariant marking | a function-shaped verify config does not export `invariant` ids (C7), so preview passes cannot be distinguished from prod guarantees | W | M4 |
+| DR-27 | quota headroom | any quota consumed by the portfolio is ≥ 80% (warn) or ≥ 95% (fail) | W/E, L | M6 |
+| DR-28 | wiki lint | runs `wiki lint` on the project wiki; any LR error → E, any LR warning → W (so LR-15 intent coverage, LR-16 liveness match and LR-21 missing tool pages surface here) | E/W | M1 |
+| DR-30 | CI-only tokens | lists tokens without `inject` (OCI signing, docker SSH, dispatch token, …), always informational; fails if one is configured in the agent proxy | S / E | M5 |
+| DR-31 | proxy environment | with `secrets.proxy` set: Node ≥ 24 without `NODE_USE_ENV_PROXY=1` in the agent-run env, or the proxy CA is not trusted (forward proxy) | W | M5 |
+| DR-32 | promotion policy guard | `auto-on-green` on a tool the schema would reject; an effective policy that differs from the policy at the last consumed approval without a `policyChange` approval (18 §7); a production job that does not bind `GREENLIGHT_RELEASE_AUTHORIZED` to the tool and sha it deploys (18 §3.1a); or a proxy policy that would forward any workflow dispatch or `release/*` ref write | E | M5 |
+| DR-33 | fixed in a newer version (local knowledge) | the **installed** wiki marks an open pattern as fixed in a CLI version newer than the installed one, which happens only when the synced wiki is newer than the CLI. With `--advisories`, it also lists the results of `greenlight advisories` (§3.11). Prints "pattern <id> is fixed in X; you run Y" | W | M3 / M6 |
+| DR-34 | protected production jobs | a workflow that references a production credential, or that deploys, migrates, applies or restarts production, does not begin with the approval verification step that sets `GREENLIGHT_RELEASE_AUTHORIZED` (18 §3.1, §3.1a), or is triggered by `push` alone. Under `--live`, it also checks through the API that the `production` environment exists with required reviewers where the plan supports them (18 §3.2, §10) | E (L for the remote check) | M5 |
+| DR-35 | agent identity | the GitHub credential configured for agent sessions belongs to the owner's account, or holds any of `workflows`, `secrets`, `administration`, `environments`, `actions: write` or `deployments: write` (18 §2). Checked with `gh api` on the token's own identity and permissions | E, L | M5 |
+| DR-36 | recovery uses approved artifacts | a remediation, self-heal or rollback workflow restarts or deploys without first resolving the last approved immutable artifact (image digest or Worker version) from the consumed approval's deployment record (18 §6) | E | M5 |
 
 IDs DR-17–DR-19 and DR-29 are reserved and unused. `--strict` in CI turns every W above into a failing
 exit, which is the existing CI quality gate in the wrapper (`pnpm greenlight doctor --strict`).

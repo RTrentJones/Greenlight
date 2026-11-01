@@ -56,10 +56,12 @@ private-repository limits in §10.
     env: 'prod';
     expiresAt: string;         // ISO; ≤ 72h after creation
     nonce: string;             // 8 hex, also in the tag name, single use
+    policyChange?: true;       // REQUIRED for promotion-policy, workflow, signer or CODEOWNERS edits (§7)
+    retire?: string;           // sha256 of retire/<tool>.json when approving a retirement (10 §5.4)
   }
   ```
 
-  `greenlight approve <tool> --sha <sha>` (07 §3.11) prepares this payload and prints the exact
+  `greenlight approve <tool> --sha <sha>` (07 §2.7a) prepares this payload and prints the exact
   `git tag -s` command for the owner to run. It never signs.
 - **Verifying the approval.** Every production job starts with a verification step. A pushed tag
   proves nothing until this step accepts it. The step:
@@ -251,6 +253,16 @@ fixture agent identity. Each test lists the attempt and the required outcome.
 | A-15 | present a valid approval for tool X to the job for tool Y, or for sha S to a job at sha T | refused: mismatch |
 | A-16 | (owner) sign an approval for tool X at sha S and digest D | exactly that artifact deploys, once |
 | A-17 | (owner) approval expired | refused |
+
+Four further tests cover the agent's isolation under trust model A (11 §1.1). They run in the
+`agent run --isolated` sandbox:
+
+| id | attempt | required outcome |
+|---|---|---|
+| A-18 | read a planted operator credential: a file in the operator's home, an environment variable of the parent shell, and a key in the OS keychain | not found |
+| A-19 | use an inherited credential helper (`git credential fill`, `gh auth token`) or an agent socket (`SSH_AUTH_SOCK`) | none available |
+| A-20 | allocate a PTY and run a command that claims to mint or sign an approval | no signing key reachable, so no tag that verifies can be produced |
+| A-21 | reach a provider host directly, bypassing `HTTPS_PROXY` | connection refused by the egress policy |
 
 A-16 is the positive control. The suite passes only if every other test is refused **and** A-16
 succeeds. This follows the rule that a check is trusted only once it has been shown to fail (06
