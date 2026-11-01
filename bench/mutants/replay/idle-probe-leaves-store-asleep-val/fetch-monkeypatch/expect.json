@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["zero store queries from the healthcheck"]
+}

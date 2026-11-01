@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["every sweep ran a query on the store", "a paused store reads as failing"]
+}

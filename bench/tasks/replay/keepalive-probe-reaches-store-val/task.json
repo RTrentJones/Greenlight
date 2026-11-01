@@ -40,6 +40,12 @@
       "grader": "app",
       "kind": "tree",
       "description": "a probe that reads user columns (select=* on an app table) from one that reads a dedicated probe table"
+    },
+    {
+      "id": "fetch-monkeypatch",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a keepalive Worker that replaces fetch at import and reports every target ok without probing from one that reaches the store"
     }
   ]
 }

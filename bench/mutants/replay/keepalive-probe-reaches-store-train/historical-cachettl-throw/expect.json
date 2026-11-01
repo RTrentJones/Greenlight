@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "every sweep reports the target healthy while the store is up",
+    "every sweep ran a query on the store"
+  ]
+}

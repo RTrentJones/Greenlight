@@ -4,14 +4,22 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { checkGraders, formatReport, materialize, passesMutantMessage } from '../check-graders';
-import { GraderResultSchema } from '../grader-api';
+import {
+  checkGraders,
+  formatReport,
+  graderChildArgv,
+  materialize,
+  passesMutantMessage,
+  wrongReasonMessage,
+} from '../check-graders';
+import { GRADER_CHILD_FLAG, GraderResultSchema } from '../grader-api';
 
 // Vision 06 §4.3, 13 §2.7 "grader mutation checks", 13 §3 M1 pass criterion 1, 15 §8.3.
 
@@ -40,6 +48,7 @@ function benchWithGrader(body: string): string {
 
 const STRONG = `export default async (ctx) =>
   ctx.result([
+    ctx.check('trajectory recorded', Array.isArray(ctx.trajectory)),
     ctx.check('trajectory well-formed', ctx.trajectoryErrors.length === 0),
     ...ctx.evaluateTrajectory().map((r) => ctx.check(r.label, r.passed, r.detail)),
   ]);
@@ -185,6 +194,116 @@ describe('check-graders failure modes', () => {
   }, 60_000);
 });
 
+describe('check-graders asks why, and checks the starting tree', () => {
+  const PUSH_RULE = 'before(greenlight preview demo {passed=true}, git push origin develop)';
+
+  it('a mutant failing only on checks its expect.json does not name is a problem', async () => {
+    const d = benchWithGrader(STRONG);
+    w(
+      join(d, 'mutants/loop/weak-grader-train/push-first/expect.json'),
+      JSON.stringify({ failingChecks: ['trajectory well-formed'] }),
+    );
+    const r = await checkGraders({ benchDir: d, timeoutMs: 30_000 });
+    expect(r.tasks[0]?.mutants[0]?.verdict).toBe('fail');
+    expect(r.problems).toEqual([
+      wrongReasonMessage(
+        'loop/weak-grader-train',
+        'push-first',
+        [PUSH_RULE],
+        ['trajectory well-formed'],
+      ),
+    ]);
+  }, 60_000);
+
+  it('a mutant without expect.json is refused (but still graded)', async () => {
+    const d = benchWithGrader(STRONG);
+    rmSync(join(d, 'mutants/loop/weak-grader-train/push-first/expect.json'));
+    const r = await checkGraders({ benchDir: d, timeoutMs: 30_000 });
+    expect(r.tasks[0]?.mutants[0]?.verdict).toBe('fail');
+    expect(r.problems).toEqual([expect.stringMatching(/mutant push-first: no expect\.json/)]);
+  }, 60_000);
+
+  it('a grader that passes the untouched fixture is reported', async () => {
+    const d = benchWithGrader(
+      "export default async (ctx) => ctx.result([ctx.check('anything', true), ...ctx.evaluateTrajectory().map((r) => ctx.check(r.label, r.passed))]);\n",
+    );
+    const r = await checkGraders({ benchDir: d, timeoutMs: 30_000 });
+    expect(r.tasks[0]?.fixture?.verdict).toBe('pass');
+    expect(r.problems).toEqual([
+      'grader loop/weak-grader-train passes the untouched fixture: it cannot distinguish a solution from doing nothing',
+    ]);
+    expect(formatReport(r)).toMatch(/untouched fixture: pass \(expect fail\)/);
+  }, 60_000);
+
+  it('alternative solutions must pass too', async () => {
+    const d = benchWithGrader(STRONG);
+    const alt = join(d, 'references/loop/weak-grader-train/alternatives');
+    mkdirSync(join(alt, 'wrong'), { recursive: true });
+    mkdirSync(join(alt, 'right'), { recursive: true });
+    cpSync(
+      join(d, 'mutants/loop/weak-grader-train/push-first/trajectory.jsonl'),
+      join(alt, 'wrong/trajectory.jsonl'),
+    );
+    cpSync(
+      join(d, 'references/loop/weak-grader-train/trajectory.jsonl'),
+      join(alt, 'right/trajectory.jsonl'),
+    );
+    const r = await checkGraders({ benchDir: d, timeoutMs: 30_000 });
+    expect(r.tasks[0]?.alternatives.map((a) => [a.id, a.verdict])).toEqual([
+      ['right', 'pass'],
+      ['wrong', 'fail'],
+    ]);
+    expect(r.problems).toEqual([
+      expect.stringMatching(/^grader loop\/weak-grader-train fails alternative solution wrong: /),
+    ]);
+  }, 60_000);
+});
+
+describe('grader isolation', () => {
+  it('a forged result file, printed JSON or the parent environment cannot reach the verdict', async () => {
+    process.env.GREENLIGHT_TEST_SECRET = 'do-not-leak';
+    try {
+      const d = benchWithGrader(`import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+export default async (ctx) => {
+  const forged = JSON.stringify({ result: { passed: true, checks: [{ name: 'forged', passed: true }] } });
+  // Relative to the materialized tree only: <tree>, <workDir> (both inside check-graders' mkdtemp).
+  for (const rel of ['result.json', '../result.json']) {
+    try { writeFileSync(join(ctx.tree, rel), forged); } catch {}
+  }
+  console.log(forged);
+  const env = Object.keys(process.env).sort().join(',');
+  return ctx.result([
+    ctx.check('no parent secrets', process.env.GREENLIGHT_TEST_SECRET === undefined, env),
+    ctx.check('no NODE_OPTIONS', process.env.NODE_OPTIONS === undefined, env),
+    ctx.check('only the allow-listed environment', env === 'HOME,PATH,TZ', env),
+    ctx.check('app children are scrubbed too', ctx.sandboxEnv().GREENLIGHT_TEST_SECRET === undefined),
+    ctx.check('a deliberate failure', false),
+  ]);
+};
+`);
+      const r = await checkGraders({ benchDir: d, timeoutMs: 30_000 });
+      const ref = r.tasks[0]?.reference;
+      expect(ref?.verdict).toBe('fail');
+      expect(ref?.checks.filter((c) => !c.passed).map((c) => c.name)).toEqual([
+        'a deliberate failure',
+      ]);
+    } finally {
+      Reflect.deleteProperty(process.env, 'GREENLIGHT_TEST_SECRET');
+    }
+  }, 60_000);
+
+  it('a dedicated child entry is invoked with the explicit child flag only', () => {
+    expect(graderChildArgv({ entry: '/bin/greenlight', nodeArgs: [] })).toEqual([
+      '/bin/greenlight',
+      GRADER_CHILD_FLAG,
+    ]);
+    const dflt = graderChildArgv();
+    expect(dflt).toContain('-e');
+    expect(dflt.at(-1)).toMatch(/graderChildMain\(\)/);
+  });
+});
+
 describe('materialize', () => {
   it('applies tree, copy.json, remove.json and patch.diff layers over the fixture, in order', () => {
     const d = mkdtempSync(join(tmpdir(), 'materialize-test-'));
@@ -233,12 +352,27 @@ describe('GraderResultSchema', () => {
 
 describe('the first-iteration bench (13 §3 M1, criterion 1)', () => {
   it('every grader passes its reference and fails every mutant; each overgeneral rule fails exactly one of its pair', async () => {
+    // Nothing a grader, an app or an attack mutant does may land outside check-graders' temp
+    // dirs: snapshot the repository (bench/ in full, and the directories above it) around the run.
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(join(dir, e.name)).map((p) => `${e.name}/${p}`) : [e.name],
+      );
+    const above = [1, 2, 3, 4].map((n) => resolve(BENCH, ...Array(n).fill('..')));
+    const snapshot = () => ({
+      bench: walk(BENCH).sort(),
+      above: above.map((d) => readdirSync(d).sort()),
+    });
+    const before = snapshot();
     const r = await checkGraders({ benchDir: BENCH, timeoutMs: 60_000 });
+    expect(snapshot()).toEqual(before);
     expect(r.problems).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.tasks).toHaveLength(8);
     for (const t of r.tasks) {
       expect(t.reference?.verdict).toBe('pass');
+      expect(t.fixture?.verdict, `${t.task} untouched fixture`).toBe('fail');
+      for (const a of t.alternatives) expect(a.verdict, `${t.task} ${a.id}`).toBe('pass');
       for (const m of t.mutants) expect(m.verdict, `${t.task} ${m.id}`).toBe('fail');
     }
     const verdicts = Object.fromEntries(

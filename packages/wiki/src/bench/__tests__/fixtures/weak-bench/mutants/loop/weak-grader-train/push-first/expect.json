@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["before(greenlight preview demo {passed=true}, git push origin develop)"]
+}

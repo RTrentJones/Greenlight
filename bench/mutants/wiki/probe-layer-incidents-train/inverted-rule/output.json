@@ -1,0 +1,30 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/probe-touches-wrong-layer",
+      "ops": [
+        {
+          "op": "insert_after",
+          "target": "evidence:\n",
+          "text": "  - issue:RTrentJones/RTrentJones.dev#55\n"
+        },
+        {
+          "op": "append",
+          "text": "\n## Rule by liveness model\nWhich layer a probe must touch depends on the tool's liveness model:\n\n- `needs-traffic` (a store that pauses after idle time, as Supabase does): the probe never queries the store; it stops at the application (issue:RTrentJones/RTrentJones.dev#55, pr:RTrentJones/greenlight#28; trace raw:20261101T090000Z-1a2b3c4d).\n- `needs-silence` (a scale-to-zero store, as Neon is) and `needs-heal` (a reclaimable container): every healthcheck and keepalive must query the store without exception (commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42; trace raw:20261101T091500Z-5e6f7a8b).\n- Readiness that does check the store stays on `/health`, which only verify calls at deploy time (commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42).\n"
+        }
+      ]
+    },
+    {
+      "id": "pattern/neon-never-sleeps",
+      "ops": [
+        {
+          "op": "append",
+          "text": "\n## Related\nThe probe half of this failure is the `needs-silence` branch of pattern/probe-touches-wrong-layer: a healthcheck or keepalive aimed at a store-querying route kept the compute awake (commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42).\n"
+        }
+      ]
+    }
+  ],
+  "update_index": "# Wiki index\n\n## Patterns\n- [keepalive-probe-misses-postgres](patterns/keepalive-probe-misses-postgres.md) — confirmed — a Supabase keepalive that never reaches Postgres.\n- [neon-never-sleeps](patterns/neon-never-sleeps.md) — hypothesis — idle-time polling keeps a scale-to-zero compute awake.\n- [probe-touches-wrong-layer](patterns/probe-touches-wrong-layer.md) — hypothesis — a probe must touch the layer its liveness model manages: the store for needs-traffic, the application for needs-silence and needs-heal.\n",
+  "append_log": "Updated pattern/probe-touches-wrong-layer with a rule conditional on the liveness model, from incident/2026-08-keepalive-green-database-paused (needs-traffic: reach the store) and incident/2026-09-polyphony-neon-never-sleeps (needs-silence: stop at the application). Linked pattern/neon-never-sleeps to it. Statuses unchanged: no deployed red-to-green evidence for the needs-silence side yet."
+}

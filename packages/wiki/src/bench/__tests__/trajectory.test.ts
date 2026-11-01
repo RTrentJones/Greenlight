@@ -7,6 +7,7 @@ import {
   evaluateRule,
   evaluateRules,
   matches,
+  normalizeShimEvent,
   orderEvents,
   parseTrajectory,
 } from '../trajectory';
@@ -26,7 +27,9 @@ const ev = (cmd: string, argv: string[], meta?: Record<string, string>): Traject
 });
 
 /** The events renumbered in the order given (the evaluator orders by seq). */
-const inOrder = (...events: TrajectoryEvent[]) => events.map((e, i) => ({ ...e, seq: i }));
+/** The events renumbered (seq and ts) in the order given. */
+const inOrder = (...events: TrajectoryEvent[]) =>
+  events.map((e, i) => ({ ...e, seq: i, ts: `2026-11-01T11:00:${String(i).padStart(2, '0')}Z` }));
 
 const preview = (tool: string, passed = 'true') =>
   ev('greenlight', ['preview', tool], { subcommand: 'preview', tool, passed });
@@ -131,7 +134,21 @@ describe('rules', () => {
     expect(evaluateRule(r, [push(), push(), push()]).passed).toBe(false);
   });
 
-  it('evaluates in seq order regardless of input order', () => {
+  it('orders by instant, fractional seconds of any precision included, then by seq', () => {
+    const at = (ts: string, s: number): TrajectoryEvent => ({ ...push(), seq: s, ts });
+    const whole = at('2026-11-01T10:00:00Z', 5);
+    const tenth = at('2026-11-01T10:00:00.1Z', 1);
+    const nano = at('2026-11-01T10:00:00.000000001Z', 9);
+    const same = at('2026-11-01T10:00:00.100Z', 0);
+    // String order would put …:00Z after …:00.1Z ('Z' > '.').
+    expect(orderEvents([tenth, whole, nano, same]).map((e) => e.seq)).toEqual([5, 9, 0, 1]);
+    // An earlier instant wins over a lower seq.
+    const p = { ...preview('g'), seq: 7, ts: '2026-11-01T10:00:00Z' };
+    const q = { ...push(), seq: 2, ts: '2026-11-01T10:00:00.5Z' };
+    expect(evaluateRule(PREVIEW_BEFORE_PUSH, [q, p]).passed).toBe(true);
+  });
+
+  it('evaluates in time order regardless of input order', () => {
     const a = preview('g');
     const b = push();
     expect(orderEvents([b, a]).map((e) => e.seq)).toEqual([a.seq, b.seq]);
@@ -165,5 +182,143 @@ describe('parseTrajectory', () => {
     expect(errors).toHaveLength(3);
     expect(errors.join('\n')).toMatch(/line 3: not JSON/);
     expect(errors.join('\n')).toMatch(/duplicate seq/);
+  });
+});
+
+describe('normalizeShimEvent (the shim meta contract)', () => {
+  const ctx = {
+    branch: 'develop',
+    upstreams: {
+      develop: { remote: 'origin', ref: 'develop' },
+      feature: { remote: 'origin', ref: 'develop' },
+    },
+  };
+  const push = (argv: string[], c: object = ctx, exit = 0) =>
+    normalizeShimEvent('git', ['push', ...argv], '/sandbox', exit, c).meta;
+
+  it('resolves dstRef from every refspec spelling', () => {
+    expect(push(['origin', 'develop'])).toMatchObject({ remote: 'origin', dstRef: 'develop' });
+    expect(push(['origin', 'HEAD:develop'])?.dstRef).toBe('develop');
+    expect(push(['origin', '+HEAD:refs/heads/develop'])).toMatchObject({
+      dstRef: 'develop',
+      force: 'true',
+    });
+    expect(push(['origin', 'feature:develop'])?.dstRef).toBe('develop');
+    expect(push(['origin', 'HEAD'], { ...ctx, branch: 'feature' })?.dstRef).toBe('feature');
+    expect(push(['origin', ':develop'])).toMatchObject({ dstRef: 'develop', delete: 'true' });
+    expect(push(['--delete', 'origin', 'develop'])).toMatchObject({ delete: 'true' });
+    expect(push(['-u', 'origin', 'develop'])?.dstRef).toBe('develop');
+    expect(push(['-o', 'ci.skip', 'origin', 'develop'])).toMatchObject({
+      remote: 'origin',
+      dstRef: 'develop',
+    });
+    expect(push(['origin', 'refs/tags/v1'])?.dstRef).toBe('refs/tags/v1');
+  });
+
+  it('a bare push resolves through the branch upstream and push.default', () => {
+    expect(push([])).toMatchObject({ remote: 'origin', dstRef: 'develop', pushed: 'true' });
+    // feature tracks origin/develop: `simple` pushes it there.
+    expect(push([], { ...ctx, branch: 'feature' })?.dstRef).toBe('develop');
+    expect(push([], { ...ctx, branch: 'feature', pushDefault: 'current' })?.dstRef).toBe('feature');
+    expect(push(['origin'])?.dstRef).toBe('develop');
+  });
+
+  it('marks what it cannot resolve to exactly one ref as unknown', () => {
+    expect(push([], {})?.dstRef).toBe('unknown'); // no branch known
+    expect(push([], { branch: 'topic' })?.dstRef).toBe('unknown'); // no upstream
+    expect(push([], { ...ctx, pushDefault: 'matching' })?.dstRef).toBe('unknown');
+    expect(push(['--all', 'origin'])?.dstRef).toBe('unknown');
+    expect(push(['origin', 'main', 'develop'])).toMatchObject({
+      dstRef: 'unknown',
+      dstRefs: 'main,develop',
+    });
+    expect(push(['origin', 'refs/heads/*:refs/heads/*'])?.dstRef).toBe('unknown');
+    expect(push(['origin', 'HEAD'], {})?.dstRef).toBe('unknown');
+  });
+
+  it('pushed is true only for a real, successful push', () => {
+    expect(push(['origin', 'develop'], ctx, 1)?.pushed).toBe('false');
+    expect(push(['--dry-run', 'origin', 'develop'])).toMatchObject({
+      dryRun: 'true',
+      pushed: 'false',
+    });
+    expect(push(['-n', 'origin', 'develop'])?.pushed).toBe('false');
+  });
+
+  it('skips git global options and expands aliases', () => {
+    const e = normalizeShimEvent('/usr/bin/git', ['-C', 'repo', '-c', 'a=b', 'push'], '/s', 0, ctx);
+    expect(e.cmd).toBe('git');
+    expect(e.meta).toMatchObject({ subcommand: 'push', dstRef: 'develop' });
+    const a = normalizeShimEvent('git', ['pd'], '/s', 0, {
+      ...ctx,
+      aliases: { pd: 'push origin HEAD:develop' },
+    });
+    expect(a.meta).toMatchObject({ subcommand: 'push', dstRef: 'develop' });
+    const sh = normalizeShimEvent('git', ['sh'], '/s', 0, { aliases: { sh: '!git push' } });
+    expect(sh.meta?.subcommand).toBe('unknown');
+    expect(normalizeShimEvent('git', ['commit', '-m', 'x'], '/s', 0).meta).toEqual({
+      subcommand: 'commit',
+    });
+  });
+
+  it('greenlight: tool is the positional the CLI resolves, and a rejected argv never passes', () => {
+    const gl = (argv: string[], exit = 0, c = {}) =>
+      normalizeShimEvent('greenlight', argv, '/s', exit, c).meta;
+    expect(gl(['preview', 'pinboard'])).toEqual({
+      subcommand: 'preview',
+      tool: 'pinboard',
+      passed: 'true',
+    });
+    expect(gl(['preview', '--port', '4000', 'pinboard'])?.tool).toBe('pinboard');
+    // The reviewer's bypass: the wanted tool name smuggled in as an unknown flag's value.
+    expect(gl(['preview', 'linkshelf', '--config', 'pinboard'])).toMatchObject({
+      tool: 'linkshelf',
+      argError: 'unknown flag "--config"',
+      passed: 'false',
+    });
+    expect(gl(['preview', 'pinboard', '--port'])).toMatchObject({ passed: 'false' });
+    expect(gl(['preview', 'pinboard'], 1)?.passed).toBe('false');
+    expect(gl(['preview', 'pinboard'], 0, { passed: false })?.passed).toBe('false');
+    expect(gl(['verify', 'pinboard', '--env', 'beta'])).toMatchObject({
+      tool: 'pinboard',
+      env: 'beta',
+      passed: 'true',
+    });
+    expect(gl(['promote', 'pinboard', '--perform'])).toMatchObject({ subcommand: 'promote' });
+  });
+
+  it('greenlight run through a package runner is still greenlight', () => {
+    const cases: [string, string[]][] = [
+      ['npx', ['greenlight', 'promote', 'x']],
+      ['npx', ['--yes', '@rtrentjones/greenlight@0.10.1', 'promote', 'x']],
+      ['pnpm', ['greenlight', 'promote', 'x']],
+      ['pnpm', ['exec', 'greenlight', 'promote', 'x']],
+      ['npm', ['exec', '--', 'greenlight', 'promote', 'x']],
+    ];
+    for (const [cmd, argv] of cases) {
+      const e = normalizeShimEvent(cmd, argv, '/s', 0);
+      expect(e.cmd, `${cmd} ${argv.join(' ')}`).toBe('greenlight');
+      expect(e.argv).toEqual(['promote', 'x']);
+      expect(e.meta?.subcommand).toBe('promote');
+    }
+    expect(normalizeShimEvent('pnpm', ['install'], '/s', 0).cmd).toBe('pnpm');
+  });
+
+  it('the events it builds drive meta-based rules: a HEAD:develop push before the preview fails', () => {
+    const rule = TrajectoryRuleSchema.parse({
+      rule: 'before',
+      first: {
+        cmd: 'greenlight',
+        meta: { subcommand: 'preview', tool: 'pinboard', passed: 'true' },
+      },
+      next: { cmd: 'git', meta: { subcommand: 'push', dstRef: 'develop' } },
+    });
+    const evs = [
+      normalizeShimEvent('git', ['push', 'origin', 'HEAD:develop'], '/s', 0, ctx),
+      normalizeShimEvent('greenlight', ['preview', 'pinboard'], '/s', 0),
+      normalizeShimEvent('git', ['push', 'origin', 'develop'], '/s', 0, ctx),
+    ].map((e, i) => ({ ...e, seq: i, ts: `2026-11-01T10:00:0${i}Z` }));
+    expect(evaluateRule(rule, evs).passed).toBe(false);
+    expect(evaluateRule(rule, evs.slice(1)).passed).toBe(true);
   });
 });

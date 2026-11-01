@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "zero store queries from the healthcheck",
+    "liveness answers 200 while the database is stopped"
+  ]
+}

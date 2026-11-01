@@ -3,26 +3,33 @@
  * check is structural or keyword-based; no LLM is called (an `eval` judge can be layered on later).
  *
  * RUBRIC
- * 1. Valid output: `MaintainerOutput` validates; every updated page exists in the bundle and every
- *    created page does not; every op's target occurs exactly once (08 §9.1).
- * 2. Cited claims: the output is applied to the bundle's pages. A CLAIM is a paragraph or list item
- *    of new body text (a block of a created page, or a block of an updated page that was not in the
- *    original). Headings, code, HTML comments and lead-in lines ending in ":" are not claims. Every
- *    claim cites at least one evidence ref, and every ref the output adds (in claims or in
- *    frontmatter) occurs somewhere in the bundle.
+ * 1. Valid output: `MaintainerOutput` validates, and the REAL patch engine
+ *    (`ctx.wiki.applyMaintainerOutput`, packages/wiki/src/patch.ts) applies it to the bundle's wiki:
+ *    ids resolve as production resolves them (`normalizeId`), every op target occurs exactly once
+ *    (overlapping occurrences counted), created pages are new and parse, updated pages still parse.
+ * 2. Cited claims: a CLAIM is a paragraph or list item of new body text (a block of a created
+ *    page, or a block of an updated page that was not in the original). Headings, code, HTML
+ *    comments and lead-in lines ending in ":" are not claims. Every claim cites at least one
+ *    evidence ref, and every ref the output adds (in claims or in frontmatter) occurs somewhere
+ *    in the bundle.
  * 3. No evidence removed: every evidence ref in an updated page's original text is still in it.
  * 4. Status changes follow 04 §4: a created page is `hypothesis`; an update may not move a page to
  *    `confirmed` unless the page already had a verified remediation (the maintainer can never set
  *    `verified: true`, that is a ledger-stage fact), may not move `confirmed` back to
  *    `hypothesis`, and `superseded` needs `supersededBy`.
  * 5. Required distinction: one created page, or an update to one of `rubric.ruleHomes`, contains
- *    a rule CONDITIONAL ON THE LIVENESS MODEL: a claim naming `needs-traffic` that says the probe
- *    reaches/queries the store, and a claim naming `needs-silence` that says the probe stops at the
- *    application / does not touch the store. That page's new claims cite at least one ref unique
- *    to each of the two incidents in `rubric.incidents` (a ref in both incidents counts for
- *    neither).
- * 6. No overgeneral rule: no new claim that names no liveness model states either
- *    "every healthcheck/probe/keepalive queries the database" or "probes never touch the database".
+ *    a rule CONDITIONAL ON THE LIVENESS MODEL, with the right POLARITY on each branch: a statement
+ *    naming `needs-traffic` (and not the other models) in which the probe reaches the store and
+ *    no reach is negated, and a statement naming `needs-silence` (not `needs-traffic`) that names
+ *    the store and only negates reaching it ("never queries the store", "stops at the
+ *    application", "store-free"). That page's new claims cite at least one ref unique to each of
+ *    the two incidents in `rubric.incidents` (a ref in both incidents counts for neither).
+ * 6. No overgeneral or inverted rule, checked per STATEMENT (claims split at sentence ends and at
+ *    while/but/whereas and at a comma that introduces another model):
+ *    - a statement naming no model may not say "every healthcheck/probe/keepalive queries the
+ *      database" (A) or "probes never touch the database" (B);
+ *    - a statement naming a model may not prescribe the opposite of that model: a store reach for
+ *      `needs-silence`/`needs-heal`, or a negated reach for `needs-traffic`.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -42,15 +49,13 @@ function walk(dir, out = []) {
   return out;
 }
 
-/** Pages by id (from frontmatter `id:`), the bundle's evidence refs, and raw record ids. */
-export function readBundle(bundleDir) {
-  const pages = new Map();
+/** Every evidence ref the bundle carries (pages, raw records, context). */
+export function bundleRefs(bundleDir) {
   const refs = new Set();
   for (const file of walk(bundleDir)) {
     const text = readFileSync(file, 'utf8');
     for (const r of refsIn(text)) refs.add(r);
-    const rel = relative(bundleDir, file);
-    if (rel.startsWith('raw/') && file.endsWith('.json')) {
+    if (relative(bundleDir, file).startsWith('raw/') && file.endsWith('.json')) {
       try {
         const id = JSON.parse(text).rawId;
         if (id) refs.add(`raw:${id}`);
@@ -58,12 +63,8 @@ export function readBundle(bundleDir) {
         // not a raw record
       }
     }
-    if (file.endsWith('.md')) {
-      const m = /^---\n[\s\S]*?^id:\s*(\S+)/m.exec(text);
-      if (m && text.startsWith('---\n')) pages.set(m[1], { file: rel, text });
-    }
   }
-  return { pages, refs };
+  return refs;
 }
 
 export function splitPage(text) {
@@ -78,17 +79,14 @@ export const statusOf = (front) => /^status:\s*([a-z-]+)/m.exec(front)?.[1] ?? n
 const supersededBy = (front) => /^supersededBy:\s*\S+/m.test(front);
 const verifiedRemediations = (front) => (front.match(/verified:\s*true/g) ?? []).length;
 
+/** Occurrences of `needle`, overlapping ones included (the patch engine's count). */
 const count = (hay, needle) => {
   let n = 0;
-  let i = hay.indexOf(needle);
-  while (i >= 0) {
-    n++;
-    i = hay.indexOf(needle, i + needle.length);
-  }
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) n++;
   return n;
 };
 
-/** Applies PatchOps with 08 §9.1 semantics; throws on a target that is absent or repeated. */
+/** PatchOps with 08 §9.1 semantics (a standalone helper; grading uses the real engine). */
 export function applyOps(text, ops) {
   let out = text;
   for (const [i, op] of ops.entries()) {
@@ -142,30 +140,85 @@ export function claimsOf(oldBody, newBody) {
   return blocks(newBody).filter((b) => !before.has(norm(b)) && !/:\s*$/.test(b));
 }
 
-const MODEL_RE = /\bneeds-(traffic|silence|heal)\b/i;
+// ---- statement polarity (RUBRIC 5, 6) -----------------------------------------------------
+
+const MODEL_G = /\bneeds-(traffic|silence|heal)\b/gi;
 const STORE_RE = /\b(store|stores|database|databases|postgres|db|table)\b/i;
-const REACH_RE =
-  /\b(reach(es|ing)?|quer(y|ies|ying)|read(s|ing)?|select(s)?|hit(s)?|touch(es)?)\b/i;
+const REACH_G =
+  /\b(?:reach(?:es|ing)?|quer(?:y|ies|ying)|reads?|reading|selects?|hits?|touch(?:es|ing)?|wakes?|waking)\b/gi;
+const NEG_WORD = /\b(?:never|not|cannot|without|no)\b|n't\b/i;
 const STOP_RE =
-  /\b(stops? at|never|must not|mustn't|does not|doesn't|do not|don't|without|store-free|leaves? the store|application|\/health\/live)\b/i;
-const NEG_RE = /\b(never|not|n't|without|no)\b/i;
+  /\bstops?\s+at\s+the\s+(?:app|application|process|server|service)\b|\bstore-free\b|\bleaves?\s+the\s+(?:store|database|db)\s+(?:alone|asleep|idle)\b/i;
 const UNIVERSAL_RE = /\b(every|all|always|any)\b/i;
+const PRESCRIPTIVE_RE =
+  /\b(every|all|always|any|never|must|should|shall|cannot|only|has to|have to|needs? to)\b/i;
+const NEG_PRESCRIPTION_RE =
+  /\b(never|must not|mustn't|should not|shouldn't|do not|don't|cannot)\b/i;
 const PROBE_RE = /\b(health ?checks?|probes?|keepalives?|liveness)\b/i;
 
-const sentences = (claim) => claim.split(/(?<=[.;])\s+/);
-const clauses = (claim) => claim.split(/(?<=[.;,])\s+|\s+(?:so|because|while|but)\s+/i);
+/** A claim's statements: sentences, split again at while/but/whereas and at a comma that
+ * introduces another liveness model ("…, and for `needs-silence` …"). */
+export const statements = (claim) =>
+  claim
+    .split(
+      /(?<=[.;])\s+|\s+(?:while|whereas|whilst|but)\s+|,\s+(?=(?:and\s+|but\s+)?(?:for\s+|with\s+|under\s+|in\s+)?`?needs-)/i,
+    )
+    .filter((s) => s.trim());
 
-/** Overgeneral A: "every healthcheck/probe queries the database"; B: "probes never touch it". */
+/** Models named, and whether the statement reaches the store (pos) and/or negates a reach. */
+export function polarity(s) {
+  const models = new Set([...s.matchAll(MODEL_G)].map((m) => m[1].toLowerCase()));
+  let pos = false;
+  let neg = false;
+  for (const m of s.matchAll(REACH_G)) {
+    const window = s.slice(0, m.index).split(/\s+/).slice(-4).join(' ');
+    if (NEG_WORD.test(window)) neg = true;
+    else pos = true;
+  }
+  if (STOP_RE.test(s)) neg = true;
+  return { models, pos, neg, store: STORE_RE.test(s) };
+}
+
+/** The required branches of the distinction (RUBRIC 5). */
+export function trafficBranch(s) {
+  const p = polarity(s);
+  return (
+    p.models.has('traffic') &&
+    !p.models.has('silence') &&
+    !p.models.has('heal') &&
+    p.store &&
+    p.pos &&
+    !p.neg
+  );
+}
+export function silenceBranch(s) {
+  const p = polarity(s);
+  return p.models.has('silence') && !p.models.has('traffic') && p.store && p.neg && !p.pos;
+}
+
+/**
+ * RUBRIC 6 for one claim: null, or why it is overgeneral. A: "every healthcheck queries the
+ * database"; B: "probes never touch the database"; or an inversion of the model it names.
+ */
 export function overgeneral(claim) {
-  if (MODEL_RE.test(claim)) return null;
-  for (const s of clauses(claim)) {
-    if (!PROBE_RE.test(s) || !STORE_RE.test(s) || !REACH_RE.test(s)) continue;
-    if (UNIVERSAL_RE.test(s) && !NEG_RE.test(s)) return 'A';
-    if (/\b(never|must not|mustn't|should not|shouldn't|do not|don't|cannot)\b/i.test(s))
-      return 'B';
+  for (const s of statements(claim)) {
+    const p = polarity(s);
+    if (p.models.size === 0) {
+      if (!PROBE_RE.test(s) || !p.store) continue;
+      if (p.pos && !p.neg && UNIVERSAL_RE.test(s)) return 'A';
+      if (p.neg && NEG_PRESCRIPTION_RE.test(s)) return 'B';
+      continue;
+    }
+    if (!p.store || !PRESCRIPTIVE_RE.test(s)) continue;
+    if ((p.models.has('silence') || p.models.has('heal')) && p.pos)
+      return 'inverts needs-silence (prescribes a store reach)';
+    if (p.models.has('traffic') && p.neg && !p.pos)
+      return 'inverts needs-traffic (prescribes no store reach)';
   }
   return null;
 }
+
+// ---- the grader ----------------------------------------------------------------------------
 
 export function gradeMaintainer(ctx, rubric) {
   const checks = [];
@@ -187,50 +240,44 @@ export function gradeMaintainer(ctx, rubric) {
       false,
       ctx.maintainerOutputError ?? 'no output.json',
     );
-    skip(LATER, 'no output');
+    skip(['pages and patch targets resolve', ...LATER], 'no output');
     return ctx.result(checks);
   }
   const v = ctx.validateMaintainerOutput(ctx.maintainerOutput);
   add('output validates against MaintainerOutput', v.success, v.error);
   if (!v.success) {
-    skip(LATER, 'invalid output');
+    skip(['pages and patch targets resolve', ...LATER], 'invalid output');
     return ctx.result(checks);
   }
   const out = ctx.maintainerOutput;
-  const { pages, refs: bundleRefs } = readBundle(ctx.bundleDir);
+  const refsInBundle = bundleRefs(ctx.bundleDir);
+  const wiki = ctx.wiki.load(join(ctx.bundleDir, 'wiki'));
 
-  // Apply.
-  const changed = []; // { id, oldText, newText, created }
-  const applyErrors = [];
-  for (const p of out.create_pages) {
-    if (pages.has(p.id)) applyErrors.push(`create ${p.id}: page already exists`);
-    else changed.push({ id: p.id, oldText: '', newText: p.content, created: true });
-  }
-  for (const u of out.update_pages) {
-    const page = pages.get(u.id);
-    if (!page) {
-      applyErrors.push(`update ${u.id}: no such page in the bundle`);
-      continue;
-    }
-    try {
-      changed.push({
-        id: u.id,
-        oldText: page.text,
-        newText: applyOps(page.text, u.ops),
-        created: false,
-      });
-    } catch (e) {
-      applyErrors.push(`update ${u.id}: ${e.message}`);
-    }
-  }
+  // 1. Apply with the production engine.
+  const applied = ctx.wiki.applyMaintainerOutput(wiki, out, {
+    actor: 'bench-grader',
+    now: new Date('2026-11-01T00:00:00Z'),
+  });
   add(
     'pages and patch targets resolve',
-    applyErrors.length === 0,
-    applyErrors.join('; ') || undefined,
+    applied.ok,
+    applied.ok ? undefined : applied.errors.join('; '),
   );
-  if (applyErrors.length > 0) {
+  if (!applied.ok) {
     skip(LATER, 'the output does not apply');
     return ctx.result(checks);
+  }
+  const changed = []; // { id, oldText, newText, created }
+  for (const w of applied.changeset.writes) {
+    const id = ctx.wiki.pathToId(w.path);
+    if (!id || w.path === 'index.md' || w.path === 'log.md') continue;
+    const oldText = wiki.files.get(w.path);
+    changed.push({
+      id,
+      oldText: oldText ?? '',
+      newText: w.content,
+      created: oldText === undefined,
+    });
   }
 
   // 2. Cited claims.
@@ -245,10 +292,11 @@ export function gradeMaintainer(ctx, rubric) {
     for (const claim of claims) {
       const cited = refsIn(claim);
       if (cited.size === 0) uncited.push(`${c.id}: "${claim.slice(0, 80)}"`);
-      for (const r of cited) if (!bundleRefs.has(r)) foreign.add(r);
+      for (const r of cited) if (!refsInBundle.has(r)) foreign.add(r);
     }
     const oldFrontRefs = refsIn(o.front);
-    for (const r of refsIn(n.front)) if (!oldFrontRefs.has(r) && !bundleRefs.has(r)) foreign.add(r);
+    for (const r of refsIn(n.front))
+      if (!oldFrontRefs.has(r) && !refsInBundle.has(r)) foreign.add(r);
   }
   add(
     'every new or changed claim cites evidence present in the bundle',
@@ -301,33 +349,28 @@ export function gradeMaintainer(ctx, rubric) {
     statusErrors.join('; ') || undefined,
   );
 
-  // 5. Required distinction.
+  // 5. Required distinction, with per-branch polarity.
   const incidentRefs = rubric.incidents.map((id) => {
-    const p = pages.get(id);
-    return p ? refsIn(splitPage(p.text).front) : new Set();
+    const p = wiki.pages.get(ctx.wiki.normalizeId(id));
+    return p ? refsIn(splitPage(p.raw).front) : new Set();
   });
   const unique = incidentRefs.map((set, i) => {
     const others = incidentRefs.filter((_, j) => j !== i);
     return new Set([...set].filter((r) => !others.some((o) => o.has(r))));
   });
-  const homes = changed.filter((c) => c.created || rubric.ruleHomes.includes(c.id));
+  const homes = new Set(rubric.ruleHomes.map((h) => ctx.wiki.normalizeId(h)));
   const findings = [];
   let distinct = false;
-  for (const c of homes) {
+  for (const c of changed.filter((x) => x.created || homes.has(x.id))) {
     const claims = claimsByPage.get(c.id) ?? [];
-    const traffic = claims.some((cl) =>
-      sentences(cl).some(
-        (s) => /\bneeds-traffic\b/i.test(s) && REACH_RE.test(s) && STORE_RE.test(s),
-      ),
-    );
-    const silence = claims.some((cl) =>
-      sentences(cl).some((s) => /\bneeds-silence\b/i.test(s) && STOP_RE.test(s)),
-    );
+    const stmts = claims.flatMap(statements);
+    const traffic = stmts.some(trafficBranch);
+    const silence = stmts.some(silenceBranch);
     // The rule itself must carry the citations: refs in the new claims, not in old page text.
     const pageRefs = new Set(claims.flatMap((cl) => [...refsIn(cl)]));
     const citesEach = unique.map((u) => [...u].some((r) => pageRefs.has(r)));
     findings.push(
-      `${c.id}: needs-traffic→reach ${traffic ? 'yes' : 'no'}, needs-silence→stop ${silence ? 'yes' : 'no'}, cites ${rubric.incidents
+      `${c.id}: needs-traffic→reaches the store ${traffic ? 'yes' : 'no'}, needs-silence→stays off the store ${silence ? 'yes' : 'no'}, cites ${rubric.incidents
         .map((id, i) => `${id.split('/')[1]} ${citesEach[i] ? 'yes' : 'no'}`)
         .join(', ')}`,
     );
@@ -339,7 +382,7 @@ export function gradeMaintainer(ctx, rubric) {
     findings.join(' | ') || `no new page and no update to ${rubric.ruleHomes.join(', ')}`,
   );
 
-  // 6. No overgeneral rule.
+  // 6. No overgeneral or inverted rule.
   const over = [];
   for (const [id, claims] of claimsByPage) {
     for (const cl of claims) {

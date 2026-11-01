@@ -4,7 +4,6 @@
   "dbEnv": "STORE_URL",
   "suspendAfterMs": 300000,
   "idleWindowMs": 600000,
-  "realWindowMs": 4500,
   "tables": {
     "entries": ["id", "account", "amount_cents", "booked_on"],
     "outbox": ["id", "topic", "payload", "sent_at"]
