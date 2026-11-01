@@ -197,4 +197,4 @@ surfaced at 0.12. The controls are:
   an `applies` range that excludes the current version moves to `archive/`;
 - duplicate detection: `wiki lint --similar` lists page pairs whose `atRisk` and `cells` match and
   whose bodies share most of their tokens, as candidates for a merge pass. This is advisory only;
-- `fact` expiry (LR-17), with a refresh procedure in the `greenlight-wiki` skill (05 §5.5).
+- `fact` expiry (LR-17), with a refresh procedure in the `greenlight-wiki` skill (05 §5.5.4).

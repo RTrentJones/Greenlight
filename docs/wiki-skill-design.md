@@ -1,5 +1,8 @@
 # Wiki skill — design considerations
 
+> **Superseded** by the vision pack in [docs/vision/](vision/README.md). Kept as the working draft it grew from.
+
+
 Companion to [plan-wiki-skill.md](plan-wiki-skill.md). The plan describes *what* to build. This
 document works out *why the design has the shape it does*. It starts from the failures the
 current tools have actually had, then from the vision of anyone pointing an agent at Greenlight,

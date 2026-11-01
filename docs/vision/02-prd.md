@@ -243,7 +243,7 @@ acceptance criteria for the requirement, not intent criteria.
 **FR-KICK-07.**
 - `add` computes the projected quota use for each quota in the cell's fact pages. It warns, and
   requires `--accept-headroom`, when any projection exceeds 80%.
-- The projection method is defined in 10 §3.
+- The projection method is defined in 10 §3.3.
 
 **FR-KICK-08.**
 - After a successful beta ship, the kickoff skill prints the beta URL taken from `resolveUrl`, or

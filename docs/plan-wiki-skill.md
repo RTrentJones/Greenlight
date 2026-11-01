@@ -1,5 +1,8 @@
 # Plan — the Greenlight wiki skill
 
+> **Superseded** by the vision pack in [docs/vision/](vision/README.md). Kept as the working draft it grew from.
+
+
 Status: **PLAN** (not built). The rationale is in [wiki-skill-design.md](wiki-skill-design.md).
 This plan sets the priorities, and where the two disagree, this plan wins. Background:
 WikiSkill (arXiv:2608.27454).

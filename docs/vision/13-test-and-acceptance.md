@@ -270,7 +270,7 @@ listed as expected.
 - **Pass criteria.**
   1. `doctor` fails DR-22.
   2. With the doctor rule bypassed through a test flag, `verify` against the fixture fails a check
-     whose output includes `see: pattern/keepalive-probe-misses-store`.
+     whose output includes `see: pattern/keepalive-probe-misses-postgres`.
   3. `wiki ingest --incident` on the resulting raw records produces a valid `MaintainerOutput` that
      updates the existing pattern's evidence rather than creating a duplicate.
   4. `wiki propose` returns an outlet of `mechanism` or `doctor`, not `skill`, for this class.

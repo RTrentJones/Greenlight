@@ -170,7 +170,7 @@ G5 is an enabling goal. It exists because G2 and G3 degrade over time without it
 | id | risk | likelihood | impact | mitigation |
 |---|---|---|---|---|
 | R-1 | A token leaks through raw evidence or wiki text | medium | high | Agents hold placeholders only (11); redaction at capture; LR-20; planted-secret test as a merge blocker (13 §2.6) |
-| R-2 | A contributed pattern injects instructions into other users' agents | medium | high | Reviewed PRs only; `hypothesis` pages are never surfaced; patterns are data to the proposer (12 T-03) |
+| R-2 | A contributed pattern injects instructions into other users' agents | medium | high | Reviewed PRs only; `hypothesis` pages are never surfaced; patterns are data to the proposer (12 T-04) |
 | R-3 | An agent promotes to prod without approval | low | high | Promotion is human by default (ADR-07); the proxy denies the dispatch call (11 §4.4); DR-32 |
 | R-4 | A skill change helps one model and harms another | medium | medium | Two-model lexicographic gate (ADR-11) |
 | R-5 | A bench grader passes for the wrong reason | medium | medium | Mutation checks for every grader (06 §4.3) |
