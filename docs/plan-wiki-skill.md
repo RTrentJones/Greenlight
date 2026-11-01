@@ -1,6 +1,7 @@
 # Plan — Greenlight as a wiki skill
 
-Status: **PLAN** (not built). Source: Tang et al., *WikiSkill: Compiling Agent Experience into
+Status: **PLAN** (not built). Design rationale, and the revisions it makes to the phases below, are in
+[wiki-skill-design.md](wiki-skill-design.md); where the two differ, the design doc wins. Source: Tang et al., *WikiSkill: Compiling Agent Experience into
 Persistent Knowledge for Skill Evolution* (arXiv:2608.27454, Aug 2026).
 
 ## Goal
