@@ -125,3 +125,87 @@ describe('agent code runs only in scrubbed child processes', () => {
     }
   });
 });
+
+describe('the fake clock reaches every thread and process of the app (re-review 4)', () => {
+  const LIB = join(here, '../../../../../bench/graders/_lib');
+  const CHILD = `
+const url = 'http://127.0.0.1:' + process.env.PORT + '/tick?k=' + process.env.K;
+setInterval(() => { fetch(url).catch(() => {}); }, 30_000);
+`;
+  const APP = `
+import { createServer } from 'node:http';
+import { Worker } from 'node:worker_threads';
+import { fork, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const counts = {};
+const inc = (k) => { counts[k] = (counts[k] ?? 0) + 1; };
+const child = fileURLToPath(new URL('./child.mjs', import.meta.url));
+// (a) a 1 s tick guarded by monotonic clocks
+let p0 = performance.now();
+let h0 = process.hrtime.bigint();
+setInterval(() => {
+  if (performance.now() - p0 >= 30_000) { p0 = performance.now(); inc('perf'); }
+  if (process.hrtime.bigint() - h0 >= 30_000_000_000n) { h0 = process.hrtime.bigint(); inc('hrtime'); }
+}, 1000);
+// (c) a loop on AbortSignal.timeout
+(async () => { for (;;) { const s = AbortSignal.timeout(30_000); await new Promise((r) => s.addEventListener('abort', r, { once: true })); inc('abort'); } })();
+// (b) worker threads: eval and file entries
+new Worker("const { parentPort } = require('node:worker_threads'); setInterval(() => parentPort.postMessage('t'), 30_000);", { eval: true }).on('message', () => inc('evalWorker'));
+new Worker(new URL('./worker.mjs', import.meta.url)).on('message', () => inc('fileWorker'));
+// child processes: fork, an explicit env without NODE_OPTIONS, and a shell wrapper
+fork(child, { env: { ...process.env, K: 'fork' } });
+spawn(process.execPath, [child], { env: { PATH: process.env.PATH, PORT: process.env.PORT, K: 'spawnEnv' }, stdio: 'ignore' });
+spawn('sh', ['-c', '"$NODE" "$CHILD"; true'], { env: { PATH: process.env.PATH, PORT: process.env.PORT, K: 'sh', NODE: process.execPath, CHILD: child }, stdio: 'ignore' });
+createServer((req, res) => {
+  const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/tick') inc(u.searchParams.get('k'));
+  res.end(JSON.stringify(counts));
+}).listen(Number(process.env.PORT), '127.0.0.1');
+`;
+  it('20 polls in 10 simulated minutes, whatever clock or thread or process they use', async () => {
+    const dir = mkdtempSync(join(work, 'clock-app-'));
+    writeFileSync(join(dir, 'app.mjs'), APP);
+    writeFileSync(join(dir, 'child.mjs'), CHILD);
+    writeFileSync(
+      join(dir, 'worker.mjs'),
+      "import { parentPort } from 'node:worker_threads';\nsetInterval(() => parentPort.postMessage('t'), 30_000);\n",
+    );
+    const { startClockCoordinator } = await import(join(LIB, 'fake-clock-coordinator.mjs'));
+    const start = Date.parse('2026-11-01T10:00:00Z');
+    const clock = await startClockCoordinator({ start });
+    const { ctx, cleanup } = createGraderContext(job());
+    try {
+      const app = await ctx.spawnApp({
+        cwd: dir,
+        command: ['node', 'app.mjs'],
+        env: clock.env(),
+        preload: [join(LIB, 'fake-clock-shim.mjs')],
+      });
+      await clock.waitForParticipant();
+      for (let t = 60_000; t <= 600_000; t += 60_000) await clock.advance(start + t);
+      await new Promise((r) => setTimeout(r, 200));
+      const counts = (await (await fetch(`${app.url}/`)).json()) as Record<string, number>;
+      for (const k of [
+        'perf',
+        'hrtime',
+        'abort',
+        'evalWorker',
+        'fileWorker',
+        'fork',
+        'spawnEnv',
+        'sh',
+      ]) {
+        expect(counts[k], `${k}: ${JSON.stringify(counts)} ${app.output()}`).toBeGreaterThanOrEqual(
+          19,
+        );
+        expect(counts[k], k).toBeLessThanOrEqual(20);
+      }
+      expect(clock.problems()).toEqual([]);
+      // 1 app + 2 workers + 3 node children.
+      expect(clock.joined()).toBe(6);
+    } finally {
+      await cleanup();
+      await clock.stop();
+    }
+  }, 60_000);
+});

@@ -66,8 +66,9 @@ export interface SpawnAppOptions {
   command: string[];
   /** Added to `sandboxEnv()`: the app never sees the grader's environment. */
   env?: Record<string, string>;
-  /** Grader-side modules preloaded into the app with `node --import` (absolute paths), e.g. a
-   * fake-clock shim. Put in argv when the command is `node`, else in NODE_OPTIONS. */
+  /** Grader-side modules preloaded into the app with `--import` (absolute paths), e.g. a
+   * fake-clock shim. Always passed in NODE_OPTIONS (never argv), so every Node process the app
+   * starts inherits them, whether the command is `node` or a wrapper (`sh -c`, `npm start`). */
   preload?: string[];
   /** Open an IPC channel to the app (`SpawnedApp.send` / `onMessage`), for a preloaded shim. */
   ipc?: boolean;
@@ -259,13 +260,13 @@ async function spawnApp(
   const port = opts.port ?? (await freePort());
   const [first, ...rest] = opts.command;
   if (!first) throw new Error('spawnApp needs a command');
-  const imports = (opts.preload ?? []).flatMap((p) => ['--import', pathToFileURL(p).href]);
+  const imports = (opts.preload ?? []).map((p) => `--import=${pathToFileURL(p).href}`);
   const isNode = first === 'node';
   const extra: Record<string, string> = { ...opts.env, PORT: String(port) };
-  if (!isNode && imports.length > 0) extra.NODE_OPTIONS = imports.join(' ');
+  if (imports.length > 0) extra.NODE_OPTIONS = imports.join(' ');
   const child = startChild(
     isNode ? process.execPath : first,
-    isNode ? [...imports, ...rest] : rest,
+    rest,
     { cwd: opts.cwd, env: env(extra), ipc: Boolean(opts.ipc) },
     register,
   );

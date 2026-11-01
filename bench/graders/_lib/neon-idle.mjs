@@ -17,6 +17,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startClockCoordinator } from './fake-clock-coordinator.mjs';
 import { createWorkersFetch, startStub, startWorkerHost } from './workers-runtime.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -73,40 +74,6 @@ async function get(url) {
   }
 }
 
-/** The grader's end of the shim's IPC protocol. */
-function appClock(app) {
-  let n = 0;
-  const waiting = new Map();
-  app.onMessage((m) => {
-    if (!m || m.__fakeClock !== 'advanced') return;
-    waiting.get(m.id)?.(m);
-    waiting.delete(m.id);
-  });
-  const ask = (msg, timeoutMs = 10_000) =>
-    new Promise((resolve, reject) => {
-      const id = n++;
-      const timer = setTimeout(() => {
-        waiting.delete(id);
-        reject(new Error(`the app's clock did not answer in ${timeoutMs} ms`));
-      }, timeoutMs);
-      waiting.set(id, (m) => {
-        clearTimeout(timer);
-        resolve(m);
-      });
-      try {
-        app.send({ ...msg, id });
-      } catch (e) {
-        clearTimeout(timer);
-        waiting.delete(id);
-        reject(e);
-      }
-    });
-  return {
-    state: () => ask({ __fakeClock: 'state' }),
-    advance: (to) => ask({ __fakeClock: 'advance', to }),
-  };
-}
-
 export async function gradeNeonIdle(ctx, { variant }) {
   const cfg = JSON.parse(
     readFileSync(
@@ -147,28 +114,25 @@ export async function gradeNeonIdle(ctx, { variant }) {
 
   // Runtime: the app on the simulated clock, against the fake store.
   const fake = await ctx.startFixture('neon-shaped', { config: cfg });
+  // One simulated clock for every process and thread the app runs (fake-clock-coordinator.mjs).
+  const clock = await startClockCoordinator({ start: fake.clock.now() });
+  ctx.onCleanup(() => clock.stop());
   let app;
   try {
     app = await ctx.spawnApp({
       cwd: toolDir,
       command: cmd,
-      env: {
-        [cfg.dbEnv]: fake.url,
-        NODE_ENV: 'production',
-        BENCH_FAKE_CLOCK_START: String(fake.clock.now()),
-      },
+      env: { [cfg.dbEnv]: fake.url, NODE_ENV: 'production', ...clock.env() },
       preload: [SHIM],
-      ipc: true,
       readyPath: '/',
     });
   } catch (e) {
     add('app starts', false, e.message);
     return ctx.result(checks);
   }
-  const clock = appClock(app);
   let next = null;
   try {
-    ({ next } = await clock.state());
+    ({ next } = await clock.waitForParticipant());
   } catch (e) {
     add('app runs on the simulated clock', false, e.message);
     return ctx.result(checks);
@@ -206,7 +170,12 @@ export async function gradeNeonIdle(ctx, { variant }) {
       if (next !== null) candidates.push(Math.max(next, t + STEP_MS));
       const to = Math.min(...candidates);
       fake.clock.set(Math.max(fake.clock.now(), to));
-      ({ next } = await clock.advance(to));
+      try {
+        ({ next } = await clock.advance(to));
+      } catch (e) {
+        truncated = `${e.message} at +${Math.round((to - simStart) / 1000)} s simulated`;
+        return;
+      }
       t = to;
       steps++;
       if (steps > MAX_STEPS || Date.now() - realStart > REAL_BUDGET_MS) {
@@ -248,12 +217,22 @@ export async function gradeNeonIdle(ctx, { variant }) {
     }
     caused[ev.kind] += fake.store.state.queries - before;
   });
+  // Work a step started in another thread or process (a message to a worker, say) may still be
+  // in flight: let it land, stamped inside the window, before reading the store.
+  await new Promise((r) => setTimeout(r, 250));
   const idle = fake.stats({ from: t0, to: t0 + windowMs + 1 });
 
   add(
     'the idle window was simulated in full',
     !truncated && fake.clock.now() >= t0 + windowMs,
-    truncated || `${steps} steps, ${Date.now() - realStart} ms real`,
+    truncated ||
+      `${steps} steps, ${Date.now() - realStart} ms real, ${clock.joined()} clock participant(s)`,
+  );
+  const strays = clock.problems();
+  add(
+    'every process and thread the app started ran on the simulated clock',
+    strays.length === 0,
+    strays.join('; ') || undefined,
   );
   add(
     'zero store queries from the healthcheck',
