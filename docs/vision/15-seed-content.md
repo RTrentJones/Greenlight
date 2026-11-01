@@ -395,7 +395,7 @@ evidence:
   - commit:RTrentJones/Polyphony@TODO   # the worker-wakeup / reaper change in the Polyphony repo
 catches:
   description: over a simulated idle window, the app issues zero queries to the store
-  graderTask: replay/idle-app-zero-store-queries
+  graderTask: replay/idle-probe-leaves-store-asleep
 remediation:
   - { outlet: skill, ref: "skill:greenlight-build", verified: false }
   - { outlet: doctor, ref: "DR-21", verified: false }
