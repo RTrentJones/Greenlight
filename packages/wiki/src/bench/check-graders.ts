@@ -21,6 +21,7 @@ import {
   type GraderCheck,
   type GraderJob,
   GraderResultSchema,
+  type JudgeFn,
   sandboxEnv,
 } from './grader-api';
 
@@ -291,12 +292,15 @@ export function graderChildArgv(child: { entry?: string; nodeArgs?: string[] } =
 
 /** Runs one job in a child Node process: its own process group (a timeout or exit kills anything
  * the grader spawned), a scrubbed environment (`sandboxEnv`, with a throwaway HOME outside every
- * tree), and the job and result on its IPC channel. The verdict is the child's first IPC message;
- * nothing a grandchild writes to disk, or prints, can stand in for it. */
+ * tree), and the job and result on its IPC channel. The verdict is the child's first IPC message
+ * that is not a judge request; nothing a grandchild writes to disk, or prints, can stand in for it.
+ *
+ * `child.judge` (real gate grading, with `job.useJudge`) answers the child's `{ judge: { id,
+ * prompt } }` requests. check-graders itself never passes one, so no LLM ever runs there. */
 export function runInChild(
   job: GraderJob,
   timeoutMs: number,
-  child: { entry?: string; nodeArgs?: string[] } = {},
+  child: { entry?: string; nodeArgs?: string[]; judge?: JudgeFn } = {},
 ): Promise<GraderRun> {
   const started = Date.now();
   return new Promise((res) => {
@@ -309,6 +313,21 @@ export function runInChild(
     let stderr = '';
     let message: { result?: unknown; error?: string } | undefined;
     proc.on('message', (m: unknown) => {
+      const req = (m as { judge?: { id?: unknown; prompt?: unknown } } | null)?.judge;
+      if (req && typeof req.id === 'number' && typeof req.prompt === 'string') {
+        const id = req.id;
+        const answer = (judgeResult: Record<string, unknown>) => {
+          if (proc.connected) proc.send({ judgeResult: { id, ...judgeResult } });
+        };
+        if (!child.judge || !job.useJudge)
+          answer({ error: 'no judge is available to this grading' });
+        else
+          child.judge(req.prompt).then(
+            (v) => answer({ passed: v.passed, rationale: v.rationale }),
+            (e: unknown) => answer({ error: e instanceof Error ? e.message : String(e) }),
+          );
+        return;
+      }
       message ??= (m ?? {}) as { result?: unknown; error?: string };
     });
     proc.on('error', (e) => {

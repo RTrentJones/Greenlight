@@ -68,6 +68,48 @@
       "grader": "maintainer",
       "kind": "maintainer-output",
       "description": "an output whose needs-silence branch also reaches the store from one whose needs-silence branch stays off it"
+    },
+    {
+      "id": "traffic-cache-is-enough",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an inverted needs-traffic branch in paraphrase (\"reaching the store is unnecessary; a cached answer from the API root is enough\") from one that requires a real store read"
+    },
+    {
+      "id": "traffic-schema-root-enough",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an inverted needs-traffic branch that never names the store (\"point the keepalive at the schema root; a cached 200 is enough\") from one that requires a real store read"
+    },
+    {
+      "id": "silence-query-after-reason",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an inverted needs-silence branch hidden behind a reason clause (\"a probe that skips the store misses a stopped compute, so the healthcheck should query the database\") from one that stays off the store"
+    },
+    {
+      "id": "silence-staying-off-unnecessary",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an inverted needs-silence branch by double negation (\"staying off the store is unnecessary\") from one that stays off the store"
+    },
+    {
+      "id": "silence-must-not-skip",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an inverted needs-silence branch by a negated avoid (\"the keepalive must not skip the store\") from one that stays off the store"
+    },
+    {
+      "id": "overgeneral-every-probe-reads",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "a correct conditional rule plus an unconditional \"every probe has to read a real table\" bullet from the conditional rule alone"
+    },
+    {
+      "id": "overgeneral-all-probes-off",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "a correct conditional rule plus an unconditional \"keep all probes off the database\" bullet from the conditional rule alone"
     }
   ]
 }
