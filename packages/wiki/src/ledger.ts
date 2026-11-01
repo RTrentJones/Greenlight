@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { LEDGER_FILE } from './load';
+import { LEDGER_FILE, parseLedger } from './load';
 import {
   type GateResult,
   type LedgerEvent,
@@ -27,9 +27,58 @@ export class LedgerWriteError extends Error {
 export type LedgerEventInput = Omit<LedgerEvent, 'eventId'> & { eventId?: string };
 
 /**
+ * Compares two ISO timestamps as instants (08 §8 `ts`), not as strings: `…:00Z` and `…:00.000Z`
+ * are equal, and `…:00.1Z` is later than `…:00Z`. Fractions are compared to any precision.
+ * Timestamps the schema accepts are UTC (`Z`), so the whole-second part parses exactly.
+ */
+export function compareTs(a: string, b: string): number {
+  const split = (ts: string): [number, string] => {
+    const m = /^(.*?)(?:\.(\d+))?Z$/.exec(ts);
+    const whole = m?.[1] ?? ts;
+    const frac = m?.[2] ?? '';
+    return [Date.parse(`${whole}Z`), frac.replace(/0+$/, '')];
+  };
+  const [sa, fa] = split(a);
+  const [sb, fb] = split(b);
+  if (sa !== sb) return sa < sb ? -1 : 1;
+  const w = Math.max(fa.length, fb.length);
+  const pa = fa.padEnd(w, '0');
+  const pb = fb.padEnd(w, '0');
+  return pa < pb ? -1 : pa > pb ? 1 : 0;
+}
+
+/** Events in time order by parsed instant; equal instants keep their ledger (append) order. */
+export function orderLedgerEvents(events: readonly LedgerEvent[]): LedgerEvent[] {
+  return events
+    .map((e, i) => ({ e, i }))
+    .sort((x, y) => compareTs(x.e.ts, y.e.ts) || x.i - y.i)
+    .map(({ e }) => e);
+}
+
+/**
+ * Whole-ledger problems (LR-14, 06 §6.1): duplicate eventIds, and every proposal whose history
+ * breaks the stage machine. Each problem is one human-readable line.
+ */
+export function ledgerProblems(events: readonly LedgerEvent[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (seen.has(e.eventId)) out.push(`duplicate eventId ${e.eventId}`);
+    seen.add(e.eventId);
+  }
+  for (const id of proposalIds(events)) {
+    for (const p of proposalHistory(events, id).problems) out.push(`proposal ${id}: ${p}`);
+  }
+  return out;
+}
+
+/**
  * Appends one event to `<root>/ledger.jsonl`. Refuses — writing nothing — an event whose writer is
- * not the harness or which fails `LedgerEventSchema`. An unsealed event is sealed with `sealEvent`;
- * a sealed one must carry the right `eventId` (the schema re-derives it). Returns what was written.
+ * not the harness, which fails `LedgerEventSchema`, whose eventId is already in the ledger, or
+ * which would make its proposal's history break the stage machine (06 §6.1): e.g. `merged` after
+ * `candidate-rejected`. An unsealed event is sealed with `sealEvent`; a sealed one must carry the
+ * right `eventId` (the schema re-derives it). Lines of the existing ledger that fail to parse are
+ * left for LR-14 to report. Returns what was written.
  */
 export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent {
   if ((event as { writer?: unknown }).writer !== 'harness') {
@@ -45,15 +94,32 @@ export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent 
     throw new LedgerWriteError(`refused: ${why}`);
   }
   const file = join(root, LEDGER_FILE);
+  const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const existing = parseLedger(text).events;
+  const next = result.data;
+  if (existing.some((e) => e.eventId === next.eventId)) {
+    throw new LedgerWriteError(`refused: eventId ${next.eventId} is already in the ledger`);
+  }
+  if (next.proposalId !== undefined) {
+    const before = proposalHistory(existing, next.proposalId);
+    const after = proposalHistory([...existing, next], next.proposalId);
+    const added = after.problems.filter((p) => !before.problems.includes(p));
+    if (after.events.at(-1) !== next) {
+      added.unshift(`ts ${next.ts} is earlier than the proposal's latest event`);
+    }
+    if (added.length > 0) {
+      throw new LedgerWriteError(`refused for proposal ${next.proposalId}: ${added.join('; ')}`);
+    }
+  }
   // A file whose last line lacks its newline would otherwise fuse with the new line.
-  const lead = existsSync(file) && !/(^|\n)$/.test(readFileSync(file, 'utf8')) ? '\n' : '';
+  const lead = text !== '' && !/(^|\n)$/.test(text) ? '\n' : '';
   appendFileSync(file, `${lead}${canonicalJson(result.data)}\n`);
   return result.data;
 }
 
 export interface ProposalHistory {
   proposalId: string;
-  /** The proposal's events in ledger (append) order. */
+  /** The proposal's events in time order (parsed instants; ties keep append order). */
   events: LedgerEvent[];
   latest?: LedgerEvent['stage'];
   /** Stage-machine violations (06 §6.1); empty for a well-formed history. */
@@ -64,7 +130,7 @@ export function proposalHistory(
   events: readonly LedgerEvent[],
   proposalId: string,
 ): ProposalHistory {
-  const own = events.filter((e) => e.proposalId === proposalId);
+  const own = orderLedgerEvents(events.filter((e) => e.proposalId === proposalId));
   return {
     proposalId,
     events: own,
@@ -105,6 +171,7 @@ function evidenceLines(e: LedgerEvent): string[] {
     case 'template':
       return [
         `${at} template, ${ev.mutantsFailed}/${ev.mutantsTotal} mutants caught (${ev.lanes.join(', ')})`,
+        ...ev.results.map((r) => `${at} ${gateLine(r)}`),
       ];
     case 'repro':
       return [`${at} repro ${ev.reproTask}, fails on ${ev.base}, passes on ${ev.candidate}`];
@@ -174,7 +241,7 @@ function table(rows: readonly Row[], empty: string): string {
 export function renderSkillImpact(events: readonly LedgerEvent[]): string {
   const rows = proposalIds(events)
     .map((id) => proposalRow(proposalHistory(events, id)))
-    .sort((a, b) => b.ts.localeCompare(a.ts) || a.id.localeCompare(b.id));
+    .sort((a, b) => compareTs(b.ts, a.ts) || a.id.localeCompare(b.id));
   return [
     '# Skill impact',
     '',

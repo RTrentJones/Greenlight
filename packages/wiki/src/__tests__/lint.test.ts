@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { generateIndex } from '../index-gen';
+import { renderSkillImpact } from '../ledger';
 import { type LintContext, type RuleId, fix, fixInMemory, lint, lintExitCode } from '../lint';
 import { loadWiki } from '../load';
 import { writeChangeset } from '../patch';
+import { type LedgerEvent, sealEvent } from '../schema';
 import {
   type Files,
   OWNER_DOMAIN,
@@ -13,6 +15,8 @@ import {
   PATTERN_HYPOTHESIS,
   goodContext,
   goodFiles,
+  ledgerEvents,
+  ledgerText,
   loadTree,
   writeTree,
 } from './fixtures';
@@ -163,6 +167,19 @@ const BAD: Record<RuleId, Case[]> = {
     },
     { name: 'stale skill-impact.md', files: edit('skill-impact.md', 'p-001', 'p-999') },
     { name: 'ledger without a render', files: ({ 'skill-impact.md': _drop, ...f }) => f },
+    {
+      // Rendered to match, so only the stage machine (06 §6.1) can fire.
+      name: 'merged after candidate-rejected',
+      files: (f) =>
+        withLedger(f, [
+          ...ledgerEvents(),
+          sealEvent({ ts: '2026-10-06T09:00:00.000Z', proposalId: 'p-002', stage: 'merged' }),
+        ]),
+    },
+    {
+      name: 'a duplicated event line',
+      files: (f) => withLedger(f, [...ledgerEvents(), ledgerEvents()[0] as LedgerEvent]),
+    },
   ],
   'LR-19': [
     {
@@ -210,6 +227,11 @@ const BAD: Record<RuleId, Case[]> = {
     },
   ],
 };
+
+/** The good files with a different ledger, its skill-impact.md re-rendered to match. */
+function withLedger(f: Files, events: LedgerEvent[]): Files {
+  return { ...f, 'ledger.jsonl': ledgerText(events), 'skill-impact.md': renderSkillImpact(events) };
+}
 
 function cite(c: LintContext, id: string): LintContext {
   return {

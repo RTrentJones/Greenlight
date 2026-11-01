@@ -3,17 +3,22 @@ import {
   type BaselineIdentity,
   type EvaluationRecord,
   EvaluationRecordSchema,
+  type GateInputRecord,
+  GateInputRecordSchema,
   comparable,
   identityDiff,
+  sealGateInput,
 } from '../schema/bench';
 import { canonicalJson } from '../schema/common';
 import { type GateResult, type LedgerEvent, LedgerEventSchema, sealEvent } from '../schema/ledger';
 import {
   type BlastRadius,
+  GATE_MODES,
   type GatePath,
   type PolicyDecision,
   type PolicyReason,
   type PolicyTask,
+  type TemplateResults,
   applyPolicy,
   earlyStop,
   releasePolicy,
@@ -21,9 +26,11 @@ import {
 import { DEFAULT_RESAMPLES, type GateMode } from './stats';
 
 /**
- * The gate (vision 06 §5.1–§5.8, roadmap M1-08): checks baseline identity, applies the single
- * policy table (policy.ts), and builds the sealed ledger event. `recompute` re-derives a stored
- * decision from EvaluationRecords alone (`bench gate --recompute <hash>`); `releaseCheck` is §5.7.
+ * The gate (vision 06 §5.1–§5.8, roadmap M1-08): checks the identity of every record, applies the
+ * single policy table (policy.ts), seals a content-addressed GateInputRecord (08 §10.4) holding
+ * every other input, and builds the sealed ledger event that references it. `recompute` re-derives
+ * a stored decision from the GateInputRecord and the EvaluationRecords it names, and nothing else
+ * (`bench gate --recompute <gateInputHash>`); `releaseCheck` is §5.7.
  * Pure: no clock, no network — the caller passes `ts`.
  */
 
@@ -33,6 +40,8 @@ export const GateConfigSchema = z.object({
   runs: z.number().int().min(1).default(3),
   resamples: z.number().int().min(1).default(DEFAULT_RESAMPLES),
   acceptShorterOnTie: z.boolean().default(false),
+  /** 06 §1.5 / §5.1: a baseline older than this at the gate's ts is re-run, never compared. */
+  maxBaselineAgeDays: z.number().int().min(1).default(30),
 });
 export type GateConfig = z.infer<typeof GateConfigSchema>;
 
@@ -52,15 +61,24 @@ export class GateHarnessError extends Error {
 }
 
 export interface GateContext {
-  /** Event timestamp (ISO). Passing the recorded event's ts to `recompute` reproduces its eventId. */
+  /** Event timestamp (ISO). Recorded in the GateInputRecord, so recompute reproduces the eventId. */
   ts: string;
   radius: BlastRadius;
   path: GatePath;
   models: { frontier: string; small: string };
-  /** The val tasks with kind and state (pending and quarantined are excluded, 06 §4.1). */
+  /** The val tasks with kind, state and modes (pending and quarantined are excluded, 06 §4.1). */
   tasks: readonly PolicyTask[];
+  /** The currently accepted skill set's hash (06 §5.1 step 1). Every baseline record must carry
+   * it; every candidate record must carry one other skill-set hash. */
+  acceptedSkillSetHash: string;
+  /**
+   * The modes this evaluation covers. Omit it to require every mode a gated task declares (the
+   * 06 §5.1 rule: both modes). Pass `['isolation']` for the M1/M2 posture, where production mode
+   * does not exist yet (M3): the narrowing is explicit and recorded in the GateInputRecord.
+   */
+  modes?: readonly GateMode[];
   config?: Partial<GateConfig>;
-  /** Bootstrap seed. Defaults to `gate:<proposalId>`, so the proposal id records it (06 §5.2). */
+  /** Bootstrap seed. Defaults to `gate:<proposalId>`; whatever is used is recorded (06 §5.2). */
   seed?: string;
   safetyFixTargets?: readonly string[];
   neutralReason?: string;
@@ -70,6 +88,8 @@ export interface GateContext {
   skill?: string;
   pattern?: string[];
   outlet?: 'skill' | 'template';
+  /** REQUIRED for the template outlet (06 §5.6). */
+  template?: TemplateResults;
   control?: boolean;
 }
 
@@ -78,12 +98,15 @@ export interface GateDecision {
   decision: PolicyDecision;
   path: GatePath;
   results: GateResult[];
+  /** Every reason with its stable code (policy.ts REASON_CODES); see `rejectedForReplayRegression`. */
   reasons: PolicyReason[];
   tieBreak: boolean;
   seed: string;
-  /** Candidate record hashes per mode; `evidence.evaluationRecord` is the first (isolation). */
+  /** Record hashes per evaluated mode, in mode order. */
   candidateRecords: string[];
   baselineRecords: string[];
+  /** The sealed GateInputRecord; store it at `evidence/eval/<hash>.json`. Null when invalid. */
+  gateInput: GateInputRecord | null;
   /** `candidate-accepted` / `candidate-rejected`; null when invalid (the gate re-runs or aborts,
    * 06 §4.8 — an invalid evaluation never reaches the ledger as a result). */
   ledgerEvent: LedgerEvent | null;
@@ -120,65 +143,143 @@ export function assertComparable(
   );
 }
 
-const MODE_ORDER: readonly GateMode[] = ['isolation', 'production'];
+/** Identity fields allowed to differ between two modes of one gate: the mode itself, and the wiki
+ * snapshot (null in isolation, required in production). Within one mode, only skillSetHash may
+ * differ between baseline and candidate. */
+const PER_MODE_FIELDS: ReadonlySet<string> = new Set(['mode', 'wikiSnapshotHash', 'skillSetHash']);
 
-interface Paired {
-  mode: GateMode;
-  baseline: EvaluationRecord;
-  candidate: EvaluationRecord;
+interface RecordSet {
+  /** Modes with a record on both sides, in mode order. */
+  modes: GateMode[];
+  baseline: Map<GateMode, EvaluationRecord>;
+  candidate: Map<GateMode, EvaluationRecord>;
+  baselineSkillSet: string;
+  candidateSkillSet: string;
 }
 
-function pairByMode(
-  baselines: EvaluationRecord[],
-  candidates: EvaluationRecord[],
-  roles: { baseline: EvaluationRecord['role']; candidate: EvaluationRecord['role'] },
-  models: { frontier: string; small: string },
-): Paired[] {
-  if (candidates.length === 0) throw new GateHarnessError('no candidate evaluation record');
-  for (const r of baselines) {
-    if (r.role !== roles.baseline) {
-      throw new GateHarnessError(`record ${r.hash} has role ${r.role}, expected ${roles.baseline}`);
+function bySide(
+  list: EvaluationRecord[],
+  side: string,
+  role: EvaluationRecord['role'],
+): Map<GateMode, EvaluationRecord> {
+  const out = new Map<GateMode, EvaluationRecord>();
+  for (const r of list) {
+    if (r.role !== role) {
+      throw new GateHarnessError(`record ${r.hash} has role ${r.role}, expected ${role}`, ['role']);
     }
-  }
-  for (const r of candidates) {
-    if (r.role !== roles.candidate) {
-      throw new GateHarnessError(
-        `record ${r.hash} has role ${r.role}, expected ${roles.candidate}`,
-      );
+    const mode = r.identity.mode;
+    if (out.has(mode)) {
+      throw new GateHarnessError(`more than one ${side} record for mode ${mode}`, ['mode']);
     }
-  }
-  const pairs: Paired[] = [];
-  for (const mode of MODE_ORDER) {
-    const b = baselines.filter((r) => r.identity.mode === mode);
-    const c = candidates.filter((r) => r.identity.mode === mode);
-    if (b.length === 0 && c.length === 0) continue;
-    if (b.length !== 1 || c.length !== 1) {
+    const stray = r.outcomes.find((o) => o.mode !== mode);
+    if (stray) {
       throw new GateHarnessError(
-        `mode ${mode} needs exactly one baseline and one candidate record (got ${b.length} and ${c.length})`,
+        `record ${r.hash} is a ${mode} evaluation but holds a ${stray.mode} outcome`,
         ['mode'],
       );
     }
-    const [base, cand] = [b[0] as EvaluationRecord, c[0] as EvaluationRecord];
-    assertComparable(base.identity, cand.identity);
-    for (const id of [models.frontier, models.small]) {
-      if (!cand.identity.models.includes(id)) {
-        throw new GateHarnessError(`gate model ${id} is not in the evaluation identity`, [
-          'models',
-        ]);
-      }
-    }
-    for (const r of [base, cand]) {
-      const stray = r.outcomes.find((o) => o.mode !== mode);
-      if (stray) {
-        throw new GateHarnessError(
-          `record ${r.hash} is a ${mode} evaluation but holds a ${stray.mode} outcome`,
-          ['mode'],
-        );
-      }
-    }
-    pairs.push({ mode, baseline: base, candidate: cand });
+    out.set(mode, r);
   }
-  return pairs;
+  return out;
+}
+
+function oneSkillSet(list: EvaluationRecord[], side: string): string {
+  const sets = [...new Set(list.map((r) => r.identity.skillSetHash))];
+  if (sets.length !== 1) {
+    throw new GateHarnessError(
+      `${side} records span ${sets.length} skill sets (${sets.join(', ')}); every ${side} record must be the same skill set`,
+      ['skillSetHash'],
+    );
+  }
+  return sets[0] as string;
+}
+
+/**
+ * The record-set rules (06 §1.5, §5.1): one record per mode per side; every baseline record is one
+ * skill set and every candidate record another; the baseline is the accepted skill set when one is
+ * named; every record agrees on every identity field except the per-mode ones; within a mode,
+ * baseline and candidate are comparable; the gate models are in the identity. Throws otherwise.
+ */
+function checkRecordSet(
+  baselines: EvaluationRecord[],
+  candidates: EvaluationRecord[],
+  opts: {
+    roles: { baseline: EvaluationRecord['role']; candidate: EvaluationRecord['role'] };
+    models: { frontier: string; small: string };
+    acceptedSkillSetHash?: string;
+    distinctSkillSets: boolean;
+  },
+): RecordSet {
+  if (candidates.length === 0) throw new GateHarnessError('no candidate evaluation record');
+  if (baselines.length === 0) throw new GateHarnessError('no baseline evaluation record');
+  const base = bySide(baselines, 'baseline', opts.roles.baseline);
+  const cand = bySide(candidates, 'candidate', opts.roles.candidate);
+  const baselineSkillSet = oneSkillSet(baselines, 'baseline');
+  const candidateSkillSet = oneSkillSet(candidates, 'candidate');
+  if (opts.distinctSkillSets && baselineSkillSet === candidateSkillSet) {
+    throw new GateHarnessError(
+      'the candidate skill set equals the baseline skill set; there is no change to evaluate',
+      ['skillSetHash'],
+    );
+  }
+  if (opts.acceptedSkillSetHash !== undefined && baselineSkillSet !== opts.acceptedSkillSetHash) {
+    throw new GateHarnessError(
+      `the baseline skill set ${baselineSkillSet} is not the accepted skill set ${opts.acceptedSkillSetHash}; re-baseline first`,
+      ['skillSetHash'],
+    );
+  }
+  const all = [
+    ...GATE_MODES.flatMap((m) => (base.has(m) ? [base.get(m) as EvaluationRecord] : [])),
+    ...GATE_MODES.flatMap((m) => (cand.has(m) ? [cand.get(m) as EvaluationRecord] : [])),
+  ];
+  const ref = all[0] as EvaluationRecord;
+  for (const r of all.slice(1)) {
+    const fields = identityDiff(ref.identity, r.identity).filter((k) => !PER_MODE_FIELDS.has(k));
+    if (fields.length > 0) {
+      throw new GateHarnessError(
+        `records ${ref.hash} and ${r.hash} are not comparable: identity differs in ${fields.join(', ')}; re-baseline first`,
+        fields,
+      );
+    }
+  }
+  const modes = GATE_MODES.filter((m) => base.has(m) && cand.has(m));
+  for (const m of modes) {
+    assertComparable(
+      (base.get(m) as EvaluationRecord).identity,
+      (cand.get(m) as EvaluationRecord).identity,
+    );
+  }
+  for (const id of [opts.models.frontier, opts.models.small]) {
+    if (!ref.identity.models.includes(id)) {
+      throw new GateHarnessError(`gate model ${id} is not in the evaluation identity`, ['models']);
+    }
+  }
+  return { modes, baseline: base, candidate: cand, baselineSkillSet, candidateSkillSet };
+}
+
+const DAY_MS = 86_400_000;
+
+/** 06 §1.5 / §5.1: a baseline older than `maxDays` at the gate's ts is re-run, never compared. */
+export function baselineAgeDays(record: Pick<EvaluationRecord, 'createdAt'>, ts: string): number {
+  return (Date.parse(ts) - Date.parse(record.createdAt)) / DAY_MS;
+}
+
+function checkBaselineAge(baselines: EvaluationRecord[], ts: string, maxDays: number): void {
+  for (const r of baselines) {
+    const age = baselineAgeDays(r, ts);
+    if (age < 0) {
+      throw new GateHarnessError(
+        `baseline record ${r.hash} was created at ${r.createdAt}, after the gate ts ${ts}`,
+        ['createdAt'],
+      );
+    }
+    if (age > maxDays) {
+      throw new GateHarnessError(
+        `baseline record ${r.hash} is ${age.toFixed(1)} days old (max ${maxDays}); re-baseline first`,
+        ['createdAt'],
+      );
+    }
+  }
 }
 
 /** Validates a sealed event against the ledger schema and returns it unchanged. */
@@ -197,9 +298,25 @@ function summarize(reasons: PolicyReason[]): string {
     .join('; ');
 }
 
+const sortedUnique = (xs: readonly string[]): string[] => [...new Set(xs)].sort();
+
+/** The task list as the GateInputRecord holds it: sorted by id, modes resolved (default both). */
+function recordedTasks(tasks: readonly PolicyTask[]): GateInputRecord['tasks'] {
+  return [...tasks]
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      state: t.state,
+      modes: GATE_MODES.filter((m) => (t.modes ?? GATE_MODES).includes(m)),
+    }));
+}
+
 /**
  * Decides a candidate against its baseline (06 §5.1). Records are one per mode on each side
- * (a BaselineIdentity names one mode, 08 §10.3). Mismatched identities throw GateHarnessError.
+ * (a BaselineIdentity names one mode, 08 §10.3). Mismatched identities, a baseline that is not the
+ * accepted skill set, or a stale baseline throw GateHarnessError. A mode required by the tasks (or
+ * declared in `ctx.modes`) but missing from either side makes the decision `invalid`.
  */
 export function decide(
   baselineRecord: Records,
@@ -217,26 +334,36 @@ export function decide(
     );
   }
   const proposalId = proposalIds[0];
-  const pairs = pairByMode(
-    baselines,
-    candidates,
-    { baseline: 'baseline', candidate: 'candidate' },
-    ctx.models,
-  );
+  const set = checkRecordSet(baselines, candidates, {
+    roles: { baseline: 'baseline', candidate: 'candidate' },
+    models: ctx.models,
+    acceptedSkillSetHash: ctx.acceptedSkillSetHash,
+    distinctSkillSets: true,
+  });
+  checkBaselineAge(baselines, ctx.ts, config.maxBaselineAgeDays);
   const seed = ctx.seed ?? `gate:${proposalId}`;
+  const outlet = ctx.outlet ?? 'skill';
+  const tasks = recordedTasks(ctx.tasks);
+  const safetyFixTargets =
+    ctx.path === 'safety-fix' && ctx.safetyFixTargets
+      ? sortedUnique(ctx.safetyFixTargets)
+      : undefined;
   const policy = applyPolicy({
     radius: ctx.radius,
     path: ctx.path,
+    outlet,
+    template: ctx.template,
     models: ctx.models,
-    modes: pairs.map((p) => p.mode),
-    tasks: ctx.tasks,
-    baseline: pairs.flatMap((p) => p.baseline.outcomes),
-    candidate: pairs.flatMap((p) => p.candidate.outcomes),
+    modes: set.modes,
+    declaredModes: ctx.modes,
+    tasks,
+    baseline: [...baselines.flatMap((r) => r.outcomes)],
+    candidate: [...candidates.flatMap((r) => r.outcomes)],
     runs: config.runs,
     alpha: config.alpha,
     resamples: config.resamples,
     seed,
-    safetyFixTargets: ctx.safetyFixTargets,
+    safetyFixTargets,
     neutralReason: ctx.neutralReason,
     neutralPendingForSkill: ctx.neutralPendingForSkill,
     tieBreak: ctx.skillLines
@@ -247,10 +374,44 @@ export function decide(
         }
       : undefined,
   });
-  const candidateRecords = pairs.map((p) => p.candidate.hash);
-  const baselineRecords = pairs.map((p) => p.baseline.hash);
+  const candidateRecords = set.modes.map((m) => (set.candidate.get(m) as EvaluationRecord).hash);
+  const baselineRecords = set.modes.map((m) => (set.baseline.get(m) as EvaluationRecord).hash);
+  let gateInput: GateInputRecord | null = null;
   let ledgerEvent: LedgerEvent | null = null;
   if (policy.decision !== 'invalid') {
+    gateInput = sealGateInput({
+      kind: 'gate-input',
+      proposalId,
+      ts: ctx.ts,
+      outlet,
+      radius: ctx.radius,
+      path: ctx.path,
+      seed,
+      config,
+      models: { frontier: ctx.models.frontier, small: ctx.models.small },
+      modes: set.modes,
+      modesDeclared: ctx.modes !== undefined,
+      acceptedSkillSetHash: set.baselineSkillSet,
+      candidateSkillSetHash: set.candidateSkillSet,
+      tasks,
+      baselineRecords,
+      candidateRecords,
+      safetyFixTargets,
+      neutralReason: ctx.neutralReason ? ctx.neutralReason : undefined,
+      neutralPendingForSkill: ctx.neutralPendingForSkill,
+      skillLines: ctx.skillLines ? { ...ctx.skillLines } : undefined,
+      skill: ctx.skill,
+      pattern: ctx.pattern ? [...ctx.pattern] : undefined,
+      control: ctx.control,
+      template:
+        outlet === 'template' && ctx.template
+          ? {
+              lanes: ctx.template.lanes.map((l) => ({ lane: l.lane, passed: l.passed })),
+              mutants: ctx.template.mutants.map((m) => ({ id: m.id, caught: m.caught })),
+            }
+          : undefined,
+    });
+    GateInputRecordSchema.parse(gateInput);
     const accepted = policy.decision === 'accept';
     let reason: string | undefined;
     if (ctx.path === 'neutral' && ctx.neutralReason?.trim()) reason = ctx.neutralReason.trim();
@@ -258,6 +419,19 @@ export function decide(
       const s = summarize(policy.reasons);
       reason = reason ? `${reason}; rejected: ${s}` : `rejected: ${s}`;
     } else if (policy.tieBreak) reason = 'accepted on tie: shorter skill (06 §5.5)';
+    const evaluationRecords = sortedUnique([...baselineRecords, ...candidateRecords]);
+    const evidence: LedgerEvent['evidence'] =
+      outlet === 'template' && ctx.template
+        ? {
+            kind: 'template',
+            gateInput: gateInput.hash,
+            evaluationRecords,
+            results: policy.results,
+            lanes: ctx.template.lanes.map((l) => l.lane),
+            mutantsFailed: ctx.template.mutants.filter((m) => m.caught).length,
+            mutantsTotal: ctx.template.mutants.length,
+          }
+        : { kind: 'bench', gateInput: gateInput.hash, evaluationRecords, results: policy.results };
     ledgerEvent = checked(
       sealEvent({
         ts: ctx.ts,
@@ -267,12 +441,8 @@ export function decide(
         control: ctx.control,
         pattern: ctx.pattern,
         skill: ctx.skill,
-        outlet: ctx.outlet ?? 'skill',
-        evidence: {
-          kind: 'bench',
-          evaluationRecord: candidateRecords[0] as string,
-          results: policy.results,
-        },
+        outlet,
+        evidence,
         reason,
       }),
     );
@@ -287,43 +457,77 @@ export function decide(
     seed,
     candidateRecords,
     baselineRecords,
+    gateInput,
     ledgerEvent,
   };
 }
 
+/** The GateContext a GateInputRecord encodes; `decide` with it rebuilds the same record. */
+export function contextFromGateInput(g: GateInputRecord): GateContext {
+  return {
+    ts: g.ts,
+    radius: g.radius,
+    path: g.path,
+    models: g.models,
+    tasks: g.tasks,
+    acceptedSkillSetHash: g.acceptedSkillSetHash,
+    modes: g.modesDeclared ? g.modes : undefined,
+    config: g.config,
+    seed: g.seed,
+    safetyFixTargets: g.safetyFixTargets,
+    neutralReason: g.neutralReason,
+    neutralPendingForSkill: g.neutralPendingForSkill,
+    skillLines: g.skillLines,
+    skill: g.skill,
+    pattern: g.pattern,
+    outlet: g.outlet,
+    template: g.template,
+    control: g.control,
+  };
+}
+
 /**
- * Re-derives a gate decision from stored EvaluationRecords alone (06 §5.8, 13 §2.7). Finds the
- * proposal's candidate records and, per mode, the one comparable baseline record. When several
- * stored baselines are comparable (an older accepted skill set with the same identity), pass
- * `baselineHashes` to choose; otherwise the call is ambiguous and throws.
+ * Re-derives a gate decision from its GateInputRecord and the EvaluationRecords it names, with no
+ * other input and no rollouts (06 §5.8, 13 §2.7, `bench gate --recompute <hash>`). `records` may
+ * hold any number of other records (other proposals, other accepted skill sets): only the hashes
+ * the input lists are read. Throws when the input record is invalid or tampered, when a listed
+ * record is missing or tampered, or when the rebuilt input does not hash to the given one.
  */
 export function recompute(
+  gateInput: GateInputRecord,
   records: readonly EvaluationRecord[],
-  proposalId: string,
-  ctx: GateContext & { baselineHashes?: readonly string[] },
 ): GateDecision {
-  const candidates = records.filter((r) => r.role === 'candidate' && r.proposalId === proposalId);
-  if (candidates.length === 0) {
-    throw new GateHarnessError(`no candidate record for proposal ${proposalId}`, ['proposalId']);
-  }
-  const baselines: EvaluationRecord[] = [];
-  for (const c of candidates) {
-    const options = records.filter(
-      (r) =>
-        r.role === 'baseline' &&
-        r.identity.mode === c.identity.mode &&
-        comparable(r.identity, c.identity) &&
-        (!ctx.baselineHashes || ctx.baselineHashes.includes(r.hash)),
+  const parsed = GateInputRecordSchema.safeParse(gateInput);
+  if (!parsed.success) {
+    throw new GateHarnessError(
+      `gate input record ${gateInput.hash} is invalid: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
+      parsed.error.issues.map((i) => i.path.join('.')),
     );
-    if (options.length !== 1) {
-      throw new GateHarnessError(
-        `${options.length === 0 ? 'no' : 'more than one'} comparable ${c.identity.mode} baseline for proposal ${proposalId}`,
-        ['baseline'],
-      );
-    }
-    baselines.push(options[0] as EvaluationRecord);
   }
-  return decide(baselines, candidates, ctx);
+  const g = parsed.data;
+  const find = (hash: string): EvaluationRecord => {
+    const r = records.find((x) => x.hash === hash);
+    if (!r) throw new GateHarnessError(`evaluation record ${hash} is not available`, ['records']);
+    return r;
+  };
+  const d = decide(
+    g.baselineRecords.map(find),
+    g.candidateRecords.map(find),
+    contextFromGateInput(g),
+  );
+  if (d.proposalId !== g.proposalId) {
+    throw new GateHarnessError(
+      `the candidate records name proposal ${d.proposalId}, the gate input ${g.proposalId}`,
+      ['proposalId'],
+    );
+  }
+  if (d.gateInput?.hash !== g.hash) {
+    throw new GateHarnessError(
+      `recomputed gate input ${d.gateInput?.hash ?? '(invalid decision)'} does not match ${g.hash}`,
+      ['hash'],
+    );
+  }
+  return d;
 }
 
 /** True when a recomputed decision matches the recorded ledger event in stage, path and evidence,
@@ -334,6 +538,24 @@ export function sameDecision(recorded: LedgerEvent, recomputed: GateDecision): b
   const pick = (x: LedgerEvent) =>
     canonicalJson({ stage: x.stage, path: x.path, evidence: x.evidence, proposalId: x.proposalId });
   return pick(recorded) === pick(e);
+}
+
+/**
+ * True when a decision is a rejection that carries a `replay-regression` reason on `taskId` (in
+ * any model or mode). The M2 exit check (06 §10.3) asserts this for the control arm on
+ * `replay/idle-probe-leaves-store-asleep-val`, so the control is shown to be rejected for the
+ * right reason, not merely rejected.
+ */
+export function rejectedForReplayRegression(
+  result: Pick<GateDecision, 'decision' | 'reasons'>,
+  taskId: string,
+): boolean {
+  return (
+    result.decision === 'reject' &&
+    result.reasons.some(
+      (r) => r.code === 'replay-regression' && r.severity === 'fail' && r.task === taskId,
+    )
+  );
 }
 
 /** A sealed `no-action` event for the early stop (06 §1.3 step 3), or null when the gate must run. */
@@ -363,8 +585,12 @@ export function earlyStopEvent(
 export interface ReleaseContext {
   ts: string;
   models: { frontier: string; small: string };
-  /** The test-split tasks with kind and state. */
+  /** The test-split tasks with kind, state and modes. */
   tasks: readonly PolicyTask[];
+  /** As GateContext.modes: omit to require every mode the test tasks declare (06 §5.7). */
+  modes?: readonly GateMode[];
+  /** The previously released skill set; when given, every previous record must carry it. */
+  releasedSkillSetHash?: string;
   radius?: BlastRadius;
   runs?: number;
   release?: string;
@@ -385,7 +611,7 @@ export interface ReleaseCheckResult {
 /**
  * The release check on the held-out test split (06 §5.7): the candidate skill set against the
  * previously released one, both models, both modes. Both sides are `release-check` records with
- * comparable identities.
+ * comparable identities, each side one skill set.
  */
 export function releaseCheck(
   prevReleased: Records,
@@ -394,18 +620,20 @@ export function releaseCheck(
 ): ReleaseCheckResult {
   const prev = asList(prevReleased).map(validated);
   const cand = asList(candidate).map(validated);
-  const pairs = pairByMode(
-    prev,
-    cand,
-    { baseline: 'release-check', candidate: 'release-check' },
-    ctx.models,
-  );
+  const set = checkRecordSet(prev, cand, {
+    roles: { baseline: 'release-check', candidate: 'release-check' },
+    models: ctx.models,
+    acceptedSkillSetHash: ctx.releasedSkillSetHash,
+    // A release may carry no skill change against the previous one; the check still runs.
+    distinctSkillSets: false,
+  });
   const policy = releasePolicy({
     models: ctx.models,
-    modes: pairs.map((p) => p.mode),
+    modes: set.modes,
+    declaredModes: ctx.modes,
     tasks: ctx.tasks,
-    previous: pairs.flatMap((p) => p.baseline.outcomes),
-    candidate: pairs.flatMap((p) => p.candidate.outcomes),
+    previous: prev.flatMap((r) => r.outcomes),
+    candidate: cand.flatMap((r) => r.outcomes),
     runs: ctx.runs,
     radius: ctx.radius,
   });
@@ -438,16 +666,18 @@ export function releaseCheck(
     : blocked
       ? `blocked: ${s}`
       : 'release check passed';
+  const evaluationRecords = sortedUnique(
+    set.modes.flatMap((m) => [
+      (set.baseline.get(m) as EvaluationRecord).hash,
+      (set.candidate.get(m) as EvaluationRecord).hash,
+    ]),
+  );
   const ledgerEvent = checked(
     sealEvent({
       ts: ctx.ts,
       stage: 'release-check',
       release: ctx.release,
-      evidence: {
-        kind: 'bench',
-        evaluationRecord: pairs[0]?.candidate.hash as string,
-        results: policy.results,
-      },
+      evidence: { kind: 'bench', evaluationRecords, results: policy.results },
       reason,
     }),
   );

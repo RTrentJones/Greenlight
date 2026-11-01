@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { isArchivedPath, normalizeId, pathToId, resolveId, resolveLink } from './ids';
 import { generateIndex, indexedPages, parseIndex, reconcileIndex } from './index-gen';
-import { renderSkillImpact } from './ledger';
+import { ledgerProblems, renderSkillImpact } from './ledger';
 import {
   INDEX_FILE,
   LEDGER_FILE,
@@ -256,6 +256,10 @@ const ledgerHolds: Rule = (wiki) => {
     page: LEDGER_FILE,
     message: `line ${e.line}: ${e.message}`,
   }));
+  // Duplicate eventIds and stage-machine violations (06 §6.1) in the lines that did parse.
+  for (const problem of ledgerProblems(wiki.ledger)) {
+    out.push({ rule: 'LR-14', page: LEDGER_FILE, message: problem });
+  }
   const hasLedger = wiki.files.has(LEDGER_FILE);
   if (!hasLedger && wiki.skillImpact === undefined) return out;
   if (wiki.skillImpact !== renderSkillImpact(wiki.ledger)) {

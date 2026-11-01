@@ -52,7 +52,12 @@ export const EvidenceSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('bench'),
-      evaluationRecord: Sha256,
+      /** The GateInputRecord (08 §10.4) the decision was computed from. REQUIRED on candidate-*
+       * events; absent on release-check events, which have no gate input. */
+      gateInput: Sha256.optional(),
+      /** Every EvaluationRecord the decision read, baseline and candidate, every mode, sorted. The
+       * retention rule (03 §5) keeps each one as long as this row exists. */
+      evaluationRecords: z.array(Sha256).min(1),
       results: z.array(GateResultSchema).min(1),
     })
     .strict(),
@@ -67,7 +72,10 @@ export const EvidenceSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('template'),
-      evaluationRecord: Sha256,
+      gateInput: Sha256,
+      evaluationRecords: z.array(Sha256).min(1),
+      /** The capability non-regression guard on cells using the template, one per model × mode. */
+      results: z.array(GateResultSchema).min(1),
       lanes: z.array(z.string().min(1)).min(1),
       mutantsFailed: z.number().int().min(0),
       mutantsTotal: z.number().int().min(1),
@@ -145,6 +153,13 @@ export const LedgerEventSchema = LedgerEventObject.superRefine((e, ctx) => {
   if (e.stage === 'verified-in-production' && e.evidence?.kind !== 'field') {
     issue('evidence', 'verified-in-production needs field evidence');
   }
+  if (
+    e.stage.startsWith('candidate-') &&
+    e.evidence?.kind === 'bench' &&
+    e.evidence.gateInput === undefined
+  ) {
+    issue('evidence', 'candidate bench evidence names its gate input record');
+  }
   if (e.control && (e.stage === 'merged' || e.stage === 'released')) {
     issue('control', 'a control-arm proposal is never merged or released');
   }
@@ -156,25 +171,54 @@ export const LedgerEventSchema = LedgerEventObject.superRefine((e, ctx) => {
 export type LedgerEvent = z.infer<typeof LedgerEventObject>;
 export type GateResult = z.infer<typeof GateResultSchema>;
 
-/** Stages that may follow each stage of one proposal (vision 06 §6.1). `withdrawn` can end any
- * accepted, merged or released proposal; a rejected or no-action proposal is final. */
-const NEXT: Record<string, readonly string[]> = {
-  start: ['no-action', 'candidate-rejected', 'candidate-accepted'],
-  'candidate-accepted': ['merged', 'withdrawn'],
-  merged: ['released', 'withdrawn'],
-  released: ['verified-in-production', 'withdrawn'],
-  'verified-in-production': ['withdrawn'],
-  'no-action': [],
-  'candidate-rejected': [],
-  withdrawn: [],
-};
+/** Outlets whose change reaches users only in a published CLI version (06 §3.5, §6.1): the
+ * framework fix (mechanism), the doctor rule, and the skills and templates bundled with the CLI.
+ * For these, `verified-in-production` follows `released`. The verify outlet's assertion lives in
+ * the wrapper's verify spec and ships with the wrapper, never in a CLI release, so for it
+ * `merged -> verified-in-production` is the path and `released` cannot occur. */
+export const RELEASED_OUTLETS: ReadonlySet<string> = new Set([
+  'mechanism',
+  'doctor',
+  'template',
+  'skill',
+]);
 
-/** Checks that one proposal's events, in order, follow the stage machine. Returns problems. */
+/** Stages that may follow each stage of one proposal (vision 06 §6.1). `withdrawn` can end any
+ * accepted, merged, released or verified proposal; a rejected or no-action proposal is final. */
+function nextStages(at: string, outlet: string | undefined): readonly string[] {
+  switch (at) {
+    case 'start':
+      return ['no-action', 'candidate-rejected', 'candidate-accepted'];
+    case 'candidate-accepted':
+      return ['merged', 'withdrawn'];
+    case 'merged':
+      // An event list that names no outlet is treated as release-carried (the stricter reading).
+      return outlet === 'verify'
+        ? ['verified-in-production', 'withdrawn']
+        : ['released', 'withdrawn'];
+    case 'released':
+      return ['verified-in-production', 'withdrawn'];
+    case 'verified-in-production':
+      return ['withdrawn'];
+    default:
+      return [];
+  }
+}
+
+/** Checks that one proposal's events, in order, follow the stage machine (06 §6.1) and name at
+ * most one outlet. Returns problems; empty for a well-formed history. */
 export function checkProposalHistory(events: readonly LedgerEvent[]): string[] {
   const out: string[] = [];
+  const outlets = [...new Set(events.flatMap((e) => (e.outlet ? [e.outlet] : [])))];
+  if (outlets.length > 1) out.push(`events name more than one outlet (${outlets.join(', ')})`);
+  const outlet = outlets[0];
   let at = 'start';
   for (const e of events) {
-    if (!(NEXT[at] ?? []).includes(e.stage)) out.push(`stage "${e.stage}" cannot follow "${at}"`);
+    if (!nextStages(at, outlet).includes(e.stage)) {
+      const why =
+        e.stage === 'released' && outlet === 'verify' ? ' (outlet verify has no CLI release)' : '';
+      out.push(`stage "${e.stage}" cannot follow "${at}"${why}`);
+    }
     at = e.stage;
   }
   return out;

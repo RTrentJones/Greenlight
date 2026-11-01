@@ -1,10 +1,19 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { LedgerWriteError, appendEvent, proposalHistory, renderSkillImpact } from '../ledger';
+import {
+  LedgerWriteError,
+  appendEvent,
+  compareTs,
+  ledgerProblems,
+  orderLedgerEvents,
+  proposalHistory,
+  renderSkillImpact,
+} from '../ledger';
+import { lint } from '../lint';
 import { loadWiki } from '../load';
 import { type LedgerEvent, sealEvent } from '../schema';
-import { ledgerEvents, writeTree } from './fixtures';
+import { goodContext, goodFiles, ledgerEvents, ledgerText, writeTree } from './fixtures';
 
 // Vision 08 §8: harness-only, append-only ledger; skill-impact.md rendered from it.
 
@@ -55,6 +64,74 @@ describe('appendEvent', () => {
     expect(existsSync(join(root, 'ledger.jsonl'))).toBe(false);
   });
 
+  const at = (stage: LedgerEvent['stage'], ts: string, extra: Record<string, unknown> = {}) =>
+    ({ ts, writer: 'harness' as const, proposalId: 'p-020', stage, ...extra }) as never;
+  const accepted = (ts = '2026-10-06T09:00:00.000Z') =>
+    at('candidate-accepted', ts, { path: 'standard', outlet: 'skill' });
+
+  it('refuses a stage the history does not allow, and writes nothing', () => {
+    const root = writeTree({});
+    appendEvent(root, at('candidate-rejected', '2026-10-06T09:00:00.000Z', { path: 'standard' }));
+    const before = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+    expect(() => appendEvent(root, at('merged', '2026-10-07T09:00:00.000Z'))).toThrow(
+      /refused for proposal p-020: stage "merged" cannot follow "candidate-rejected"/,
+    );
+    expect(() => appendEvent(writeTree({}), at('merged', '2026-10-07T09:00:00.000Z'))).toThrow(
+      /cannot follow "start"/,
+    );
+    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8')).toBe(before);
+  });
+
+  it('refuses verified-in-production straight after merged for a skill, allows it for verify', () => {
+    const field = {
+      evidence: {
+        kind: 'field',
+        check: 'keepalive-db',
+        before: 'raw:20261007T090000Z-aaaaaaaa',
+        after: 'raw:20261008T090000Z-bbbbbbbb',
+      },
+    };
+    const skill = writeTree({});
+    appendEvent(skill, accepted());
+    appendEvent(skill, at('merged', '2026-10-07T09:00:00.000Z'));
+    expect(() =>
+      appendEvent(skill, at('verified-in-production', '2026-10-08T09:00:00.000Z', field)),
+    ).toThrow(/cannot follow "merged"/);
+    appendEvent(skill, at('released', '2026-10-08T09:00:00.000Z', { release: '2.0.1' }));
+    appendEvent(skill, at('verified-in-production', '2026-10-09T09:00:00.000Z', field));
+
+    const verify = writeTree({});
+    appendEvent(
+      verify,
+      at('candidate-accepted', '2026-10-06T09:00:00.000Z', { path: 'standard', outlet: 'verify' }),
+    );
+    appendEvent(verify, at('merged', '2026-10-07T09:00:00.000Z'));
+    appendEvent(verify, at('verified-in-production', '2026-10-08T09:00:00.000Z', field));
+    expect(loadWiki(verify).ledger.map((e) => e.stage)).toEqual([
+      'candidate-accepted',
+      'merged',
+      'verified-in-production',
+    ]);
+  });
+
+  it('refuses a duplicate eventId, and an event earlier than its proposal latest', () => {
+    const root = writeTree({});
+    const first = appendEvent(root, accepted());
+    expect(() => appendEvent(root, first)).toThrow(/already in the ledger/);
+    // spend events have no proposal, but are still unique
+    const spend = {
+      ts: '2026-10-06T09:00:00.000Z',
+      writer: 'harness' as const,
+      stage: 'spend' as const,
+      spend: { usd: 0, rollouts: 1, requests: 1, tokensIn: 1, tokensOut: 1 },
+    };
+    appendEvent(root, spend);
+    expect(() => appendEvent(root, spend)).toThrow(/already in the ledger/);
+    expect(() => appendEvent(root, at('merged', '2026-10-05T09:00:00.000Z'))).toThrow(
+      /earlier than the proposal's latest event/,
+    );
+  });
+
   it('records invalid lines on load instead of throwing', () => {
     const root = writeTree({});
     appendEvent(root, event);
@@ -94,6 +171,54 @@ describe('proposalHistory', () => {
     expect(proposalHistory([merged], 'p-x').problems).toEqual([
       'stage "merged" cannot follow "start"',
     ]);
+  });
+});
+
+describe('timestamps compare as instants, not strings', () => {
+  it('orders fractional seconds and equal instants correctly', () => {
+    expect('2026-10-01T00:00:00Z' > '2026-10-01T00:00:00.1Z').toBe(true); // the string trap
+    expect(compareTs('2026-10-01T00:00:00Z', '2026-10-01T00:00:00.1Z')).toBe(-1);
+    expect(compareTs('2026-10-01T00:00:00.100Z', '2026-10-01T00:00:00.1Z')).toBe(0);
+    expect(compareTs('2026-10-01T00:00:00Z', '2026-10-01T00:00:00.000Z')).toBe(0);
+    expect(compareTs('2026-10-01T00:00:00.0000001Z', '2026-10-01T00:00:00Z')).toBe(1);
+    expect(compareTs('2026-10-02T00:00:00Z', '2026-10-01T23:59:59.999Z')).toBe(1);
+  });
+
+  it('orders a history by instant, keeping append order on ties', () => {
+    const e = (ts: string, stage: LedgerEvent['stage'], extra: Record<string, unknown> = {}) =>
+      sealEvent({ ts, proposalId: 'p-t', stage, ...extra } as never);
+    const acc = e('2026-10-01T00:00:00Z', 'candidate-accepted', { path: 'standard' });
+    const merged = e('2026-10-01T00:00:00.1Z', 'merged');
+    expect(proposalHistory([merged, acc], 'p-t')).toMatchObject({ latest: 'merged', problems: [] });
+    const tieA = e('2026-10-01T00:00:00Z', 'no-action', { reason: 'a' });
+    const tieB = e('2026-10-01T00:00:00.000Z', 'no-action', { reason: 'b' });
+    expect(orderLedgerEvents([tieB, tieA])).toEqual([tieB, tieA]);
+  });
+});
+
+describe('ledgerProblems / LR-14 (06 §6.1)', () => {
+  it('reports duplicate eventIds and stage-machine violations, and lint surfaces them', () => {
+    const events = ledgerEvents();
+    expect(ledgerProblems(events)).toEqual([]);
+    const bad = [
+      ...events,
+      events[0] as LedgerEvent,
+      sealEvent({ ts: '2026-10-06T00:00:00.000Z', proposalId: 'p-003', stage: 'merged' }),
+    ];
+    expect(ledgerProblems(bad)).toEqual([
+      `duplicate eventId ${(events[0] as LedgerEvent).eventId}`,
+      'proposal p-001: stage "candidate-accepted" cannot follow "candidate-accepted"',
+      'proposal p-003: stage "merged" cannot follow "no-action"',
+    ]);
+    const files = {
+      ...goodFiles(),
+      'ledger.jsonl': ledgerText(bad),
+      'skill-impact.md': renderSkillImpact(bad),
+    };
+    const findings = lint(loadWiki(writeTree(files)), goodContext());
+    expect(findings.map((f) => `${f.rule} ${f.message}`)).toEqual(
+      ledgerProblems(bad).map((m) => `LR-14 ${m}`),
+    );
   });
 });
 

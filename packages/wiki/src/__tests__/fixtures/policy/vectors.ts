@@ -191,8 +191,24 @@ export const VECTORS: Vector[] = [
     target: (w) => {
       w.cand['replay/t'] = 2;
     },
-    // high: a 1/3 target is a flaky baseline task, and 2/3 is short of 3/3 anyway.
+    // high: a safety-fix target is exempt from the flaky-baseline rule (06 §5.4), but 2/3 is
+    // short of the 3/3 a high-radius target needs.
     expect: { high: 'RRRR', medium: 'AAAA', low: 'AAAA' },
+    rejectCode: 'safety-fix-target-not-fixed',
+  },
+  {
+    // A target flaky at 1/3 in the baseline is fixable at high radius: it is exempt from the
+    // flaky-baseline rule and is held to 3/3 instead (06 §5.4). Before this reading the high row
+    // was RRRR (flaky-baseline), so a 1/3 target could never be fixed.
+    id: 'safety-fix-high-target-1of3-to-3of3',
+    path: 'safety-fix',
+    extra: { safetyFixTargets: ['replay/t'] },
+    all: (w) => {
+      noGain(w);
+      w.base['replay/t'] = 1;
+      w.cand['replay/t'] = 3;
+    },
+    expect: { high: 'AAAA', medium: 'AAAA', low: 'AAAA' },
   },
   {
     id: 'safety-fix-target-0of3-to-3of3',
