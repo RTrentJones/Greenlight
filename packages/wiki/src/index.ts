@@ -30,3 +30,7 @@ export * from './patch';
 export * from './ledger';
 export * from './redact';
 export * from './lint';
+// M1-07: maintainer and proposer bundles with split isolation (06 §1.4, §2.1, §3.1–§3.4).
+export * from './sample';
+export * from './bundle';
+export * from './skills';
