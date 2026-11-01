@@ -13,12 +13,47 @@ import { type RawRecord, truncateExcerpt } from '@rtrentjones/greenlight-shared'
 
 export type Split = 'train' | 'val' | 'test';
 
-/** The bench split of a record, or undefined for a field record. */
-export const splitOf = (r: RawRecord): Split | undefined => r.bench?.split;
+/**
+ * The authoritative split of every bench task, by task id: `bench/splits.json`. A raw record's
+ * own `bench.split` is self-declared, so it never decides visibility on its own.
+ */
+export type SplitIndex = ReadonlyMap<string, Split>;
 
-/** True for evidence an agent role may see: field records and train bench records (06 §1.4). */
-export const isAgentVisible = (r: RawRecord): boolean =>
-  r.kind !== 'bench' || r.bench?.split === 'train';
+/** Parses `bench/splits.json` (`{ "<taskId>": "train" | "val" | "test" }`). Throws on any other
+ * shape, so a corrupt file can never read as "no held-out tasks". */
+export function parseSplits(text: string): SplitIndex {
+  const json = JSON.parse(text) as unknown;
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+    throw new Error('bench/splits.json must be an object of task id → split');
+  }
+  const out = new Map<string, Split>();
+  for (const [id, s] of Object.entries(json as Record<string, unknown>)) {
+    if (s !== 'train' && s !== 'val' && s !== 'test') {
+      throw new Error(`bench/splits.json: task ${id} has split ${JSON.stringify(s)}`);
+    }
+    out.set(id, s);
+  }
+  return out;
+}
+
+/**
+ * The split of a bench record as `splits` establishes it from its task id, or `undefined` when it
+ * cannot be established: no index, or a task the index does not list. A field record has no
+ * split. When the record's own `bench.split` disagrees with the index, the index wins.
+ */
+export function splitOf(r: RawRecord, splits?: SplitIndex): Split | undefined {
+  if (r.kind !== 'bench' || !r.bench) return undefined;
+  return splits?.get(r.bench.task);
+}
+
+/**
+ * True for evidence an agent role may see (06 §1.4): field records, and bench records whose task
+ * `splits` lists as `train` and which also declare themselves `train`. A bench record whose split
+ * cannot be established (no index, or an unknown task id) is never visible.
+ */
+export const isAgentVisible = (r: RawRecord, splits?: SplitIndex): boolean =>
+  r.kind !== 'bench' ||
+  (r.bench !== undefined && r.bench.split === 'train' && splitOf(r, splits) === 'train');
 
 /** Numeric-aware version comparison ("10" > "9", "1.10" > "1.9"); non-numeric parts compare as
  * strings. */
@@ -75,6 +110,8 @@ export interface SampleOptions {
   skill?: string;
   /** The cell of a record, for "passing in the same cell as a failing one"; defaults to its tool. */
   cellOf?: (r: RawRecord) => string;
+  /** `bench/splits.json`; without it no bench record is a candidate. */
+  splits?: SplitIndex;
 }
 
 export interface Sample {
@@ -97,7 +134,8 @@ export function sampleRecords(records: readonly RawRecord[], opts: SampleOptions
   const cellOf = opts.cellOf ?? ((r: RawRecord) => r.tool);
   const skill = opts.skill?.split('@')[0];
   const pool = records.filter(
-    (r) => isAgentVisible(r) && (opts.skill === undefined || matchesSkill(r, opts.skill)),
+    (r) =>
+      isAgentVisible(r, opts.splits) && (opts.skill === undefined || matchesSkill(r, opts.skill)),
   );
   const rank = (r: RawRecord) => seededRank(opts.seed, r.rawId);
 

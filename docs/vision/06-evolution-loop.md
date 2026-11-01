@@ -117,10 +117,21 @@ The policy is enforced by mechanism. Instructions alone are not enough:
   `bench/mutants/<taskId>/` (08 §10). Bundles are built from an allow-list, so these paths can never
   be copied in.
 - **`wiki read raw:<id>` and `wiki traces` refuse val and test records.** They refuse any `bench`
-  raw record whose `split` is not `train`, with the error `raw <id> belongs to split <s>; not
-  visible to role proposer`.
+  raw record whose split is not `train`, with the error `raw <id> belongs to split <s>; not
+  visible to role proposer`. The split is taken from `bench/splits.json` by task id, never from the
+  record's self-declared `bench.split`; a bench record whose task `splits.json` does not list, or
+  any bench record when `splits.json` is unavailable, is refused as well.
 - **`outcomes.md` is assembled from train records and ledger aggregates only.** A unit test asserts
   that no val or test task id appears in a generated bundle.
+- **Bundles carry a projected ledger, never `ledger.jsonl` itself.** Gate events carry per-task
+  `replay.regressions` and reason text that can name val tasks (the M2 control arm produces exactly
+  that). A bundle's `ledger.jsonl` and `skill-impact.md` are projections that keep stage, proposal,
+  outlet, skill, path, control, cited patterns, versions and the kind of evidence, plus, for the
+  proposer only, the aggregate val score per model and mode. Regressions, replay counts, p-values,
+  reasons, diffs, task ids, check names and every test-split result are dropped. The maintainer's
+  projection carries no scores, since the maintainer sees no val results.
+- **Incidents reach the proposer only through pattern pages.** `wiki read <incident-id>` is
+  refused for every role but `maintainer`.
 
 ### 1.5 Baseline identity
 
@@ -152,8 +163,10 @@ and it is never reported as a result.
 `greenlight wiki ingest` writes a bundle directory, `.greenlight/bundles/<rawId>/`, and prints its
 path. The bundle contains:
 
-- `wiki/`: a full copy of the wiki in scope. That is the project wiki, plus the framework wiki when
-  `--framework` is given in the framework repo.
+- `wiki/`: a copy of the wiki in scope. That is the project wiki, plus the framework wiki when
+  `--framework` is given in the framework repo. Pages, `index.md` and `log.md` are copied
+  verbatim; `ledger.jsonl` and `skill-impact.md` are the maintainer's projection (§1.4), with no
+  val results.
 - `raw/`: the sampled raw records (§3.2), each with its excerpt truncated to 15,000 characters. The
   records come from train rollouts and field records only (§1.4).
 - `incident/` (with `--incident <n>`): the issue body and comments, the linked PRs' titles and
@@ -161,6 +174,8 @@ path. The bundle contains:
 - `context.json`: the installed Greenlight version, the manifest cells, the list of verify check
   ids per tool, and the managed skills with their versions.
 - `PROMPT.md`: the prompt in §2.2, with the bundle paths filled in.
+- `access.jsonl`: the access log of reads made through the read-only interface (§3.1).
+- `bundle.json`: the manifest (id, role, files), verified against the bundle key (§3.1).
 
 ### 2.2 Maintainer prompt (full text)
 
@@ -257,11 +272,14 @@ trust it blindly:
 containing:
 
 - `index.md` and `skill-impact.md`. Both are pre-loaded, because the paper's proposer reads them
-  first.
+  first. `skill-impact.md` is rendered from the proposer's projection of the ledger (§1.4).
 - `outcomes.md`: an outcome summary built only from evidence the proposer may see (§1.4). For each
   managed skill in scope it gives:
   - the field metrics (05 §9) for the current and previous versions;
-  - the **train** results per task for the current baseline identity;
+  - the **train** results per task under the **accepted** skill set: the one the latest merged
+    proposal's gate input names as its candidate (or, before any merge, the accepted set of the
+    latest gate input), else the hash of the installed skill set (08 §10.3). It is never the skill
+    set of whichever train record happens to be newest;
   - the **aggregate** val score per model and mode, from the ledger, with no per-task detail;
   - the open hypotheses with their evidence counts.
 - `PROMPT.md`: the prompt in §3.3.
@@ -272,13 +290,31 @@ from any agent:
 
 | command | returns |
 |---|---|
-| `greenlight wiki read <page-id>` | the page, any status, with `--role maintainer` implied |
+| `greenlight wiki read <page-id>` | the page, any status (a hypothesis carries a banner). Incident pages are refused to the proposer, which sees incidents only through the pattern pages that cite them (§1.4) |
 | `greenlight wiki read raw:<rawId>` | the raw record, excerpt included |
 | `greenlight wiki read skill:<name>` | `SKILL.md` and `PURPOSE.md` |
 | `greenlight wiki traces --skill <name> --failed [--limit n]` | raw ids, newest first |
 
+The role comes from the bundle (`--bundle` or `GREENLIGHT_BUNDLE`), never from a flag: `--role`
+can only narrow a maintainer bundle. Without a bundle the role is `agent`, and `--role maintainer`
+or `--role proposer` is refused (exit 4), because those roles exist only inside a harness-issued
+bundle, where every read is logged.
+
 `propose --apply <file>` refuses the proposal unless the bundle's access log shows at least four
 `wiki read raw:` calls. This enforces the paper's "read at least 4 execution traces".
+
+**Bundle trust.** `wiki ingest` and `wiki propose` issue each bundle a random 32-byte key, stored
+outside the bundle at `.greenlight/bundle-keys/<bundleId>` (mode 0600; `GREENLIGHT_BUNDLE_KEYS`
+overrides the directory), together with an HMAC of the bundle's `bundle.json`. The CLI reads a
+bundle's role and identity only after verifying that MAC, so a hand-written `bundle.json` cannot
+make a directory a bundle or change its role. Every served read appends an access-log entry that
+is HMAC'd with the key and chained to the previous entry's MAC (`seq`, `prev`, `mac`).
+`propose --apply` verifies the whole chain, refusing the proposal (exit 4) if any line was forged,
+edited, reordered or spliced from another bundle, and counts only reads of raw ids that exist in
+the raw store and are visible to the proposer. **Trust assumption:** the proposer sandbox cannot
+read or write `.greenlight/bundle-keys/`. The runner keeps that directory outside the sandbox, and
+serves the read-only commands from a process outside the sandbox that can read the key; if the
+sandbox could read a key, it could forge its own log.
 
 ### 3.2 Sampling and truncation
 

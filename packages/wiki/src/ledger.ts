@@ -1,5 +1,16 @@
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { LEDGER_FILE, parseLedger } from './load';
 import {
   type GateResult,
@@ -20,6 +31,126 @@ export class LedgerWriteError extends Error {
   constructor(message: string) {
     super(`ledger: ${message}`);
     this.name = 'LedgerWriteError';
+  }
+}
+
+// ---- cross-process file lock ----------------------------------------------------------------
+
+export class FileLockTimeoutError extends Error {
+  constructor(readonly lock: string) {
+    super(`timed out waiting for the lock ${lock}`);
+    this.name = 'FileLockTimeoutError';
+  }
+}
+
+export interface FileLockOptions {
+  /** A lock whose mtime is older than this is presumed abandoned by a crashed holder (default
+   * 30s). A live holder slower than this loses exclusion, so callers keep the critical section
+   * short. */
+  staleMs?: number;
+  /** How long to wait for the lock before throwing `FileLockTimeoutError` (default 10s). */
+  timeoutMs?: number;
+  now?: () => number;
+}
+
+const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function readToken(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw e;
+  }
+}
+
+function mtimeOf(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Runs `fn` while holding `<lock>.guard`, a short-held O_EXCL lock that serializes every
+ * REMOVAL of the main lock (a steal or a release), so two waiters can never both remove it. */
+function underGuard(lock: string, staleMs: number, now: () => number, fn: () => void): void {
+  const guard = `${lock}.guard`;
+  const deadline = now() + Math.max(staleMs, 1_000);
+  for (;;) {
+    try {
+      closeSync(openSync(guard, 'wx'));
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      // The guard is held for microseconds; one this old belongs to a holder that crashed inside
+      // the guarded section.
+      const m = mtimeOf(guard);
+      if (m !== undefined && now() - m > staleMs) rmSync(guard, { force: true });
+      else if (now() > deadline) throw new FileLockTimeoutError(guard);
+      else pause(2);
+    }
+  }
+  try {
+    fn();
+  } finally {
+    rmSync(guard, { force: true });
+  }
+}
+
+/**
+ * Runs `fn` under an exclusive cross-process lock file. The lock is created with O_EXCL and holds
+ * a random token. Every removal is token-checked and serialized under a guard file:
+ *
+ * - a waiter that finds a stale lock removes it only if the lock still holds the token it saw and
+ *   is still stale, so two waiters can never both steal (one would otherwise delete the lock the
+ *   other has just created);
+ * - the holder removes the lock only if it still holds its own token, so a holder whose lock was
+ *   stolen never deletes the next holder's lock.
+ */
+export function withFileLock<T>(lock: string, fn: () => T, opts: FileLockOptions = {}): T {
+  const staleMs = opts.staleMs ?? 30_000;
+  const now = opts.now ?? Date.now;
+  const deadline = now() + (opts.timeoutMs ?? 10_000);
+  const token = `${process.pid}.${randomBytes(12).toString('hex')}`;
+  mkdirSync(dirname(lock), { recursive: true });
+  for (;;) {
+    try {
+      const fd = openSync(lock, 'wx');
+      try {
+        writeSync(fd, token);
+      } finally {
+        closeSync(fd);
+      }
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      const seen = readToken(lock);
+      const m = mtimeOf(lock);
+      if (seen === undefined || m === undefined) continue; // released between open and read
+      if (now() - m > staleMs) {
+        underGuard(lock, staleMs, now, () => {
+          const cur = mtimeOf(lock);
+          if (readToken(lock) === seen && cur !== undefined && now() - cur > staleMs) {
+            rmSync(lock, { force: true });
+          }
+        });
+        continue;
+      }
+      if (now() > deadline) throw new FileLockTimeoutError(lock);
+      pause(5);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      underGuard(lock, staleMs, now, () => {
+        if (readToken(lock) === token) rmSync(lock, { force: true });
+      });
+    } catch {
+      // Could not take the guard: leave the lock to go stale rather than mask fn's outcome.
+    }
   }
 }
 
@@ -79,6 +210,10 @@ export function ledgerProblems(events: readonly LedgerEvent[]): string[] {
  * `candidate-rejected`. An unsealed event is sealed with `sealEvent`; a sealed one must carry the
  * right `eventId` (the schema re-derives it). Lines of the existing ledger that fail to parse are
  * left for LR-14 to report. Returns what was written.
+ *
+ * The read-check-append runs under `<ledger>.lock` (`withFileLock`): the ledger is re-read under
+ * the lock, so two processes appending at once cannot both pass the duplicate and stage-machine
+ * checks against the same snapshot.
  */
 export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent {
   if ((event as { writer?: unknown }).writer !== 'harness') {
@@ -94,9 +229,13 @@ export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent 
     throw new LedgerWriteError(`refused: ${why}`);
   }
   const file = join(root, LEDGER_FILE);
+  const data = result.data;
+  return withFileLock(`${file}.lock`, () => appendLocked(file, data));
+}
+
+function appendLocked(file: string, next: LedgerEvent): LedgerEvent {
   const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
   const existing = parseLedger(text).events;
-  const next = result.data;
   if (existing.some((e) => e.eventId === next.eventId)) {
     throw new LedgerWriteError(`refused: eventId ${next.eventId} is already in the ledger`);
   }
@@ -113,8 +252,8 @@ export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent 
   }
   // A file whose last line lacks its newline would otherwise fuse with the new line.
   const lead = text !== '' && !/(^|\n)$/.test(text) ? '\n' : '';
-  appendFileSync(file, `${lead}${canonicalJson(result.data)}\n`);
-  return result.data;
+  appendFileSync(file, `${lead}${canonicalJson(next)}\n`);
+  return next;
 }
 
 export interface ProposalHistory {
@@ -246,6 +385,162 @@ export function renderSkillImpact(events: readonly LedgerEvent[]): string {
     '# Skill impact',
     '',
     '<!-- rendered from ledger.jsonl by `greenlight wiki render`; do not edit by hand -->',
+    '',
+    '## Proposals',
+    '',
+    table(
+      rows.filter((r) => !r.control),
+      '_No proposals yet._',
+    ),
+    '',
+    '## Controls',
+    '',
+    table(
+      rows.filter((r) => r.control),
+      '_No control proposals._',
+    ),
+    '',
+  ].join('\n');
+}
+
+// ---- the projected ledger for agent bundles (06 §1.4) ----------------------------------------
+
+/** One model × mode's aggregate val score, as the proposer may see it (06 §1.4). */
+export interface ProjectedScore {
+  model: string;
+  mode: GateResult['mode'];
+  before: number;
+  after: number;
+  delta: number;
+  decision: GateResult['decision'];
+}
+
+/**
+ * A ledger event as an agent bundle holds it. Only the fields 06 §1.4 lets a role see survive:
+ * stage, proposal, outlet, skill, path, control, cited patterns, versions and release, the KIND of
+ * evidence, and (proposer only) the aggregate val score per model × mode. Per-task regressions,
+ * replay counts, p-values, reason text, diffs, repro task ids, check names, evaluation hashes and
+ * every test-split result are dropped, as are `spend` and `release-check` events.
+ */
+export interface ProjectedEvent {
+  ts: string;
+  proposalId?: string;
+  stage: LedgerEvent['stage'];
+  path?: LedgerEvent['path'];
+  control?: boolean;
+  outlet?: LedgerEvent['outlet'];
+  skill?: string;
+  pattern?: string[];
+  versionFrom?: string;
+  versionTo?: string;
+  release?: string;
+  evidence?: NonNullable<LedgerEvent['evidence']>['kind'];
+  scores?: ProjectedScore[];
+}
+
+export type ProjectionRole = 'maintainer' | 'proposer';
+
+/** The ledger projected for `role`, in ledger order. The maintainer sees no val results at all,
+ * so its projection carries no scores (06 §1.4). */
+export function projectLedger(
+  events: readonly LedgerEvent[],
+  role: ProjectionRole,
+): ProjectedEvent[] {
+  return events
+    .filter((e) => e.stage !== 'spend' && e.stage !== 'release-check')
+    .map((e) => {
+      const ev = e.evidence;
+      const results = ev && (ev.kind === 'bench' || ev.kind === 'template') ? ev.results : [];
+      const scores =
+        role === 'proposer'
+          ? results
+              .filter((r) => r.split === 'val')
+              .map((r) => ({
+                model: r.model,
+                mode: r.mode,
+                before: r.capability.before,
+                after: r.capability.after,
+                delta: r.capability.delta,
+                decision: r.decision,
+              }))
+          : [];
+      const out: ProjectedEvent = { ts: e.ts, stage: e.stage };
+      if (e.proposalId !== undefined) out.proposalId = e.proposalId;
+      if (e.path !== undefined) out.path = e.path;
+      if (e.control !== undefined) out.control = e.control;
+      if (e.outlet !== undefined) out.outlet = e.outlet;
+      if (e.skill !== undefined) out.skill = e.skill;
+      if (e.pattern !== undefined) out.pattern = [...e.pattern];
+      if (e.versionFrom !== undefined) out.versionFrom = e.versionFrom;
+      if (e.versionTo !== undefined) out.versionTo = e.versionTo;
+      if (e.release !== undefined) out.release = e.release;
+      if (ev !== undefined) out.evidence = ev.kind;
+      if (scores.length > 0) out.scores = scores;
+      return out;
+    });
+}
+
+/** The projected ledger as JSONL, one canonical object per line. */
+export const projectedLedgerText = (events: readonly ProjectedEvent[]): string =>
+  events.map((e) => `${canonicalJson(e as unknown as Record<string, unknown>)}\n`).join('');
+
+function projectedRow(id: string, evs: readonly ProjectedEvent[]): Row {
+  const ordered = evs
+    .map((e, i) => ({ e, i }))
+    .sort((x, y) => compareTs(x.e.ts, y.e.ts) || x.i - y.i)
+    .map(({ e }) => e);
+  const last = ordered.at(-1) as ProjectedEvent;
+  const skill = ordered.find((e) => e.skill)?.skill;
+  const outlet = ordered.find((e) => e.outlet)?.outlet;
+  const target = [skill, outlet && (skill ? `(${outlet})` : outlet)].filter(Boolean).join(' ');
+  const patterns = [...new Set(ordered.flatMap((e) => e.pattern ?? []))].join(', ');
+  const path = [...ordered].reverse().find((e) => e.path)?.path ?? '';
+  const evidence = ordered.flatMap((e) => {
+    if (!e.evidence) return [];
+    if (!e.scores) return [`${e.stage}: ${e.evidence} evidence`];
+    return e.scores.map(
+      (s) =>
+        `${e.stage}: ${s.model} ${s.mode}/val: capability ${pct(s.before)}→${pct(s.after)} (${signed(s.delta)}) → ${s.decision}`,
+    );
+  });
+  const accepted = ordered.some((e) => e.stage === 'candidate-accepted');
+  const measured = ordered.some((e) => e.evidence === 'bench' || e.evidence === 'template');
+  if (accepted && !measured) evidence.push('**unmeasured**');
+  const cells = [
+    last.ts.slice(0, 10),
+    id,
+    target || '—',
+    patterns || '—',
+    path || '—',
+    last.stage,
+    evidence.join('<br>') || '—',
+  ];
+  return {
+    ts: last.ts,
+    id,
+    control: ordered.some((e) => e.control === true),
+    line: `| ${cells.map(cell).join(' | ')} |`,
+  };
+}
+
+/**
+ * `skill-impact.md` as an agent bundle holds it: the layout of `renderSkillImpact`, rendered from
+ * the projected ledger, so no regression list, reason or task id can reach a sandbox.
+ */
+export function renderProjectedSkillImpact(events: readonly ProjectedEvent[]): string {
+  const ids = [...new Set(events.flatMap((e) => (e.proposalId ? [e.proposalId] : [])))];
+  const rows = ids
+    .map((id) =>
+      projectedRow(
+        id,
+        events.filter((e) => e.proposalId === id),
+      ),
+    )
+    .sort((a, b) => compareTs(b.ts, a.ts) || a.id.localeCompare(b.id));
+  return [
+    '# Skill impact',
+    '',
+    '<!-- projected from ledger.jsonl for an agent bundle (06 §1.4): aggregate scores only -->',
     '',
     '## Proposals',
     '',

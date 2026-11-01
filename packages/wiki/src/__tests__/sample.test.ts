@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { bundleExcerpt, compareVersions, parseSampleSpec, sampleRecords } from '../sample';
-import { rec } from './raw-fixtures';
+import {
+  bundleExcerpt,
+  compareVersions,
+  isAgentVisible,
+  parseSampleSpec,
+  parseSplits,
+  sampleRecords as sampleWith,
+  splitOf,
+} from '../sample';
+import { fixtureSplits, rec } from './raw-fixtures';
+
+const splits = fixtureSplits();
+const sampleRecords = (
+  records: Parameters<typeof sampleWith>[0],
+  opts: Parameters<typeof sampleWith>[1],
+) => sampleWith(records, { splits, ...opts });
 
 const ids = (rs: { rawId: string }[]) => rs.map((r) => r.rawId.slice(-8));
 
@@ -22,6 +36,34 @@ describe('sampleRecords (06 §3.2)', () => {
     expect(ids([...s.failing, ...s.passing])).not.toContain('00000005');
     expect(ids([...s.failing, ...s.passing])).not.toContain('00000006');
     expect(ids([...s.failing, ...s.passing])).not.toContain('00000009');
+  });
+
+  it('takes the split from bench/splits.json by task id, never from the record', () => {
+    // Self-declared train, but splits.json lists the task as val.
+    const liar = rec({ id: '0000000d', split: 'train', task: 'replay/fixture-task-val' });
+    // A bench record whose task splits.json does not list.
+    const unknown = rec({ id: '0000000e', split: 'train', task: 'replay/not-in-splits-train' });
+    const train = rec({ id: '0000000f', split: 'train' });
+    const field = rec({ id: '00000010' });
+    expect(splitOf(liar, splits)).toBe('val');
+    expect(isAgentVisible(liar, splits)).toBe(false);
+    expect(splitOf(unknown, splits)).toBeUndefined();
+    expect(isAgentVisible(unknown, splits)).toBe(false);
+    expect(isAgentVisible(train, splits)).toBe(true);
+    // Without splits.json no bench record is visible; field records always are.
+    expect(isAgentVisible(train)).toBe(false);
+    expect(isAgentVisible(field)).toBe(true);
+    const s = sampleWith([liar, unknown, train, field], { seed: 's', failing: 9, splits });
+    expect(ids(s.failing).sort()).toEqual(['0000000f', '00000010']);
+    expect(ids(sampleWith([liar, unknown, train, field], { seed: 's' }).failing)).toEqual([
+      '00000010',
+    ]);
+  });
+
+  it('parses splits.json strictly', () => {
+    expect(parseSplits('{"a":"train","b":"val"}').get('b')).toBe('val');
+    expect(() => parseSplits('{"a":"holdout"}')).toThrow(/split/);
+    expect(() => parseSplits('[]')).toThrow(/object/);
   });
 
   it('is deterministic for a seed and independent of input order', () => {

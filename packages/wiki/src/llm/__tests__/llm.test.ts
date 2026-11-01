@@ -1,9 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { findSecrets } from '@rtrentjones/greenlight-shared';
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { race } from '../../__tests__/race';
 import { checkBudget, estimateGateCost, spendEvent } from '../../bench/budget';
 import { BudgetSchema, ModelsConfigSchema } from '../../schema';
 import {
@@ -686,6 +688,31 @@ describe('FileQuotaStore', () => {
     expect(s.take('m', '2026-11-01', 20)).toEqual({ day: '2026-11-01', count: 2 });
     expect(s.take('m', '2026-11-01', 2)).toBeNull();
   });
+
+  it('processes racing over a stale lock steal it once and lose no increment', async () => {
+    const root = tmp();
+    const s = new FileQuotaStore({ root });
+    s.save('m', { day: '2026-11-01', count: 0 });
+    const lock = `${s.path('m')}.lock`;
+    writeFileSync(lock, 'crashed-holder');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lock, old, old);
+    const results = await race(
+      8,
+      pathToFileURL(resolve(__dirname, '../quota.ts')).href,
+      `
+        const s = new m.FileQuotaStore({ root: arg.root, staleLockMs: 5000, lockTimeoutMs: 30000 });
+        for (let i = 0; i < 15; i++) if (!s.take('m', '2026-11-01', 10000)) throw new Error('refused');
+        return 1;
+      `,
+      { root },
+    );
+    for (const r of results) expect(r.stderr).toBe('');
+    expect(results.every((r) => r.code === 0)).toBe(true);
+    expect(s.load('m')).toEqual({ day: '2026-11-01', count: 8 * 15 });
+    expect(existsSync(lock)).toBe(false);
+    expect(existsSync(`${lock}.guard`)).toBe(false);
+  }, 60_000);
 
   it('refuses a corrupt file rather than resetting the count', () => {
     const root = tmp();

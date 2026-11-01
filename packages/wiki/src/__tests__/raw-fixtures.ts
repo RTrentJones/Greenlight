@@ -7,6 +7,19 @@ import { type RawRecord, RawRecordSchema, sha256 } from '@rtrentjones/greenlight
 
 export const SKILL_SET = 'a'.repeat(64);
 
+/** `bench/splits.json` for the fixture tasks (the default task of each split, plus extras). */
+export const fixtureSplits = (
+  extra: Record<string, 'train' | 'val' | 'test'> = {},
+): Map<string, 'train' | 'val' | 'test'> =>
+  new Map(
+    Object.entries({
+      'replay/fixture-task-train': 'train',
+      'replay/fixture-task-val': 'val',
+      'replay/fixture-task-test': 'test',
+      ...extra,
+    }) as [string, 'train' | 'val' | 'test'][],
+  );
+
 export interface RecOpts {
   id: string;
   passed?: boolean;
@@ -17,6 +30,8 @@ export interface RecOpts {
   wikiHits?: string[];
   skill?: { name: string; version: string };
   excerpt?: string;
+  /** The bench rollout's skill set hash (default `SKILL_SET`). */
+  skillSetHash?: string;
 }
 
 /** `id` is the 8-hex suffix; the timestamp part comes from `startedAt`. */
@@ -50,7 +65,7 @@ export function rec(o: RecOpts): RawRecord {
             split: o.split,
             model: 'model-a',
             mode: 'isolation',
-            skillSetHash: SKILL_SET,
+            skillSetHash: o.skillSetHash ?? SKILL_SET,
             evaluationId: 'eval-1',
             run: 1,
             seed: '1',

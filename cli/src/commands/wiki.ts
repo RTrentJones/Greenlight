@@ -2,13 +2,18 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { newRawId } from '@rtrentjones/greenlight-shared';
 import {
+  BUNDLE_KEYS_DIR,
   type BundleContext,
   BundleLeakError,
   BundleSecretError,
+  type Finding,
   type LintContext,
+  type OpenBundle,
   PROPOSAL_FILE,
   type Role,
   type SeamTerms,
+  type SplitIndex,
+  acceptedSkillSet,
   applyMaintainerOutput,
   buildMaintainerBundle,
   buildProposerBundle,
@@ -20,10 +25,13 @@ import {
   loadRawStore,
   loadSkills,
   loadWiki,
+  openBundle,
   parseSampleSpec,
-  readBundleManifest,
+  parseSplits,
+  readGateInput,
   readTarget,
   recordAccess,
+  skillSetHash,
   withWrites,
   writeBundle,
   writeChangeset,
@@ -72,7 +80,10 @@ const USAGE = `usage: greenlight wiki <subcommand>
                        the read-only interface; val/test bench records are never served
 
 common: --root <wiki dir> (default wiki), --raw <raw dir> (default .greenlight/raw).
-Inside a bundle, set GREENLIGHT_BUNDLE=<bundle dir> (or pass --bundle) so reads are logged.`;
+Inside a bundle, set GREENLIGHT_BUNDLE=<bundle dir> (or pass --bundle) so reads are logged.
+Roles: the maintainer and proposer roles exist only inside a harness-issued bundle (its role is
+verified against the key in .greenlight/bundle-keys/, or GREENLIGHT_BUNDLE_KEYS); without one,
+reads run as role agent and --role maintainer|proposer is refused.`;
 
 class Usage extends Error {}
 
@@ -120,6 +131,8 @@ interface Paths {
   raw: string;
   skills: string;
   templates: string;
+  /** Per-bundle keys; the runner keeps this outside every agent sandbox (06 §3.1). */
+  keys: string;
 }
 
 function paths(io: WikiIo, values: Record<string, string>): Paths {
@@ -128,6 +141,7 @@ function paths(io: WikiIo, values: Record<string, string>): Paths {
     raw: resolve(io.cwd, values['--raw'] ?? '.greenlight/raw'),
     skills: resolve(io.cwd, '.claude/skills'),
     templates: resolve(io.cwd, 'tools'),
+    keys: resolve(io.cwd, io.env.GREENLIGHT_BUNDLE_KEYS || BUNDLE_KEYS_DIR),
   };
 }
 
@@ -160,18 +174,31 @@ async function lintContext(io: WikiIo, framework: boolean, p: Paths): Promise<Li
   return { kind, skills: loadSkills(p.skills), seam: await seamTerms(io.cwd) };
 }
 
-/** Held-out task ids from `bench/splits.json` (framework repo), on top of the raw store's own. */
-function heldOutTaskIds(cwd: string): string[] {
+/**
+ * `bench/splits.json` (framework repo): the authoritative split of every bench task. Undefined
+ * when absent, in which case no bench raw record is ever served or bundled. A corrupt file is a
+ * missing prerequisite (exit 3), never "no held-out tasks".
+ */
+function loadSplits(cwd: string): SplitIndex | undefined {
   const file = join(cwd, 'bench/splits.json');
-  if (!existsSync(file)) return [];
+  if (!existsSync(file)) return undefined;
   try {
-    const splits = JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>;
-    return Object.entries(splits)
-      .filter(([, s]) => s !== 'train')
-      .map(([id]) => id);
-  } catch {
-    return [];
+    return parseSplits(readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw Object.assign(new Error(`cannot read ${file}: ${(err as Error).message}`), { code: 3 });
   }
+}
+
+/** Held-out task ids from `bench/splits.json`, on top of the raw store's own. */
+const heldOutTaskIds = (splits: SplitIndex | undefined): string[] =>
+  [...(splits ?? [])].filter(([, s]) => s !== 'train').map(([id]) => id);
+
+/**
+ * The accepted skill set for `outcomes.md` (06 §1.5): from the latest merged or gated ledger state
+ * (its gate input record under `<wiki>/evidence/eval/`), else the installed skill set's hash.
+ */
+function acceptedSkillSetFor(p: Paths, wiki: ReturnType<typeof loadWiki>): string | undefined {
+  return acceptedSkillSet(wiki.ledger, (h) => readGateInput(p.root, h)) ?? skillSetHash(p.skills);
 }
 
 const withCode = (err: unknown): number =>
@@ -260,6 +287,7 @@ async function ingestCmd(args: string[], io: WikiIo): Promise<number> {
   for (const e of store.errors) io.err(`! skipped raw ${e.file}: ${e.message}`);
   const id = newRawId();
   const dir = resolve(io.cwd, a.values['--out'] ?? join('.greenlight/bundles', id));
+  const splits = loadSplits(io.cwd);
   const bundle = buildMaintainerBundle({
     id: a.values['--out'] ? basename(dir) : id,
     dir,
@@ -271,14 +299,37 @@ async function ingestCmd(args: string[], io: WikiIo): Promise<number> {
     skill: a.values['--skill'],
     tool: a.values['--tool'],
     incident: a.values['--incident'],
-    heldOutTaskIds: heldOutTaskIds(io.cwd),
+    heldOutTaskIds: heldOutTaskIds(splits),
+    splits,
   });
-  writeBundle(dir, bundle);
+  writeBundle(dir, bundle, { keysDir: p.keys });
   io.err(
     `maintainer bundle: ${bundle.manifest.rawIds.length} raw record(s), ${bundle.files.size} files`,
   );
   io.out(dir);
   return 0;
+}
+
+/**
+ * The error findings `after` has beyond `before`, counted as a multiset by rule, page and message:
+ * a finding has no location, so an identical new error on a page that already had one is still
+ * introduced (its count went up), never masked by the pre-existing one.
+ */
+export function introducedErrors(before: readonly Finding[], after: readonly Finding[]): Finding[] {
+  const key = (f: Finding) => `${f.rule}\0${f.page}\0${f.message}`;
+  const budget = new Map<string, number>();
+  for (const f of before) {
+    if (f.severity === 'error') budget.set(key(f), (budget.get(key(f)) ?? 0) + 1);
+  }
+  return after.filter((f) => {
+    if (f.severity !== 'error') return false;
+    const left = budget.get(key(f)) ?? 0;
+    if (left > 0) {
+      budget.set(key(f), left - 1);
+      return false;
+    }
+    return true;
+  });
 }
 
 async function ingestApply(
@@ -305,13 +356,8 @@ async function ingestApply(
   // Lint the scratch copy (06 §2.4). Only findings the change introduces reject it, so an
   // unrelated pre-existing problem cannot block every maintainer pass.
   const ctx = await lintContext(io, a.flags.has('--framework'), p);
-  const key = (f: { rule: string; page: string; message: string }) =>
-    `${f.rule}\0${f.page}\0${f.message}`;
-  const before = new Set(lint(wiki, ctx).map(key));
   const scratch = withWrites(wiki, applied.changeset.writes);
-  const introduced = lint(scratch, ctx).filter(
-    (f) => f.severity === 'error' && !before.has(key(f)),
-  );
+  const introduced = introducedErrors(lint(wiki, ctx), lint(scratch, ctx));
   if (introduced.length > 0) {
     io.err('✘ maintainer output rejected by lint; nothing written:');
     for (const f of introduced.slice(0, 10)) io.err(`  ${f.rule} ${f.page}: ${f.message}`);
@@ -354,6 +400,9 @@ function proposeCmd(args: string[], io: WikiIo): number {
       wiki,
       skillsDir: p.skills,
       templatesDir: p.templates,
+      keysDir: p.keys,
+      records: loadRawStore(p.raw).records,
+      splits: loadSplits(io.cwd),
     });
     if (!checked.ok) {
       io.err('✘ proposal refused:');
@@ -362,7 +411,7 @@ function proposeCmd(args: string[], io: WikiIo): number {
     }
     const record = {
       proposalId: checked.proposalId,
-      bundle: readBundleManifest(bundleDir).id,
+      bundle: openBundle(bundleDir, p.keys).manifest.id,
       validatedAt: new Date().toISOString(),
       output: checked.proposal,
     };
@@ -382,6 +431,7 @@ function proposeCmd(args: string[], io: WikiIo): number {
   for (const e of store.errors) io.err(`! skipped raw ${e.file}: ${e.message}`);
   const id = newRawId();
   const dir = resolve(io.cwd, a.values['--out'] ?? join('.greenlight/bundles', id));
+  const splits = loadSplits(io.cwd);
   const bundle = buildProposerBundle({
     id: a.values['--out'] ? basename(dir) : id,
     dir,
@@ -389,30 +439,48 @@ function proposeCmd(args: string[], io: WikiIo): number {
     records: store.records,
     skills: skill ? [skill] : managed,
     skill,
-    heldOutTaskIds: heldOutTaskIds(io.cwd),
+    heldOutTaskIds: heldOutTaskIds(splits),
+    splits,
+    acceptedSkillSetHash: acceptedSkillSetFor(p, wiki),
   });
-  writeBundle(dir, bundle);
+  writeBundle(dir, bundle, { keysDir: p.keys });
   io.out(dir);
   return 0;
 }
 
 // ---- read / traces ---------------------------------------------------------------------------
 
-/** The role in effect: the bundle's (when one is named), else `--role`, else a building agent. */
-function roleOf(io: WikiIo, values: Record<string, string>): { role: Role; bundle?: string } {
+/**
+ * The role in effect. Inside a bundle it is the bundle's role, read from its VERIFIED manifest
+ * (`openBundle`); `--role` can only narrow a maintainer bundle, never widen. Without a bundle the
+ * role is `agent`: `--role maintainer` or `--role proposer` is refused (exit 4), because those
+ * roles exist only inside a harness-issued bundle, where every read is logged.
+ */
+function roleOf(
+  io: WikiIo,
+  values: Record<string, string>,
+  p: Paths,
+): { role: Role; bundle?: OpenBundle } {
   const named = values['--bundle'] ?? io.env.GREENLIGHT_BUNDLE;
   const flag = values['--role'];
   if (flag !== undefined && !['maintainer', 'proposer', 'agent'].includes(flag)) {
     throw new Usage(`--role must be maintainer, proposer or agent (got "${flag}")`);
   }
   if (named) {
-    const bundle = resolve(io.cwd, named);
-    const manifest = readBundleManifest(bundle);
-    // A bundle fixes the role; --role can only narrow a maintainer bundle, never widen.
-    const role: Role = manifest.role === 'maintainer' && flag ? (flag as Role) : manifest.role;
+    const bundle = openBundle(resolve(io.cwd, named), p.keys);
+    const own = bundle.manifest.role;
+    const role: Role = own === 'maintainer' && flag ? (flag as Role) : own;
     return { role, bundle };
   }
-  return { role: (flag as Role | undefined) ?? 'agent' };
+  if (flag !== undefined && flag !== 'agent') {
+    throw Object.assign(
+      new Error(
+        `--role ${flag} needs a ${flag} bundle (--bundle <dir> or GREENLIGHT_BUNDLE): that role exists only inside a harness-issued bundle, where every read is logged`,
+      ),
+      { code: 4 },
+    );
+  }
+  return { role: 'agent' };
 }
 
 function readCmd(args: string[], io: WikiIo): number {
@@ -424,11 +492,12 @@ function readCmd(args: string[], io: WikiIo): number {
   if (!ref || a.positional.length > 1)
     throw new Usage('usage: greenlight wiki read <page-id|raw:<id>|skill:<name>>');
   const p = paths(io, a.values);
-  const { role, bundle } = roleOf(io, a.values);
+  const { role, bundle } = roleOf(io, a.values, p);
   const result = readTarget(ref, role, {
     wiki: existsSync(p.root) ? loadWiki(p.root) : undefined,
     records: ref.startsWith('raw:') ? loadRawStore(p.raw).records : [],
     skillsDir: p.skills,
+    splits: ref.startsWith('raw:') ? loadSplits(io.cwd) : undefined,
   });
   if (bundle) {
     recordAccess(bundle, {
@@ -456,13 +525,14 @@ function tracesCmd(args: string[], io: WikiIo): number {
   const limit = a.values['--limit'] === undefined ? 20 : Number(a.values['--limit']);
   if (!Number.isInteger(limit) || limit < 1) throw new Usage('--limit must be a positive integer');
   const p = paths(io, a.values);
-  const { bundle } = roleOf(io, a.values);
+  const { bundle } = roleOf(io, a.values, p);
   const rows = listTraces(loadRawStore(p.raw).records, {
     skill: a.values['--skill'],
     tool: a.values['--tool'],
     failed,
     passing: a.flags.has('--passing'),
     limit,
+    splits: loadSplits(io.cwd),
   });
   if (bundle) {
     recordAccess(bundle, {

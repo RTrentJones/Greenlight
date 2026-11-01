@@ -1,15 +1,27 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   appendFileSync,
+  chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
+  writeSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { type RawRecord, RawRecordSchema } from '@rtrentjones/greenlight-shared';
 import { normalizeId, pathToId, resolveId } from './ids';
+import {
+  orderLedgerEvents,
+  projectLedger,
+  projectedLedgerText,
+  renderProjectedSkillImpact,
+  withFileLock,
+} from './ledger';
 import {
   INDEX_FILE,
   LEDGER_FILE,
@@ -21,6 +33,7 @@ import {
 import { applyFilePatches, writeChangeset } from './patch';
 import { findSecrets, redact } from './redact';
 import {
+  type SplitIndex,
   bundleExcerpt,
   isAgentVisible,
   matchesSkill,
@@ -30,21 +43,25 @@ import {
   unattributed,
 } from './sample';
 import {
+  GateInputRecordSchema,
   type LedgerEvent,
   type ProposerOutput,
   ProposerOutputSchema,
   touchesVersion,
 } from './schema';
 import { canonicalJson } from './schema/common';
+import { loadSkills } from './skills';
 
 /**
  * Maintainer and proposer bundles (vision 06 §1.4, §2.1, §3.1). A bundle is the ONLY thing a
  * maintainer or proposer sandbox holds, so evidence separation is enforced here by construction:
  *
- * - every file is built from an allow-list of sources (wiki pages and the wiki's own index, log,
- *   ledger and skill-impact files; visible raw records; a context document; the prompt). Nothing
- *   under `bench/` — tasks, graders, mutants or references — is ever a source;
- * - raw records are filtered to field and `train` records before sampling (sample.ts);
+ * - every file is built from an allow-list of sources (wiki pages and the wiki's own index and
+ *   log; the PROJECTED ledger and skill-impact, which keep stages and aggregate scores but no
+ *   per-task regressions, reasons or task ids; visible raw records; a context document; the
+ *   prompt). Nothing under `bench/` — tasks, graders, mutants or references — is ever a source;
+ * - raw records are filtered to field and `train` records before sampling (sample.ts), with the
+ *   split taken from `bench/splits.json` by task id, never from the record itself;
  * - the finished bundle is scanned for every val/test task id and raw id the caller knows of, and
  *   for grader/mutant paths. A hit refuses the whole bundle, so a leak fails loudly instead of
  *   reaching a sandbox.
@@ -52,6 +69,15 @@ import { canonicalJson } from './schema/common';
  * The read-only interface (`wiki read`, `wiki traces`) refuses val and test records with the
  * exact error of 06 §1.4, and appends every read to the bundle's access log, which
  * `propose --apply` checks for the paper's "read at least 4 execution traces".
+ *
+ * Bundle trust (06 §3.1). Every bundle is issued with a random per-bundle key stored OUTSIDE the
+ * bundle, at `.greenlight/bundle-keys/<bundleId>` (mode 0600), together with an HMAC of the
+ * bundle's `bundle.json`. The bundle's role and identity are read only through `openBundle`,
+ * which verifies that MAC, so a hand-written `bundle.json` cannot make any directory a bundle or
+ * widen its role. Each served read appends an access-log entry MAC'd with the key and chained to
+ * the previous entry's MAC; `checkProposal` verifies the chain and counts only real, visible raw
+ * ids. The trust assumption: the proposer sandbox cannot read or write `.greenlight/bundle-keys/`
+ * (the runner keeps it outside the sandbox and serves the read-only CLI from outside it).
  */
 
 export type Role = 'maintainer' | 'proposer' | 'agent';
@@ -61,6 +87,17 @@ export const ACCESS_LOG = 'access.jsonl';
 export const PROMPT_FILE = 'PROMPT.md';
 export const PROPOSAL_FILE = 'proposal.json';
 export const MIN_RAW_READS = 4;
+/** Per-bundle keys, relative to the working root; never inside a bundle (06 §3.1). */
+export const BUNDLE_KEYS_DIR = join('.greenlight', 'bundle-keys');
+
+/** A bundle's identity or access log failed verification: a forged or tampered bundle. */
+export class BundleTrustError extends Error {
+  readonly code = 4;
+  constructor(message: string) {
+    super(message);
+    this.name = 'BundleTrustError';
+  }
+}
 
 export interface BundleManifest {
   id: string;
@@ -145,18 +182,20 @@ export function loadRawStore(dir: string): RawStore {
 
 /** The strings that must never appear in an agent bundle: every val/test bench task id and raw id
  * in the store, any extra held-out task ids (e.g. from `bench/splits.json`), and grader, mutant
- * and reference paths. */
+ * and reference paths. A bench record whose split `splits` cannot establish counts as held out. */
 export function heldOutTokens(
   records: readonly RawRecord[],
   extraTaskIds: readonly string[] = [],
+  splits?: SplitIndex,
 ): string[] {
   const tokens = new Set<string>(['bench/graders', 'bench/mutants', 'bench/references']);
   for (const r of records) {
-    if (isAgentVisible(r)) continue;
+    if (isAgentVisible(r, splits)) continue;
     tokens.add(r.rawId);
     if (r.bench) tokens.add(r.bench.task);
   }
   for (const t of extraTaskIds) tokens.add(t);
+  for (const [id, s] of splits ?? []) if (s !== 'train') tokens.add(id);
   return [...tokens].sort();
 }
 
@@ -200,10 +239,11 @@ function bundledRecord(r: RawRecord): string {
   return `${JSON.stringify({ ...r, retained: { ...r.retained, excerpt } }, null, 2)}\n`;
 }
 
-/** The wiki files a maintainer bundle copies: pages plus the wiki's own index, log, ledger and
- * skill-impact. Anything else under the wiki root (evidence exports, stray files) stays out. */
+/** The wiki files a maintainer bundle copies verbatim: pages plus the wiki's own index and log.
+ * The ledger and skill-impact are never copied; the bundle gets their projection (06 §1.4).
+ * Anything else under the wiki root (evidence exports, stray files) stays out. */
 function wikiAllowList(wiki: Wiki): [string, string][] {
-  const own = new Set([INDEX_FILE, LOG_FILE, LEDGER_FILE, SKILL_IMPACT_FILE]);
+  const own = new Set([INDEX_FILE, LOG_FILE]);
   return [...wiki.files]
     .filter(([p]) => own.has(p) || pathToId(p) !== undefined)
     .sort(([a], [b]) => a.localeCompare(b));
@@ -343,8 +383,10 @@ export interface MaintainerBundleInput {
   tool?: string;
   /** An incident page id to bundle under `incident/`. */
   incident?: string;
-  /** Held-out task ids known beyond the raw store (e.g. `bench/splits.json`). */
+  /** Held-out task ids known beyond the raw store and `splits`. */
   heldOutTaskIds?: readonly string[];
+  /** `bench/splits.json`: decides which bench records are train. Without it, none are. */
+  splits?: SplitIndex;
   now?: Date;
 }
 
@@ -352,10 +394,14 @@ export function buildMaintainerBundle(input: MaintainerBundleInput): BundleFiles
   const seed = input.seed ?? input.id;
   const files = new Map<string, string>();
   for (const [path, text] of wikiAllowList(input.wiki)) files.set(`wiki/${path}`, text);
+  const projected = projectLedger(input.wiki.ledger, 'maintainer');
+  files.set(`wiki/${LEDGER_FILE}`, projectedLedgerText(projected));
+  files.set(`wiki/${SKILL_IMPACT_FILE}`, renderProjectedSkillImpact(projected));
 
   const candidates = input.records.filter((r) => input.tool === undefined || r.tool === input.tool);
   const { failing, passing } = sampleRecords(candidates, {
     seed,
+    splits: input.splits,
     skill: input.skill,
     failing: input.sample?.failing,
     passing: input.sample?.passing,
@@ -389,6 +435,7 @@ export function buildMaintainerBundle(input: MaintainerBundleInput): BundleFiles
 
   files.set('context.json', `${JSON.stringify(input.context, null, 2)}\n`);
   files.set(PROMPT_FILE, renderPrompt(MAINTAINER_PROMPT, input.dir, 'maintainer'));
+  files.set(ACCESS_LOG, '');
   return seal(
     {
       id: input.id,
@@ -400,7 +447,7 @@ export function buildMaintainerBundle(input: MaintainerBundleInput): BundleFiles
       rawIds: sampled.map((r) => r.rawId),
     },
     files,
-    heldOutTokens(input.records, input.heldOutTaskIds),
+    heldOutTokens(input.records, input.heldOutTaskIds, input.splits),
   );
 }
 
@@ -415,13 +462,19 @@ export interface ProposerBundleInput {
   skills: readonly string[];
   skill?: string;
   heldOutTaskIds?: readonly string[];
+  splits?: SplitIndex;
+  /** The accepted skill set whose train results `outcomes.md` reports (`acceptedSkillSet`). */
+  acceptedSkillSetHash?: string;
   now?: Date;
 }
 
 export function buildProposerBundle(input: ProposerBundleInput): BundleFiles {
   const files = new Map<string, string>();
   files.set(INDEX_FILE, input.wiki.index ?? '# Index\n');
-  files.set(SKILL_IMPACT_FILE, input.wiki.skillImpact ?? '# Skill impact\n');
+  files.set(
+    SKILL_IMPACT_FILE,
+    renderProjectedSkillImpact(projectLedger(input.wiki.ledger, 'proposer')),
+  );
   files.set(
     'outcomes.md',
     renderOutcomes({
@@ -429,6 +482,8 @@ export function buildProposerBundle(input: ProposerBundleInput): BundleFiles {
       ledger: input.wiki.ledger,
       wiki: input.wiki,
       skills: input.skills,
+      splits: input.splits,
+      acceptedSkillSetHash: input.acceptedSkillSetHash,
     }),
   );
   files.set(PROMPT_FILE, renderPrompt(PROPOSER_PROMPT, input.dir, 'proposer'));
@@ -443,8 +498,91 @@ export function buildProposerBundle(input: ProposerBundleInput): BundleFiles {
       rawIds: [],
     },
     files,
-    heldOutTokens(input.records, input.heldOutTaskIds),
+    heldOutTokens(input.records, input.heldOutTaskIds, input.splits),
   );
+}
+
+// ---- the accepted skill set (06 §1.5) -------------------------------------------------------
+
+/**
+ * The installed skill set hash (08 §10.3: "over every managed skill's SKILL.md + PURPOSE.md
+ * content"): sha256 of the canonical JSON of `[{ name, skillMd, purposeMd }]`, sorted by name,
+ * with `purposeMd: null` for a skill without a sidecar. Undefined when there are no skills.
+ */
+export function skillSetHash(skillsDir: string): string | undefined {
+  const skills = loadSkills(skillsDir);
+  if (skills.length === 0) return undefined;
+  const entries = skills.map((s) => {
+    const purpose = join(skillsDir, s.name, 'PURPOSE.md');
+    return {
+      name: s.name,
+      skillMd: readFileSync(join(skillsDir, s.name, 'SKILL.md'), 'utf8'),
+      purposeMd: existsSync(purpose) ? readFileSync(purpose, 'utf8') : null,
+    };
+  });
+  return createHash('sha256').update(canonicalJson(entries)).digest('hex');
+}
+
+/** The two skill-set hashes a gate input record names (08 §10.4). */
+export interface GateSkillSets {
+  acceptedSkillSetHash: string;
+  candidateSkillSetHash: string;
+}
+
+const gateInputOfEvent = (e: LedgerEvent | undefined): string | undefined =>
+  e?.evidence && (e.evidence.kind === 'bench' || e.evidence.kind === 'template')
+    ? e.evidence.gateInput
+    : undefined;
+
+/**
+ * The accepted skill set from the latest ledger state (06 §1.5), newest event first, ignoring
+ * control-arm proposals and proposals since withdrawn: a `merged` proposal makes its accepted
+ * candidate's skill set the accepted one; any other gated event ran its baseline under the
+ * accepted set of its day. Undefined when the ledger names no resolvable gate input. The caller
+ * falls back to the installed skill set (`skillSetHash`), never to the newest train record.
+ */
+export function acceptedSkillSet(
+  ledger: readonly LedgerEvent[],
+  gateInputOf: (hash: string) => GateSkillSets | undefined,
+): string | undefined {
+  const ordered = orderLedgerEvents(ledger);
+  const withdrawn = new Set(
+    ordered.filter((e) => e.stage === 'withdrawn' && e.proposalId).map((e) => e.proposalId),
+  );
+  for (const e of [...ordered].reverse()) {
+    if (e.control === true || (e.proposalId && withdrawn.has(e.proposalId))) continue;
+    if (e.stage === 'merged') {
+      const accepted = ordered.find(
+        (x) => x.proposalId === e.proposalId && x.stage === 'candidate-accepted',
+      );
+      const gi = gateInputOfEvent(accepted);
+      const rec = gi === undefined ? undefined : gateInputOf(gi);
+      if (rec) return rec.candidateSkillSetHash;
+    } else if (e.stage.startsWith('candidate-')) {
+      const gi = gateInputOfEvent(e);
+      const rec = gi === undefined ? undefined : gateInputOf(gi);
+      if (rec) return rec.acceptedSkillSetHash;
+    }
+  }
+  return undefined;
+}
+
+/** A gate input record from `<wikiRoot>/evidence/eval/<hash>.json` (08 §10.4), validated (its own
+ * hash included); undefined when absent or invalid. */
+export function readGateInput(wikiRoot: string, hash: string): GateSkillSets | undefined {
+  if (!/^[0-9a-f]{64}$/.test(hash)) return undefined;
+  const file = join(wikiRoot, 'evidence', 'eval', `${hash}.json`);
+  if (!existsSync(file)) return undefined;
+  try {
+    const r = GateInputRecordSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
+    if (!r.success || r.data.hash !== hash) return undefined;
+    return {
+      acceptedSkillSetHash: r.data.acceptedSkillSetHash,
+      candidateSkillSetHash: r.data.candidateSkillSetHash,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 const rate = (passed: number, total: number): string =>
@@ -453,15 +591,19 @@ const rate = (passed: number, total: number): string =>
 /**
  * `outcomes.md` (06 §3.1), assembled ONLY from what the proposer may see (06 §1.4): field records
  * and train bench records, plus the ledger's aggregate val scores per model and mode (no per-task
- * results, no regression lists, no check names) and the wiki's open hypotheses.
+ * results, no regression lists, no check names) and the wiki's open hypotheses. The training
+ * results are those of the ACCEPTED skill set (`acceptedSkillSetHash`), never of whatever skill
+ * set the newest train record happens to carry.
  */
 export function renderOutcomes(input: {
   records: readonly RawRecord[];
   ledger: readonly LedgerEvent[];
   wiki: Wiki;
   skills: readonly string[];
+  splits?: SplitIndex;
+  acceptedSkillSetHash?: string;
 }): string {
-  const visible = input.records.filter(isAgentVisible);
+  const visible = input.records.filter((r) => isAgentVisible(r, input.splits));
   const field = visible.filter((r) => r.kind !== 'bench');
   const train = visible.filter((r) => r.kind === 'bench');
   const out: string[] = [
@@ -494,12 +636,16 @@ export function renderOutcomes(input: {
   }
 
   out.push('## Training results', '');
-  const current = train[0]?.bench?.skillSetHash; // records are newest first
-  const baseline = train.filter((r) => r.bench?.skillSetHash === current);
-  if (baseline.length === 0) out.push('_No train rollouts under the current skill set._', '');
-  else {
+  const current = input.acceptedSkillSetHash;
+  const baseline =
+    current === undefined ? [] : train.filter((r) => r.bench?.skillSetHash === current);
+  if (current === undefined) {
+    out.push('_No accepted skill set is known yet, so no training results are shown._', '');
+  } else if (baseline.length === 0) {
+    out.push(`_No train rollouts under the accepted skill set \`${current.slice(0, 12)}\`._`, '');
+  } else {
     out.push(
-      `Baseline skill set \`${(current ?? '').slice(0, 12)}\`.`,
+      `Accepted skill set \`${current.slice(0, 12)}\`.`,
       '',
       '| task | model | mode | runs | passed |',
       '|---|---|---|---|---|',
@@ -560,16 +706,125 @@ export function renderOutcomes(input: {
   return out.join('\n');
 }
 
-// ---- writing and reading bundles ------------------------------------------------------------
+// ---- writing, issuing and opening bundles (06 §3.1 trust) -----------------------------------
 
-/** Writes a bundle under `dir` (created if needed) through the atomic changeset writer. */
-export function writeBundle(dir: string, bundle: BundleFiles): void {
-  mkdirSync(dir, { recursive: true });
-  writeChangeset(dir, {
-    writes: [...bundle.files].map(([path, content]) => ({ path, content })),
-  });
+const BUNDLE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** What `.greenlight/bundle-keys/<bundleId>` holds. Never copied into a bundle. */
+interface BundleKeyRecord {
+  bundleId: string;
+  role: BundleManifest['role'];
+  /** 32 random bytes, hex. */
+  key: string;
+  /** HMAC-SHA256(key, "manifest\0" + bundle.json text), hex. */
+  manifestMac: string;
 }
 
+const hmac = (key: Buffer, data: string): string =>
+  createHmac('sha256', key).update(data).digest('hex');
+
+function sameHex(a: string, b: string): boolean {
+  if (!/^[0-9a-f]{64}$/.test(a) || !/^[0-9a-f]{64}$/.test(b)) return false;
+  return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+}
+
+const keyFile = (keysDir: string, id: string): string => {
+  if (!BUNDLE_ID_RE.test(id)) throw new BundleTrustError(`"${id}" is not a valid bundle id`);
+  return join(keysDir, id);
+};
+
+export interface WriteBundleOptions {
+  /** Where the per-bundle key is stored: `<root>/.greenlight/bundle-keys`, outside the bundle. */
+  keysDir: string;
+}
+
+/**
+ * Writes a bundle under `dir` (created if needed) through the atomic changeset writer, and issues
+ * its key: a fresh random key and the MAC of the written `bundle.json`, stored at
+ * `<keysDir>/<bundleId>` with mode 0600. Re-issuing an id replaces its key, which invalidates
+ * every access-log entry written under the old one; the bundle's access log is reset with it.
+ */
+export function writeBundle(dir: string, bundle: BundleFiles, opts: WriteBundleOptions): void {
+  const file = keyFile(opts.keysDir, bundle.manifest.id);
+  const keysDir = resolve(opts.keysDir);
+  if (inside(resolve(dir), keysDir) || resolve(dir) === keysDir) {
+    throw new BundleTrustError('the bundle-keys directory must not be inside the bundle');
+  }
+  mkdirSync(dir, { recursive: true });
+  const writes = [...bundle.files].map(([path, content]) => ({ path, content }));
+  if (!bundle.files.has(ACCESS_LOG)) writes.push({ path: ACCESS_LOG, content: '' });
+  writeChangeset(dir, { writes });
+  const key = randomBytes(32);
+  const manifestText = bundle.files.get(BUNDLE_MANIFEST) as string;
+  const record: BundleKeyRecord = {
+    bundleId: bundle.manifest.id,
+    role: bundle.manifest.role,
+    key: key.toString('hex'),
+    manifestMac: hmac(key, `manifest\0${manifestText}`),
+  };
+  mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  const fd = openSync(tmp, 'wx', 0o600);
+  try {
+    writeSync(fd, `${JSON.stringify(record)}\n`);
+  } finally {
+    closeSync(fd);
+  }
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, file);
+}
+
+/** A bundle whose identity was verified against its key. */
+export interface OpenBundle {
+  dir: string;
+  manifest: BundleManifest;
+  /** @internal the per-bundle key, for access-log MACs. */
+  key: Buffer;
+}
+
+/**
+ * Opens a bundle, verifying its identity: `bundle.json` must name an issued bundle id, and its
+ * exact bytes must carry the MAC stored under `<keysDir>/<id>`; the role comes from that verified
+ * manifest. Throws `BundleTrustError` for anything else, so a directory with a hand-written
+ * `bundle.json` is never treated as a bundle.
+ */
+export function openBundle(dir: string, keysDir: string): OpenBundle {
+  const file = join(dir, BUNDLE_MANIFEST);
+  if (!existsSync(file))
+    throw new BundleTrustError(`${dir} is not a greenlight bundle (no ${BUNDLE_MANIFEST})`);
+  const text = readFileSync(file, 'utf8');
+  let manifest: BundleManifest;
+  try {
+    manifest = JSON.parse(text) as BundleManifest;
+  } catch {
+    throw new BundleTrustError(`${file} is not valid JSON`);
+  }
+  const id = typeof manifest?.id === 'string' ? manifest.id : '';
+  const kf = keyFile(keysDir, id);
+  if (!existsSync(kf)) {
+    throw new BundleTrustError(`bundle ${id} was not issued by this harness (no key for it)`);
+  }
+  let record: BundleKeyRecord;
+  try {
+    record = JSON.parse(readFileSync(kf, 'utf8')) as BundleKeyRecord;
+  } catch {
+    throw new BundleTrustError(`the key record for bundle ${id} is unreadable`);
+  }
+  const key = Buffer.from(String(record.key ?? ''), 'hex');
+  if (
+    record.bundleId !== id ||
+    key.length !== 32 ||
+    !sameHex(hmac(key, `manifest\0${text}`), String(record.manifestMac ?? '')) ||
+    record.role !== manifest.role
+  ) {
+    throw new BundleTrustError(
+      `${BUNDLE_MANIFEST} of bundle ${id} does not match the manifest the harness issued`,
+    );
+  }
+  return { dir, manifest, key };
+}
+
+/** Reads a bundle's manifest WITHOUT verifying it; use `openBundle` for anything that trusts it. */
 export function readBundleManifest(dir: string): BundleManifest {
   const file = join(dir, BUNDLE_MANIFEST);
   if (!existsSync(file))
@@ -577,7 +832,8 @@ export function readBundleManifest(dir: string): BundleManifest {
   return JSON.parse(readFileSync(file, 'utf8')) as BundleManifest;
 }
 
-export interface AccessEntry {
+/** One read as the CLI reports it. */
+export interface AccessRead {
   ts: string;
   command: 'read' | 'traces';
   target: string;
@@ -585,33 +841,123 @@ export interface AccessEntry {
   refused?: string;
 }
 
-export function recordAccess(dir: string, entry: AccessEntry): void {
-  appendFileSync(join(dir, ACCESS_LOG), `${JSON.stringify(entry)}\n`);
+/** An access-log line: the read, its position, and a MAC chained to the previous line's. */
+export interface AccessEntry extends AccessRead {
+  seq: number;
+  prev: string;
+  mac: string;
 }
 
-export function readAccessLog(dir: string): AccessEntry[] {
-  const file = join(dir, ACCESS_LOG);
-  if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8')
+const genesis = (b: OpenBundle): string => hmac(b.key, `genesis\0${b.manifest.id}`);
+
+function entryMac(b: OpenBundle, e: Omit<AccessEntry, 'mac'>): string {
+  const body: Record<string, unknown> = {
+    bundle: b.manifest.id,
+    seq: e.seq,
+    prev: e.prev,
+    ts: e.ts,
+    command: e.command,
+    target: e.target,
+  };
+  if (e.refused !== undefined) body.refused = e.refused;
+  return hmac(b.key, `access\0${canonicalJson(body)}`);
+}
+
+export interface AccessLog {
+  entries: AccessEntry[];
+  /** Lines that fail verification (forged, edited, reordered or spliced); empty for a good log. */
+  problems: string[];
+}
+
+/** Reads and verifies a bundle's access log: every line must parse, carry the next `seq`, chain to
+ * the previous line's MAC (the first to the bundle's genesis value) and carry a valid MAC. */
+export function readAccessLog(bundle: OpenBundle): AccessLog {
+  const file = join(bundle.dir, ACCESS_LOG);
+  const entries: AccessEntry[] = [];
+  const problems: string[] = [];
+  if (!existsSync(file)) return { entries, problems };
+  const lines = readFileSync(file, 'utf8')
     .split('\n')
-    .filter((l) => l.trim() !== '')
-    .flatMap((l) => {
-      try {
-        return [JSON.parse(l) as AccessEntry];
-      } catch {
-        return [];
-      }
-    });
+    .filter((l) => l.trim() !== '');
+  let prev = genesis(bundle);
+  lines.forEach((line, i) => {
+    let e: AccessEntry;
+    try {
+      e = JSON.parse(line) as AccessEntry;
+    } catch {
+      problems.push(`${ACCESS_LOG} line ${i + 1} is not valid JSON`);
+      return;
+    }
+    const wellFormed =
+      typeof e === 'object' &&
+      e !== null &&
+      e.seq === i &&
+      typeof e.ts === 'string' &&
+      (e.command === 'read' || e.command === 'traces') &&
+      typeof e.target === 'string' &&
+      (e.refused === undefined || typeof e.refused === 'string') &&
+      typeof e.prev === 'string' &&
+      typeof e.mac === 'string';
+    if (!wellFormed || !sameHex(e.prev, prev) || !sameHex(entryMac(bundle, e), e.mac)) {
+      problems.push(`${ACCESS_LOG} line ${i + 1} fails verification (forged or edited)`);
+      return;
+    }
+    entries.push(e);
+    prev = e.mac;
+  });
+  return { entries, problems };
 }
 
-/** Distinct raw records successfully read through `wiki read raw:<id>`. */
-export const rawReads = (log: readonly AccessEntry[]): string[] => [
-  ...new Set(
-    log
-      .filter((e) => e.command === 'read' && !e.refused && e.target.startsWith('raw:'))
-      .map((e) => e.target),
-  ),
-];
+/**
+ * Appends one served read to the bundle's access log, MAC'd with the bundle key and chained to
+ * the last entry. Runs under a lock, re-reading the log under it, so concurrent reads keep one
+ * chain. Refuses (throws `BundleTrustError`) to extend a log that already fails verification.
+ */
+export function recordAccess(bundle: OpenBundle, read: AccessRead): AccessEntry {
+  const file = join(bundle.dir, ACCESS_LOG);
+  return withFileLock(`${file}.lock`, () => {
+    const log = readAccessLog(bundle);
+    if (log.problems.length > 0) {
+      throw new BundleTrustError(
+        `the access log of bundle ${bundle.manifest.id} has been tampered with: ${log.problems[0]}`,
+      );
+    }
+    const last = log.entries.at(-1);
+    const base = {
+      seq: log.entries.length,
+      prev: last ? last.mac : genesis(bundle),
+      ts: read.ts,
+      command: read.command,
+      target: read.target,
+      ...(read.refused !== undefined ? { refused: read.refused } : {}),
+    };
+    const entry: AccessEntry = { ...base, mac: entryMac(bundle, base) };
+    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const lead = text !== '' && !text.endsWith('\n') ? '\n' : '';
+    appendFileSync(file, `${lead}${JSON.stringify(entry)}\n`);
+    return entry;
+  });
+}
+
+/**
+ * Distinct raw records successfully read through `wiki read raw:<id>` in a VERIFIED log: the read
+ * was not refused, the id is a record in `records`, and that record is visible to `role`.
+ */
+export function rawReads(
+  entries: readonly AccessEntry[],
+  records: readonly RawRecord[],
+  role: Role,
+  splits?: SplitIndex,
+): string[] {
+  const byId = new Map(records.map((r) => [r.rawId, r]));
+  const out = new Set<string>();
+  for (const e of entries) {
+    if (e.command !== 'read' || e.refused !== undefined || !e.target.startsWith('raw:')) continue;
+    const r = byId.get(e.target.slice(4));
+    if (r && rawRefusal(r, role, splits) === undefined) out.add(e.target);
+  }
+  return [...out];
+}
 
 // ---- the read-only interface (06 §3.1, 07 §3.6b/§3.6d) -------------------------------------
 
@@ -619,13 +965,17 @@ export type ReadResult =
   | { ok: true; text: string; json: unknown }
   | { ok: false; code: 2 | 3 | 4; message: string };
 
-/** The exact refusal of 06 §1.4, or undefined when `r` is visible to `role`. */
-export function rawRefusal(r: RawRecord, role: Role): string | undefined {
-  const split = splitOf(r);
-  if (r.kind === 'bench' && split !== 'train') {
-    return `raw ${r.rawId} belongs to split ${split}; not visible to role ${role}`;
+/** The exact refusal of 06 §1.4, or undefined when `r` is visible to `role`. The split comes from
+ * `splits` (bench/splits.json) by task id; a bench record whose split cannot be established is
+ * refused too. */
+export function rawRefusal(r: RawRecord, role: Role, splits?: SplitIndex): string | undefined {
+  if (isAgentVisible(r, splits)) return undefined;
+  const split = splitOf(r, splits);
+  if (split === undefined) {
+    return `raw ${r.rawId} is a bench record whose split cannot be established from bench/splits.json; not visible to role ${role}`;
   }
-  return undefined;
+  const shown = split === 'train' ? (r.bench?.split ?? split) : split;
+  return `raw ${r.rawId} belongs to split ${shown}; not visible to role ${role}`;
 }
 
 export interface ReadSources {
@@ -633,6 +983,8 @@ export interface ReadSources {
   records: readonly RawRecord[];
   /** Directory holding `<name>/SKILL.md` and `<name>/PURPOSE.md`. */
   skillsDir: string;
+  /** `bench/splits.json`; without it every bench record is refused. */
+  splits?: SplitIndex;
 }
 
 const HYPOTHESIS_BANNER = 'HYPOTHESIS — not guidance';
@@ -643,7 +995,7 @@ export function readTarget(ref: string, role: Role, src: ReadSources): ReadResul
     const id = ref.slice(4);
     const r = src.records.find((x) => x.rawId === id);
     if (!r) return { ok: false, code: 3, message: `raw ${id} not found` };
-    const refusal = rawRefusal(r, role);
+    const refusal = rawRefusal(r, role, src.splits);
     if (refusal) return { ok: false, code: 4, message: refusal };
     const json = { ...r, retained: { ...r.retained, excerpt: redact(r.retained.excerpt) } };
     return { ok: true, text: `${JSON.stringify(json, null, 2)}\n`, json };
@@ -673,11 +1025,12 @@ export function readTarget(ref: string, role: Role, src: ReadSources): ReadResul
     notices.push(`${page.id} is superseded by ${next.id}`);
     page = next;
   }
+  // 06 §1.4: the proposer (and a building agent) sees incidents only through pattern pages.
   if (page.frontmatter.type === 'incident' && role !== 'maintainer') {
     return {
       ok: false,
       code: 4,
-      message: `${page.id} is an incident page; not visible to role ${role} (use --role maintainer)`,
+      message: `${page.id} is an incident page; not visible to role ${role} (incidents reach this role only through the pattern pages that cite them)`,
     };
   }
   if (page.frontmatter.status === 'hypothesis') notices.push(HYPOTHESIS_BANNER);
@@ -697,12 +1050,13 @@ export interface TraceQuery {
   passing?: boolean;
   tool?: string;
   limit?: number;
+  splits?: SplitIndex;
 }
 
 /** `wiki traces`: visible raw records only (field and train), newest first. */
 export function listTraces(records: readonly RawRecord[], q: TraceQuery): RawRecord[] {
   return records
-    .filter(isAgentVisible)
+    .filter((r) => isAgentVisible(r, q.splits))
     .filter((r) => q.skill === undefined || matchesSkill(r, q.skill))
     .filter((r) => q.tool === undefined || r.tool === q.tool)
     .filter((r) => (q.failed ? !r.passed : q.passing ? r.passed : true))
@@ -720,6 +1074,11 @@ export interface ProposalCheckInput {
   skillsDir: string;
   /** Directory holding lane templates (`tools`), for `outlet: template`. */
   templatesDir: string;
+  /** Where bundle keys live (`.greenlight/bundle-keys`), outside the bundle. */
+  keysDir: string;
+  /** The raw store: a logged read counts only for a real record visible to the proposer. */
+  records: readonly RawRecord[];
+  splits?: SplitIndex;
 }
 
 export type ProposalCheck =
@@ -738,10 +1097,19 @@ function inside(root: string, path: string): boolean {
  * Validates a proposer output for a proposer bundle without changing anything outside the bundle:
  * the schema; the harness-owned `version` (refused); edit-path containment, with every op
  * applied in memory against the target; the cited patterns exist; and at least four distinct
- * `wiki read raw:` reads in the bundle's access log. Schema errors exit 1; policy refusals exit 4.
+ * `wiki read raw:` reads of real, visible raw records in the bundle's VERIFIED access log. The
+ * bundle itself is opened with `openBundle`, so its role comes from the MAC'd manifest. Schema
+ * errors exit 1; policy refusals (including a forged bundle or a tampered log) exit 4.
  */
 export function checkProposal(input: ProposalCheckInput): ProposalCheck {
-  const manifest = readBundleManifest(input.bundleDir);
+  let bundle: OpenBundle;
+  try {
+    bundle = openBundle(input.bundleDir, input.keysDir);
+  } catch (err) {
+    if (err instanceof BundleTrustError) return { ok: false, code: 4, errors: [err.message] };
+    throw err;
+  }
+  const manifest = bundle.manifest;
   if (manifest.role !== 'proposer') {
     return { ok: false, code: 4, errors: [`bundle ${manifest.id} is a ${manifest.role} bundle`] };
   }
@@ -781,7 +1149,14 @@ export function checkProposal(input: ProposalCheckInput): ProposalCheck {
     for (const id of p.patterns) {
       if (!resolveId(input.wiki, id)) errors.push(`patterns: "${id}" is not a page of the wiki`);
     }
-    const reads = rawReads(readAccessLog(input.bundleDir));
+    const log = readAccessLog(bundle);
+    if (log.problems.length > 0) {
+      errors.push(
+        `the access log fails verification, so none of it counts: ${log.problems.join('; ')}`,
+      );
+    }
+    const reads =
+      log.problems.length > 0 ? [] : rawReads(log.entries, input.records, 'proposer', input.splits);
     if (reads.length < MIN_RAW_READS) {
       errors.push(
         `the access log shows ${reads.length} \`wiki read raw:\` call(s); at least ${MIN_RAW_READS} are required before a proposal`,
