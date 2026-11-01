@@ -30,3 +30,6 @@ greenlight.config.ts
 
 # packed tarballs (pnpm pack / inspection)
 *.tgz
+
+# Sub-agent git worktrees (local orchestration only)
+.claude/worktrees/
