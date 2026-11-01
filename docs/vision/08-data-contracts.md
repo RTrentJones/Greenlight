@@ -476,7 +476,7 @@ type LedgerEvent = {
   reason?: string;                       // REQUIRED for no-action, withdrawn, neutral, and human overrides
   versionFrom?: string; versionTo?: string;   // on merged (skill/template)
   release?: string;                      // on released: the CLI version
-  spend?: { usd: number; rollouts: number; tokensIn: number; tokensOut: number; evaluationId?: string };
+  spend?: { usd: number; rollouts: number; requests: number; tokensIn: number; tokensOut: number; evaluationId?: string };  // requests: the free-tier binding constraint (ADR-20)
 };
 
 type Evidence =
@@ -595,8 +595,8 @@ interface TrajectoryEvent {
 
 type Matcher = { cmd: string; args?: string[]; meta?: Record<string, string> };  // args: ordered subsequence, "*" wildcard
 type TrajectoryRule =
-  | { rule: 'before'; first: Matcher; then: Matcher }    // every `then` is preceded by some `first`
-  | { rule: 'after'; trigger: Matcher; then: Matcher; within?: number }  // each trigger is followed by `then` within n events
+  | { rule: 'before'; first: Matcher; next: Matcher }    // every `next` is preceded by some `first`
+  | { rule: 'after'; trigger: Matcher; next: Matcher; within?: number }  // each trigger is followed by `next` within n events
   | { rule: 'never'; match: Matcher; unless?: Matcher }  // no match, unless `unless` occurred earlier
   | { rule: 'count'; match: Matcher; min?: number; max?: number };
 ```
@@ -604,11 +604,11 @@ type TrajectoryRule =
 Examples:
 
 - "preview before push":
-  `{rule:'before', first:{cmd:'greenlight', args:['preview','*'], meta:{passed:'true'}}, then:{cmd:'git', args:['push','origin','develop']}}`
+  `{rule:'before', first:{cmd:'greenlight', args:['preview','*'], meta:{passed:'true'}}, next:{cmd:'git', args:['push','origin','develop']}}`
 - "never promote":
   `{rule:'never', match:{cmd:'greenlight', args:['promote']}}`
 - "look up after a failed verify", which is used in production mode only:
-  `{rule:'after', trigger:{cmd:'greenlight', args:['verify'], meta:{passed:'false'}}, then:{cmd:'greenlight', args:['wiki','lookup']}, within:5}`
+  `{rule:'after', trigger:{cmd:'greenlight', args:['verify'], meta:{passed:'false'}}, next:{cmd:'greenlight', args:['wiki','lookup']}, within:5}`
 
 ### 10.3 Baseline identity
 
@@ -642,7 +642,8 @@ interface EvaluationRecord {
     task: string; run: number; model: string; mode: 'isolation' | 'production';
     score: 0 | 1; graders: { kind: string; passed: boolean; detail?: string }[];
     seed: string; rawId: string; durationMs: number;
-    cost: { usd: number; tokensIn: number; tokensOut: number };
+    servedBy: string;                  // the model that actually served it; a fallback-served rollout is invalid for gating (06 §4.8)
+    cost: { usd: number; requests: number; tokensIn: number; tokensOut: number };
   }[];
 }
 ```
