@@ -26,7 +26,7 @@ import { canonicalJson } from '../schema/common';
 
 /** The runner's own version: its prompt scaffolding, tool set and sandbox contract. Part of
  * `harness.runnerVersion`; bump it on any change that could change an agent's behaviour. */
-export const RUNNER_VERSION = '0.2.0';
+export const RUNNER_VERSION = '0.2.1';
 
 const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
 

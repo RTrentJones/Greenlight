@@ -64,7 +64,7 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
       graders: ['trajectory'],
     });
     expect(a.wikiSnapshotHash).toBeNull();
-    expect(a.harness.runnerVersion).toBe('0.2.0');
+    expect(a.harness.runnerVersion).toBe('0.2.1');
     expect(a.harness.limits).toEqual({ maxSteps: 15, requestsPerRollout: 17, timeoutMin: null });
   });
 

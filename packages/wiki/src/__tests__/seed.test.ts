@@ -44,7 +44,10 @@ describe('framework wiki seed', () => {
 
   it('is fully generated: lint --fix has nothing to change (index, skill-impact)', () => {
     expect(fix(wiki).writes).toEqual([]);
-    expect(readFileSync(join(SEED, 'ledger.jsonl'), 'utf8')).toBe('');
+    // The seed proposes nothing, so its ledger holds only harness `spend` events from bench runs
+    // (budget accounting persists there, 06 §9), each of which must validate.
+    expect(wiki.ledgerErrors).toEqual([]);
+    expect(wiki.ledger.every((e) => e.stage === 'spend' && e.writer === 'harness')).toBe(true);
   });
 
   it('seeds exactly the three confirmed patterns and the named hypotheses (15 §8.1)', () => {

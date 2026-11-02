@@ -33,6 +33,13 @@ import {
   RequestBudget,
 } from '../llm/limits';
 import { checkModels, clientForRole, createLimiters, entryForRole } from '../llm/models';
+
+/** Backoff for transient model errors (429/5xx) inside a rollout. Free-tier demand spikes
+ * last minutes, and a rollout cannot resume part-way, so the client's default (~10 s in total)
+ * throws away a rollout's spent requests on the first spike. Three retries reaching ~1 minute
+ * in total keep a 15-step rollout well inside the shortest task timeout (10 min). Part of the
+ * runner's behaviour, so it is covered by RUNNER_VERSION in the identity. */
+export const ROLLOUT_RETRY_DELAYS_MS: readonly number[] = [4_000, 15_000, 45_000];
 import { FileQuotaStore, usageFromLedger } from '../llm/quota';
 import {
   HARNESS_VENDOR,
@@ -663,7 +670,7 @@ async function runRollout(
       allowFallback: false,
       ...(o.env ? { env: o.env } : {}),
       ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
-      ...(o.retryDelaysMs ? { retryDelaysMs: o.retryDelaysMs } : {}),
+      retryDelaysMs: o.retryDelaysMs ?? [...ROLLOUT_RETRY_DELAYS_MS],
       ...(o.sleep ? { sleep: o.sleep } : {}),
     });
     const timeoutMs =
@@ -823,7 +830,7 @@ function judgeFor(
     allowFallback: false,
     ...(o.env ? { env: o.env } : {}),
     ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
-    ...(o.retryDelaysMs ? { retryDelaysMs: o.retryDelaysMs } : {}),
+    retryDelaysMs: o.retryDelaysMs ?? [...ROLLOUT_RETRY_DELAYS_MS],
     ...(o.sleep ? { sleep: o.sleep } : {}),
   });
   return async (prompt) => {
