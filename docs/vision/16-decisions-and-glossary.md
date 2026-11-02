@@ -393,6 +393,20 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
   - Claude headless (`claude -p`): it has a cost, and it does not meet the owner's direction.
   - Gemini CLI as the agent: it ties evaluation to that CLI's own prompt and tools, and its skill
     support would need verifying. It is kept as a possible `--agent gemini-cli` later.
+- **Amendment (2026-11-02, owner decision).** The free-tier pace is accepted for now. That means
+  about one rollout per model per day, about 4 days to seal the M1 train records, and about 24 days
+  per M2 gate. The fallback, which the owner pre-approved, is a Flash-Lite model, for example
+  `gemini-3.5-flash-lite` or `gemini-3.1-flash-lite`, both listed by `models.list` on 2026-11-01.
+  - **Switch triggers.** Any one of these is enough:
+    1. the M1 train evaluation has not sealed 7 days after it started (2026-11-01);
+    2. a projected M2 gate exceeds 30 days;
+    3. the frontier model defers on transient 502/503 errors on 4 or more consecutive days.
+  - **How to switch.** Only between evaluations, never during one, because the model list is part
+    of the `BaselineIdentity` and a change refuses `--resume`. Replace the `small` role first. A
+    gate must have two distinct models, so replace `frontier` only if it alone is the bottleneck.
+    Before relying on the new model, confirm its free-tier limits against Google's AI Studio
+    rate-limit page and record them in `fact/gemini-free`. Then re-baseline, because every earlier
+    evaluation becomes incomparable.
 - **Status.** Accepted.
 
 ## 2. Open questions
