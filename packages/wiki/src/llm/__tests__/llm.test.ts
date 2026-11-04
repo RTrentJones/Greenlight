@@ -31,6 +31,24 @@ import { type ReactTool, runReact } from '../react';
 const ROOT = resolve(__dirname, '../../../../..');
 const modelsJson = JSON.parse(readFileSync(resolve(ROOT, 'bench/models.json'), 'utf8'));
 const budgetJson = JSON.parse(readFileSync(resolve(ROOT, 'bench/budget.json'), 'utf8'));
+// A frozen two-model config with a fallback, so the client, limiter and checkModels tests do not
+// depend on which models the live bench/models.json currently names (it changed on 2026-11-04).
+const fixtureModels = {
+  provider: 'gemini',
+  keyEnv: 'GEMINI_API_KEY',
+  roles: {
+    frontier: {
+      id: 'gemini-3.8-flash',
+      fallback: 'gemini-3.6-flash',
+      limits: { rpm: 5, rpd: 20, tpm: 250000 },
+    },
+    small: { id: 'gemini-3.6-flash', limits: { rpm: 5, rpd: 20, tpm: 250000 } },
+    maintainer: 'frontier',
+    proposer: 'frontier',
+    judge: 'small',
+  },
+  temperature: 0.2,
+};
 
 type Reply = { status: number; body: unknown } | 'network';
 interface Sent {
@@ -125,9 +143,10 @@ const base = {
 describe('bench config files', () => {
   it('bench/models.json validates against ModelsConfigSchema with the ADR-20 pair', () => {
     const m = ModelsConfigSchema.parse(modelsJson);
-    expect(m.roles.frontier.id).toBe('gemini-3.8-flash');
-    expect(m.roles.frontier.fallback).toBe('gemini-3.6-flash');
-    expect(m.roles.small.id).toBe('gemini-3.6-flash');
+    // Switched on 2026-11-04 (ADR-20 amendment, trigger 2): gemini-3.8-flash stayed unavailable.
+    expect(m.roles.frontier.id).toBe('gemini-3.6-flash');
+    expect(m.roles.small.id).toBe('gemini-3.5-flash-lite');
+    expect(m.roles.frontier.id).not.toBe(m.roles.small.id);
     expect([m.roles.maintainer, m.roles.proposer, m.roles.judge]).toEqual([
       'frontier',
       'frontier',
@@ -377,7 +396,7 @@ describe('rate limiter', () => {
   });
 
   it('the client acquires the limiter of the model actually called', async () => {
-    const config = ModelsConfigSchema.parse(modelsJson);
+    const config = ModelsConfigSchema.parse(fixtureModels);
     const limiters = createLimiters(config, { sleep: async () => {} });
     expect([...limiters.keys()]).toEqual(['gemini-3.8-flash', 'gemini-3.6-flash']);
     const f = mockFetch([err(503), err(503), err(503), text('ok')]);
@@ -526,7 +545,7 @@ describe('react loop', () => {
 });
 
 describe('checkModels', () => {
-  const config = ModelsConfigSchema.parse(modelsJson);
+  const config = ModelsConfigSchema.parse(fixtureModels);
   it('passes when every configured id is listed (across pages)', async () => {
     const f = mockFetch([
       {
@@ -787,7 +806,7 @@ describe('FileQuotaStore', () => {
 });
 
 describe('checkModels: methods and deprecation', () => {
-  const config = ModelsConfigSchema.parse(modelsJson);
+  const config = ModelsConfigSchema.parse(fixtureModels);
   it('treats a model with no listed methods as unusable and reports deprecated ones', async () => {
     const f = mockFetch([
       {

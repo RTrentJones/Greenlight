@@ -246,3 +246,15 @@ describe('unexplainedRefMoves (M1: is the recording complete?)', () => {
     expect(unexplainedRefMoves(ref(A), ref(B), observed)).toEqual([]);
   });
 });
+
+describe('raw-record secret check (2026-11-04 drill)', () => {
+  it('scans string leaves, not JSON text, so escaped newlines cannot fake a secret', async () => {
+    const { flaggedLeaves } = await import('../runner');
+    const leaf =
+      'module "k" {\n  github_token      = var.keepalive_github_token\n  cron = "0 6 */3 * *"\n}\n';
+    expect(flaggedLeaves({ transcript: [{ output: leaf }] })).toEqual([]);
+    expect(flaggedLeaves({ excerpt: 'request failed (token=Zk3q9TnW2vLp8RxY)' })).toEqual([
+      '$.excerpt',
+    ]);
+  });
+});

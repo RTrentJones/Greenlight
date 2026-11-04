@@ -7,8 +7,15 @@ JSON cannot carry comments, so the provenance of both files is recorded here (vi
 
 | role | entry | id | fallback |
 |---|---|---|---|
-| maintainer, proposer | frontier | `gemini-3.8-flash` | `gemini-3.6-flash` |
-| judge | small | `gemini-3.6-flash` | — |
+| maintainer, proposer | frontier | `gemini-3.6-flash` | — |
+| judge | small | `gemini-3.5-flash-lite` | — |
+
+**Switched on 2026-11-04** (ADR-20 amendment, trigger 2). `gemini-3.8-flash`, the original
+frontier, returned 502/503 on every attempt for four consecutive days (Nov 1–4). The most capable
+model that kept answering, `gemini-3.6-flash`, became the frontier. `gemini-3.5-flash-lite`
+answered probes and became the small model. The free-tier limits of Flash-Lite are not verified
+(Google's page gives no per-model numbers), so the conservative 5 rpm / 20 rpd is kept until they
+are. Every earlier evaluation is incomparable and was abandoned.
 
 `temperature` is 0.2 (06 §4.8 "Determinism"). Both ids must be listed by `models.list` with
 `generateContent` among their `supportedGenerationMethods`. `checkModels()`
@@ -132,8 +139,8 @@ rollout fits per model per day, however few requests it then spends.
 
 | model | rollouts | days at 20 RPD (one rollout per day) |
 |---|---|---|
-| frontier `gemini-3.8-flash` | 24 | 24 |
-| small `gemini-3.6-flash` | 24 (+12 judge calls, which fit in the leftover) | 24 |
+| frontier `gemini-3.6-flash` | 24 | 24 |
+| small `gemini-3.5-flash-lite` | 24 (+12 judge calls, which fit in the leftover) | 24 |
 
 The two models draw on separate quotas and run in parallel, so a gate takes **about 24 days**.
 `--rollout-requests 10` fits two rollouts per model per day (about 12 days), at the cost of cutting

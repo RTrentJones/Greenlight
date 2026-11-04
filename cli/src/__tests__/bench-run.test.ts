@@ -40,8 +40,8 @@ import { benchCommand } from '../commands/bench';
 const REPO = resolve(__dirname, '../../..');
 const BENCH = join(REPO, 'bench');
 const LOOP = 'loop/fixture-preview-before-push-train';
-const SMALL = 'gemini-3.6-flash';
-const FRONTIER = 'gemini-3.8-flash';
+const SMALL = 'gemini-3.5-flash-lite';
+const FRONTIER = 'gemini-3.6-flash';
 const DOCKER = dockerAvailable();
 /** On CI the isolation suite is not optional: without docker it FAILS (below) instead of passing
  * with its docker cases skipped. Locally they are skipped with a warning. */
@@ -474,9 +474,12 @@ describe('rollout isolation (13 §2.7)', () => {
         }),
       );
       expect(r.status, r.message).toBe('deferred');
-      expect(m.sent.length).toBe(3); // the primary and its two retries
+      // Every attempt goes to the frontier model and none to another model. The live
+      // models.json no longer gives the frontier a fallback (2026-11-04 switch); the
+      // fallback-disabled path itself is covered by the harness tests on a frozen config.
+      expect(m.sent.length).toBeGreaterThanOrEqual(3);
       for (const s of m.sent) expect(s.url).toContain(FRONTIER);
-      expect(r.rollouts[0]?.reason).toMatch(/fallback disabled/);
+      expect(r.rollouts[0]?.reason).toMatch(/deferred/);
     },
     300_000,
   );
@@ -697,7 +700,7 @@ describe('quota scheduling across models (M4)', () => {
     expect(m.sent.every((s) => s.url.includes(SMALL))).toBe(true); // not one frontier request
     expect(r.remaining).toEqual({ [FRONTIER]: [`${LOOP}|${FRONTIER}|1`] });
     expect(r.deferredModels?.[FRONTIER]).toMatch(
-      /daily quota: gemini-3.8-flash has 4 request\(s\) left today and a rollout may need 17/,
+      /daily quota: gemini-3\.6-flash has 4 request\(s\) left today and a rollout may need 17/,
     );
     expect(r.rollouts.map((x) => [x.model, x.status])).toEqual([[SMALL, 'graded']]);
     // Tomorrow: resume runs only the frontier rollout.
@@ -749,7 +752,7 @@ describe('quota scheduling across models (M4)', () => {
       [SMALL, 'graded'],
       [SMALL, 'graded'],
     ]);
-    expect(r.message).toMatch(/gemini-3.8-flash: 2 rollout\(s\) left \(deferred: /);
+    expect(r.message).toMatch(/gemini-3\.6-flash: 2 rollout\(s\) left \(deferred: /);
     // The deferred requests still count against the frontier model's day.
     const ledger = parseLedger(readFileSync(join(o.wikiRoot, 'ledger.jsonl'), 'utf8')).events;
     expect(ledger.map((e) => [e.spend?.model, e.spend?.requests])).toEqual([
@@ -905,6 +908,6 @@ describe('greenlight bench (CLI)', () => {
     const x = io(REPO);
     const m = fakeModel(() => finish);
     expect(await benchCommand(['models', '--check'], { ...x.io, fetchImpl: m.fetchImpl })).toBe(0);
-    expect(x.err.join('\n')).toMatch(/✔ gemini-3.6-flash/);
+    expect(x.err.join('\n')).toMatch(/✔ gemini-3\.6-flash/);
   });
 });

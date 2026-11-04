@@ -3,12 +3,11 @@
   "keyEnv": "GEMINI_API_KEY",
   "roles": {
     "frontier": {
-      "id": "gemini-3.8-flash",
-      "fallback": "gemini-3.6-flash",
+      "id": "gemini-3.6-flash",
       "limits": { "rpm": 5, "rpd": 20, "tpm": 250000 }
     },
     "small": {
-      "id": "gemini-3.6-flash",
+      "id": "gemini-3.5-flash-lite",
       "limits": { "rpm": 5, "rpd": 20, "tpm": 250000 }
     },
     "maintainer": "frontier",

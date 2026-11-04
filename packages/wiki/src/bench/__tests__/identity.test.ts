@@ -227,8 +227,8 @@ describe('selection helpers', () => {
   it('model roles and ids resolve in models.json order', () => {
     const config = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
     expect(resolveModels(config, ['small', 'frontier'])).toEqual([
-      'gemini-3.8-flash',
       'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
     ]);
     expect(resolveModels(config, ['gemini-3.6-flash'])).toEqual(['gemini-3.6-flash']);
     expect(() => resolveModels(config, ['nope'])).toThrow(/unknown model/);

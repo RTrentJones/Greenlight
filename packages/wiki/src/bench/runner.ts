@@ -518,6 +518,38 @@ function redactDeep(v: unknown): unknown {
   return v;
 }
 
+/** Paths of every string leaf the detector flags. Scanning the parsed value, not its JSON text,
+ * matters: JSON escaping turns a newline into a literal `\n`, so a line such as
+ * `github_token = var.keepalive_github_token` stops looking like a code expression and is
+ * flagged in the serialized form although it is clean as the string it is (2026-11-04 drill). */
+export function flaggedLeaves(v: unknown, path = '$'): string[] {
+  if (typeof v === 'string') return findSecrets(v).length > 0 ? [path] : [];
+  if (Array.isArray(v)) return v.flatMap((x, i) => flaggedLeaves(x, `${path}[${i}]`));
+  if (v && typeof v === 'object')
+    return Object.entries(v).flatMap(([k, x]) => flaggedLeaves(x, `${path}.${k}`));
+  return [];
+}
+
+/** Replaces each flagged string leaf (by the paths `flaggedLeaves` returns) in place. */
+function withholdLeaves(v: unknown, paths: Set<string>, path = '$'): void {
+  if (Array.isArray(v)) {
+    v.forEach((x, i) => {
+      const p = `${path}[${i}]`;
+      if (typeof x === 'string' && paths.has(p))
+        v[i] = '[withheld: flagged by the secret detector]';
+      else withholdLeaves(x, paths, p);
+    });
+  } else if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    for (const [k, x] of Object.entries(o)) {
+      const p = `${path}.${k}`;
+      if (typeof x === 'string' && paths.has(p))
+        o[k] = '[withheld: flagged by the secret detector]';
+      else withholdLeaves(x, paths, p);
+    }
+  }
+}
+
 function seedFor(task: string, model: string, run: number): number {
   return Number.parseInt(sha256(`${task}|${model}|${run}`).slice(0, 8), 16) & 0x7fffffff;
 }
@@ -981,7 +1013,9 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
     if (e.kind === 'tool_result')
       lines.push(`    -> ${e.ok ? 'ok' : 'error'} ${String(e.result).slice(0, 400)}`);
   }
-  const excerpt = truncateExcerpt(redact(lines.join('\n')));
+  // Redact before AND after truncating: cutting a line in the middle can leave a fragment that
+  // looks like `key=value` only once its start is gone.
+  const excerpt = truncateExcerpt(redact(truncateExcerpt(redact(lines.join('\n')))));
   const treeDir = join(f.artifacts, 'tree');
   const installed = existsSync(treeDir) ? treeSkills(treeDir) : {};
   const injected = f.task.spec.skills;
@@ -1035,10 +1069,17 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
     },
   };
   const parsed = RawRecordSchema.parse(record);
-  const text = `${JSON.stringify(parsed, null, 2)}\n`;
-  if (findSecrets(text).length > 0) {
-    throw new Error(`raw record ${f.rawId} would hold a flagged value; refusing to write it`);
+  // Raw capture redacts (08 §5.2); it does not refuse. Anything still flagged after redaction is
+  // withheld outright, and the record says where, so a detector disagreement never crashes a run
+  // or discards a graded rollout.
+  const flagged = flaggedLeaves(parsed);
+  if (flagged.length > 0) {
+    c.log(
+      `raw record ${f.rawId}: withholding flagged value(s) at ${flagged.slice(0, 5).join(', ')}`,
+    );
+    withholdLeaves(parsed, new Set(flagged));
   }
+  const text = `${JSON.stringify(parsed, null, 2)}\n`;
   const rawDir = join(c.stateDir, 'raw');
   mkdirSync(rawDir, { recursive: true });
   writeFileSync(join(rawDir, `${f.rawId}.json`), text);
