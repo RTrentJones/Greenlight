@@ -1,0 +1,253 @@
+{
+  "identity": {
+    "taskSetHash": "da6fcb7353be7235a69af001ff440ea3bce1b3d0d318f691e7de1ec3c5c5f8a7",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"]
+      }
+    ],
+    "splitsHash": "f325e53a60ff2e031e2d23b5bd8b600e03048c7ead0b2f9d6429d27defce6d8a",
+    "graderSetHash": "5f84b30f2288e42ca31ae8a2d170b439ce2d988e0cc5cbd2c44c17930cfb2b9f",
+    "depsHash": "11a9d03c98588bba005b1fdabce20bec91622912dd8677da5f32cd65eba28ad9",
+    "harness": {
+      "runnerVersion": "0.2.1",
+      "imageDigest": "ctx:sha256:ac2daeb6600e5b23574d2080476cc800e1cc4b701501781e13f5fa5e653dd4f9",
+      "limits": {
+        "maxSteps": 15,
+        "requestsPerRollout": 17,
+        "timeoutMin": null
+      }
+    },
+    "agent": {
+      "vendor": "greenlight-harness",
+      "version": "0.1.0"
+    },
+    "models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+    "skillSetHash": "b7cb0e89da058b38bfa6bc19f8d26c2efe71211d95590e0e7bd9a458c8129cc5",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "baseline",
+  "createdAt": "2026-11-12T04:04:27.043Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+        }
+      ],
+      "seed": "1356827611",
+      "rawId": "20261112T035223Z-03ed74d5",
+      "durationMs": 95591,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 15,
+        "tokensIn": 51295,
+        "tokensOut": 937
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+        }
+      ],
+      "seed": "1214773703",
+      "rawId": "20261112T035819Z-9b5b0c7b",
+      "durationMs": 69063,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 54682,
+        "tokensOut": 771
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: keepalive target declared for ledgerline; zero store queries from the healthcheck; zero store queries over the idle window; store suspended at the end of the idle window; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1186048785",
+      "rawId": "20261112T035359Z-080de7a3",
+      "durationMs": 59394,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 9,
+        "tokensIn": 60609,
+        "tokensOut": 462
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: container healthcheck declared; keepalive target declared for ledgerline; zero store queries from the healthcheck; zero store queries from the keepalive; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "26537575",
+      "rawId": "20261112T035928Z-838d97d8",
+      "durationMs": 116298,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 108393,
+        "tokensOut": 294
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: keepalive target declared for tripnote; the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; every sweep reports the target healthy while the store is up; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1649237414",
+      "rawId": "20261112T035458Z-69cbdf36",
+      "durationMs": 114950,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 63924,
+        "tokensOut": 301
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: keepalive target declared for tripnote; the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; every sweep reports the target healthy while the store is up; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1761483037",
+      "rawId": "20261112T040124Z-f15d9fb7",
+      "durationMs": 74595,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 63976,
+        "tokensOut": 325
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule"
+        }
+      ],
+      "seed": "809085710",
+      "rawId": "20261112T035653Z-b924173b",
+      "durationMs": 85523,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 14,
+        "tokensIn": 38317,
+        "tokensOut": 1312
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule"
+        }
+      ],
+      "seed": "2018048246",
+      "rawId": "20261112T040239Z-9668533f",
+      "durationMs": 107694,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 15,
+        "tokensIn": 37205,
+        "tokensOut": 366
+      }
+    }
+  ],
+  "hash": "9058d42acc7aaf96afb172c0000ede20cf4137cc7d498e5602989d14d0da882b"
+}
