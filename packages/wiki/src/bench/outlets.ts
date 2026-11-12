@@ -26,7 +26,8 @@ import { type EvidenceSchema, type LedgerEvent, sealEvent } from '../schema/ledg
  *   script reviewed by a human, lives at `bench/repro/<slug>/{repro.json,run.mjs}` in the
  *   harness's own tree (`ctx.repoRoot`), never in the candidate, so a candidate cannot rewrite the
  *   test it is judged by. It runs against the base and the candidate trees. Accept iff it fails on
- *   base, passes on the candidate, and `pnpm run check-all` passes on the candidate.
+ *   base, passes on the candidate, and the harness's `check-all` commands pass on the candidate
+ *   (run there with a scrubbed environment; the candidate's own package.json is not trusted).
  * - **verify**: an artifact check. The proposed assertion (a JSON `api` verify check in the issue
  *   body, or `ctx.assertionFile`) must fail against the faulty artifact and pass on the fixed one.
  * - **template**: not in M2 (it waits for M4); always `invalid`.
@@ -78,9 +79,11 @@ export interface OutletContext {
   /** verify outlet: a JSON file holding the assertion, instead of a block in the issue body. */
   assertionFile?: string;
   /** Installs a checked-out commit's dependencies (default: `pnpm install --frozen-lockfile
-   * --prefer-offline --ignore-scripts`). Never run on a given directory. */
+   * --prefer-offline --ignore-scripts --ignore-pnpmfile`, in `installEnv()`: no secrets). Never
+   * run on a given directory. */
   prepareTree?: (tree: string) => Promise<void>;
-  /** The framework suite on the candidate (default: `pnpm run check-all` in the tree). */
+  /** The framework suite on the candidate (default: the HARNESS tree's `check-all` commands,
+   * `checkAllCommands(repoRoot)`, run in the candidate tree with a scrubbed environment). */
   checkAll?: (tree: string) => Promise<{ ok: boolean; detail?: string }>;
   /** verify outlet: runs the assertion against one served artifact (default: the harness CLI's
    * `greenlight verify --url <served> --spec <assertion>`). */
@@ -411,7 +414,7 @@ async function evaluateRepro(p: IssueProposal, ctx: OutletContext): Promise<Outl
       }
       reasons.push({ code: 'repro-passes-on-candidate', detail: r.spec.id });
     }
-    const suite = await (ctx.checkAll ?? defaultCheckAll)(cand.dir);
+    const suite = await (ctx.checkAll ?? ((t) => runHarnessCheckAll(ctx.repoRoot, t)))(cand.dir);
     if (!suite.ok) {
       return decided(
         p,
@@ -517,6 +520,18 @@ class Checkouts {
         if (!EVIDENCE_REF_RE.test(t.ref)) {
           return { error: `${label}: "${t.ref}" is not an evidence ref`, code: 'unpinned-tree' };
         }
+        // A commit ref names that commit only when the directory IS it: a clean checkout whose
+        // HEAD is the named sha. Anything else would put an unverifiable commit in the evidence.
+        const named = /^commit:[\w.-]+\/[\w.-]+@([0-9a-f]{7,40})$/.exec(t.ref)?.[1];
+        if (named !== undefined) {
+          const at = cleanHead(dir);
+          if (!at || !at.startsWith(named)) {
+            return {
+              error: `${label}: ${dir} is ${at ? `at ${at}` : 'not a clean git checkout'}, not the ${t.ref} it is named as`,
+              code: 'unpinned-tree',
+            };
+          }
+        }
         return { dir, ref: t.ref };
       }
       const head = cleanHead(dir);
@@ -581,7 +596,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 /** HEAD of a clean git checkout rooted at `dir`, else null. */
-function cleanHead(dir: string): string | null {
+export function cleanHead(dir: string): string | null {
   try {
     if (resolve(git(dir, ['rev-parse', '--show-toplevel'])) !== dir) return null;
     if (git(dir, ['status', '--porcelain', '--untracked-files=normal']) !== '') return null;
@@ -591,22 +606,100 @@ function cleanHead(dir: string): string | null {
   }
 }
 
+/** Environment variables a dependency install may need (the store, the proxy, CA bundles) and
+ * nothing else: no API key or token of the harness reaches a candidate tree's install. */
+const INSTALL_ENV_ALLOW = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'LANG',
+  'PNPM_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'XDG_CONFIG_HOME',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+];
+
+export function installEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = { CI: '1' };
+  for (const k of INSTALL_ENV_ALLOW) {
+    const v = env[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
 async function defaultPrepareTree(tree: string): Promise<void> {
+  // --ignore-scripts and --ignore-pnpmfile: nothing of the candidate's runs during the install.
   const res = await runProcess(
     'pnpm',
-    ['install', '--frozen-lockfile', '--prefer-offline', '--ignore-scripts'],
-    { cwd: tree, env: { ...process.env } as Record<string, string>, timeoutMs: 600_000 },
+    ['install', '--frozen-lockfile', '--prefer-offline', '--ignore-scripts', '--ignore-pnpmfile'],
+    { cwd: tree, env: installEnv(), timeoutMs: 600_000 },
   );
   if (res.code !== 0) throw new Error(`pnpm install failed:\n${tail(res.output)}`);
 }
 
-async function defaultCheckAll(tree: string): Promise<{ ok: boolean; detail?: string }> {
-  const res = await runProcess('pnpm', ['run', 'check-all'], {
-    cwd: tree,
-    env: { ...process.env, CI: '1' } as Record<string, string>,
-    timeoutMs: 3_600_000,
-  });
-  return { ok: res.code === 0 && !res.timedOut, detail: res.output };
+/**
+ * The framework suite's commands, from the HARNESS tree's `package.json` (`scripts["check-all"]`),
+ * never the candidate's: a candidate that rewrites `"check-all": "true"` (or any script it chains)
+ * is judged by the harness's suite all the same. `pnpm <script>` / `pnpm run <script>` steps are
+ * expanded through the harness's scripts until only leaf commands remain.
+ */
+export function checkAllCommands(harnessRoot: string): string[] {
+  const pkg = JSON.parse(readFileSync(join(harnessRoot, 'package.json'), 'utf8')) as {
+    scripts?: Record<string, string>;
+  };
+  const scripts = pkg.scripts ?? {};
+  const top = scripts['check-all'];
+  if (!top) throw new Error(`no check-all script in ${harnessRoot}/package.json`);
+  const expand = (cmd: string, depth: number): string[] =>
+    cmd
+      .split('&&')
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .flatMap((part) => {
+        const m = /^pnpm\s+(?:run\s+)?([\w:.-]+)$/.exec(part);
+        const sub = m ? scripts[m[1] as string] : undefined;
+        if (sub === undefined) return [part];
+        if (depth > 8) throw new Error(`check-all expands too deep at ${part}`);
+        return expand(sub, depth + 1);
+      });
+  return expand(top, 0);
+}
+
+/** Runs the harness's check-all commands in `tree`, in a scrubbed environment (as repro runs):
+ * no harness secret (GEMINI_API_KEY, tokens) reaches candidate code. */
+export async function runHarnessCheckAll(
+  harnessRoot: string,
+  tree: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; detail?: string }> {
+  const commands = checkAllCommands(harnessRoot);
+  const home = mkdtempSync(join(tmpdir(), 'greenlight-check-all-home-'));
+  try {
+    const base = scrubbedEnv(home);
+    const env = { ...base, CI: '1', PATH: `${join(tree, 'node_modules', '.bin')}:${base.PATH}` };
+    let detail = '';
+    for (const cmd of commands) {
+      const res = await runProcess('sh', ['-c', cmd], {
+        cwd: tree,
+        env,
+        timeoutMs: opts.timeoutMs ?? 3_600_000,
+      });
+      detail = `$ ${cmd}\n${res.output}`;
+      if (res.code !== 0 || res.timedOut) return { ok: false, detail };
+    }
+    return { ok: true, detail };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 
 // ---- serving an artifact and running verify -------------------------------------------------

@@ -240,21 +240,73 @@ function appendLocked(file: string, next: LedgerEvent): LedgerEvent {
   if (existing.some((e) => e.eventId === next.eventId)) {
     throw new LedgerWriteError(`refused: eventId ${next.eventId} is already in the ledger`);
   }
-  if (next.proposalId !== undefined) {
-    const before = proposalHistory(existing, next.proposalId);
-    const after = proposalHistory([...existing, next], next.proposalId);
-    const added = after.problems.filter((p) => !before.problems.includes(p));
-    if (after.events.at(-1) !== next) {
-      added.unshift(`ts ${next.ts} is earlier than the proposal's latest event`);
-    }
-    if (added.length > 0) {
-      throw new LedgerWriteError(`refused for proposal ${next.proposalId}: ${added.join('; ')}`);
-    }
-  }
+  checkAppend(existing, next);
   // A file whose last line lacks its newline would otherwise fuse with the new line.
   const lead = text !== '' && !/(^|\n)$/.test(text) ? '\n' : '';
   appendFileSync(file, `${lead}${canonicalJson(next)}\n`);
   return next;
+}
+
+/** Refuses `next` when it would add a stage-machine problem to its proposal's history. */
+function checkAppend(existing: readonly LedgerEvent[], next: LedgerEvent): void {
+  if (next.proposalId === undefined) return;
+  const before = proposalHistory(existing, next.proposalId);
+  const after = proposalHistory([...existing, next], next.proposalId);
+  const added = after.problems.filter((p) => !before.problems.includes(p));
+  if (after.events.at(-1) !== next) {
+    added.unshift(`ts ${next.ts} is earlier than the proposal's latest event`);
+  }
+  if (added.length > 0) {
+    throw new LedgerWriteError(`refused for proposal ${next.proposalId}: ${added.join('; ')}`);
+  }
+}
+
+/**
+ * Appends several sealed events all or nothing, under one lock and in one write. Idempotent by
+ * eventId: an event already in the ledger is skipped (a retry after a crash appends only what is
+ * missing). Every new event is validated against the ledger plus the ones before it; a refusal
+ * writes nothing.
+ */
+export function appendEvents(
+  root: string,
+  events: readonly LedgerEventInput[],
+): { appended: LedgerEvent[]; present: LedgerEvent[] } {
+  const sealed = events.map((event) => {
+    if ((event as { writer?: unknown }).writer !== 'harness') {
+      throw new LedgerWriteError(
+        'refused: only the harness writes the ledger (writer must be "harness")',
+      );
+    }
+    const { eventId, writer: _writer, ...rest } = event;
+    const e = eventId === undefined ? sealEvent(rest) : { ...event, eventId };
+    const r = LedgerEventSchema.safeParse(e);
+    if (!r.success) {
+      const why = r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+      throw new LedgerWriteError(`refused: ${why}`);
+    }
+    return r.data;
+  });
+  const file = join(root, LEDGER_FILE);
+  return withFileLock(`${file}.lock`, () => {
+    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const acc = [...parseLedger(text).events];
+    const appended: LedgerEvent[] = [];
+    const present: LedgerEvent[] = [];
+    for (const e of sealed) {
+      if (acc.some((x) => x.eventId === e.eventId)) {
+        present.push(e);
+        continue;
+      }
+      checkAppend(acc, e);
+      acc.push(e);
+      appended.push(e);
+    }
+    if (appended.length > 0) {
+      const lead = text !== '' && !/(^|\n)$/.test(text) ? '\n' : '';
+      appendFileSync(file, `${lead}${appended.map((e) => `${canonicalJson(e)}\n`).join('')}`);
+    }
+    return { appended, present };
+  });
 }
 
 export interface ProposalHistory {

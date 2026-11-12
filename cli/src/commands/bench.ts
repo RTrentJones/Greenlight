@@ -86,6 +86,10 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
                        A quota deferral persists and exits 1; --resume continues on a later day.
                        --dry-run plans without a request; --handoff-only regenerates handoff.md.
+                       --candidate (mechanism / doctor): a commit, or a clean checkout (pinned to
+                       its HEAD); fixed on first use, a different one on resume is refused.
+                       A verify proposal needs the faulty and fixed artifacts, which M2 takes only
+                       programmatically (OutletContext.artifacts): from the CLI it stays invalid.
   review <iterationId> --decision accept|reject --reason "<text>"
                        record the owner's review of an iteration's ledger rows (a review event;
                        a reject of an accepted candidate is a withdrawn event)
@@ -397,6 +401,7 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       skillsDir: p.skills,
       wikiRoot: p.wiki,
       iterationId: id,
+      benchDir: p.bench,
     });
     if (a.flags.has('--json')) io.out(JSON.stringify({ file, handoff }));
     else io.out(`${handoff.kind}: ${handoff.title}\n${file}`);
@@ -511,6 +516,7 @@ function reviewCmd(args: string[], io: BenchIo): number {
     iterationId: id,
     decision,
     reason,
+    benchDir: p.bench,
     ...(io.iterate?.now ? { now: io.iterate.now } : {}),
   });
   if (a.flags.has('--json')) io.out(JSON.stringify({ eventIds: r.eventIds }));
