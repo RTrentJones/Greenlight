@@ -788,18 +788,44 @@ Every outlet's evidence lands in the same ledger, with its own `evidence.kind` (
 a fresh copy of the base with the candidate's diff overlaid; neither tree's `node_modules`, `.git`,
 `.turbo` or `*.tsbuildinfo` is copied. A diff that touches the harness's own configuration is
 `invalid` (`candidate-touches-harness-config`), reviewed by a human and never evaluated: any
-`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, `.pnpmfile.cjs`, `turbo.json`,
+`package.json` or `.gitignore` (at any depth), `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`,
+`.pnpmfile.{cjs,mjs,js}`, `turbo.json`,
 `vitest.config.*`, `biome.json*`, `tsconfig*.json`, `.dependency-cruiser.cjs`, `scripts/**`,
 `.github/**` and `bench/**` (repros, controls, graders, gate/models/budget/splits). A link that
 leaves the tree is `invalid` (`candidate-unsafe-tree`). Dependencies come from the base lockfile
 only (`--frozen-lockfile --ignore-scripts --ignore-pnpmfile`, the registry pinned to the
-harness's default). `check-all` is the HARNESS tree's script, expanded to its leaf commands, and
-runs inside the docker sandbox: one container per command from the bench runner image, uid
-10000, `--network none`, read-only root, no capabilities, `no-new-privileges`, tmpfs HOME and
-`/tmp`, the evaluated tree as the only writable mount (with a fresh `.git`: no remote, no
-credentials), and no harness environment variable. Without docker the outlet is `invalid`
-(`no-sandbox`); candidate code never runs unsandboxed. The trusted repro still runs on the host
-with a scrubbed environment, against the evaluated tree.
+harness's default). A diff that adds a check-suppression marker (`biome-ignore`, `@ts-nocheck`,
+`@ts-ignore`, `eslint-disable`, `it/describe/test.skip`, `.only`) is still evaluated, but the
+hand-off notes each one for the owner.
+
+**Every process that runs tree code runs in the docker sandbox**, the trusted repro included:
+one container per check-all command and per repro run, from the bench runner image, uid 10000,
+`--network none`, read-only root, no capabilities, `no-new-privileges`, pid/memory/cpu limits,
+tmpfs HOME and `/tmp`, and no harness environment variable. The tree (base or evaluated) is
+mounted **read-only** at its host path (the evaluated tree with a fresh `.git`: no remote, no
+credentials); `node_modules` is neither writable nor chmod'ed. The only writable paths are the
+declared outputs, a fresh tmpfs in every container: `.turbo` in the root and in each workspace
+package (turbo's cache and task logs), `node_modules/.vite` (vitest's cache) and `.vitest-tmp/`
+(the one repo-local scratch directory tests write, and where the sandbox's `vitest` shim copies
+the root config, since vite writes a bundled copy next to its config file). The set was found by
+running the harness's `check-all` on a read-only tree; `typecheck` emits nothing, and no command
+reads another's output, so every command and every repro starts from the pristine tree and
+nothing one step writes reaches a later one (a future step that needs `build` output would run
+the build in its own container). `check-all` is the HARNESS tree's script, expanded to its leaf
+commands. The repro script is mounted read-only from the HARNESS tree; its verdict is the
+container's exit code (0 passes, 1 fails, else error), never a file the tree could write. The
+evaluated tree is re-hashed (content outside `node_modules`, a stat manifest inside) before and
+after every repro and after every check-all command; any drift is `invalid`
+(`candidate-mutated-tree`). Without docker the outlet is `invalid` (`no-sandbox`); tree code
+never runs unsandboxed.
+
+**Trees and host git.** A `{commit}` is resolved in the harness repository and checked out with
+`git worktree add`; every host git call runs with no system or global config and
+`-c core.fsmonitor= -c core.hooksPath=/dev/null`. Host git never runs inside a given directory
+(its `.git/config` could name an fsmonitor or a hook): a directory with its own `.git` is
+`unpinned-tree` (name its commit instead), and a directory is evaluated only under an explicit
+non-`commit:` evidence ref, pinned by its content hash (a directory that changed since its pin is
+refused).
 
 For a template candidate, the gate takes the generated-app test result per lane and, per template
 mutant, whether those tests caught it. It applies the §5.4 replay safety rules unchanged and
@@ -953,6 +979,17 @@ only start an investigation. The bench decides.
     base commit (a page a human committed since is never reverted). Restored pages must pass
     `wiki lint --strict` before the iteration runs. Bundle keys and locks are never sealed: an
     in-flight proposer step reruns with a fresh bundle on the new runner.
+  - **Replay.** Each blob is bound, through the GCM associated data, to its iteration id and a
+    sequence number (1 for a new iteration, the restored seq + 1 after a resume): a restore names
+    the iteration (`iteration_id` is required with `state_run_id`), the blob opens only under it,
+    and the open is refused when any of the last 30 completed evo runs holds a blob of that
+    iteration with a higher seq. Residual risk: a newer run outside that window, or one whose
+    artifact expired or was deleted, is not seen, so its older predecessor could be restored.
+  - **The key and the scripts.** `EVO_STATE_KEY` is in the environment of exactly two steps, open
+    and seal, each running the copy of `scripts/evo-state.mjs` taken right after checkout, before
+    any install or iteration ran; the restore, lint and iterate steps never see it. Before
+    sealing, a keyless step checks `git status` (no fsmonitor, no hooks, no global config): any
+    change outside `wiki/` (`.greenlight/` is ignored) means nothing is sealed.
   - **What a resume trusts.** A resume refuses (exit 4) when the installed skill set,
     `models.json`, `gate.json`, `splits.json`, the task set, `bench/controls/**` or
     `bench/repro/**` differ from the iteration's creation. Pins fail closed: a state missing any
@@ -961,13 +998,16 @@ only start an investigation. The bench decides.
     (all of `checkProposal` but the per-runner access log) and its id must be its content id; the
     candidate skill set is rebuilt from the accepted skills and the proposal, and must hash to the
     stored hash; a control must equal its pinned file; every evaluation record a step uses must be
-    that step's (role, proposal, skill set, the split's tasks, and the identity's task-set, splits
-    and grader hashes over the bench on disk); a pending review's events are re-derived and must
+    that step's (role, proposal, skill set, the split's tasks, the identity's task-set, splits
+    and grader hashes over the bench on disk, and the models its settings resolve to in
+    `models.json`, the rollout limits its settings fix, isolation mode, the runner's `depsHash`
+    and the sandbox image digest); a pending review's events are re-derived and must
     reproduce the stored eventIds. Any mismatch is exit 4.
   - **One process per iteration.** The iteration lock is taken atomically (a private temp file
     `link()`ed to `.lock`) and holds host, pid, process start time and a token. A holder on this
-    host is alive only if its pid runs with the same start time; a stale lock is removed
-    compare-and-delete. A lock from another host cannot be checked and is refused unless
+    host is alive only if its pid runs with the same start time; a lock naming the current process
+    (same pid and start time, whatever its token) is live, so acquisition is never reentrant; a
+    stale lock is removed compare-and-delete. A lock from another host cannot be checked and is refused unless
     `--break-lock`.
   - **Refusal.** `bench run` reports the expected cost before running (§4.5). It refuses to start a
     gate whose expected cost exceeds `perGateMaxUsd`, `perGateMaxRollouts` or the month's

@@ -36,15 +36,28 @@ import { AGENT_UID, type RunnerImage, dockerAvailable, ensureRunnerImage } from 
  *   base, passes on the candidate, and the harness's `check-all` commands pass on the candidate.
  *   The candidate is never run as it stands: the evaluated tree is a fresh copy of the BASE with
  *   the candidate's diff overlaid (`buildEvaluatedTree`), and a diff that touches the harness's
- *   own configuration (`HARNESS_CONFIG_PATHS`: any package.json, the lockfile and workspace,
- *   .npmrc/.pnpmfile, turbo/vitest/biome/tsconfig/depcruise configs, `scripts/`, `.github/`,
- *   `bench/`) is `invalid` (`candidate-touches-harness-config`). Dependencies come from the base
- *   lockfile only (`--frozen-lockfile --ignore-scripts --ignore-pnpmfile`, registry pinned);
- *   a candidate's `node_modules`, `.git`, `.turbo` and `*.tsbuildinfo` are never copied.
- *   check-all then runs inside the docker sandbox (`runSandboxedCheckAll`: uid 10000, read-only
- *   root, `--network none`, no capabilities, only the evaluated tree mounted, a fresh `.git` with
- *   no remote and no credentials, no harness environment). Without docker the outlet is
- *   `invalid` (`no-sandbox`): candidate code never runs unsandboxed.
+ *   own configuration (`HARNESS_CONFIG_PATHS`: any package.json or .gitignore, the lockfile and
+ *   workspace, .npmrc/.pnpmfile, turbo/vitest/biome/tsconfig/depcruise configs, `scripts/`,
+ *   `.github/`, `bench/`) is `invalid` (`candidate-touches-harness-config`). Dependencies come
+ *   from the base lockfile only (`--frozen-lockfile --ignore-scripts --ignore-pnpmfile`, registry
+ *   pinned); a candidate's `node_modules`, `.git`, `.turbo` and `*.tsbuildinfo` are never copied.
+ * - **Every process that runs tree code runs in the docker sandbox**, the repro included
+ *   (`runSandboxedRepro`, `runSandboxedCheckAll`): uid 10000, read-only root, `--network none`,
+ *   no capabilities, `no-new-privileges`, pid/memory/cpu limits, no harness environment. The
+ *   evaluated tree is mounted READ-ONLY at its host path; the only writable places are fresh
+ *   tmpfs mounts per container (`/tmp`, HOME, and the declared outputs `checkOutputDirs`: each
+ *   workspace package's `.turbo`, the root `.vitest-tmp/` and `node_modules/.vite`), so every
+ *   command and every repro starts from the pristine tree and nothing a step writes reaches a
+ *   later one. The repro script is mounted read-only from the HARNESS tree; its verdict is the
+ *   container's exit code, never a file. The tree is re-hashed (`treeSnapshot`) before and after
+ *   every repro and after every check-all command: any drift is `invalid`
+ *   (`candidate-mutated-tree`). Without docker the outlet is `invalid` (`no-sandbox`): candidate
+ *   code never runs unsandboxed.
+ * - Trees: a `{commit}` is resolved in the HARNESS repository and checked out with
+ *   `git worktree add` (host git with `safeGitEnv` and `-c core.fsmonitor= -c core.hooksPath=/dev/null`).
+ *   Host git never runs inside a `{dir}`: a directory with its own `.git` is refused (name its
+ *   commit), and a directory is pinned by its content hash (`treeContentHash`) plus a named,
+ *   non-commit evidence ref.
  * - **verify**: an artifact check. The proposed assertion (a JSON `api` verify check in the issue
  *   body, or `ctx.assertionFile`) must fail against the faulty artifact and pass on the fixed one.
  * - **template**: not in M2 (it waits for M4); always `invalid`.
@@ -60,10 +73,12 @@ import { AGENT_UID, type RunnerImage, dockerAvailable, ensureRunnerImage } from 
 type Evidence = z.infer<typeof EvidenceSchema>;
 
 /** A tree to evaluate: a commit of `ctx.repoRoot` (checked out with `git worktree add`, removed
- * afterwards), or an existing directory used as is. A directory's evidence ref is `ref` when given,
- * else its HEAD when it is a clean git checkout; a dirty, unreferenced directory cannot be
- * recomputed, so evaluating it is `invalid` (`unpinned-tree`). */
-export type OutletTreeRef = { commit: string } | { dir: string; ref?: string };
+ * afterwards), or an existing directory used as is. Host git never runs inside a directory: one
+ * with its own `.git` is refused (name the commit instead), and a directory needs an explicit,
+ * non-`commit:` evidence `ref` (a `commit:` ref cannot be checked without git) — else it cannot be
+ * recomputed, so evaluating it is `invalid` (`unpinned-tree`). `hash` (`treeContentHash`, set by
+ * the iteration's pin) must still match the directory's contents. */
+export type OutletTreeRef = { commit: string } | { dir: string; ref?: string; hash?: string };
 
 export interface OutletContext {
   /** The harness's own checkout: the trusted repros (`bench/repro/`), the CLI that runs verify. */
@@ -104,6 +119,9 @@ export interface OutletContext {
    * tree's `check-all` commands inside the docker sandbox; `unavailable` when there is no
    * sandbox, which makes the evaluation `invalid`). Tests inject it. */
   checkAll?: (tree: string) => Promise<CheckAllResult>;
+  /** One trusted repro against a tree (default: `runSandboxedRepro`, in the docker sandbox;
+   * `unavailable` without one, which makes the evaluation `invalid`). Tests inject it. */
+  runRepro?: (repro: LoadedRepro, tree: string) => Promise<ReproRun>;
   /** verify outlet: runs the assertion against one served artifact (default: the harness CLI's
    * `greenlight verify --url <served> --spec <assertion>`). */
   runAssertion?: (
@@ -117,6 +135,8 @@ export interface CheckAllResult {
   detail?: string;
   /** No sandbox could run the suite (no docker, no runner image): neither a pass nor a fail. */
   unavailable?: boolean;
+  /** The tree changed under a command (`treeSnapshot` drift): the run proves nothing. */
+  mutated?: string;
 }
 
 export type OutletDecision = 'accept' | 'reject' | 'invalid';
@@ -128,14 +148,19 @@ export interface OutletReason {
 /** accept / reject carry evidence and a sealed `candidate-*` event; `invalid` never reaches the
  * ledger (as `GateDecision.ledgerEvent` is null when invalid), and has evidence only when both
  * trees were pinned. */
-export type OutletResult =
+export type OutletResult = (
   | {
       decision: 'accept' | 'reject';
       reasons: OutletReason[];
       evidence: Evidence;
       ledgerEvent: LedgerEvent;
     }
-  | { decision: 'invalid'; reasons: OutletReason[]; evidence: Evidence | null; ledgerEvent: null };
+  | { decision: 'invalid'; reasons: OutletReason[]; evidence: Evidence | null; ledgerEvent: null }
+) & {
+  /** For the owner's hand-off, never a verdict: suppression markers the candidate's diff adds
+   * (`suppressionNotes`: biome-ignore, @ts-nocheck, @ts-ignore, eslint-disable, .skip, .only). */
+  notes?: string[];
+};
 
 export const OUTLET_REASON_CODES = [
   // accept
@@ -164,6 +189,7 @@ export const OUTLET_REASON_CODES = [
   'assertion-error',
   'candidate-touches-harness-config',
   'candidate-unsafe-tree',
+  'candidate-mutated-tree',
   'no-sandbox',
 ] as const;
 
@@ -234,36 +260,77 @@ export function loadRepros(benchDir: string): { repros: LoadedRepro[]; problems:
 
 export type ReproVerdict = 'pass' | 'fail' | 'error';
 
-/** Runs one repro against a tree in its own process group, with a scrubbed environment and a
- * throwaway HOME and cwd. */
-export async function runRepro(
+export interface ReproRun {
+  verdict: ReproVerdict;
+  output: string;
+  /** No sandbox could run it (no docker, no runner image): neither a verdict nor an error. */
+  unavailable?: boolean;
+}
+
+/**
+ * Runs one trusted repro against `tree` inside the docker sandbox (`sandboxRunArgs`): the repro
+ * folder is mounted read-only from the HARNESS tree at `/opt/gl-repro`, the tree read-only at its
+ * host path, and `node /opt/gl-repro/<script> --tree <tree>` runs as uid 10000 with no network
+ * and no harness environment. The verdict is the container's exit code (0 pass, 1 fail, else
+ * error), which nothing the tree runs can write to a host file; the output is the container's
+ * stdout/stderr, read by the host. Without docker or the runner image: `unavailable`.
+ */
+export async function runSandboxedRepro(
+  harnessRoot: string,
   repro: LoadedRepro,
   tree: string,
-): Promise<{ verdict: ReproVerdict; output: string }> {
-  const scratch = mkdtempSync(join(tmpdir(), 'greenlight-repro-run-'));
-  try {
-    const res = await runProcess(
-      process.execPath,
-      [join(repro.dir, repro.spec.script), '--tree', resolve(tree)],
-      { cwd: scratch, env: scrubbedEnv(scratch), timeoutMs: repro.spec.timeoutMs },
-    );
-    const verdict: ReproVerdict =
-      res.timedOut || res.code === null
-        ? 'error'
-        : res.code === 0
-          ? 'pass'
-          : res.code === 1
-            ? 'fail'
-            : 'error';
-    return {
-      verdict,
-      output: res.timedOut
-        ? `timed out after ${repro.spec.timeoutMs} ms\n${res.output}`
-        : res.output,
-    };
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
+  o: SandboxOptions = {},
+): Promise<ReproRun> {
+  const docker = o.docker ?? 'docker';
+  if (!dockerAvailable(docker)) {
+    return { verdict: 'error', output: 'docker is not available', unavailable: true };
   }
+  let image: RunnerImage;
+  try {
+    image = o.image ?? ensureRunnerImage(join(harnessRoot, 'bench', 'runner'), { docker });
+  } catch (e) {
+    return { verdict: 'error', output: `no runner image: ${errMsg(e)}`, unavailable: true };
+  }
+  const dir = resolve(tree);
+  makeReadable(dir);
+  const name = `gl-repro-${stampOf(dir)}`;
+  const args = sandboxRunArgs({
+    name,
+    image,
+    tree: dir,
+    outputs: [],
+    mounts: ['-v', `${resolve(repro.dir)}:/opt/gl-repro:ro`],
+    workdir: '/tmp',
+    path: '/usr/local/bin:/usr/bin:/bin',
+    memory: o.memory,
+    cpus: o.cpus,
+  });
+  const res = await runProcess(
+    docker,
+    [...args, 'node', `/opt/gl-repro/${repro.spec.script}`, '--tree', dir],
+    { cwd: tmpdir(), env: dockerClientEnv(), timeoutMs: repro.spec.timeoutMs },
+  );
+  if (res.timedOut) await removeContainer(docker, name);
+  // 125: docker itself could not start the container; no verdict on the tree.
+  if (res.code === 125) {
+    return {
+      verdict: 'error',
+      output: `docker run failed: ${tail(res.output)}`,
+      unavailable: true,
+    };
+  }
+  const verdict: ReproVerdict =
+    res.timedOut || res.code === null
+      ? 'error'
+      : res.code === 0
+        ? 'pass'
+        : res.code === 1
+          ? 'fail'
+          : 'error';
+  return {
+    verdict,
+    output: res.timedOut ? `timed out after ${repro.spec.timeoutMs} ms\n${res.output}` : res.output,
+  };
 }
 
 // ---- verify assertions ----------------------------------------------------------------------
@@ -400,6 +467,9 @@ async function evaluateRepro(p: IssueProposal, ctx: OutletContext): Promise<Outl
     .join(',');
 
   const trees = new Checkouts(ctx);
+  const repro = ctx.runRepro ?? ((r, t) => runSandboxedRepro(ctx.repoRoot, r, t));
+  let notes: string[] = [];
+  const withNotes = (r: OutletResult): OutletResult => (notes.length > 0 ? { ...r, notes } : r);
   try {
     const base = await trees.open(ctx.base, 'base');
     if ('error' in base) return invalid(base.code, base.error);
@@ -409,67 +479,107 @@ async function evaluateRepro(p: IssueProposal, ctx: OutletContext): Promise<Outl
     const evidence: Evidence = { kind: 'repro', base: base.ref, candidate: cand.ref, reproTask };
     const evaluated = await trees.evaluated(base.dir, cand.dir);
     if ('error' in evaluated) return invalid(evaluated.code, evaluated.error, evidence);
+    notes = evaluated.notes;
+    // The pristine evaluated tree: nothing run on it may change it (06 §5.6).
+    const pristine = treeSnapshot(evaluated.dir);
+    const drifted = (when: string) => {
+      const d = snapshotDrift(pristine, treeSnapshot(evaluated.dir));
+      return d
+        ? withNotes(
+            invalid('candidate-mutated-tree', `the evaluated tree changed ${when}: ${d}`, evidence),
+          )
+        : null;
+    };
+    const noSandbox = (what: string, detail: string) =>
+      withNotes(
+        invalid(
+          'no-sandbox',
+          `${what} runs tree code only inside the docker sandbox: ${detail}`,
+          evidence,
+        ),
+      );
 
     const reasons: OutletReason[] = [];
     for (const r of matching) {
-      const onBase = await runRepro(r, base.dir);
+      const onBase = await repro(r, base.dir);
+      if (onBase.unavailable) return noSandbox(`the repro ${r.spec.id}`, tail(onBase.output));
       if (onBase.verdict === 'error') {
-        return invalid('repro-error', `${r.spec.id} on base: ${tail(onBase.output)}`, evidence);
+        return withNotes(
+          invalid('repro-error', `${r.spec.id} on base: ${tail(onBase.output)}`, evidence),
+        );
       }
       if (onBase.verdict === 'pass') {
-        return invalid(
-          'repro-passes-on-base',
-          `${r.spec.id} passes on base ${base.ref}: it does not reproduce the condition there`,
-          evidence,
+        return withNotes(
+          invalid(
+            'repro-passes-on-base',
+            `${r.spec.id} passes on base ${base.ref}: it does not reproduce the condition there`,
+            evidence,
+          ),
         );
       }
       reasons.push({ code: 'repro-fails-on-base', detail: `${r.spec.id}: ${tail(onBase.output)}` });
-      const onCand = await runRepro(r, evaluated.dir);
+      const before = drifted(`before the repro ${r.spec.id}`);
+      if (before) return before;
+      const onCand = await repro(r, evaluated.dir);
+      const after = drifted(`under the repro ${r.spec.id}`);
+      if (after) return after;
+      if (onCand.unavailable) return noSandbox(`the repro ${r.spec.id}`, tail(onCand.output));
       if (onCand.verdict === 'error') {
-        return invalid(
-          'repro-error',
-          `${r.spec.id} on candidate: ${tail(onCand.output)}`,
-          evidence,
+        return withNotes(
+          invalid('repro-error', `${r.spec.id} on candidate: ${tail(onCand.output)}`, evidence),
         );
       }
       if (onCand.verdict === 'fail') {
-        return decided(
+        return withNotes(
+          decided(
+            p,
+            ctx,
+            false,
+            [
+              ...reasons,
+              { code: 'repro-fails-on-candidate', detail: `${r.spec.id}: ${tail(onCand.output)}` },
+            ],
+            evidence,
+          ),
+        );
+      }
+      reasons.push({ code: 'repro-passes-on-candidate', detail: r.spec.id });
+    }
+    const suite = await (
+      ctx.checkAll ??
+      ((t) =>
+        runSandboxedCheckAll(ctx.repoRoot, t, {
+          verify: () => snapshotDrift(pristine, treeSnapshot(t)),
+        }))
+    )(evaluated.dir);
+    const afterSuite = drifted('under check-all');
+    if (afterSuite) return afterSuite;
+    if (suite.mutated) {
+      return withNotes(
+        invalid(
+          'candidate-mutated-tree',
+          `the evaluated tree changed under check-all: ${suite.mutated}`,
+          evidence,
+        ),
+      );
+    }
+    if (suite.unavailable) return noSandbox('check-all', suite.detail ?? 'unavailable');
+    if (!suite.ok) {
+      return withNotes(
+        decided(
           p,
           ctx,
           false,
           [
             ...reasons,
-            { code: 'repro-fails-on-candidate', detail: `${r.spec.id}: ${tail(onCand.output)}` },
+            { code: 'check-all-failed', ...(suite.detail ? { detail: tail(suite.detail) } : {}) },
           ],
           evidence,
-        );
-      }
-      reasons.push({ code: 'repro-passes-on-candidate', detail: r.spec.id });
-    }
-    const suite = await (ctx.checkAll ?? ((t) => runSandboxedCheckAll(ctx.repoRoot, t)))(
-      evaluated.dir,
-    );
-    if (suite.unavailable) {
-      return invalid(
-        'no-sandbox',
-        `check-all runs candidate code only inside the docker sandbox: ${suite.detail ?? 'unavailable'}`,
-        evidence,
-      );
-    }
-    if (!suite.ok) {
-      return decided(
-        p,
-        ctx,
-        false,
-        [
-          ...reasons,
-          { code: 'check-all-failed', ...(suite.detail ? { detail: tail(suite.detail) } : {}) },
-        ],
-        evidence,
+        ),
       );
     }
     reasons.push({ code: 'check-all-passed' });
-    return decided(p, ctx, true, reasons, evidence);
+    return withNotes(decided(p, ctx, true, reasons, evidence));
   } finally {
     trees.close();
   }
@@ -558,7 +668,7 @@ class Checkouts {
     baseDir: string,
     candDir: string,
   ): Promise<
-    | { dir: string }
+    | { dir: string; notes: string[] }
     | {
         error: string;
         code: 'candidate-touches-harness-config' | 'candidate-unsafe-tree' | 'checkout-failed';
@@ -582,47 +692,53 @@ class Checkouts {
     try {
       await (this.ctx.prepareTree ?? defaultPrepareTree)(dir);
       freshGit(dir);
+      // The declared outputs' mount points exist before the pristine snapshot is taken.
+      for (const out of checkOutputDirs(dir)) mkdirSync(join(dir, out), { recursive: true });
     } catch (e) {
       return { error: `evaluated tree: ${errMsg(e)}`, code: 'checkout-failed' };
     }
-    return { dir };
+    return { dir, notes: suppressionNotes(baseDir, candDir, built.changed) };
   }
 
   async open(t: OutletTreeRef, label: string, o: { install?: boolean } = {}): Promise<Opened> {
     if ('dir' in t) {
+      // Host git never runs in a directory (its .git/config could name an fsmonitor, a hook or
+      // a filter): a git checkout is named by its commit, resolved in the harness repository.
       const dir = resolve(t.dir);
       if (!existsSync(dir))
         return { error: `${label}: no directory ${dir}`, code: 'checkout-failed' };
-      if (t.ref !== undefined) {
-        if (!EVIDENCE_REF_RE.test(t.ref)) {
-          return { error: `${label}: "${t.ref}" is not an evidence ref`, code: 'unpinned-tree' };
-        }
-        // A commit ref names that commit only when the directory IS it: a clean checkout whose
-        // HEAD is the named sha. Anything else would put an unverifiable commit in the evidence.
-        const named = /^commit:[\w.-]+\/[\w.-]+@([0-9a-f]{7,40})$/.exec(t.ref)?.[1];
-        if (named !== undefined) {
-          const at = cleanHead(dir);
-          if (!at || !at.startsWith(named)) {
-            return {
-              error: `${label}: ${dir} is ${at ? `at ${at}` : 'not a clean git checkout'}, not the ${t.ref} it is named as`,
-              code: 'unpinned-tree',
-            };
-          }
-        }
-        return { dir, ref: t.ref };
-      }
-      const head = cleanHead(dir);
-      if (!head) {
+      if (existsSync(join(dir, '.git'))) {
         return {
-          error: `${label}: ${dir} is not a clean git checkout and has no ref, so the result could not be recomputed`,
+          error: `${label}: ${dir} has its own .git; git is never run in a given directory, so name the commit instead (it is resolved in the harness repository)`,
           code: 'unpinned-tree',
         };
       }
-      return { dir, ref: `commit:${this.repo}@${head}` };
+      if (t.ref === undefined) {
+        return {
+          error: `${label}: ${dir} has no evidence ref, so the result could not be recomputed`,
+          code: 'unpinned-tree',
+        };
+      }
+      if (!EVIDENCE_REF_RE.test(t.ref)) {
+        return { error: `${label}: "${t.ref}" is not an evidence ref`, code: 'unpinned-tree' };
+      }
+      if (t.ref.startsWith('commit:')) {
+        return {
+          error: `${label}: a directory cannot be shown to be ${t.ref} without running git in it; name the commit instead`,
+          code: 'unpinned-tree',
+        };
+      }
+      if (t.hash !== undefined && treeContentHash(dir) !== t.hash) {
+        return {
+          error: `${label}: ${dir} no longer has the contents it was pinned with (${t.hash.slice(0, 12)})`,
+          code: 'unpinned-tree',
+        };
+      }
+      return { dir, ref: t.ref };
     }
     let sha: string;
     try {
-      sha = git(this.ctx.repoRoot, ['rev-parse', '--verify', `${t.commit}^{commit}`]);
+      sha = safeGit(this.ctx.repoRoot, ['rev-parse', '--verify', `${t.commit}^{commit}`]);
     } catch (e) {
       return {
         error: `${label}: ${t.commit} is not a commit: ${errMsg(e)}`,
@@ -633,7 +749,7 @@ class Checkouts {
     this.scratch.push(root);
     const dir = join(root, 'tree');
     try {
-      git(this.ctx.repoRoot, ['worktree', 'add', '--detach', dir, sha]);
+      safeGit(this.ctx.repoRoot, ['worktree', 'add', '--detach', dir, sha]);
       this.added.push(dir);
       if (o.install !== false) await (this.ctx.prepareTree ?? defaultPrepareTree)(dir);
     } catch (e) {
@@ -648,7 +764,7 @@ class Checkouts {
   close(): void {
     for (const dir of this.added) {
       try {
-        git(this.ctx.repoRoot, ['worktree', 'remove', '--force', dir]);
+        safeGit(this.ctx.repoRoot, ['worktree', 'remove', '--force', dir]);
       } catch {
         // removed below; prune drops the registration
       }
@@ -656,7 +772,7 @@ class Checkouts {
     for (const s of this.scratch) rmSync(s, { recursive: true, force: true });
     if (this.added.length > 0) {
       try {
-        git(this.ctx.repoRoot, ['worktree', 'prune']);
+        safeGit(this.ctx.repoRoot, ['worktree', 'prune']);
       } catch {
         // best effort
       }
@@ -664,23 +780,51 @@ class Checkouts {
   }
 }
 
-function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, {
+/** The environment of every host git call: no system or global config (no harness credential,
+ * no helper), no terminal prompt. */
+export function safeGitEnv(home?: string): Record<string, string> {
+  const h = home ?? process.env.HOME;
+  return {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    ...(h ? { HOME: h } : {}),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+}
+
+/** Options that keep a repository's own config from running anything on the host: no fsmonitor
+ * hook, no hooks at all. */
+export const SAFE_GIT_ARGS: readonly string[] = [
+  '-c',
+  'core.fsmonitor=',
+  '-c',
+  'core.hooksPath=/dev/null',
+];
+
+/** Host git on a harness-controlled repository (`safeGitEnv`, `SAFE_GIT_ARGS`); never in a
+ * directory a candidate supplied. Ownership is not checked (`safe.directory=*`, on the command
+ * line since no system or global config is read): every caller names the harness's own repo,
+ * which in the outlet sandbox is owned by the host user, not uid 10000. */
+export function safeGit(cwd: string, args: string[]): string {
+  return execFileSync('git', [...SAFE_GIT_ARGS, '-c', 'safe.directory=*', ...args], {
     cwd,
+    env: safeGitEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   }).trim();
 }
 
-/** HEAD of a clean git checkout rooted at `dir`, else null. */
-export function cleanHead(dir: string): string | null {
-  try {
-    if (resolve(git(dir, ['rev-parse', '--show-toplevel'])) !== dir) return null;
-    if (git(dir, ['status', '--porcelain', '--untracked-files=normal']) !== '') return null;
-    return git(dir, ['rev-parse', 'HEAD']);
-  } catch {
-    return null;
+/** sha256 over a directory's contents as `listTreeEntries` sees them (node_modules, .git, .turbo
+ * and tsbuildinfo skipped): what a directory pin binds. */
+export function treeContentHash(dir: string): string {
+  const h = createHash('sha256');
+  for (const [p, e] of listTreeEntries(dir)) {
+    h.update(
+      e.kind === 'file' ? `f\0${p}\0${e.hash}\0${e.exec ? 1 : 0}\n` : `l\0${p}\0${e.target}\n`,
+    );
   }
+  return h.digest('hex');
 }
 
 /** Environment variables a dependency install may need (the store, the proxy, CA bundles) and
@@ -746,7 +890,8 @@ export const HARNESS_CONFIG_PATHS: readonly { rule: string; re: RegExp }[] = [
   { rule: 'pnpm-lock.yaml', re: /(^|\/)pnpm-lock\.yaml$/ },
   { rule: 'pnpm-workspace.yaml', re: /(^|\/)pnpm-workspace\.yaml$/ },
   { rule: '.npmrc', re: /(^|\/)\.npmrc$/ },
-  { rule: '.pnpmfile.cjs', re: /(^|\/)\.pnpmfile\.c?js$/ },
+  { rule: '.pnpmfile.{cjs,mjs,js}', re: /(^|\/)\.pnpmfile\.[cm]?js$/ },
+  { rule: '.gitignore', re: /(^|\/)\.gitignore$/ },
   { rule: 'turbo.json', re: /(^|\/)turbo\.jsonc?$/ },
   { rule: 'vitest.config.*', re: /(^|\/)vite(st)?\.(config|workspace)\.[\w.]+$/ },
   { rule: 'biome.json*', re: /(^|\/)biome\.jsonc?$/ },
@@ -820,6 +965,54 @@ export function harnessConfigTouches(paths: readonly string[]): string[] {
   return paths.filter((p) => HARNESS_CONFIG_PATHS.some((r) => r.re.test(p)));
 }
 
+/** Markers that switch a check off. A diff that adds one is still evaluated (no refusal), but
+ * the owner's hand-off says so (`suppressionNotes`). */
+export const SUPPRESSION_MARKERS: readonly { marker: string; re: RegExp }[] = [
+  { marker: 'biome-ignore', re: /biome-ignore/g },
+  { marker: '@ts-nocheck', re: /@ts-nocheck/g },
+  { marker: '@ts-ignore', re: /@ts-ignore/g },
+  { marker: 'eslint-disable', re: /eslint-disable/g },
+  { marker: '.skip', re: /\b(?:it|describe|test|suite|bench)\.skip\b/g },
+  { marker: '.only', re: /\b(?:it|describe|test|suite|bench)\.only\b/g },
+];
+
+const countOf = (text: string, re: RegExp) => text.match(re)?.length ?? 0;
+
+/** One note per changed text file that has more of a `SUPPRESSION_MARKERS` marker in the
+ * candidate than in the base (a new file counts from zero). */
+export function suppressionNotes(
+  baseDir: string,
+  candDir: string,
+  changed: readonly string[],
+): string[] {
+  const read = (root: string, rel: string): string | null => {
+    const f = join(root, rel);
+    try {
+      if (!lstatSync(f).isFile()) return null;
+      const buf = readFileSync(f);
+      return buf.includes(0) ? null : buf.toString('utf8');
+    } catch {
+      return null;
+    }
+  };
+  const notes: string[] = [];
+  for (const rel of changed) {
+    const now = read(candDir, rel);
+    if (now === null) continue;
+    const was = read(baseDir, rel) ?? '';
+    const added = SUPPRESSION_MARKERS.map((m) => ({
+      m: m.marker,
+      n: countOf(now, m.re) - countOf(was, m.re),
+    })).filter((x) => x.n > 0);
+    if (added.length > 0) {
+      notes.push(
+        `the candidate adds ${added.map((x) => `\`${x.m}\` ×${x.n}`).join(', ')} in ${rel}`,
+      );
+    }
+  }
+  return notes;
+}
+
 /**
  * Writes `dest`: a copy of the base tree with the candidate's diff overlaid. Refuses, writing
  * nothing, a diff that touches the harness's configuration or adds a link that points out of the
@@ -874,7 +1067,11 @@ function freshGit(dir: string): void {
     GIT_COMMITTER_EMAIL: 'bench@greenlight.invalid',
   };
   const g = (args: string[]) =>
-    execFileSync('git', args, { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', [...SAFE_GIT_ARGS, ...args], {
+      cwd: dir,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   g(['init', '-q']);
   g(['add', '-A']);
   g(['commit', '-q', '--no-verify', '--allow-empty', '-m', 'evaluated tree']);
@@ -928,33 +1125,173 @@ const bins = [];
 for (let d = process.cwd(); ; d = dirname(d)) { const b = join(d, 'node_modules', '.bin'); if (existsSync(b)) bins.push(b); if (dirname(d) === d) break; }
 const q = (s) => "'" + s.split("'").join("'\\''") + "'";
 const cmd = [scripts[name], ...rest.slice(1).filter((a) => a !== '--').map(q)].join(' ');
-const r = spawnSync('sh', ['-c', cmd], { stdio: 'inherit', env: { ...process.env, PATH: [...bins, process.env.PATH].join(':'), npm_lifecycle_event: name } });
+const r = spawnSync('sh', ['-c', cmd], { stdio: 'inherit', env: { ...process.env, PATH: ['/opt/gl-bin', ...bins, process.env.PATH].join(':'), npm_lifecycle_event: name } });
 process.exit(r.status === null ? 1 : r.status);
 `;
 
-export interface SandboxedCheckAllOptions {
+/**
+ * The `vitest` inside the check-all sandbox. The tree is mounted read-only, and vite writes a
+ * bundled copy of its config NEXT TO the config file before importing it, so the tree's root
+ * config (the base's: a candidate cannot change it) is copied into the writable `.vitest-tmp/`
+ * and named with `--config`; the root, and so every include glob, stays the tree.
+ */
+const SANDBOX_VITEST = String.raw`#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const { copyFileSync, existsSync, mkdirSync } = require('node:fs');
+const { join } = require('node:path');
+const args = process.argv.slice(2);
+const cwd = process.cwd();
+const real = join(cwd, 'node_modules', '.bin', 'vitest');
+if (!existsSync(real)) { console.error('sandbox vitest: no node_modules/.bin/vitest in ' + cwd); process.exit(1); }
+const named = args.some((a) => a === '--config' || a === '-c' || a.startsWith('--config='));
+const extra = [];
+if (!named) {
+  const cfg = ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs'].map((x) => 'vitest.config.' + x).find((f) => existsSync(join(cwd, f)));
+  if (cfg) {
+    const dir = join(cwd, '.vitest-tmp', '.config');
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(join(cwd, cfg), join(dir, cfg));
+    extra.push('--config', join(dir, cfg));
+  }
+}
+const r = spawnSync(real, [...args, ...extra], { stdio: 'inherit' });
+process.exit(r.status === null ? 1 : r.status);
+`;
+
+export interface SandboxOptions {
   docker?: string;
   /** The runner image (default: `ensureRunnerImage(<harness>/bench/runner)`). */
   image?: RunnerImage;
-  /** Per command (default 1 h). */
-  timeoutMs?: number;
   memory?: string;
   cpus?: string;
 }
 
-/** Makes the evaluated tree writable by the sandbox's uid: every directory, and every file
- * outside node_modules (whose files are hard links into the pnpm store and stay as they are). */
-function openTreeTo(root: string): void {
-  const walk = (dir: string, inModules: boolean) => {
-    chmodSync(dir, 0o777);
+export interface SandboxedCheckAllOptions extends SandboxOptions {
+  /** Per command (default 1 h). */
+  timeoutMs?: number;
+  /** Called after every command: a non-null drift (`snapshotDrift`) stops the suite as
+   * `mutated`, before any later command runs on the changed tree. */
+  verify?: () => string | null;
+}
+
+// ---- the sandboxed tree: read-only, with declared outputs ----------------------------------
+
+/** The workspace packages of a tree, by the `packages:` globs of its `pnpm-workspace.yaml` (the
+ * base's: a candidate cannot change it), the root included. Globs: `dir`, `dir/*`, `!dir/x-*`. */
+export function workspacePackages(tree: string): string[] {
+  const file = join(tree, 'pnpm-workspace.yaml');
+  const out = new Set<string>(['.']);
+  if (!existsSync(file)) return [...out];
+  const globs: string[] = [];
+  let inPackages = false;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (/^packages:\s*$/.test(line)) {
+      inPackages = true;
+      continue;
+    }
+    if (inPackages) {
+      const m = /^\s+-\s+["']?([^"'#]+?)["']?\s*(#.*)?$/.exec(line);
+      if (m) globs.push((m[1] as string).trim());
+      else if (/^\S/.test(line)) inPackages = false;
+    }
+  }
+  const toRe = (g: string) =>
+    new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*?/g, '[^/]*')}$`);
+  const negated = globs.filter((g) => g.startsWith('!')).map((g) => toRe(g.slice(1)));
+  const isPkg = (rel: string) =>
+    !rel.split('/').some((x) => x === '..' || x === 'node_modules') &&
+    existsSync(join(tree, rel, 'package.json'));
+  for (const g of globs.filter((x) => !x.startsWith('!'))) {
+    const clean = g.replace(/\/+$/, '');
+    const star = /^(.*?)\/\*\*?$/.exec(clean);
+    const candidates = star
+      ? existsSync(join(tree, star[1] as string))
+        ? readdirSync(join(tree, star[1] as string)).map((n) => `${star[1]}/${n}`)
+        : []
+      : [clean];
+    for (const rel of candidates) {
+      if (isPkg(rel) && !negated.some((re) => re.test(rel))) out.add(rel);
+    }
+  }
+  return [...out].sort();
+}
+
+/**
+ * The only paths of the tree a check-all command may write, each a fresh tmpfs per container
+ * (found by running the harness's check-all in the sandbox on a read-only tree): turbo's cache
+ * and task logs (`.turbo` in the root and in every workspace package), vitest's cache
+ * (`node_modules/.vite`) and `.vitest-tmp/`, the one repo-local scratch directory tests write
+ * (configs jiti must resolve from inside the repo; the sandbox `vitest`'s config copy). `typecheck`
+ * emits nothing (no `dist`, no tsbuildinfo), and no command reads another's output, so every
+ * command starts from the pristine tree. Relative, posix.
+ */
+export function checkOutputDirs(tree: string): string[] {
+  const out = ['.vitest-tmp', 'node_modules/.vite'];
+  for (const pkg of workspacePackages(tree)) out.push(pkg === '.' ? '.turbo' : `${pkg}/.turbo`);
+  return out;
+}
+
+/** Every directory outside node_modules readable (and enterable) by the sandbox's uid, and every
+ * file readable; node_modules is left as installed. Nothing is made writable. */
+function makeReadable(root: string): void {
+  const walk = (dir: string) => {
+    const st = lstatSync(dir);
+    if ((st.mode & 0o555) !== 0o555) chmodSync(dir, st.mode | 0o555);
     for (const name of readdirSync(dir)) {
       const p = join(dir, name);
-      const st = lstatSync(p);
-      if (st.isDirectory()) walk(p, inModules || name === 'node_modules');
-      else if (st.isFile() && !inModules) chmodSync(p, st.mode | 0o666);
+      const e = lstatSync(p);
+      if (e.isDirectory()) {
+        if (name !== 'node_modules') walk(p);
+      } else if (e.isFile() && (e.mode & 0o444) !== 0o444) chmodSync(p, e.mode | 0o444);
     }
   };
-  walk(root, false);
+  walk(root);
+}
+
+export interface TreeSnapshot {
+  /** `listTreeEntries`: the content of everything outside node_modules / .git / .turbo. */
+  entries: Map<string, TreeEntry>;
+  /** Every file and link under every node_modules (size, mode, mtime, inode; link targets),
+   * the declared output mount points excluded. */
+  modules: Map<string, string>;
+}
+
+/** What the tree is now: content hashes outside node_modules, a stat manifest inside it. */
+export function treeSnapshot(root: string): TreeSnapshot {
+  const outputs = new Set(checkOutputDirs(root));
+  const modules = new Map<string, string>();
+  const walkModules = (rel: string) => {
+    for (const name of readdirSync(join(root, rel)).sort()) {
+      const r = `${rel}/${name}`;
+      if (outputs.has(r)) continue;
+      const st = lstatSync(join(root, r));
+      if (st.isDirectory()) walkModules(r);
+      else if (st.isSymbolicLink()) modules.set(r, `l:${readlinkSync(join(root, r))}`);
+      else modules.set(r, `f:${st.size}:${st.mode}:${st.mtimeMs}:${st.ino}`);
+    }
+  };
+  const findModules = (rel: string) => {
+    for (const name of readdirSync(join(root, rel || '.')).sort()) {
+      const r = rel ? `${rel}/${name}` : name;
+      const st = lstatSync(join(root, r));
+      if (!st.isDirectory() || name === '.git') continue;
+      if (name === 'node_modules') walkModules(r);
+      else findModules(r);
+    }
+  };
+  findModules('');
+  return { entries: listTreeEntries(root), modules };
+}
+
+/** The paths that differ between two snapshots (at most 10 named), or null when none do. */
+export function snapshotDrift(a: TreeSnapshot, b: TreeSnapshot): string | null {
+  const diff: string[] = [];
+  for (const [p, e] of b.entries) if (!sameEntry(a.entries.get(p), e)) diff.push(p);
+  for (const p of a.entries.keys()) if (!b.entries.has(p)) diff.push(`${p} (removed)`);
+  for (const [p, v] of b.modules) if (a.modules.get(p) !== v) diff.push(p);
+  for (const p of a.modules.keys()) if (!b.modules.has(p)) diff.push(`${p} (removed)`);
+  if (diff.length === 0) return null;
+  return `${diff.slice(0, 10).join(', ')}${diff.length > 10 ? ` and ${diff.length - 10} more` : ''}`;
 }
 
 const DOCKER_CLIENT_ENV = [
@@ -967,13 +1304,94 @@ const DOCKER_CLIENT_ENV = [
   'DOCKER_TLS_VERIFY',
 ];
 
+/** The docker client's own environment, and nothing of the harness's. */
+function dockerClientEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of DOCKER_CLIENT_ENV) {
+    const v = process.env[k];
+    if (v !== undefined) env[k] = v;
+  }
+  return env;
+}
+
+const stampOf = (s: string) =>
+  createHash('sha256').update(`${s}${Date.now()}${Math.random()}`).digest('hex').slice(0, 12);
+
+async function removeContainer(docker: string, name: string): Promise<void> {
+  await runProcess(docker, ['rm', '-f', name], {
+    cwd: tmpdir(),
+    env: dockerClientEnv(),
+    timeoutMs: 60_000,
+  });
+}
+
+/**
+ * `docker run` arguments for one container of the bench runner image that runs tree code: uid
+ * 10000 (group shim, so git runs), `--network none`, `--read-only` root, `--cap-drop ALL`,
+ * `no-new-privileges`, pid/memory/cpu limits, tmpfs `/tmp` and HOME, the tree READ-ONLY at its
+ * host path (pnpm's .bin shims name absolute paths), a fresh tmpfs over each declared output,
+ * and `mounts` (read-only helpers). Only the variables set here enter the container.
+ */
+function sandboxRunArgs(o: {
+  name: string;
+  image: RunnerImage;
+  tree: string;
+  outputs: readonly string[];
+  mounts: readonly string[];
+  workdir: string;
+  path: string;
+  env?: Record<string, string>;
+  memory?: string | undefined;
+  cpus?: string | undefined;
+}): string[] {
+  const tmpfs = `rw,exec,uid=${AGENT_UID},gid=${AGENT_UID},mode=0700`;
+  return [
+    'run',
+    '--rm',
+    '--name',
+    o.name,
+    '--network',
+    'none',
+    '--read-only',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    '--pids-limit',
+    '4096',
+    '--memory',
+    o.memory ?? '6g',
+    '--cpus',
+    o.cpus ?? '2',
+    '-u',
+    `${AGENT_UID}:${o.image.shimUid}`,
+    '--tmpfs',
+    '/tmp:rw,exec,mode=1777,size=2g',
+    '--tmpfs',
+    `/home/agent:${tmpfs},size=256m`,
+    '-v',
+    `${o.tree}:${o.tree}:ro`,
+    ...o.outputs.flatMap((out) => ['--tmpfs', `${join(o.tree, out)}:${tmpfs},size=1g`]),
+    ...o.mounts,
+    '-w',
+    o.workdir,
+    '-e',
+    'HOME=/home/agent',
+    '-e',
+    'TZ=UTC',
+    ...Object.entries(o.env ?? {}).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
+    '-e',
+    `PATH=${o.path}`,
+    o.image.tag,
+  ];
+}
+
 /**
  * The harness's check-all commands (`checkAllCommands(harnessRoot)`) on the evaluated `tree`,
- * each in a fresh container of the bench runner image: uid 10000 (group shim, so git runs),
- * `--network none`, `--read-only` root, `--cap-drop ALL`, `no-new-privileges`, pid/memory/cpu
- * limits, tmpfs HOME and /tmp, and exactly one writable bind mount, the tree, at its host path
- * (pnpm's .bin shims name absolute paths). Two read-only helpers: the `pnpm run` shim and a git
- * system config that trusts the tree. No harness environment variable enters the container (the
+ * each in a fresh container (`sandboxRunArgs`): the tree read-only, a fresh tmpfs over each of
+ * `checkOutputDirs(tree)`, and three read-only helpers (the `pnpm run` and `vitest` shims, and a
+ * git system config that trusts the tree). After every command `o.verify` re-hashes the tree;
+ * drift stops the suite (`mutated`). No harness environment variable enters the container (the
  * docker client's own environment is not forwarded). Without docker or the runner image the
  * result is `unavailable`, never a pass or a fail.
  */
@@ -998,86 +1416,48 @@ export async function runSandboxedCheckAll(
     packageManager?: string;
   };
   const pnpmVersion = /^pnpm@([\w.-]+)/.exec(harnessPkg.packageManager ?? '')?.[1] ?? '10.0.0';
-  const clientEnv: Record<string, string> = {};
-  for (const k of DOCKER_CLIENT_ENV) {
-    const v = process.env[k];
-    if (v !== undefined) clientEnv[k] = v;
-  }
+  const outputs = checkOutputDirs(dir);
+  for (const out of outputs) mkdirSync(join(dir, out), { recursive: true });
+  makeReadable(dir);
   const aux = mkdtempSync(join(tmpdir(), 'greenlight-check-all-aux-'));
-  const runArgs = (name: string) => [
-    'run',
-    '--rm',
-    '--name',
-    name,
-    '--network',
-    'none',
-    '--read-only',
-    '--cap-drop',
-    'ALL',
-    '--security-opt',
-    'no-new-privileges',
-    '--pids-limit',
-    '4096',
-    '--memory',
-    o.memory ?? '6g',
-    '--cpus',
-    o.cpus ?? '2',
-    '-u',
-    `${AGENT_UID}:${image.shimUid}`,
-    '--tmpfs',
-    '/tmp:rw,exec,mode=1777,size=2g',
-    '--tmpfs',
-    `/home/agent:rw,exec,mode=0700,uid=${AGENT_UID},gid=${AGENT_UID},size=256m`,
-    '-v',
-    `${dir}:${dir}`,
-    '-v',
-    `${join(aux, 'bin')}:/opt/gl-bin:ro`,
-    '-v',
-    `${join(aux, 'git.cfg')}:/etc/gitconfig:ro`,
-    '-w',
-    dir,
-    '-e',
-    'HOME=/home/agent',
-    '-e',
-    'TZ=UTC',
-    '-e',
-    'TURBO_TELEMETRY_DISABLED=1',
-    '-e',
-    `GL_PNPM_VERSION=${pnpmVersion}`,
-    '-e',
-    `PATH=/opt/gl-bin:${dir}/node_modules/.bin:/usr/local/bin:/usr/bin:/bin`,
-    image.tag,
-  ];
-  const stamp = createHash('sha256')
-    .update(`${dir}${Date.now()}${Math.random()}`)
-    .digest('hex')
-    .slice(0, 12);
-  const dockerRun = (name: string, script: string, timeoutMs: number) =>
-    runProcess(docker, [...runArgs(name), 'sh', '-c', script], {
-      cwd: aux,
-      env: clientEnv,
-      timeoutMs,
-    });
+  const stamp = stampOf(dir);
   try {
     mkdirSync(join(aux, 'bin'));
     writeFileSync(join(aux, 'bin', 'pnpm'), SANDBOX_PNPM, { mode: 0o755 });
+    writeFileSync(join(aux, 'bin', 'vitest'), SANDBOX_VITEST, { mode: 0o755 });
     writeFileSync(join(aux, 'git.cfg'), '[safe]\n\tdirectory = *\n', { mode: 0o644 });
     chmodSync(aux, 0o755);
     chmodSync(join(aux, 'bin'), 0o755);
-    openTreeTo(dir);
     let detail = '';
     let i = 0;
     for (const cmd of commands) {
       const name = `gl-check-all-${stamp}-${i++}`;
-      const res = await dockerRun(name, `umask 000; ${cmd}`, o.timeoutMs ?? 3_600_000);
-      if (res.timedOut) {
-        await runProcess(docker, ['rm', '-f', name], {
-          cwd: aux,
-          env: clientEnv,
-          timeoutMs: 60_000,
-        });
-      }
+      const args = sandboxRunArgs({
+        name,
+        image,
+        tree: dir,
+        outputs,
+        mounts: [
+          '-v',
+          `${join(aux, 'bin')}:/opt/gl-bin:ro`,
+          '-v',
+          `${join(aux, 'git.cfg')}:/etc/gitconfig:ro`,
+        ],
+        workdir: dir,
+        path: `/opt/gl-bin:${dir}/node_modules/.bin:/usr/local/bin:/usr/bin:/bin`,
+        env: { TURBO_TELEMETRY_DISABLED: '1', GL_PNPM_VERSION: pnpmVersion },
+        memory: o.memory,
+        cpus: o.cpus,
+      });
+      const res = await runProcess(docker, [...args, 'sh', '-c', cmd], {
+        cwd: aux,
+        env: dockerClientEnv(),
+        timeoutMs: o.timeoutMs ?? 3_600_000,
+      });
+      if (res.timedOut) await removeContainer(docker, name);
       detail = `$ ${cmd}\n${res.output}`;
+      const drift = o.verify?.() ?? null;
+      if (drift) return { ok: false, mutated: `after \`${cmd}\`: ${drift}`, detail };
       // 125: docker itself could not start the container; that is no verdict on the candidate.
       if (res.code === 125) {
         return { ok: false, unavailable: true, detail: `docker run failed: ${tail(res.output)}` };
@@ -1086,17 +1466,9 @@ export async function runSandboxedCheckAll(
     }
     return { ok: true, detail };
   } finally {
-    // What the sandbox's uid created must stay removable by the host user.
-    await dockerRun(
-      `gl-check-all-${stamp}-fix`,
-      `find ${shq(dir)} -user ${AGENT_UID} -exec chmod a+rwX {} + 2>/dev/null; true`,
-      120_000,
-    );
     rmSync(aux, { recursive: true, force: true });
   }
 }
-
-const shq = (s: string) => `'${s.split("'").join(`'\\''`)}'`;
 
 // ---- serving an artifact and running verify -------------------------------------------------
 

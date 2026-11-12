@@ -404,6 +404,13 @@ describe('bench iterate (M2-01, M2-04)', () => {
           await tamper((x) => {
             (x.evaluate.candidate as Cand).record = x.baseline.record as string;
           }, /is not this step's record: it is a baseline record/);
+          // The rest of the identity binds too: limits and models the settings fix.
+          await tamper((x) => {
+            x.settings.maxSteps = 3;
+          }, /is not this step's record: its rollout limit maxSteps is 8, not 3/);
+          await tamper((x) => {
+            x.settings.models = ['small'];
+          }, /is not this step's record: it ran models .*, not /);
           await tamper((x) => {
             x.proposer.proposalId = 'prop-deadbeefdead';
           }, /is not its content id/);
@@ -947,9 +954,32 @@ describe('evo.yml', () => {
     expect(text).toMatch(/path: \$\{\{ runner\.temp \}\}\/evo-sealed/);
     expect(text).not.toMatch(/download-artifact[\s\S]*?path: \.\s*$/m);
     expect(text).toContain(
-      'node scripts/evo-state.mjs open "$RUNNER_TEMP/evo-sealed/state.glevo" "$RUNNER_TEMP/evo-state"',
+      'node "$RUNNER_TEMP/evo-scripts/evo-state.mjs" open "$RUNNER_TEMP/evo-sealed/state.glevo" "$RUNNER_TEMP/evo-state" --iteration "$ITERATION_ID"',
     );
     expect(text).toContain('pnpm exec tsx scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .');
+    // The key reaches exactly the open and seal steps, which run the copies taken first.
+    const steps = text.split(/\n(?=\s{6}- (?:name|uses):)/);
+    const keyed = steps.filter((st) =>
+      /EVO_STATE_KEY: \$\{\{ secrets\.EVO_STATE_KEY \}\}/.test(st),
+    );
+    expect(keyed.map((st) => /name: (.*)/.exec(st)?.[1])).toEqual([
+      'Open the iteration state (authenticated, this iteration, not older than any seen)',
+      'Seal the resumable state',
+    ]);
+    for (const st of keyed) {
+      expect(st).toContain('"$RUNNER_TEMP/evo-scripts/evo-state.mjs"');
+      expect(st).not.toMatch(/pnpm|tsx|git /);
+    }
+    const copy = text.indexOf('Copy the state scripts out of the checkout');
+    expect(copy).toBeGreaterThan(0);
+    expect(copy).toBeLessThan(text.indexOf('pnpm install'));
+    // Replay: bound to the iteration and seq; recent runs' blobs are checked; a resume needs the id.
+    expect(text).toContain('--seq "$(( ${prev:-0} + 1 ))"');
+    expect(text).toContain('state_run_id needs iteration_id');
+    expect(text).toContain('Download recent sealed states (replay check)');
+    // Nothing is sealed when the checkout changed outside wiki/.
+    expect(text).toContain('git -c core.fsmonitor= -c core.hooksPath=/dev/null status');
+    expect(text).toMatch(/\[ "\$CLEAN" = "yes" \]/);
     expect(text).toContain('pnpm greenlight wiki lint --strict');
     // Uploads: the masked hand-offs, and the sealed blob only when the key is present.
     const uploads = [...text.matchAll(/upload-artifact[\s\S]*?path: (.*)/g)].map((m) => m[1]);
@@ -967,9 +997,19 @@ describe('evo.yml', () => {
     const mod = (await import(join(REPO, 'scripts', 'evo-state.mjs'))) as {
       parseKey: (t: string | undefined) => Buffer;
       collect: (c: string) => { path: string; data: Buffer }[];
-      seal: (f: { path: string; data: Buffer }[], k: Buffer) => Buffer;
-      open: (b: Buffer, k: Buffer) => { path: string; data: Buffer }[];
+      seal: (
+        f: { path: string; data: Buffer }[],
+        k: Buffer,
+        b: { iterationId: string; seq: number },
+      ) => Buffer;
+      open: (
+        b: Buffer,
+        k: Buffer,
+        bind: { iterationId: string },
+      ) => { files: { path: string; data: Buffer }[]; seq: number };
+      newestSeq: (blobs: Buffer[], k: Buffer, bind: { iterationId: string }) => number;
     };
+    const X = { iterationId: 'iter-x' };
     const key = mod.parseKey(Buffer.alloc(32, 7).toString('base64'));
     expect(() => mod.parseKey(undefined)).toThrow(/not set/);
     expect(() => mod.parseKey('c2hvcnQ=')).toThrow(/32 bytes/);
@@ -989,17 +1029,30 @@ describe('evo.yml', () => {
       'wiki/ledger.jsonl',
       'wiki/patterns/p.md',
     ]);
-    const blob = mod.seal(files, key);
+    const blob = mod.seal(files, key, { ...X, seq: 2 });
     expect(blob.includes(Buffer.from('iter-x'))).toBe(false); // nothing in the clear
-    expect(mod.open(blob, key).map((f) => f.path)).toEqual(files.map((f) => f.path));
-    // A wrong key, or any flipped byte, fails authentication.
-    expect(() => mod.open(blob, Buffer.alloc(32, 8))).toThrow(/fails authentication/);
+    const opened = mod.open(blob, key, X);
+    expect(opened.seq).toBe(2);
+    expect(opened.files.map((f) => f.path)).toEqual(files.map((f) => f.path));
+    // A wrong key, any flipped byte, another iteration, or an edited seq fails authentication.
+    expect(() => mod.open(blob, Buffer.alloc(32, 8), X)).toThrow(/fails authentication/);
     const flipped = Buffer.from(blob);
     flipped[flipped.length - 1] = (flipped[flipped.length - 1] as number) ^ 1;
-    expect(() => mod.open(flipped, key)).toThrow(/fails authentication/);
+    expect(() => mod.open(flipped, key, X)).toThrow(/fails authentication/);
+    expect(() => mod.open(blob, key, { iterationId: 'iter-y' })).toThrow(/fails authentication/);
+    const reseq = Buffer.from(blob);
+    reseq.writeUInt32BE(9, 'GLEVO2\n'.length);
+    expect(() => mod.open(reseq, key, X)).toThrow(/fails authentication/);
+    // Replay: the newest seq among other runs' blobs of THIS iteration (others are ignored).
+    const older = mod.seal(files, key, { ...X, seq: 1 });
+    const other = mod.seal(files, key, { iterationId: 'iter-y', seq: 7 });
+    expect(mod.newestSeq([older, blob, other, Buffer.from('junk')], key, X)).toBe(2);
     // A well-sealed blob naming a path outside the state is refused all the same.
-    const evil = mod.seal([{ path: 'package.json', data: Buffer.from('{}') }], key);
-    expect(() => mod.open(evil, key)).toThrow(/names a path it may not/);
+    const evil = mod.seal([{ path: 'package.json', data: Buffer.from('{}') }], key, {
+      ...X,
+      seq: 1,
+    });
+    expect(() => mod.open(evil, key, X)).toThrow(/names a path it may not/);
   });
 
   it('evo-restore: state paths, a byte-prefix valid ledger, and only untouched maintainer pages', async () => {

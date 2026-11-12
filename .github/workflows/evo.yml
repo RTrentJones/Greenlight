@@ -22,6 +22,16 @@ name: evo
 #   .greenlight/{bench,raw,quota}, a ledger whose bytes extend ours and that passes the stage
 #   machine, the evaluation records, and the wiki pages the iteration wrote (only where ours still
 #   equal the iteration's base commit); then `wiki lint --strict` must pass.
+# - Replay: a sealed blob is bound (GCM associated data) to its iteration id and a sequence number
+#   (seq 1 for a new iteration, the restored seq + 1 after that). A resume needs iteration_id, the
+#   blob opens only under it, and the open is refused when any of the last 30 completed evo runs
+#   holds an authenticating blob of that iteration with a HIGHER seq (an older state is never
+#   restored over a newer one). Residual risk: a newer run outside that window, or whose artifact
+#   expired or was deleted, is not seen.
+# - EVO_STATE_KEY is in the environment of exactly two steps, each running only the copy of
+#   scripts/evo-state.mjs taken before anything else ran (open, seal); the restore, lint and
+#   iterate steps never see it. Before sealing, the checkout must show no change outside wiki/
+#   (git status, run without the key).
 # - Bundle keys are never sealed: each run makes its own, so an in-flight proposer step reruns
 #   with a fresh bundle on a new runner (its access log cannot be verified there). No .lock either.
 
@@ -70,6 +80,15 @@ jobs:
           # No token in .git/config: nothing an outlet or rollout runs can read it there.
           persist-credentials: false
 
+      # The sealing scripts as checked out, before any step runs code: the open and seal steps
+      # (the only ones with EVO_STATE_KEY) run these copies, never the checkout's files, which
+      # an iteration could have changed by the time the state is sealed.
+      - name: Copy the state scripts out of the checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/evo-scripts"
+          cp scripts/evo-state.mjs scripts/evo-restore.mjs "$RUNNER_TEMP/evo-scripts/"
+          chmod 0444 "$RUNNER_TEMP/evo-scripts/"*
+
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
 
       - run: pnpm install --frozen-lockfile
@@ -83,10 +102,13 @@ jobs:
       - name: The state key is set
         id: key
         env:
-          EVO_STATE_KEY: ${{ secrets.EVO_STATE_KEY }}
+          # A boolean only: the key itself never enters this step.
+          HAS_KEY: ${{ secrets.EVO_STATE_KEY != '' }}
           RUN_ID: ${{ inputs.state_run_id }}
+          ITERATION_ID: ${{ inputs.iteration_id }}
         run: |
-          if [ -n "$EVO_STATE_KEY" ]; then echo "present=yes" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -n "$RUN_ID" ] && [ -z "$ITERATION_ID" ]; then echo "::error::state_run_id needs iteration_id: a sealed state opens only under the iteration it belongs to"; exit 2; fi
+          if [ "$HAS_KEY" = "true" ]; then echo "present=yes" >> "$GITHUB_OUTPUT"; exit 0; fi
           echo "present=no" >> "$GITHUB_OUTPUT"
           echo "> **No EVO_STATE_KEY secret:** this run restores no state and uploads none (the state is only ever stored sealed). Add the secret to resume iterations across runs." >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$RUN_ID" ]; then echo "::error::state_run_id needs the EVO_STATE_KEY secret: refusing to restore unauthenticated state"; exit 1; fi
@@ -125,6 +147,24 @@ jobs:
           status=$(gh api "repos/$REPO/compare/$EVO_SEALED_SINCE...$head_sha" --jq .status)
           case "$status" in ahead|identical) ;; *) echo "::error::run $RUN_ID ($head_sha) does not descend from $EVO_SEALED_SINCE ($status)"; exit 1;; esac
 
+      # Every recent completed evo run's sealed blob, for the replay check in the open step (a blob
+      # that does not authenticate for this iteration is ignored there).
+      - name: Download recent sealed states (replay check)
+        if: inputs.state_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evo-scan"
+          for b in $EVO_BRANCHES; do
+            gh api "repos/$REPO/actions/workflows/evo.yml/runs?branch=$b&event=workflow_dispatch&status=completed&per_page=30" --jq '.workflow_runs[].id'
+          done | sort -un | while read -r id; do
+            case "$id" in ''|*[!0-9]*) continue;; esac
+            gh run download "$id" -R "$REPO" -n greenlight-evo-state-sealed -D "$RUNNER_TEMP/evo-scan/$id" > /dev/null 2>&1 || true
+          done
+          ls "$RUNNER_TEMP/evo-scan"
+
       - name: Download the sealed iteration state
         if: inputs.state_run_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -134,13 +174,21 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/evo-sealed
 
-      - name: Open and restore the iteration state (authenticated, allow-listed paths only)
+      - name: Open the iteration state (authenticated, this iteration, not older than any seen)
         if: inputs.state_run_id != ''
         env:
           EVO_STATE_KEY: ${{ secrets.EVO_STATE_KEY }}
+          ITERATION_ID: ${{ inputs.iteration_id }}
         run: |
           set -euo pipefail
-          node scripts/evo-state.mjs open "$RUNNER_TEMP/evo-sealed/state.glevo" "$RUNNER_TEMP/evo-state"
+          against=()
+          for f in "$RUNNER_TEMP"/evo-scan/*/state.glevo; do [ -f "$f" ] && against+=(--against "$f"); done
+          node "$RUNNER_TEMP/evo-scripts/evo-state.mjs" open "$RUNNER_TEMP/evo-sealed/state.glevo" "$RUNNER_TEMP/evo-state" --iteration "$ITERATION_ID" --seq-out "$RUNNER_TEMP/evo-seq" "${against[@]}"
+
+      - name: Restore the iteration state (allow-listed paths only)
+        if: inputs.state_run_id != ''
+        run: |
+          set -euo pipefail
           pnpm exec tsx scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .
           # Restored pages are used only once they lint clean.
           pnpm greenlight wiki lint --strict
@@ -153,14 +201,17 @@ jobs:
           SCOPE: ${{ inputs.scope }}
         run: |
           set +e
+          out="$RUNNER_TEMP/iterate.json"
           if [ -n "$ITERATION_ID" ]; then
-            pnpm greenlight bench iterate --resume "$ITERATION_ID" --sandbox docker --json > iterate.json
+            pnpm greenlight bench iterate --resume "$ITERATION_ID" --sandbox docker --json > "$out"
           else
-            pnpm greenlight bench iterate --scope "$SCOPE" --sandbox docker --json > iterate.json
+            pnpm greenlight bench iterate --scope "$SCOPE" --sandbox docker --json > "$out"
           fi
           code=$?
           set -e
-          cat iterate.json
+          cat "$out"
+          id="${ITERATION_ID:-$(jq -r '.iterationId // empty' "$out" 2>/dev/null || true)}"
+          echo "iteration=$id" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
           # 0 complete, 1 deferred / blocked (resume on a later day); anything else fails the run.
           if [ "$code" -gt 1 ]; then exit "$code"; fi
@@ -188,11 +239,31 @@ jobs:
       # What a later run restores with state_run_id: raw records, bench run progress, quota and
       # the wiki writes, sealed (scripts/evo-state.mjs; never bundle keys, never a lock). No key,
       # no state: it is never uploaded in the clear.
+      # Without the key: the checkout may differ from the commit only under wiki/ (the iteration's
+      # writes; .greenlight/ and node_modules are ignored). Anything else means something wrote
+      # where it must not, and nothing is sealed.
+      - name: Check the checkout for changes outside the state
+        id: clean
+        if: always() && steps.key.outputs.present == 'yes'
+        run: |
+          set -euo pipefail
+          changes=$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.fsmonitor= -c core.hooksPath=/dev/null status --porcelain=v1 --untracked-files=all)
+          bad=$(printf '%s\n' "$changes" | awk 'NF { p = substr($0, 4); if (p !~ /^"?wiki\//) print p }')
+          if [ -n "$bad" ]; then printf '::error::changes outside the state paths, refusing to seal:\n%s\n' "$bad"; echo "ok=no" >> "$GITHUB_OUTPUT"; exit 1; fi
+          echo "ok=yes" >> "$GITHUB_OUTPUT"
+
       - name: Seal the resumable state
         if: always() && steps.key.outputs.present == 'yes'
         env:
           EVO_STATE_KEY: ${{ secrets.EVO_STATE_KEY }}
-        run: node scripts/evo-state.mjs seal . "$RUNNER_TEMP/state.glevo"
+          CLEAN: ${{ steps.clean.outputs.ok }}
+          ITERATION_ID: ${{ steps.iterate.outputs.iteration }}
+        run: |
+          set -euo pipefail
+          [ "$CLEAN" = "yes" ] || { echo "::error::the checkout changed outside the state paths: nothing is sealed"; exit 1; }
+          [ -n "$ITERATION_ID" ] || { echo "::error::no iteration id to bind the state to: nothing is sealed"; exit 1; }
+          prev=0; [ -f "$RUNNER_TEMP/evo-seq" ] && prev=$(tr -cd '0-9' < "$RUNNER_TEMP/evo-seq")
+          node "$RUNNER_TEMP/evo-scripts/evo-state.mjs" seal . "$RUNNER_TEMP/state.glevo" --iteration "$ITERATION_ID" --seq "$(( ${prev:-0} + 1 ))"
 
       - name: Upload the sealed state
         if: always() && steps.key.outputs.present == 'yes'
