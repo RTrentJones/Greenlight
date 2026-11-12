@@ -299,8 +299,8 @@ describe.each([
         sandbox === 'process' ? 'process' : expect.stringMatching(/^ctx:sha256:[0-9a-f]{64}$/),
       );
       expect(r.record?.identity.harness.limits).toEqual({
-        maxSteps: 15,
-        requestsPerRollout: 17,
+        maxSteps: 25,
+        requestsPerRollout: 27,
         timeoutMin: 2,
       });
       const [outcome] = r.record?.outcomes ?? [];
@@ -663,7 +663,7 @@ describe('budget, deferral, redaction', () => {
     // M5: so do changed limits; unset limits on resume are the evaluation's own.
     const steps = await runBench({ ...o, resume: again.evaluationId, maxSteps: 20 });
     expect(steps.status).toBe('policy-refused');
-    expect(steps.message).toMatch(/harness.*rollout limits .*"maxSteps":15.*"maxSteps":20/);
+    expect(steps.message).toMatch(/harness.*rollout limits .*"maxSteps":25.*"maxSteps":20/);
     const cap = await runBench({ ...o, resume: again.evaluationId, rolloutRequestCap: 30 });
     expect(cap.status).toBe('policy-refused');
     writeFileSync(join(bench, 'tasks', LOOP, 'brief.md'), 'A different brief.\n');
@@ -699,7 +699,7 @@ describe('quota scheduling across models (M4)', () => {
 
   it('skips a model whose quota left is below the request cap and keeps running the other', async () => {
     const m = twoModels(new Set());
-    const quota = memoryQuota({ [FRONTIER]: RPD.frontier - 4 }); // 4 left < 17
+    const quota = memoryQuota({ [FRONTIER]: RPD.frontier - 4 }); // 4 left < 27
     const o = options({
       fetchImpl: m.fetchImpl,
       sandbox: 'process',
@@ -712,7 +712,7 @@ describe('quota scheduling across models (M4)', () => {
     expect(r.remaining).toEqual({ [FRONTIER]: [`${LOOP}|${FRONTIER}|1`] });
     expect(r.deferredModels?.[FRONTIER]).toMatch(
       new RegExp(
-        `daily quota: ${reId(FRONTIER)} has 4 request\\(s\\) left today and a rollout may need 17`,
+        `daily quota: ${reId(FRONTIER)} has 4 request\\(s\\) left today and a rollout may need 27`,
       ),
     );
     expect(r.rollouts.map((x) => [x.model, x.status])).toEqual([[SMALL, 'graded']]);

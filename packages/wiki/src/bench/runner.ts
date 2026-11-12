@@ -231,7 +231,7 @@ const ROLLOUT_KEY = (t: string, m: string, r: number) => `${t}|${m}|${r}`;
 
 export const REQUESTS_PER_ROLLOUT = 12;
 /** 15: the live smoke showed 10 steps too tight for the replay tasks (bench/README-models.md). */
-export const DEFAULT_MAX_STEPS = 15;
+export const DEFAULT_MAX_STEPS = 25;
 /** The per-rollout request cap for `maxSteps`: one request per step plus two retries' headroom. */
 export const rolloutRequestCap = (maxSteps: number): number => maxSteps + 2;
 

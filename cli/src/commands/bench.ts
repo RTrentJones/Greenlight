@@ -67,7 +67,7 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        events and (when complete) a sealed EvaluationRecord; train runs are cached
                        by baseline identity (--force re-runs). --sandbox process is local
                        development only and is refused for baseline evaluations.
-                       --max-steps (default 15) and --rollout-requests (the per-rollout request
+                       --max-steps (default 25) and --rollout-requests (the per-rollout request
                        cap, default max-steps + 2) are part of the identity; a model whose daily
                        quota left is below the cap is skipped for today (exit 1, deferred).
   check-graders [taskId…] [--verbose]

@@ -166,9 +166,9 @@ describe('bench config files', () => {
       models: 2,
       modes: 1,
       baselineRerun: true,
-      requestsPerRollout: 12.25,
+      requestsPerRollout: 20.25,
     });
-    expect(estimate).toEqual({ rollouts: 48, requests: 588, usd: 0 });
+    expect(estimate).toEqual({ rollouts: 48, requests: 972, usd: 0 });
     const check = checkBudget(b, estimate, [], '2026-11-01T00:00:00Z', {
       dailyRequestsRemaining: 20,
     });

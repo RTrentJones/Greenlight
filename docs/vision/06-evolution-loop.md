@@ -513,7 +513,7 @@ does not leak into proposer-visible evidence over time.
    - The trajectory file is written by the host, outside the agent's writable tree, from events the
      shims send through a socket only the shim user can connect to. The agent cannot edit its own
      trajectory. Whether the recording is complete is checked, not assumed (§4.6).
-   - The rollout limits (`maxSteps`, default 15; the per-rollout request cap, default
+   - The rollout limits (`maxSteps`, default 25, raised from 15 on 2026-11-12 after the activation baseline showed 6 of 8 rollouts stopped by the cap; the per-rollout request cap, default
      `maxSteps + 2`; any timeout override) are part of the baseline identity (`harness.limits`,
      §1.5): runs under different limits are never compared, cached or resumed into one another.
 4. The score is 1 if every grader check passes and 0 otherwise. Partial credit is stored

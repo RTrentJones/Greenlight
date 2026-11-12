@@ -23,7 +23,7 @@ export default {
       access: 'public',
       envs: ['beta', 'prod'],
       port: 4320,
-      preview: { command: 'node app.mjs', port: 4320, path: '/pins' },
+      preview: { command: 'node app.mjs', port: 4320, path: '/' },
     },
   ],
 };
