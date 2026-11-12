@@ -54,7 +54,7 @@ env:
   EVO_BRANCHES: "2.0"
   # The commit that introduced sealed state: a state run's head must descend from it (runs before
   # it sealed nothing). Update it only if that history is rewritten.
-  EVO_SEALED_SINCE: "0000000000000000000000000000000000000000"
+  EVO_SEALED_SINCE: "86d9773166751cf6bd4bbf7bf24da67612a7360d"
 
 jobs:
   iterate:
