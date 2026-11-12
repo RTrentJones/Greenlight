@@ -1,8 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { renderSkillImpact } from '../../ledger';
+import { checkProposalContent, purposeRadiusChange } from '../../bundle';
+import { appendEvents, renderSkillImpact } from '../../ledger';
+import { loadWiki } from '../../load';
 import {
   LedgerEventSchema,
   MAINTAINER_OUTPUT_JSON_SCHEMA,
@@ -14,7 +26,7 @@ import {
   normalizeProposerOutput,
   sealEvent,
 } from '../../schema';
-import { blastRadius, loadControls, materializeCandidate } from '../iterate';
+import { acquireLock, blastRadius, loadControls, materializeCandidate, pinTree } from '../iterate';
 
 /** Unit cases for `bench iterate` (roadmap M2-01/M2-04) that need no rollout: the hand-written
  * JSON Schemas stay in step with the zod contracts, the review annotation's place in the stage
@@ -194,5 +206,112 @@ describe('iterate helpers', () => {
       name: 'deploy-verify-promote',
     });
     expect(loadControls(BENCH, 'no-such-dir')).toEqual([]);
+  });
+});
+
+describe('resume hardening (second review)', () => {
+  const REPO = resolve(BENCH, '..');
+
+  it('blast radius: a PURPOSE.md edit may not move the parsed key or the frontmatter', () => {
+    const fm = '---\nskill: x\nblast-radius: high\nowner: o\n---\nbody\n';
+    expect(purposeRadiusChange(fm, fm.replace('body', 'new body'))).toBeNull();
+    // Closing the block early moves blast-radius out of it although the line is unchanged.
+    expect(purposeRadiusChange(fm, fm.replace('skill: x\n', 'skill: x\n---\n'))).toMatch(/keys/);
+    expect(purposeRadiusChange(fm, fm.replace(/^---\n/, ''))).toMatch(/frontmatter block/);
+    expect(purposeRadiusChange(fm, fm.replace(/\n/g, '\r\n'))).toMatch(/frontmatter block/);
+    expect(purposeRadiusChange(fm, fm.replace('high', 'low'))).toMatch(/blast-radius value/);
+    expect(purposeRadiusChange(fm, fm.replace('high', '"high"'))).toBeNull();
+
+    const skills = mkdtempSync(join(tmpdir(), 'iterate-radius-'));
+    try {
+      cpSync(join(REPO, '.claude', 'skills', 'provider-neon'), join(skills, 'provider-neon'), {
+        recursive: true,
+      });
+      writeFileSync(join(skills, 'provider-neon', 'PURPOSE.md'), fm.replace('x', 'provider-neon'));
+      const patch = (edits: unknown[]) =>
+        checkProposalContent({
+          output: {
+            action: 'patch',
+            outlet: 'skill',
+            name: 'provider-neon',
+            edits,
+            patterns: ['pattern/probe-touches-wrong-layer'],
+          },
+          wiki: loadWiki(join(REPO, 'wiki')),
+          skillsDir: skills,
+          templatesDir: join(REPO, 'tools'),
+        });
+      const moved = patch([
+        { op: 'insert_after', file: 'PURPOSE.md', target: 'skill: provider-neon\n', text: '---\n' },
+      ]);
+      expect(moved.ok).toBe(false);
+      expect(!moved.ok && moved.errors.join('\n')).toMatch(
+        /PURPOSE\.md: the edit changes the frontmatter keys/,
+      );
+      const fine = patch([{ op: 'append', file: 'PURPOSE.md', text: '\nmore\n' }]);
+      expect(fine.ok, JSON.stringify(fine)).toBe(true);
+    } finally {
+      rmSync(skills, { recursive: true, force: true });
+    }
+  });
+
+  it('pinTree: a commit that does not resolve is an error, never pinned literally', () => {
+    expect(() => pinTree(REPO, { commit: 'no-such-ref-anywhere' }, 'o/r')).toThrow(
+      /is not a commit/,
+    );
+    expect(pinTree(REPO, { commit: 'HEAD' }, 'o/r').key).toMatch(/^commit:[0-9a-f]{40}$/);
+  });
+
+  it('the lock is taken atomically and released compare-and-delete', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'iterate-lock-'));
+    try {
+      const release = acquireLock(dir);
+      // Another live pid on this host is a running holder.
+      writeFileSync(join(dir, '.lock'), JSON.stringify({ host: hostname(), pid: process.ppid }));
+      expect(() => acquireLock(dir)).toThrow(/is running in process/);
+      // Someone else's lock now (a holder that broke ours): our release leaves it alone.
+      writeFileSync(join(dir, '.lock'), JSON.stringify({ host: 'h', pid: 1, token: 'other' }));
+      release();
+      expect(existsSync(join(dir, '.lock'))).toBe(true);
+      expect(() => acquireLock(dir)).toThrow(/on host h.*--break-lock/);
+      const mine = acquireLock(dir, () => {}, { breakLock: true });
+      mine();
+      expect(existsSync(join(dir, '.lock'))).toBe(false);
+      expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('appendEvents repairs a torn trailing line under the lock, and keeps a whole one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'iterate-torn-'));
+    try {
+      const ev = (n: number) =>
+        sealEvent({
+          ts: `2026-11-1${n}T00:00:00.000Z`,
+          proposalId: `prop-00000000000${n}`,
+          stage: 'no-action',
+          change: { kind: 'no_action' },
+          reason: 'r',
+        });
+      appendEvents(root, [ev(1)]);
+      appendFileSync(join(root, 'ledger.jsonl'), '{"eventId":"tor');
+      const r = appendEvents(root, [ev(2)], { repairTornTail: true });
+      expect(r.repaired).toBe('{"eventId":"tor');
+      const text = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+      const ids = text
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l).eventId);
+      expect(ids).toEqual([ev(1).eventId, ev(2).eventId]);
+      // A complete last line that only lacks its newline is kept.
+      writeFileSync(join(root, 'ledger.jsonl'), text.trimEnd());
+      const kept = appendEvents(root, [ev(3)], { repairTornTail: true });
+      expect(kept.repaired).toBeUndefined();
+      const lines = readFileSync(join(root, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean);
+      expect(lines).toHaveLength(3);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

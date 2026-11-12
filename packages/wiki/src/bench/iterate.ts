@@ -1,19 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync,
   cpSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -29,6 +27,7 @@ import {
   buildMaintainerBundle,
   buildProposerBundle,
   checkProposal,
+  checkProposalContent,
   listTraces,
   loadRawStore,
   openBundle,
@@ -40,7 +39,13 @@ import {
   writeBundle,
 } from '../bundle';
 import { appendLogEntry } from '../index-gen';
-import { appendEvent, appendEvents, proposalHistory, renderSkillImpact } from '../ledger';
+import {
+  appendEvent,
+  appendEvents,
+  proposalHistory,
+  renderSkillImpact,
+  withFileLock,
+} from '../ledger';
 import { type LintContext, introducedErrors, lint } from '../lint';
 import { type GeminiClient, type Usage, clientForRole, createLimiters, entryForRole } from '../llm';
 import { RequestBudget } from '../llm/limits';
@@ -78,6 +83,7 @@ import {
   normalizeProposerOutput,
   sealEvent,
 } from '../schema';
+import { canonicalJson } from '../schema/common';
 import { loadSkills } from '../skills';
 import { spendEvent } from './budget';
 import { type LoadedTask, loadTasks } from './check-graders';
@@ -89,7 +95,7 @@ import {
   loadGateConfig,
   rejectedForReplayRegression,
 } from './gate';
-import { hashTree, skillSetHashOf } from './identity';
+import { graderSetHash, hashTree, skillSetHashOf, splitsHash, taskSetHash } from './identity';
 import {
   type ControlArm,
   type OutletContext,
@@ -254,6 +260,10 @@ export interface IterationState {
   acceptedSkillSetHash: string;
   /** What the iteration was created against; every resume refuses (exit 4) when one differs. */
   pins?: IterationPins;
+  /** The checkout's HEAD commit at creation. scripts/evo-restore.mjs restores a wiki page the
+   * iteration wrote only while the checkout's copy still equals the copy at this commit (a page
+   * a human committed since is never reverted). */
+  baseCommit?: string;
   notes: string[];
   train: EvalStep;
   maintainer: {
@@ -328,6 +338,10 @@ export interface IterationPins {
   gate: string;
   splits: string;
   tasks: string;
+  /** `bench/controls/**`: the control arms and the rejections they must earn. */
+  controls: string;
+  /** `bench/repro/**`: the trusted repros the mechanism / doctor outlets are judged by. */
+  repro: string;
 }
 
 /** An outlet tree, resolved once: `key` names what it resolved to (a commit sha, a clean HEAD). */
@@ -378,6 +392,11 @@ export interface IterateOptions {
   outletContext?: Partial<OutletContext>;
   /** Fixed id for a new iteration (tests). */
   iterationId?: string;
+  /** `--adopt-pins`: a resumed state missing a pin adopts the current input (logged); without it
+   * the resume is refused (exit 4). */
+  adoptPins?: boolean;
+  /** `--break-lock`: remove a lock written on another host (which cannot be checked here). */
+  breakLock?: boolean;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -453,53 +472,131 @@ function saveState(stateDir: string, s: IterationState, now: Date): void {
   renameSync(tmp, file);
 }
 
+/** A process's start time on this host (Linux `/proc/<pid>/stat` field 22, in clock ticks since
+ * boot), or null where it cannot be read. With the pid it names one process: a reused pid has
+ * another start time. */
+export function processStart(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return fields[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+interface LockHolder {
+  host?: unknown;
+  pid?: unknown;
+  start?: unknown;
+  token?: unknown;
+}
+
 /**
- * One process per iteration: a lock file in the iteration directory holding `{host, pid}`. A
- * holder that is dead on this host is stale. A lock written on another host cannot be checked
- * here; since a lock never rides in an artifact (evo.yml excludes it), one from another host is
- * a leftover of a copied state directory, removed with a message saying so.
+ * One process per iteration: `.lock` in the iteration directory, holding `{host, pid, start,
+ * token}`. Taken atomically: the content is written to a private temp file first, then `link()`ed
+ * to `.lock`, which fails if any lock exists, so no reader ever sees a half-written lock and two
+ * takers can never both win.
+ *
+ * - A holder on this host is alive when its pid runs with the same start time (a reused pid is
+ *   not the holder); a dead holder's lock is stale.
+ * - A lock written on another host cannot be checked here: it is refused unless `breakLock` (the
+ *   CLI's `--break-lock`) says the owner knows that run is gone.
+ * - A stale or broken lock is removed compare-and-delete, under `withFileLock(<lock>.steal)`: only
+ *   if `.lock` still holds exactly the content that was judged, so a lock another process has just
+ *   taken is never removed. Release is compare-and-delete with the holder's own content.
  */
-export function acquireLock(dir: string, log: (s: string) => void = () => {}): () => void {
+export function acquireLock(
+  dir: string,
+  log: (s: string) => void = () => {},
+  o: { breakLock?: boolean } = {},
+): () => void {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, '.lock');
-  const me = { host: hostname(), pid: process.pid };
-  for (let i = 0; i < 2; i++) {
+  const mine = JSON.stringify({
+    host: hostname(),
+    pid: process.pid,
+    start: processStart(process.pid),
+    token: randomBytes(12).toString('hex'),
+  });
+  const removeIf = (content: string) =>
+    withFileLock(`${file}.steal`, () => {
+      let cur: string | undefined;
+      try {
+        cur = readFileSync(file, 'utf8');
+      } catch {
+        return;
+      }
+      if (cur === content) rmSync(file, { force: true });
+    });
+  for (let i = 0; i < 3; i++) {
+    const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    writeFileSync(tmp, mine, { flag: 'wx' });
     try {
-      const fd = openSync(file, 'wx');
-      writeSync(fd, JSON.stringify(me));
-      closeSync(fd);
-      return () => rmSync(file, { force: true });
+      linkSync(tmp, file);
+      return () => removeIf(mine);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      let held: { host?: unknown; pid?: unknown } = {};
-      try {
-        const t = readFileSync(file, 'utf8').trim();
-        held = t.startsWith('{') ? (JSON.parse(t) as typeof held) : { pid: Number(t) };
-      } catch {
-        held = {};
-      }
-      const pid = Number(held.pid);
-      if (typeof held.host === 'string' && held.host !== me.host) {
-        log(
-          `warning: removing the lock of process ${pid} on host ${held.host} at ${file}: a lock is checked only on the host that wrote it, and this state directory was copied here`,
-        );
-        rmSync(file, { force: true });
-        continue;
-      }
-      let alive = false;
-      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-        try {
-          process.kill(pid, 0);
-          alive = true;
-        } catch {
-          alive = false;
-        }
-      }
-      if (alive) throw new IterationError(`iteration is running in process ${pid} (${file})`, 4);
-      rmSync(file, { force: true });
+    } finally {
+      rmSync(tmp, { force: true });
     }
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue; // released in between
+    }
+    let held: LockHolder = {};
+    try {
+      held = text.trim().startsWith('{')
+        ? (JSON.parse(text) as LockHolder)
+        : { pid: Number(text.trim()) };
+    } catch {
+      held = {};
+    }
+    const pid = Number(held.pid);
+    if (typeof held.host === 'string' && held.host !== hostname()) {
+      if (!o.breakLock) {
+        throw new IterationError(
+          `iteration is locked by process ${pid} on host ${held.host} (${file}); a lock is checked only on the host that wrote it. If that run is gone, rerun with --break-lock`,
+          4,
+        );
+      }
+      log(
+        `warning: breaking the lock of process ${pid} on host ${held.host} at ${file} (--break-lock)`,
+      );
+      removeIf(text);
+      continue;
+    }
+    let alive = false;
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+      try {
+        process.kill(pid, 0);
+        const start = typeof held.start === 'string' ? held.start : null;
+        alive = start === null || processStart(pid) === null || processStart(pid) === start;
+      } catch {
+        alive = false;
+      }
+    }
+    if (alive) throw new IterationError(`iteration is running in process ${pid} (${file})`, 4);
+    log(`removing the stale lock of process ${pid} at ${file}`);
+    removeIf(text);
   }
   throw new IterationError(`cannot lock ${file}`, 1);
+}
+
+/** The full sha of `repoRoot`'s HEAD, or undefined outside a git checkout. */
+function headCommit(repoRoot: string): string | undefined {
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--verify', 'HEAD^{commit}'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    return /^[0-9a-f]{40,64}$/.test(out) ? out : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The pins of an iteration's inputs as they are on disk now. */
@@ -510,6 +607,8 @@ export function iterationPins(benchDir: string, skillsDir: string): IterationPin
     gate: hashTree(join(benchDir, 'gate.json')),
     splits: hashTree(join(benchDir, 'splits.json')),
     tasks: hashTree(join(benchDir, 'tasks')),
+    controls: hashTree(join(benchDir, 'controls')),
+    repro: hashTree(join(benchDir, 'repro')),
   };
 }
 
@@ -519,11 +618,15 @@ const PIN_NAMES: Record<keyof IterationPins, string> = {
   gate: 'bench/gate.json',
   splits: 'bench/splits.json',
   tasks: 'the bench task set (bench/tasks)',
+  controls: 'the control arms (bench/controls)',
+  repro: 'the trusted repros (bench/repro)',
 };
 
-/** Refuses a resume whose inputs drifted from the iteration's creation (a state from before
- * pins existed gets them now). Evaluations, controls and decisions all assume these inputs. */
-function checkPins(s: IterationState, o: IterateOptions): void {
+/** Refuses a resume whose inputs drifted from the iteration's creation. Pins fail closed: a state
+ * without pins, or missing any pin, is refused (exit 4) unless `adoptPins` (`--adopt-pins`) says
+ * the owner vouches that the inputs on disk now are the ones it was created against; only the
+ * missing pins are adopted, and the present ones are still compared. */
+function checkPins(s: IterationState, o: IterateOptions, log: (s: string) => void): void {
   const now = iterationPins(o.benchDir, o.skillsDir);
   if (now.skillSet !== s.acceptedSkillSetHash) {
     throw new IterationError(
@@ -531,11 +634,23 @@ function checkPins(s: IterationState, o: IterateOptions): void {
       4,
     );
   }
-  if (!s.pins) {
-    s.pins = now;
-    return;
+  const names = Object.keys(PIN_NAMES) as (keyof IterationPins)[];
+  const held: Partial<IterationPins> = s.pins ?? {};
+  const missing = names.filter((k) => typeof held[k] !== 'string' || held[k] === '');
+  if (missing.length > 0) {
+    if (!o.adoptPins) {
+      throw new IterationError(
+        `iteration ${s.iterationId} has no pin for ${missing.map((k) => PIN_NAMES[k]).join(', ')}, so its inputs cannot be shown unchanged: start a new iteration, or rerun with --adopt-pins if you vouch for the inputs on disk now`,
+        4,
+      );
+    }
+    log(
+      `warning: --adopt-pins: pinning ${missing.map((k) => PIN_NAMES[k]).join(', ')} as they are on disk now`,
+    );
+    s.pins = { ...now, ...held } as IterationPins;
+    for (const k of missing) s.pins[k] = now[k];
   }
-  const pins = s.pins;
+  const pins = s.pins as IterationPins;
   const drift = (Object.keys(PIN_NAMES) as (keyof IterationPins)[]).filter(
     (k) => pins[k] !== now[k],
   );
@@ -729,12 +844,67 @@ function runOptions(c: Ctx, over: Partial<BenchRunOptions>): BenchRunOptions {
  * Runs (or resumes) one evaluation for a rollout step and maps its status onto the step: sealed or
  * cached → done; deferred / incomplete → resumable, exit 1; budget or policy refusal → exit 4.
  */
+/** What a step's evaluation record must be: a record found by hash or restored with the state is
+ * used only when it is the record of THIS step. */
+export interface RecordBinding {
+  role: EvaluationRecord['role'];
+  split: 'train' | 'val';
+  /** The candidate's proposal; absent for train and baseline (a record naming one is refused). */
+  proposalId?: string;
+  /** The skill set the rollouts must have run under. */
+  skillSetHash: string;
+}
+
+/**
+ * Why `rec` is not the record of a step bound by `b`, or null when it is: its role, proposal,
+ * skill set, task split (every task of the split, as the runner's identity lists them) and the
+ * identity's pins over the bench inputs on disk now (task set, splits, graders).
+ */
+export function recordBindingProblem(
+  rec: EvaluationRecord,
+  b: RecordBinding,
+  benchDir: string,
+  tasks: readonly LoadedTask[],
+): string | null {
+  if (rec.role !== b.role) return `it is a ${rec.role} record, not ${b.role}`;
+  if ((rec.proposalId ?? undefined) !== b.proposalId) {
+    return `it names proposal ${rec.proposalId ?? '(none)'}, not ${b.proposalId ?? '(none)'}`;
+  }
+  if (rec.identity.skillSetHash !== b.skillSetHash) {
+    return `it ran under skill set ${rec.identity.skillSetHash.slice(0, 12)}, not ${b.skillSetHash.slice(0, 12)}`;
+  }
+  const split = tasks.filter((t) => t.spec.split === b.split).map((t) => t.spec);
+  const ids = split.map((t) => t.id).sort();
+  const have = rec.identity.tasks.map((t) => t.id).sort();
+  if (ids.join('\n') !== have.join('\n')) {
+    return `its tasks are not the ${b.split} split`;
+  }
+  if (rec.identity.taskSetHash !== taskSetHash(benchDir, ids, rec.identity.tasks)) {
+    return 'its task set is not the one on disk';
+  }
+  if (rec.identity.splitsHash !== splitsHash(benchDir, split)) {
+    return 'its splits are not the ones on disk';
+  }
+  if (rec.identity.graderSetHash !== graderSetHash(benchDir, ids)) {
+    return 'its graders are not the ones on disk';
+  }
+  return null;
+}
+
 async function evaluation(
   c: Ctx,
   step: IterationStep,
   st: EvalStep,
   over: Partial<BenchRunOptions>,
+  bind: RecordBinding,
 ): Promise<{ ok: true; record: EvaluationRecord } | { ok: false; out: StepOutcome }> {
+  const unbound = (rec: EvaluationRecord) => {
+    const why = recordBindingProblem(rec, bind, c.o.benchDir, c.tasks);
+    if (!why) return null;
+    st.status = 'failed';
+    st.message = `evaluation record ${rec.hash} is not this step's record: ${why}`;
+    return stop(c, step, 'failed', `${step}: ${st.message}`, 4);
+  };
   // A sealed evaluation is loaded, never resumed (the runner refuses to resume a complete one):
   // after a crash between the runner's seal and this state's save, or a failed decision after
   // the seal, the step continues from the record without a rollout.
@@ -744,6 +914,8 @@ async function evaluation(
       : undefined) ??
     (st.evaluationId ? sealedRecordFor(c.stateDir, c.o.wikiRoot, st.evaluationId) : undefined);
   if (sealed) {
+    const refused = unbound(sealed);
+    if (refused) return { ok: false, out: refused };
     st.status = 'done';
     st.record = sealed.hash;
     st.remaining = undefined;
@@ -762,6 +934,8 @@ async function evaluation(
   if (r.evaluationId) st.evaluationId = r.evaluationId;
   st.message = r.message;
   if ((r.status === 'complete' || r.status === 'cached') && r.record) {
+    const refused = unbound(r.record);
+    if (refused) return { ok: false, out: refused };
     st.status = 'done';
     st.record = r.record.hash;
     st.remaining = undefined;
@@ -914,11 +1088,13 @@ function trainTasks(c: Ctx): string[] | undefined {
 }
 
 async function stepTrain(c: Ctx): Promise<StepOutcome> {
-  const r = await evaluation(c, 'train', c.s.train, {
-    split: 'train',
-    role: 'train',
-    tasks: trainTasks(c),
-  });
+  const r = await evaluation(
+    c,
+    'train',
+    c.s.train,
+    { split: 'train', role: 'train', tasks: trainTasks(c) },
+    { role: 'train', split: 'train', skillSetHash: c.s.acceptedSkillSetHash },
+  );
   if (!r.ok) return r.out;
   if (r.record.identity.skillSetHash !== c.s.acceptedSkillSetHash) {
     c.s.train.status = 'failed';
@@ -1130,12 +1306,18 @@ const policyTasks = (r: EvaluationRecord): PolicyTask[] =>
 
 async function stepBaseline(c: Ctx): Promise<StepOutcome> {
   const gateCfg = readGateCfg(c.o.benchDir);
-  const r = await evaluation(c, 'baseline', c.s.baseline, {
-    split: 'val',
-    role: 'baseline',
-    ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
-    reuseBaselineMaxAgeDays: gateCfg.maxBaselineAgeDays,
-  });
+  const r = await evaluation(
+    c,
+    'baseline',
+    c.s.baseline,
+    {
+      split: 'val',
+      role: 'baseline',
+      ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
+      reuseBaselineMaxAgeDays: gateCfg.maxBaselineAgeDays,
+    },
+    { role: 'baseline', split: 'val', skillSetHash: c.s.acceptedSkillSetHash },
+  );
   if (!r.ok) return r.out;
   const rec = r.record;
   if (rec.identity.skillSetHash !== c.s.acceptedSkillSetHash) {
@@ -1454,20 +1636,22 @@ async function evaluateCandidate(
 ): Promise<StepOutcome> {
   const o = c.o;
   cand.ts ??= c.now().toISOString();
+  // A candidate directory on disk (restored with the state, or left by an earlier run) is never
+  // trusted: the skill set is rebuilt from the accepted skills and the proposal on every entry,
+  // and a rebuilt hash that differs from the stored one refuses the step (exit 4).
   const dest = join(c.dir, 'candidates', cand.proposalId, 'skills');
-  if (!cand.candidateSkills || !existsSync(dest)) {
-    const made = materializeCandidate(o.skillsDir, proposal, dest);
-    if (!made.ok) {
-      cand.status = 'failed';
-      cand.message = made.errors.join('; ');
-      return stop(c, step, 'failed', `${step}: ${cand.message}`, 1);
-    }
-    cand.candidateSkills = relative(c.dir, dest);
+  const made = materializeCandidate(o.skillsDir, proposal, dest);
+  if (!made.ok) {
+    cand.status = 'failed';
+    cand.message = made.errors.join('; ');
+    return stop(c, step, 'failed', `${step}: ${cand.message}`, 1);
   }
+  cand.candidateSkills = relative(c.dir, dest);
   const hash = skillSetHashOf(dest);
   if (cand.candidateSkillSetHash && cand.candidateSkillSetHash !== hash) {
     cand.status = 'failed';
-    return stop(c, step, 'failed', `${step}: the candidate skill set changed on disk`, 1);
+    cand.message = `the candidate skill set rebuilt from the proposal hashes to ${hash.slice(0, 12)}, not the stored ${cand.candidateSkillSetHash.slice(0, 12)}`;
+    return stop(c, step, 'failed', `${step}: ${cand.message}`, 4);
   }
   cand.candidateSkillSetHash = hash;
   const skill = skillOf(proposal);
@@ -1478,15 +1662,32 @@ async function evaluateCandidate(
     proposal.action === 'patch' ? readIf(join(o.skillsDir, skill, 'PURPOSE.md')) : undefined,
   );
   c.save();
-  const r = await evaluation(c, step, cand, {
-    split: 'val',
-    role: 'candidate',
-    proposalId: cand.proposalId,
-    skillsDir: dest,
-    ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
-  });
+  const r = await evaluation(
+    c,
+    step,
+    cand,
+    {
+      split: 'val',
+      role: 'candidate',
+      proposalId: cand.proposalId,
+      skillsDir: dest,
+      ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
+    },
+    { role: 'candidate', split: 'val', proposalId: cand.proposalId, skillSetHash: hash },
+  );
   if (!r.ok) return r.out;
   const baseline = recordByHash(o.wikiRoot, c.s.baseline.record as string);
+  const baseWhy = recordBindingProblem(
+    baseline,
+    { role: 'baseline', split: 'val', skillSetHash: c.s.acceptedSkillSetHash },
+    o.benchDir,
+    c.tasks,
+  );
+  if (baseWhy) {
+    cand.status = 'failed';
+    cand.message = `the baseline record ${baseline.hash} is not this iteration's: ${baseWhy}`;
+    return stop(c, step, 'failed', `${step}: ${cand.message}`, 4);
+  }
   const gateCfg = readGateCfg(o.benchDir);
   let d: GateDecision;
   try {
@@ -1543,12 +1744,43 @@ async function evaluateCandidate(
   return { ok: true };
 }
 
+/**
+ * Why the proposal stored in the state may not be evaluated, or null. The state may have been
+ * restored on another runner, so its proposal is re-checked as the proposer step checked it (all
+ * but the bundle's access log, whose keys are per runner) and its id must be the content id.
+ */
+function storedProposalProblem(
+  c: Ctx,
+  proposal: ProposerOutput,
+  proposalId: string,
+): string | null {
+  const checked = checkProposalContent({
+    output: proposal,
+    wiki: loadWiki(c.o.wikiRoot),
+    skillsDir: c.o.skillsDir,
+    templatesDir: c.templatesDir,
+    scope: c.s.settings.scope,
+  });
+  if (!checked.ok) return `the stored proposal fails its checks: ${checked.errors.join('; ')}`;
+  const id = checked.proposalId;
+  if (proposalId !== id && proposalId !== `${id}-${c.s.iterationId.slice(-8)}`) {
+    return `the stored proposal id ${proposalId} is not its content id ${id}`;
+  }
+  return null;
+}
+
 async function stepEvaluate(c: Ctx): Promise<StepOutcome> {
   const e = c.s.evaluate;
   const p = c.s.proposer;
   if (e.kind === 'early-stop' || e.kind === 'no-action') return { ok: true };
   const proposal = p.proposal as ProposerOutput;
   const proposalId = p.proposalId as string;
+  const why = storedProposalProblem(c, proposal, proposalId);
+  if (why) {
+    e.status = 'failed';
+    e.message = why;
+    return stop(c, 'evaluate', 'failed', `evaluate: ${why}`, 4);
+  }
   if (
     proposal.action === 'create' ||
     (proposal.action === 'patch' && proposal.outlet === 'skill')
@@ -1664,7 +1896,8 @@ export function pinTree(repoRoot: string, t: OutletTreeRef, sourceRepo: string):
         .trim();
       return { tree: { commit: sha }, key: `commit:${sha}` };
     } catch {
-      return { tree: t, key: `commit:${t.commit}` };
+      // Never pinned literally: an unresolvable name would be re-resolved (to anything) later.
+      throw new IterationError(`outlet tree ${t.commit} is not a commit of ${repoRoot}`, 2);
     }
   }
   const dir = resolve(t.dir);
@@ -1731,8 +1964,26 @@ async function stepControl(c: Ctx): Promise<StepOutcome> {
     c.save();
   }
   const replayVal = c.tasks.filter((t) => t.spec.split === 'val' && t.spec.kind === 'replay');
+  const onDisk = new Map(
+    loadControls(c.o.benchDir, c.s.settings.controlsDir).map((x) => [x.file, x.arm] as const),
+  );
   for (const item of ctl.items) {
     if (item.status === 'done') continue;
+    // The control is the pinned file's (bench/controls is an iteration pin), never the copy in a
+    // restored state.
+    const arm = onDisk.get(item.file);
+    if (
+      !arm ||
+      arm.id !== item.controlId ||
+      canonicalJson(arm.proposal) !== canonicalJson(item.proposal) ||
+      canonicalJson(arm.expect) !== canonicalJson(item.expect) ||
+      item.proposalId !== `control-${arm.id}-${c.s.iterationId.slice(-8)}`
+    ) {
+      item.status = 'failed';
+      item.message = `control ${item.controlId} in the state is not ${item.file} on disk`;
+      ctl.status = 'failed';
+      return stop(c, 'control', 'failed', `control: ${item.message}`, 4);
+    }
     const out = await evaluateCandidate(c, 'control', item, item.proposal, {
       control: true,
       ...('patterns' in item.proposal ? { pattern: item.proposal.patterns } : {}),
@@ -2293,7 +2544,7 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
       throw new IterationError(`iteration ${id} exists; resume it with --resume ${id}`, 2);
     // The lock comes first: the state is loaded (or created) only by its holder.
     const dir = iterationDir(stateDir, id);
-    const unlock = acquireLock(dir, log);
+    const unlock = acquireLock(dir, log, { breakLock: o.breakLock === true });
     try {
       let s: IterationState;
       if (o.resume) {
@@ -2314,7 +2565,7 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
             exitCode: 0,
           };
         }
-        checkPins(s, o);
+        checkPins(s, o, log);
       } else {
         if (existsSync(iterationStatePath(stateDir, id)))
           throw new IterationError(`iteration ${id} exists; resume it with --resume ${id}`, 2);
@@ -2328,6 +2579,8 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
           throw new IterationError(`scope ${o.scope} is not a managed skill`, 2);
         s = newState(o, { id, accepted, now: now(), wiki });
         s.pins = iterationPins(o.benchDir, o.skillsDir);
+        const head = headCommit(o.repoRoot);
+        if (head) s.baseCommit = head;
         for (const inc of s.settings.incidents) {
           const page = wiki.pages.get(inc);
           if (!page || page.frontmatter.type !== 'incident')
@@ -2424,6 +2677,8 @@ export function reviewIteration(o: {
   reason: string;
   benchDir?: string;
   now?: () => Date;
+  breakLock?: boolean;
+  log?: (s: string) => void;
 }): { eventIds: string[]; events: LedgerEvent[] } {
   const now = o.now ?? (() => new Date());
   const reason = o.reason.trim();
@@ -2432,7 +2687,9 @@ export function reviewIteration(o: {
     throw new IterationError(`"${o.iterationId}" is not an iteration id`, 2);
   if (!existsSync(iterationStatePath(o.stateDir, o.iterationId)))
     throw new IterationError(`no iteration ${o.iterationId}`, 2);
-  const unlock = acquireLock(iterationDir(o.stateDir, o.iterationId));
+  const unlock = acquireLock(iterationDir(o.stateDir, o.iterationId), o.log, {
+    breakLock: o.breakLock === true,
+  });
   try {
     const s = loadIterationState(o.stateDir, o.iterationId);
     if (s.review) {
@@ -2458,10 +2715,12 @@ export function reviewIteration(o: {
         4,
       );
     }
-    if (!pending) {
-      const ts = now().toISOString();
-      const ledger = ledgerEvents(o.wikiRoot);
-      const events = targets.map((target) => {
+    // The events are DERIVED from the state and the ledger, never taken from a stored copy: a
+    // pending review keeps only its decision, reason and ts, and its events must re-derive to the
+    // same eventIds (the ledger read without them, in case a crash left them appended).
+    const derive = (ts: string, without: ReadonlySet<string>) => {
+      const ledger = ledgerEvents(o.wikiRoot).filter((e) => !without.has(e.eventId));
+      return targets.map((target) => {
         const latest = proposalHistory(ledger, target.proposalId as string).latest;
         const withdraw =
           o.decision === 'reject' && latest !== undefined && AFTER_ACCEPT.has(latest);
@@ -2474,18 +2733,38 @@ export function reviewIteration(o: {
           review: { decision: o.decision, iteration: s.iterationId },
         });
       });
+    };
+    let events: LedgerEvent[];
+    if (pending) {
+      const stored = new Set(pending.events.map((e) => e.eventId));
+      events = derive(pending.ts, stored);
+      const same =
+        events.length === pending.events.length &&
+        events.every((e, i) => e.eventId === pending?.events[i]?.eventId);
+      if (!same) {
+        throw new IterationError(
+          `iteration ${s.iterationId} has a half-recorded review whose events do not re-derive from the state and the ledger; refusing to append them`,
+          4,
+        );
+      }
+    } else {
+      const ts = now().toISOString();
+      events = derive(ts, new Set());
       pending = { decision: o.decision, reason, ts, events };
       s.reviewPending = pending;
       saveState(o.stateDir, s, now());
     }
 
     try {
-      appendEvents(o.wikiRoot, pending.events);
+      // A torn trailing line (a crash mid-append) is repaired under the ledger lock first.
+      appendEvents(o.wikiRoot, events, { repairTornTail: true });
     } catch (e) {
-      // Nothing was written: the pending review is dropped so a corrected one can be recorded.
-      s.reviewPending = undefined;
-      saveState(o.stateDir, s, now());
-      throw new IterationError(`the review was refused: ${(e as Error).message}`, 4);
+      // The pending review is KEPT: a retry derives and appends the same events (same eventIds,
+      // same reason), never new ones.
+      throw new IterationError(
+        `the review was not recorded (${(e as Error).message}); rerun it with the same --decision and --reason`,
+        4,
+      );
     }
     writeChangeset(o.wikiRoot, {
       writes: [{ path: SKILL_IMPACT_FILE, content: renderSkillImpact(ledgerEvents(o.wikiRoot)) }],
@@ -2494,7 +2773,7 @@ export function reviewIteration(o: {
       decision: o.decision,
       reason,
       ts: pending.ts,
-      eventIds: pending.events.map((e) => e.eventId),
+      eventIds: events.map((e) => e.eventId),
     };
     s.reviewPending = undefined;
     saveState(o.stateDir, s, now());
@@ -2505,7 +2784,7 @@ export function reviewIteration(o: {
       iterationId: s.iterationId,
       ...(o.benchDir ? { benchDir: o.benchDir } : {}),
     });
-    return { eventIds: s.review.eventIds, events: pending.events };
+    return { eventIds: s.review.eventIds, events };
   } finally {
     unlock();
   }

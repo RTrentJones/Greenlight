@@ -80,7 +80,7 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        gate model (06 §4.1)
   iterate [--scope <skill|all>] [--resume <iterationId>] [--sandbox docker|process] [--json]
           [--dry-run] [--handoff-only] [--models frontier,small] [--runs n] [--max-steps n]
-          [--rollout-requests n] [--candidate <commit|dir>]
+          [--rollout-requests n] [--candidate <commit|dir>] [--adopt-pins] [--break-lock]
                        one WikiSkill iteration (06 §1.3) as a resumable state machine: train
                        evidence → maintainer → baseline → proposer → outlet evaluation → control
                        arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
@@ -88,9 +88,12 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        --dry-run plans without a request; --handoff-only regenerates handoff.md.
                        --candidate (mechanism / doctor): a commit, or a clean checkout (pinned to
                        its HEAD); fixed on first use, a different one on resume is refused.
+                       A resume is refused (exit 4) when an input pin drifted or is missing;
+                       --adopt-pins adopts the current inputs for MISSING pins only (you vouch
+                       for them). --break-lock removes a lock written on another host.
                        A verify proposal needs the faulty and fixed artifacts, which M2 takes only
                        programmatically (OutletContext.artifacts): from the CLI it stays invalid.
-  review <iterationId> --decision accept|reject --reason "<text>"
+  review <iterationId> --decision accept|reject --reason "<text>" [--break-lock]
                        record the owner's review of an iteration's ledger rows (a review event;
                        a reject of an accepted candidate is a withdrawn event)
 
@@ -377,7 +380,7 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       '--rollout-requests',
       '--candidate',
     ],
-    boolean: ['--json', '--dry-run', '--handoff-only'],
+    boolean: ['--json', '--dry-run', '--handoff-only', '--adopt-pins', '--break-lock'],
   });
   const p = paths(io, a.values);
   const v = a.values;
@@ -431,6 +434,8 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
             : { commit: v['--candidate'] },
         }
       : {}),
+    ...(a.flags.has('--adopt-pins') ? { adoptPins: true } : {}),
+    ...(a.flags.has('--break-lock') ? { breakLock: true } : {}),
     ...(io.fetchImpl ? { fetchImpl: io.fetchImpl } : {}),
     log: (s: string) => io.err(s),
     ...(io.iterate ?? {}),
@@ -492,7 +497,7 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
 function reviewCmd(args: string[], io: BenchIo): number {
   const a = parseFlags('bench review', args, {
     value: [...COMMON, '--decision', '--reason'],
-    boolean: ['--json'],
+    boolean: ['--json', '--break-lock'],
   });
   const id = a.positional[0];
   const decision = a.values['--decision'];
@@ -517,6 +522,8 @@ function reviewCmd(args: string[], io: BenchIo): number {
     decision,
     reason,
     benchDir: p.bench,
+    ...(a.flags.has('--break-lock') ? { breakLock: true } : {}),
+    log: (s: string) => io.err(s),
     ...(io.iterate?.now ? { now: io.iterate.now } : {}),
   });
   if (a.flags.has('--json')) io.out(JSON.stringify({ eventIds: r.eventIds }));
