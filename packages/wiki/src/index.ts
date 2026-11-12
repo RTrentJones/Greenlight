@@ -28,6 +28,8 @@ export * from './bench/shims';
 export * from './bench/sandbox';
 export * from './bench/grade';
 export * from './bench/runner';
+// M2-02 / M2-03: outlet evaluation for the human-applied outlets, and the control arm.
+export * from './bench/outlets';
 export * from './ids';
 export * from './parse';
 export * from './load';

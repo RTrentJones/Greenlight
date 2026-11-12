@@ -14,6 +14,8 @@ bench/
   mutants/<taskId>/<mutantId>/                      # HIDDEN: known-bad solutions it must fail
   pairs/<pairId>/pair.json                          # HIDDEN: overgeneral rules that must fail exactly one task
   fixtures/                                         # HIDDEN: fake stores and the canonical fixture tools
+  repro/<slug>/{repro.json, run.mjs, fixture/}      # trusted reproductions: mechanism/doctor outlets (M2-02)
+  controls/<id>.json                                # control-arm proposals, labelled control, never merged (M2-03)
   splits.json                                       # taskId → train | val | test
 ```
 
@@ -179,6 +181,30 @@ alternatives, its untouched fixture and its mutants, and every pair, and fails w
 passes mutant <n>: it cannot distinguish <description>` (06 §4.3). It runs in CI as part of the
 Vitest suite, which also asserts that a run leaves no file outside its temp directories. Attack
 mutants resolve every write from their own location inside the materialized (mkdtemp) tree.
+
+## Outlets: repros and the control arm (M2-02, M2-03)
+
+Proposals for the human-applied outlets are evaluated by `evaluateOutlet`
+(`packages/wiki/src/bench/outlets.ts`, 06 §5.6), not by the gate:
+
+- **mechanism / doctor** run a trusted reproduction, `repro/<slug>/`. `repro.json` names the
+  `patterns` it reproduces, the `outlets` it serves, its `script` and `timeoutMs`, and `reviewed`
+  (`{ by, at }`; null until a human has reviewed it, and an unreviewed repro is never evidence).
+  `node run.mjs --tree <checkout>` exits 0 when the checkout handles the condition, 1 when it
+  reproduces it, anything else on error. Repros are read from the harness's own tree, never from the
+  candidate. A candidate is accepted iff the repro fails on base, passes on the candidate, and
+  `pnpm run check-all` passes on the candidate. `repro/probe-touches-wrong-layer/` is the doctor
+  repro for DR-21 (07 §4.2): it builds wrappers around one needs-silence tool and fails on every
+  framework without DR-21 (`repro/repro.test.ts`).
+- **verify** takes a ```` ```json verify ```` block of `api` checks from the issue body and must
+  fail on the faulty artifact and pass on the fixed one.
+- **template** is `invalid` until M4.
+
+`controls/probe-layer-overgeneral.json` is the first iteration's control arm (06 §10.2 step 4): a
+skill patch on `deploy-verify-promote` stating the overgeneral rule of `pairs/probe-layer-val`
+`overgeneral-a`. `controls/controls.test.ts` shows it is a well-formed proposal and that an app
+following it fails `replay/idle-probe-leaves-store-asleep-val`, so the gate must reject it with
+`replay-regression`.
 
 ## Runner (`bench/runner/`, `greenlight bench run`)
 
