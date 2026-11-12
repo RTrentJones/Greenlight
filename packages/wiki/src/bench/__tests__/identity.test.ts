@@ -226,11 +226,9 @@ describe('selection helpers', () => {
   });
   it('model roles and ids resolve in models.json order', () => {
     const config = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
-    expect(resolveModels(config, ['small', 'frontier'])).toEqual([
-      'gemini-3.6-flash',
-      'gemini-3.5-flash-lite',
-    ]);
-    expect(resolveModels(config, ['gemini-3.6-flash'])).toEqual(['gemini-3.6-flash']);
+    const { frontier, small } = config.roles;
+    expect(resolveModels(config, ['small', 'frontier'])).toEqual([frontier.id, small.id]);
+    expect(resolveModels(config, [small.id])).toEqual([small.id]);
     expect(() => resolveModels(config, ['nope'])).toThrow(/unknown model/);
   });
 });

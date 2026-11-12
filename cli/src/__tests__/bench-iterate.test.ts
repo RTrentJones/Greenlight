@@ -49,9 +49,12 @@ import { benchCommand } from '../commands/bench';
  */
 
 const REPO = resolve(__dirname, '../../..');
+/** The live gate pair (bench/models.json), so a model switch does not rewrite the tests. */
+const LIVE_MODELS = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
+const FRONTIER: string = LIVE_MODELS.roles.frontier.id;
+const SMALL: string = LIVE_MODELS.roles.small.id;
+const reId = (id: string) => id.replace(/[.]/g, '\\.');
 const BENCH = join(REPO, 'bench');
-const FRONTIER = 'gemini-3.6-flash';
-const SMALL = 'gemini-3.5-flash-lite';
 const DOCKER = dockerAvailable();
 const IDLE_VAL = 'replay/idle-probe-leaves-store-asleep-val';
 const CANDIDATE_MARKER = 'WIKI-MARKER: reconcile probe lessons by liveness model.';

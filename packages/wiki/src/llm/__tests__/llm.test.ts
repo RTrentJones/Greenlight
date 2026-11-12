@@ -143,9 +143,9 @@ const base = {
 describe('bench config files', () => {
   it('bench/models.json validates against ModelsConfigSchema with the ADR-20 pair', () => {
     const m = ModelsConfigSchema.parse(modelsJson);
-    // Switched on 2026-11-04 (ADR-20 amendment, trigger 2): gemini-3.8-flash stayed unavailable.
-    expect(m.roles.frontier.id).toBe('gemini-3.6-flash');
-    expect(m.roles.small.id).toBe('gemini-3.5-flash-lite');
+    // Switched again on 2026-11-12 (ADR-20 amendment, trigger 2): gemini-3.6-flash admits 20 RPD.
+    expect(m.roles.frontier.id).toBe('gemini-3.5-flash-lite');
+    expect(m.roles.small.id).toBe('gemini-3.1-flash-lite');
     expect(m.roles.frontier.id).not.toBe(m.roles.small.id);
     expect([m.roles.maintainer, m.roles.proposer, m.roles.judge]).toEqual([
       'frontier',

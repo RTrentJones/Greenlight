@@ -13,7 +13,7 @@ import { runReact } from '../react';
 const live = process.env.GREENLIGHT_LIVE_GEMINI === '1';
 
 describe.skipIf(!live)('live: gemini harness smoke', () => {
-  it('gemini-3.6-flash completes a one-tool task through finish', async () => {
+  it('the small model completes a one-tool task through finish', async () => {
     const root = resolve(__dirname, '../../../../..');
     const config = ModelsConfigSchema.parse(
       JSON.parse(readFileSync(resolve(root, 'bench/models.json'), 'utf8')),
@@ -64,6 +64,6 @@ describe.skipIf(!live)('live: gemini harness smoke', () => {
     );
     expect(r.error).toBeUndefined();
     expect(r.result).toEqual({ product: 391 });
-    expect(r.servedBy).toEqual(['gemini-3.6-flash']);
+    expect(r.servedBy).toEqual([config.roles.small.id]);
   }, 180_000);
 });

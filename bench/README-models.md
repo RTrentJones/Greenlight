@@ -7,10 +7,17 @@ JSON cannot carry comments, so the provenance of both files is recorded here (vi
 
 | role | entry | id | fallback |
 |---|---|---|---|
-| maintainer, proposer | frontier | `gemini-3.6-flash` | — |
-| judge | small | `gemini-3.5-flash-lite` | — |
+| maintainer, proposer | frontier | `gemini-3.5-flash-lite` | — |
+| judge | small | `gemini-3.1-flash-lite` | — |
 
-**Switched on 2026-11-04** (ADR-20 amendment, trigger 2). `gemini-3.8-flash`, the original
+**Switched again on 2026-11-12** (ADR-20 amendment, trigger 2). The measured limits put
+`gemini-3.6-flash` at 20 RPD, one 17-request rollout a day, and no bench task had a baseline yet,
+so the first M2 gate projected far past 30 days. The frontier was the only bottleneck, so it was
+replaced: `gemini-3.5-flash-lite` became the frontier and `gemini-3.1-flash-lite`, measured the
+same day, became the small model. The maintainer and proposer follow the frontier role. Both ids
+passed `bench models --check` and the live smoke test on 2026-11-12.
+
+**Earlier switch, 2026-11-04** (ADR-20 amendment, trigger 2). `gemini-3.8-flash`, the original
 frontier, returned 502/503 on every attempt for four consecutive days (Nov 1–4). The most capable
 model that kept answering, `gemini-3.6-flash`, became the frontier. `gemini-3.5-flash-lite`
 answered probes and became the small model. Its limits were measured on 2026-11-12 (below). Every earlier evaluation is incomparable and was abandoned.
@@ -51,12 +58,12 @@ than model identity.
 ### Free-tier limits (`rpm`, `rpd`, `tpm`)
 
 Recorded values, **measured on 2026-11-12** (fact page `wiki/facts/gemini-free.md`):
-`gemini-3.6-flash` at **5 RPM and 20 RPD**, both confirmed by the quota ids Google returned in its
-429 responses, and `gemini-3.5-flash-lite` at **10 RPM and 190 RPD**, lower bounds from 190
-requests that never hit a 429. TPM stays at 250,000 for both (not probed). With these values the
-small model fits about eleven 17-request rollouts per day, so its half of a gate finishes in about
-three days. The frontier still admits one rollout per day, and it sets the gate's length at about
-24 days.
+`gemini-3.5-flash-lite` at **10 RPM and 190 RPD** and `gemini-3.1-flash-lite` at **10 RPM and 250
+RPD**, lower bounds from runs of 190 and 250 requests that never hit a 429. TPM stays at 250,000
+(not probed). The former frontier, `gemini-3.6-flash`, measured 5 RPM and 20 RPD, both named by the
+quota ids in Google's 429 responses. With the new values the frontier fits about eleven
+17-request rollouts a day and the small model about fourteen, so a 48-rollout gate takes about
+three days instead of about 24.
 
 The history below records how the earlier, unverified 5 RPM / 20 RPD default for both models was
 chosen.
@@ -132,26 +139,24 @@ smoke task used 2 requests for one tool call and `finish`.
 
 **The cap is reserved, which sets the pace.** Before each rollout the runner requires the model's
 remaining daily quota to cover the full cap (17, plus 1 on the judge model for a maintainer gate
-rollout), so a rollout is never started that the day's quota could cut off mid-way. At 20 RPD
-that admits **one rollout per model per day** (a second one only if the first used 3 requests or
-fewer), whatever the rollout actually spends: 20 − ~9–12 used leaves 8–11, below 17. The days
-table below therefore understates the pace: a gate's 24 rollouts per model take about **24 days**
-at 20 RPD (the judge calls fit in the small model's leftover). `--rollout-requests n` lowers the
+rollout), so a rollout is never started that the day's quota could cut off mid-way. The pace is
+therefore set by the daily limit divided by the cap, not by what rollouts actually spend: at the
+former frontier's 20 RPD this admitted one rollout a day, and at the measured 190 and 250 RPD it
+admits 11 and 14 (the table below). `--rollout-requests n` lowers the
 cap (and the reservation) for faster days at the risk of cutting rollouts short; it is part of the
 identity, so baseline and candidate must use the same value.
 
-**Days per gate at 20 RPD per model.** Each model runs half the rollouts. Because the runner
-reserves a full rollout cap (`maxSteps + 2` = 17 requests) before starting each rollout, only one
-rollout fits per model per day, however few requests it then spends.
+**Days per gate at the measured limits.** Each model runs half the rollouts. The runner reserves a
+full rollout cap (`maxSteps + 2` = 17 requests) before starting each rollout, so the number that fit
+in a day is the daily limit divided by 17, rounded down.
 
-| model | rollouts | days at 20 RPD (one rollout per day) |
-|---|---|---|
-| frontier `gemini-3.6-flash` | 24 | 24 |
-| small `gemini-3.5-flash-lite` | 24 (+12 judge calls, which fit in the leftover) | 24 |
+| model | rollouts | rollouts per day | days |
+|---|---|---|---|
+| frontier `gemini-3.5-flash-lite` (190 RPD) | 24 | 11 | 3 |
+| small `gemini-3.1-flash-lite` (250 RPD) | 24 (+12 judge calls) | 14 | 2 |
 
-The two models draw on separate quotas and run in parallel, so a gate takes **about 24 days**.
-`--rollout-requests 10` fits two rollouts per model per day (about 12 days), at the cost of cutting
-rollouts short. It is part of the identity, so it must be used for the whole evaluation. Fallback is
+The two models draw on separate quotas and run in parallel, so a gate takes **about three days**.
+Before 2026-11-12, with `gemini-3.6-flash` at 20 RPD, the same gate took about 24 days. Fallback is
 off for every rollout, so one model never spends the other's quota.
 
 **Before M3.** Production mode doubles the rollouts to 96. Before then, `perGateMaxRollouts` must

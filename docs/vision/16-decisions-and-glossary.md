@@ -407,6 +407,16 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
     Before relying on the new model, confirm its free-tier limits against Google's AI Studio
     rate-limit page and record them in `fact/gemini-free`. Then re-baseline, because every earlier
     evaluation becomes incomparable.
+- **Amendment (2026-11-12, trigger 2).** Measured limits (`fact/gemini-free`): `gemini-3.6-flash`
+  is 5 RPM and 20 RPD, both named by Google's 429 quota ids, which admits one 17-request rollout a
+  day. No bench task had a recorded baseline yet, so the first M2 gate needs an activation baseline
+  first; with the train, baseline, candidate and control passes this projected well past 30 days,
+  and the frontier alone was the bottleneck. The pair became **frontier `gemini-3.5-flash-lite`
+  (≥10 RPM, ≥190 RPD) and small `gemini-3.1-flash-lite` (≥10 RPM, ≥250 RPD)**, both lower bounds
+  measured without a 429. The maintainer and proposer follow the frontier role, so they also run on
+  `gemini-3.5-flash-lite`; a separate, stronger maintainer model would need a third `ModelEntry`
+  and is deferred. No evaluation was in progress, and the M1 records were already incomparable to
+  any M2 gate, so nothing is abandoned beyond what re-baselining already required.
 - **Status.** Accepted.
 
 ## 2. Open questions

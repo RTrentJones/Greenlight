@@ -38,10 +38,13 @@ import { benchCommand } from '../commands/bench';
  */
 
 const REPO = resolve(__dirname, '../../..');
+/** The live gate pair (bench/models.json), so a model switch does not rewrite the tests. */
+const LIVE_MODELS = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
+const FRONTIER: string = LIVE_MODELS.roles.frontier.id;
+const SMALL: string = LIVE_MODELS.roles.small.id;
+const reId = (id: string) => id.replace(/[.]/g, '\\.');
 const BENCH = join(REPO, 'bench');
 const LOOP = 'loop/fixture-preview-before-push-train';
-const SMALL = 'gemini-3.5-flash-lite';
-const FRONTIER = 'gemini-3.6-flash';
 /** The live daily quotas (bench/models.json, measured 2026-11-12): the scheduling tests pre-spend
  * against these so they keep describing equal headroom whatever the models' real limits are. */
 const RPD: Record<'frontier' | 'small', number> = (() => {
@@ -696,7 +699,7 @@ describe('quota scheduling across models (M4)', () => {
 
   it('skips a model whose quota left is below the request cap and keeps running the other', async () => {
     const m = twoModels(new Set());
-    const quota = memoryQuota({ [FRONTIER]: 16 }); // 4 left < 17
+    const quota = memoryQuota({ [FRONTIER]: RPD.frontier - 4 }); // 4 left < 17
     const o = options({
       fetchImpl: m.fetchImpl,
       sandbox: 'process',
@@ -708,7 +711,9 @@ describe('quota scheduling across models (M4)', () => {
     expect(m.sent.every((s) => s.url.includes(SMALL))).toBe(true); // not one frontier request
     expect(r.remaining).toEqual({ [FRONTIER]: [`${LOOP}|${FRONTIER}|1`] });
     expect(r.deferredModels?.[FRONTIER]).toMatch(
-      /daily quota: gemini-3\.6-flash has 4 request\(s\) left today and a rollout may need 17/,
+      new RegExp(
+        `daily quota: ${reId(FRONTIER)} has 4 request\\(s\\) left today and a rollout may need 17`,
+      ),
     );
     expect(r.rollouts.map((x) => [x.model, x.status])).toEqual([[SMALL, 'graded']]);
     // Tomorrow: resume runs only the frontier rollout.
@@ -761,7 +766,7 @@ describe('quota scheduling across models (M4)', () => {
       [SMALL, 'graded'],
       [SMALL, 'graded'],
     ]);
-    expect(r.message).toMatch(/gemini-3\.6-flash: 2 rollout\(s\) left \(deferred: /);
+    expect(r.message).toMatch(new RegExp(`${reId(FRONTIER)}: 2 rollout\\(s\\) left \\(deferred: `));
     // The deferred requests still count against the frontier model's day.
     const ledger = parseLedger(readFileSync(join(o.wikiRoot, 'ledger.jsonl'), 'utf8')).events;
     expect(ledger.map((e) => [e.spend?.model, e.spend?.requests])).toEqual([
@@ -917,6 +922,6 @@ describe('greenlight bench (CLI)', () => {
     const x = io(REPO);
     const m = fakeModel(() => finish);
     expect(await benchCommand(['models', '--check'], { ...x.io, fetchImpl: m.fetchImpl })).toBe(0);
-    expect(x.err.join('\n')).toMatch(/✔ gemini-3\.6-flash/);
+    expect(x.err.join('\n')).toMatch(new RegExp(`✔ ${reId(FRONTIER)}`));
   });
 });

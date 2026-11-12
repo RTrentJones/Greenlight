@@ -14,6 +14,8 @@ quotas:
   - { key: flash-rpd, label: "gemini-3.6-flash requests per day", limit: 20, unit: "requests/day", scope: project }
   - { key: flash-lite-rpm, label: "gemini-3.5-flash-lite requests per minute (measured lower bound)", limit: 10, unit: "requests/minute", scope: project }
   - { key: flash-lite-rpd, label: "gemini-3.5-flash-lite requests per day (measured lower bound)", limit: 190, unit: "requests/day", scope: project }
+  - { key: flash-lite-3-1-rpm, label: "gemini-3.1-flash-lite requests per minute (measured lower bound)", limit: 10, unit: "requests/minute", scope: project }
+  - { key: flash-lite-3-1-rpd, label: "gemini-3.1-flash-lite requests per day (measured lower bound)", limit: 250, unit: "requests/day", scope: project }
 ---
 Google publishes no per-model free-tier table, so these values were measured on 2026-11-12 with
 one-token `generateContent` probes against the project the bench's key belongs to. Quotas are per
@@ -30,6 +32,11 @@ spacing the day's twentieth request was the last to succeed, and the next return
 bounds: the true limits are at least that high and may be higher (a third-party copy of the AI
 Studio table lists 10 RPM and 500 RPD). The recorded numbers are the ones observed to work, so a
 limiter configured from them cannot cause a 429.
+
+`gemini-3.1-flash-lite` was probed the same day in the same way. It answered 249 of 250 requests;
+the one failure was a transient 503, and no request returned 429, so 10 RPM and 250 RPD are lower
+bounds too. It also answered a forced function call correctly. `gemini-2.5-flash-lite` is still
+listed by `models.list` but returns 404 "no longer available to new users", so it cannot be used.
 
 `bench/models.json` copies these values (08 §10.5). Re-measure when a model id changes or a 429
 names a quota lower than the one recorded here.
