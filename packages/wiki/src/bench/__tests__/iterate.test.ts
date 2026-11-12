@@ -1,3 +1,5 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { renderSkillImpact } from '../../ledger';
@@ -12,7 +14,7 @@ import {
   normalizeProposerOutput,
   sealEvent,
 } from '../../schema';
-import { blastRadius, loadControls } from '../iterate';
+import { blastRadius, loadControls, materializeCandidate } from '../iterate';
 
 /** Unit cases for `bench iterate` (roadmap M2-01/M2-04) that need no rollout: the hand-written
  * JSON Schemas stay in step with the zod contracts, the review annotation's place in the stage
@@ -133,12 +135,50 @@ describe('the review annotation (08 §8)', () => {
 });
 
 describe('iterate helpers', () => {
-  it('blast radius: PURPOSE.md first, then the 06 §5.4 table', () => {
+  it('blast radius: the larger of the 06 §5.4 table and the accepted PURPOSE.md', () => {
     expect(blastRadius('provider-neon', undefined)).toBe('medium');
     expect(blastRadius('deploy-verify-promote', undefined)).toBe('high');
     expect(
       blastRadius('provider-neon', '---\nskill: provider-neon\nblast-radius: low\n---\n'),
     ).toBe('low');
+    expect(
+      blastRadius('provider-neon', '---\nskill: provider-neon\nblast-radius: high\n---\n'),
+    ).toBe('high');
+    // A PURPOSE.md never lowers a skill the table names.
+    expect(blastRadius('deploy-verify-promote', '---\nskill: x\nblast-radius: low\n---\n')).toBe(
+      'high',
+    );
+  });
+
+  it('a candidate is never built from a non-canonical name', () => {
+    const root = mkdtempSync(join(tmpdir(), 'iterate-names-'));
+    try {
+      const skills = join(root, 'skills');
+      for (const n of ['provider-neon', 'deploy-verify-promote']) {
+        mkdirSync(join(skills, n), { recursive: true });
+        writeFileSync(join(skills, n, 'SKILL.md'), `---\nname: ${n}\n---\n# ${n}\n`);
+      }
+      const edits = [{ op: 'append' as const, file: 'SKILL.md', text: 'x' }];
+      for (const name of ['deploy-verify-promote/', 'provider-neon/../deploy-verify-promote']) {
+        const r = materializeCandidate(
+          skills,
+          { action: 'patch', outlet: 'skill', name, edits, patterns: ['p'] },
+          join(root, 'cand'),
+        );
+        expect(r.ok, name).toBe(false);
+        expect(
+          ProposerOutputSchema.safeParse({
+            action: 'patch',
+            outlet: 'skill',
+            name,
+            edits,
+            patterns: ['p'],
+          }).success,
+        ).toBe(false);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('loads the M2-03 control arm with its expectation', () => {

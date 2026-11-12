@@ -47,6 +47,9 @@ import {
   type LedgerEvent,
   type ProposerOutput,
   ProposerOutputSchema,
+  SKILL_NAME_RE,
+  TEMPLATE_NAME_RE,
+  touchesBlastRadius,
   touchesVersion,
 } from './schema';
 import { canonicalJson } from './schema/common';
@@ -1094,7 +1097,14 @@ export interface ProposalCheckInput {
   /** The raw store: a logged read counts only for a real record visible to the proposer. */
   records: readonly RawRecord[];
   splits?: SplitIndex;
+  /** The iteration's scope (`all` or one managed skill): a scoped iteration may only patch that
+   * skill (06 §1.3 `acceptedSkillSet(scope)`), never create or patch another. */
+  scope?: string;
 }
+
+/** The lines of `text` that mention `blast-radius`, in order: what an edit must leave as is. */
+const radiusLines = (text: string): string[] =>
+  text.split('\n').filter((l) => /blast-radius/i.test(l));
 
 export type ProposalCheck =
   | { ok: true; proposalId: string; proposal: ProposerOutput }
@@ -1139,24 +1149,56 @@ export function checkProposal(input: ProposalCheckInput): ProposalCheck {
   const p = parsed.data;
   const errors: string[] = [];
   if (touchesVersion(p)) errors.push('the proposal edits a version field; the harness sets it');
+  if (touchesBlastRadius(p)) {
+    errors.push('the proposal writes a blast-radius line; the owner sets it (06 §5.4)');
+  }
+  const scoped = input.scope !== undefined && input.scope !== 'all' ? input.scope : undefined;
 
   if (p.action === 'create') {
-    if (existsSync(join(input.skillsDir, p.name))) {
+    if (!SKILL_NAME_RE.test(p.name)) {
+      errors.push(`skill name "${p.name}" is not a kebab-case skill name`);
+    } else if (existsSync(join(input.skillsDir, p.name))) {
       errors.push(`skill ${p.name} already exists; propose a patch instead`);
+    }
+    if (scoped) {
+      errors.push(
+        `this iteration is scoped to skill ${scoped}: a create of ${p.name} is out of scope`,
+      );
     }
   } else if (p.action === 'patch') {
     const base = p.outlet === 'skill' ? input.skillsDir : input.templatesDir;
     const root = resolve(base, p.name);
-    if (
-      !inside(resolve(base), root) ||
-      (p.outlet === 'template' && !p.name.startsWith('_template-'))
+    // The name is exactly one canonical path segment naming an existing skill / template: never
+    // a path (`a/../b`, `b/`), so the skill a patch lands in is the skill its name says.
+    const canonical =
+      p.outlet === 'skill' ? SKILL_NAME_RE.test(p.name) : TEMPLATE_NAME_RE.test(p.name);
+    if (!canonical || !inside(resolve(base), root)) {
+      errors.push(`${p.outlet} "${p.name}" is not a ${p.outlet} name under ${base}`);
+    } else if (
+      p.outlet === 'skill' &&
+      !loadSkills(input.skillsDir).some((s) => s.name === p.name)
     ) {
-      errors.push(`${p.outlet} "${p.name}" is outside ${base}`);
+      errors.push(`skill "${p.name}" is not an accepted skill of ${base}`);
     } else if (!existsSync(root) || !inside(realpathSync(resolve(base)), realpathSync(root))) {
       errors.push(`${p.outlet} "${p.name}" does not exist`);
     } else {
       const applied = applyFilePatches(root, p.edits);
       if (!applied.ok) errors.push(...applied.errors);
+      else {
+        for (const w of applied.changeset.writes) {
+          const before = readFileSync(join(root, w.path), 'utf8');
+          if (radiusLines(before).join('\n') !== radiusLines(w.content).join('\n')) {
+            errors.push(
+              `edits to ${w.path} change a blast-radius line; the owner sets it (06 §5.4)`,
+            );
+          }
+        }
+      }
+    }
+    if (scoped && (p.outlet !== 'skill' || p.name !== scoped)) {
+      errors.push(
+        `this iteration is scoped to skill ${scoped}: a ${p.outlet} patch of ${p.name} is out of scope`,
+      );
     }
   }
 

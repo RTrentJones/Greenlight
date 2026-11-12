@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -9,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import {
   type DailyUsage,
@@ -17,6 +18,7 @@ import {
   type IterateResult,
   type IterationState,
   type IterationStep,
+  type OutletContext,
   type QuotaStore,
   type RunnerAssets,
   dockerAvailable,
@@ -29,6 +31,7 @@ import {
   parseLedger,
   readAccessLog,
   rejectedForReplayRegression,
+  sealEvent,
   skillSetHashOf,
 } from '@rtrentjones/greenlight-wiki';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -278,6 +281,9 @@ function fakeModel(wiki: string): Fake {
 
 const DAY = 86_400_000;
 
+const gitOut = (cwd: string, ...args: string[]) =>
+  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
 function setup(withControl = true) {
   const root = tmp('greenlight-iterate-');
   const bench = tinyBench(root, withControl);
@@ -339,20 +345,49 @@ describe('bench iterate (M2-01, M2-04)', () => {
       const realSkills = skillSetHashOf(join(REPO, '.claude', 'skills'));
       const skillsBefore = skillSetHashOf(env.skills);
       const id = 'iter-test-full';
-      const plan: [IterationStep | null, string | null][] = [
+      // A gate that throws once the candidate evaluation is sealed: the decision fails, and the
+      // retry decides from the sealed record without a rollout (M4).
+      const failingDecide = (() => {
+        throw new Error('injected gate failure');
+      }) as unknown as IterateOptions['decide'];
+      const plan: [IterationStep | null, string | null, Partial<IterateOptions>?][] = [
         ['train', SMALL],
         ['maintainer', FRONTIER],
         ['baseline', SMALL],
         ['proposer', FRONTIER],
         ['evaluate', SMALL],
+        ['evaluate', null, { decide: failingDecide }],
         ['control', SMALL],
         [null, null],
       ];
       const results: IterateResult[] = [];
-      for (const [day, [step, model]] of plan.entries()) {
+      let logBeforeLastDay = '';
+      let sealedCandidate: string | undefined;
+      for (const [day, [step, model, over]] of plan.entries()) {
         env.fake.exhaust = step && model ? { step, model } : null;
-        const r = await iterate(env.options(day, day === 0 ? { iterationId: id } : { resume: id }));
+        if (step === null) logBeforeLastDay = readFileSync(join(env.wiki, 'log.md'), 'utf8');
+        const callsBefore = env.fake.rolloutCalls;
+        const r = await iterate(
+          env.options(day, { ...(day === 0 ? { iterationId: id } : { resume: id }), ...over }),
+        );
         results.push(r);
+        if (over?.decide) {
+          expect(r.status, r.message).toBe('failed');
+          expect(r.message).toMatch(/injected gate failure/);
+          const saved = loadIterationState(env.stateDir, id);
+          expect(saved.evaluate.candidate?.record).toBeTruthy();
+          expect(saved.evaluate.candidate?.decisionStatus).toBe('failed');
+          sealedCandidate = saved.evaluate.candidate?.record;
+          continue;
+        }
+        if (step === 'control') {
+          // The retried decision reused the sealed candidate record: no candidate rollout ran
+          // again (only the control's, which defers on SMALL).
+          const saved = loadIterationState(env.stateDir, id);
+          expect(saved.evaluate.candidate?.record).toBe(sealedCandidate);
+          expect(saved.evaluate.candidate?.decisionStatus).toBe('done');
+          expect(env.fake.rolloutCalls).toBeGreaterThanOrEqual(callsBefore);
+        }
         if (step) {
           expect(r.status, `${step}: ${r.message}`).toBe('deferred');
           expect(r.step).toBe(step);
@@ -448,8 +483,11 @@ describe('bench iterate (M2-01, M2-04)', () => {
       expect(md).toContain(`| ${FRONTIER} | isolation | val |`);
       expect(md).toContain(`| ${SMALL} | isolation | val |`);
       expect(md).toContain(`+${CANDIDATE_MARKER}`);
-      expect(md).toContain(`rejected for a replay regression: yes, on \`${IDLE_VAL}\``);
+      expect(md).toContain('rejected for a replay regression: yes, on 1 val replay task');
       expect(md).toContain('**met**');
+      // 06 §1.4: the public hand-off names no val task.
+      expect(md).not.toContain(IDLE_VAL);
+      expect(readFileSync(join(dir, 'handoff.json'), 'utf8')).not.toContain(IDLE_VAL);
       expect(md).toContain('### Cost');
       expect(md).toContain(`greenlight bench review ${id} --decision accept|reject`);
       const json = JSON.parse(readFileSync(join(dir, 'handoff.json'), 'utf8'));
@@ -458,6 +496,25 @@ describe('bench iterate (M2-01, M2-04)', () => {
       // The iteration never touched the skills it was given, nor the repo's.
       expect(skillSetHashOf(env.skills)).toBe(skillsBefore);
       expect(skillSetHashOf(join(REPO, '.claude', 'skills'))).toBe(realSkills);
+
+      // A crash between the ledger append and the log write is repaired on resume, once: the log
+      // is put back as it was before the record step and the record step reruns.
+      const ownIds = [s.evaluate.event?.eventId, ctl?.event?.eventId] as string[];
+      const once = (t: string, x: string) => t.split(x).length - 1;
+      for (const x of ownIds)
+        expect(once(readFileSync(join(env.wiki, 'log.md'), 'utf8'), x)).toBe(1);
+      writeFileSync(join(env.wiki, 'log.md'), logBeforeLastDay);
+      const crashed = loadIterationState(env.stateDir, id);
+      crashed.status = 'running';
+      crashed.step = 'record';
+      crashed.record = { status: 'pending' };
+      crashed.handoff = { status: 'pending' };
+      writeFileSync(join(dir, 'state.json'), `${JSON.stringify(crashed, null, 2)}\n`);
+      const repaired = await iterate(env.options(8, { resume: id }));
+      expect(repaired.status, repaired.message).toBe('complete');
+      for (const x of ownIds)
+        expect(once(readFileSync(join(env.wiki, 'log.md'), 'utf8'), x)).toBe(1);
+      expect(ledger(env.wiki).length).toBe(events.length);
 
       // --handoff-only regenerates; review records the owner's decision.
       rmSync(join(dir, 'handoff.md'));
@@ -515,6 +572,46 @@ describe('bench iterate (M2-01, M2-04)', () => {
         [ctl?.proposalId, 'review', 'reject'],
       ]);
       expect(readFileSync(join(dir, 'handoff.md'), 'utf8')).toContain('**reject**');
+      // A crash after the review's append but before its state save: the retry appends nothing
+      // twice (same eventIds), and a different decision is refused while one is half-recorded.
+      const half = loadIterationState(env.stateDir, id);
+      const reviewEvents = after.filter((e) => e.review);
+      half.reviewPending = {
+        decision: 'reject',
+        reason: 'owner wants a smaller rule',
+        ts: half.review?.ts as string,
+        events: reviewEvents,
+      };
+      half.review = undefined;
+      writeFileSync(join(dir, 'state.json'), `${JSON.stringify(half, null, 2)}\n`);
+      const o2b: string[] = [];
+      expect(
+        await benchCommand(
+          ['review', id, '--decision', 'accept', '--reason', 'other', '--root', env.wiki],
+          io(o2b),
+        ),
+      ).toBe(4);
+      expect(o2b.join('\n')).toMatch(/half-recorded/);
+      expect(
+        await benchCommand(
+          [
+            'review',
+            id,
+            '--decision',
+            'reject',
+            '--reason',
+            'owner wants a smaller rule',
+            '--root',
+            env.wiki,
+            '--skills',
+            env.skills,
+          ],
+          io(o2b),
+        ),
+        o2b.join('\n'),
+      ).toBe(0);
+      expect(ledger(env.wiki)).toHaveLength(after.length);
+      expect(ledgerProblems(ledger(env.wiki))).toEqual([]);
       const o3: string[] = [];
       expect(
         await benchCommand(
@@ -578,6 +675,80 @@ describe('bench iterate (M2-01, M2-04)', () => {
       expect(md3).toContain('kind: issue');
       expect(md3).toContain('title: Validate probe targets against the liveness model');
       expect(md3).toContain('**No ledger outcome.**');
+      expect(md3).not.toContain(IDLE_VAL);
+
+      // M3: the outlet trees are pinned on first entry; a different --candidate on resume is
+      // refused, and outletContext cannot override the pinned base / candidate / id / clock.
+      const [head, prev] = [gitOut(REPO, 'rev-parse', 'HEAD'), gitOut(REPO, 'rev-parse', 'HEAD~1')];
+      const seen: { base: unknown; candidate: unknown; proposalId: string }[] = [];
+      let throwOnce = true;
+      const fakeOutlet = (async (
+        prop: { patterns: string[]; outlet: string },
+        ctx: OutletContext,
+      ) => {
+        seen.push({ base: ctx.base, candidate: ctx.candidate, proposalId: ctx.proposalId });
+        if ('commit' in ctx.candidate && ctx.candidate.commit === prev && throwOnce) {
+          throwOnce = false;
+          throw new Error('injected outlet failure');
+        }
+        const evidence = {
+          kind: 'repro' as const,
+          base: `commit:RTrentJones/greenlight@${'commit' in ctx.base ? ctx.base.commit : 'x'}`,
+          candidate: `commit:RTrentJones/greenlight@${'commit' in ctx.candidate ? ctx.candidate.commit : 'x'}`,
+          reproTask: 'repro/probe-touches-wrong-layer',
+        };
+        return {
+          decision: 'accept',
+          reasons: [],
+          evidence,
+          ledgerEvent: sealEvent({
+            ts: ctx.now().toISOString(),
+            proposalId: ctx.proposalId,
+            stage: 'candidate-accepted',
+            path: 'standard',
+            pattern: [...prop.patterns],
+            outlet: prop.outlet as 'mechanism',
+            change: { kind: 'issue' },
+            evidence,
+          }),
+        };
+      }) as unknown as IterateOptions['evaluateOutlet'];
+      env.fake.proposal = {
+        action: 'issue',
+        outlet: 'mechanism',
+        title: 'Pin the probe layer',
+        body: 'A pinned-tree test proposal.',
+        patterns: ['pattern/probe-touches-wrong-layer'],
+      };
+      const pin = 'iter-test-pinned';
+      const forged = {
+        evaluateOutlet: fakeOutlet,
+        outletContext: { base: { commit: 'forged' }, proposalId: 'forged' } as never,
+        controlsDir: join(env.bench, 'none'),
+      };
+      const b0 = await iterate(env.options(12, { iterationId: pin, ...forged }));
+      expect(b0.status, b0.message).toBe('blocked');
+      expect(b0.message).toMatch(/needs the candidate change/);
+      const pinnedBase = loadIterationState(env.stateDir, pin).evaluate.outlet?.base;
+      expect(pinnedBase?.tree).toEqual({ commit: head });
+      expect(seen[0]?.base).toEqual({ commit: head });
+      expect(seen[0]?.proposalId).not.toBe('forged');
+      const b1 = await iterate(
+        env.options(12, { resume: pin, outletCandidate: { commit: 'HEAD~1' }, ...forged }),
+      );
+      expect(b1.status, b1.message).toBe('failed');
+      expect(loadIterationState(env.stateDir, pin).evaluate.outlet?.candidate?.tree).toEqual({
+        commit: prev,
+      });
+      const b2 = await iterate(
+        env.options(12, { resume: pin, outletCandidate: { commit: head }, ...forged }),
+      );
+      expect(b2.exitCode).toBe(4);
+      expect(b2.message).toMatch(/pinned/);
+      const b3 = await iterate(env.options(12, { resume: pin, ...forged }));
+      expect(b3.status, b3.message).toBe('complete');
+      expect(seen.at(-1)).toMatchObject({ base: { commit: head }, candidate: { commit: prev } });
+      expect(b3.state?.evaluate.event?.stage).toBe('candidate-accepted');
     },
     900_000,
   );
@@ -663,4 +834,153 @@ describe('evo.yml', () => {
     expect(text).not.toMatch(/git (commit|push)/);
     expect(text).toMatch(/contents:\s*read/);
   });
+
+  it('restores state only from a provenance-checked run, into a temp dir, allow-listed paths only', () => {
+    const text = readFileSync(join(REPO, '.github/workflows/evo.yml'), 'utf8');
+    // The job runs only on the allow-listed branch.
+    expect(text).toMatch(
+      /^\s{4}if: contains\(fromJSON\('\["refs\/heads\/2\.0"\]'\), github\.ref\)/m,
+    );
+    // Provenance: the run is resolved and checked before anything is downloaded.
+    const check = text.indexOf("Check the state run's provenance");
+    const download = text.indexOf('actions/download-artifact');
+    expect(check).toBeGreaterThan(0);
+    expect(check).toBeLessThan(download);
+    expect(text).toContain('gh api "repos/$REPO/actions/runs/$RUN_ID"');
+    expect(text).toContain('.github/workflows/evo.yml');
+    expect(text).toContain('.head_repository.full_name');
+    expect(text).toContain('.head_branch');
+    // Downloaded into a temp dir, never over the checkout; copied by the allow-list script.
+    expect(text).toMatch(/path: \$\{\{ runner\.temp \}\}\/evo-state/);
+    expect(text).not.toMatch(/download-artifact[\s\S]*?path: \.\s*$/m);
+    expect(text).toContain('node scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .');
+    // No bundle keys and no lock in any artifact; the state upload names its roots.
+    for (const m of text.matchAll(/upload-artifact[\s\S]*?path: \|([\s\S]*?)(?:\n\s{10}\w|$)/g)) {
+      const paths = m[1] as string;
+      expect(paths).not.toMatch(/^\s*\.greenlight\/\s*$/m);
+      expect(paths).toContain('!.greenlight/**/.lock');
+    }
+    expect(text).toContain('!.greenlight/bundle-keys/');
+  });
+
+  it('evo-restore copies only state and wiki writes, and refuses a ledger that is not an extension', async () => {
+    const mod = (await import(join(REPO, 'scripts', 'evo-restore.mjs'))) as {
+      restore: (a: string, c: string) => { restored: string[]; skipped: string[] };
+    };
+    const root = tmp('greenlight-evo-restore-');
+    const art = join(root, 'artifact');
+    const co = join(root, 'checkout');
+    const put = (base: string, rel: string, body: string) => {
+      mkdirSync(join(base, rel, '..'), { recursive: true });
+      writeFileSync(join(base, rel), body);
+    };
+    const line = (id: string) => `${JSON.stringify({ eventId: id })}\n`;
+    put(co, 'wiki/ledger.jsonl', line('a') + line('b'));
+    put(co, 'package.json', '{"scripts":{"check-all":"pnpm test"}}');
+    for (const rel of [
+      '.greenlight/bench/iterations/iter-x/state.json',
+      '.greenlight/raw/r.json',
+      '.greenlight/quota/m.json',
+      'wiki/evidence/eval/abc.json',
+      'wiki/patterns/p.md',
+      // Never restored:
+      '.greenlight/bundle-keys/k.json',
+      '.greenlight/bench/iterations/iter-x/.lock',
+      'package.json',
+      'bench/gate.json',
+      'bench/repro/x/run.mjs',
+      '.claude/skills/x/SKILL.md',
+      'node_modules/x/index.js',
+      'cli/src/bin.ts',
+    ])
+      put(art, rel, 'evil');
+    put(art, 'wiki/ledger.jsonl', line('a') + line('b') + line('c'));
+    const r = mod.restore(art, co);
+    expect(r.restored.sort()).toEqual(
+      [
+        '.greenlight/bench/iterations/iter-x/state.json',
+        '.greenlight/quota/m.json',
+        '.greenlight/raw/r.json',
+        'wiki/evidence/eval/abc.json',
+        'wiki/ledger.jsonl',
+        'wiki/patterns/p.md',
+      ].sort(),
+    );
+    expect(readFileSync(join(co, 'package.json'), 'utf8')).toContain('check-all');
+    for (const rel of ['.greenlight/bundle-keys/k.json', 'bench/gate.json', 'cli/src/bin.ts'])
+      expect(existsSync(join(co, rel))).toBe(false);
+    // A ledger that rewrites history (not a prefix extension) is refused, and nothing copied.
+    put(co, 'wiki/ledger.jsonl', line('a') + line('b') + line('c') + line('d'));
+    put(art, 'wiki/patterns/q.md', 'new');
+    expect(() => mod.restore(art, co)).toThrow(/does not extend/);
+    expect(existsSync(join(co, 'wiki/patterns/q.md'))).toBe(false);
+  });
+});
+
+describe('bench iterate without docker (process sandbox)', () => {
+  it('train → maintainer → baseline refused; crash-resume after the seal, input drift and lock handling', async () => {
+    const env = setup(false);
+    const id = 'iter-test-process';
+    const opts = (day: number, over: Partial<IterateOptions> = {}) =>
+      env.options(day, { sandbox: 'process', ...over });
+
+    // Day 0: train is sealed, then the maintainer's model has no quota left.
+    env.fake.exhaust = { step: 'maintainer', model: FRONTIER };
+    const r0 = await iterate(opts(0, { iterationId: id }));
+    expect(r0.status, r0.message).toBe('deferred');
+    expect(r0.step).toBe('maintainer');
+    const s0 = loadIterationState(env.stateDir, id);
+    expect(s0.train.status).toBe('done');
+    expect(s0.pins?.skillSet).toBe(s0.acceptedSkillSetHash);
+    const trainRecord = s0.train.record as string;
+    const trainEval = s0.train.evaluationId as string;
+
+    // A crash between the runner's seal and the state's save: the step must load the sealed
+    // record (no rollout, no "already complete" wedge) instead of resuming it.
+    const dir = iterationDir(env.stateDir, id);
+    const crashed = { ...s0, status: 'running', step: 'train' } as IterationState;
+    crashed.train = { status: 'deferred', evaluationId: trainEval };
+    writeFileSync(join(dir, 'state.json'), `${JSON.stringify(crashed, null, 2)}\n`);
+    const calls = env.fake.rolloutCalls;
+
+    // Drift is refused before anything runs: the gate config, then the installed skills.
+    const gate = join(env.bench, 'gate.json');
+    const gateText = readFileSync(gate, 'utf8');
+    writeFileSync(gate, '{ "alpha": 0.05, "runs": 2, "resamples": 1000 }\n');
+    const drift = await iterate(opts(1, { resume: id }));
+    expect(drift.exitCode).toBe(4);
+    expect(drift.message).toMatch(/bench\/gate\.json changed/);
+    writeFileSync(gate, gateText);
+    const skillFile = join(env.skills, 'greenlight-wiki', 'SKILL.md');
+    const skillText = readFileSync(skillFile, 'utf8');
+    writeFileSync(skillFile, `${skillText}\ndrift\n`);
+    const skillDrift = await iterate(opts(1, { resume: id }));
+    expect(skillDrift.exitCode).toBe(4);
+    expect(skillDrift.message).toMatch(/installed skills/);
+    writeFileSync(skillFile, skillText);
+
+    // A live lock on this host refuses; a lock written on another host is removed, with a
+    // warning, since a lock never travels with the state.
+    writeFileSync(join(dir, '.lock'), JSON.stringify({ host: hostname(), pid: process.ppid }));
+    const locked = await iterate(opts(1, { resume: id }));
+    expect(locked.exitCode).toBe(4);
+    expect(locked.message).toMatch(/is running in process/);
+    writeFileSync(join(dir, '.lock'), JSON.stringify({ host: 'another-runner', pid: 1 }));
+    const logs: string[] = [];
+    env.fake.exhaust = null;
+    const r1 = await iterate(opts(1, { resume: id, log: (x) => logs.push(x) }));
+    expect(logs.join('\n')).toMatch(/removing the lock of process 1 on host another-runner/);
+    expect(existsSync(join(dir, '.lock'))).toBe(false);
+
+    // The sealed train record was loaded, not re-run; the maintainer applied; the baseline is
+    // refused by policy (the process sandbox cannot produce val evidence, 06 §4.2).
+    expect(env.fake.rolloutCalls - calls).toBe(0);
+    const s1 = loadIterationState(env.stateDir, id);
+    expect(s1.train.record).toBe(trainRecord);
+    expect(s1.maintainer.applied).toBe(true);
+    expect(r1.status, r1.message).toBe('blocked');
+    expect(r1.step).toBe('baseline');
+    expect(r1.exitCode).toBe(4);
+    expect(r1.message).toMatch(/process sandbox/);
+  }, 300_000);
 });

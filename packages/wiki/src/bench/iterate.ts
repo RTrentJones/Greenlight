@@ -15,6 +15,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { hostname } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { type RawRecord, newRawId } from '@rtrentjones/greenlight-shared';
 import { parse as parseYaml } from 'yaml';
@@ -39,7 +40,7 @@ import {
   writeBundle,
 } from '../bundle';
 import { appendLogEntry } from '../index-gen';
-import { appendEvent, renderSkillImpact } from '../ledger';
+import { appendEvent, appendEvents, proposalHistory, renderSkillImpact } from '../ledger';
 import { type LintContext, introducedErrors, lint } from '../lint';
 import { type GeminiClient, type Usage, clientForRole, createLimiters, entryForRole } from '../llm';
 import { RequestBudget } from '../llm/limits';
@@ -55,7 +56,7 @@ import {
   withWrites,
 } from '../load';
 import { applyFilePatches, applyMaintainerOutput, writeChangeset } from '../patch';
-import { findSecrets } from '../redact';
+import { findSecrets, redact } from '../redact';
 import { type SplitIndex, parseSplits } from '../sample';
 import {
   type EvaluationRecord,
@@ -72,6 +73,7 @@ import {
   PROPOSER_OUTPUT_JSON_SCHEMA,
   type ProposerOutput,
   ProposerOutputSchema,
+  SKILL_NAME_RE,
   evalEvidencePath,
   normalizeProposerOutput,
   sealEvent,
@@ -87,12 +89,13 @@ import {
   loadGateConfig,
   rejectedForReplayRegression,
 } from './gate';
-import { skillSetHashOf } from './identity';
+import { hashTree, skillSetHashOf } from './identity';
 import {
   type ControlArm,
   type OutletContext,
   type OutletResult,
   type OutletTreeRef,
+  cleanHead,
   evaluateOutlet as defaultEvaluateOutlet,
   loadControlArm,
 } from './outlets';
@@ -105,6 +108,7 @@ import {
   type SandboxKind,
   loadEvaluationRecords,
   runBench,
+  sealedRecordFor,
 } from './runner';
 import { treeDiff } from './sandbox';
 
@@ -203,6 +207,9 @@ export interface CandidateState extends EvalStep {
   candidateSkills?: string;
   candidateSkillSetHash?: string;
   radius?: BlastRadius;
+  /** The decision's own status, apart from the evaluation's (`record` set = sealed): a failed
+   * decision is retried from the sealed record on resume, without a rollout. */
+  decisionStatus?: StepStatus;
   decision?: DecisionSummary;
   gateInput?: GateInputRecord;
   event?: LedgerEvent;
@@ -245,6 +252,8 @@ export interface IterationState {
   };
   /** The accepted skill set (06 §1.5) every baseline and train record must carry. */
   acceptedSkillSetHash: string;
+  /** What the iteration was created against; every resume refuses (exit 4) when one differs. */
+  pins?: IterationPins;
   notes: string[];
   train: EvalStep;
   maintainer: {
@@ -281,6 +290,10 @@ export interface IterationState {
     candidate?: CandidateState;
     outlet?: {
       ts: string;
+      /** The trees the outlet rule judges, pinned on first entry (a resume never re-resolves a
+       * moving ref such as HEAD, and refuses a different --candidate). */
+      base?: PinnedTree;
+      candidate?: PinnedTree;
       result?: {
         decision: OutletResult['decision'];
         reasons: string[];
@@ -298,6 +311,29 @@ export interface IterationState {
     ts: string;
     eventIds: string[];
   };
+  /** A review whose events are computed and saved before they are appended: a retry after a
+   * crash appends the same events (same eventIds) instead of new ones. */
+  reviewPending?: {
+    decision: 'accept' | 'reject';
+    reason: string;
+    ts: string;
+    events: LedgerEvent[];
+  };
+}
+
+/** Hashes of the inputs an iteration's evidence depends on (06 §1.5), fixed at creation. */
+export interface IterationPins {
+  skillSet: string;
+  models: string;
+  gate: string;
+  splits: string;
+  tasks: string;
+}
+
+/** An outlet tree, resolved once: `key` names what it resolved to (a commit sha, a clean HEAD). */
+export interface PinnedTree {
+  tree: OutletTreeRef;
+  key: string;
 }
 
 export interface IterateOptions {
@@ -329,6 +365,8 @@ export interface IterateOptions {
   context?: BundleContext;
   /** Lint context for the maintainer's scratch wiki (default: the framework wiki, no seam terms). */
   lint?: Pick<LintContext, 'kind' | 'seam' | 'secretValues'>;
+  /** The gate (default gate.ts `decide`); injectable so a failed decision can be tested. */
+  decide?: typeof decide;
   /** The non-skill outlet evaluator (default outlets.ts `evaluateOutlet`). */
   evaluateOutlet?: typeof defaultEvaluateOutlet;
   /** mechanism / doctor: the base tree (default: the checkout's HEAD commit). */
@@ -415,19 +453,39 @@ function saveState(stateDir: string, s: IterationState, now: Date): void {
   renameSync(tmp, file);
 }
 
-/** One process per iteration: a pid lock in the iteration directory (a dead holder's is stale). */
-function acquireLock(dir: string): () => void {
+/**
+ * One process per iteration: a lock file in the iteration directory holding `{host, pid}`. A
+ * holder that is dead on this host is stale. A lock written on another host cannot be checked
+ * here; since a lock never rides in an artifact (evo.yml excludes it), one from another host is
+ * a leftover of a copied state directory, removed with a message saying so.
+ */
+export function acquireLock(dir: string, log: (s: string) => void = () => {}): () => void {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, '.lock');
+  const me = { host: hostname(), pid: process.pid };
   for (let i = 0; i < 2; i++) {
     try {
       const fd = openSync(file, 'wx');
-      writeSync(fd, String(process.pid));
+      writeSync(fd, JSON.stringify(me));
       closeSync(fd);
       return () => rmSync(file, { force: true });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      const pid = Number(readFileSync(file, 'utf8').trim());
+      let held: { host?: unknown; pid?: unknown } = {};
+      try {
+        const t = readFileSync(file, 'utf8').trim();
+        held = t.startsWith('{') ? (JSON.parse(t) as typeof held) : { pid: Number(t) };
+      } catch {
+        held = {};
+      }
+      const pid = Number(held.pid);
+      if (typeof held.host === 'string' && held.host !== me.host) {
+        log(
+          `warning: removing the lock of process ${pid} on host ${held.host} at ${file}: a lock is checked only on the host that wrote it, and this state directory was copied here`,
+        );
+        rmSync(file, { force: true });
+        continue;
+      }
       let alive = false;
       if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
         try {
@@ -437,11 +495,56 @@ function acquireLock(dir: string): () => void {
           alive = false;
         }
       }
-      if (alive) throw new IterationError(`iteration is running in process ${pid}`, 4);
+      if (alive) throw new IterationError(`iteration is running in process ${pid} (${file})`, 4);
       rmSync(file, { force: true });
     }
   }
   throw new IterationError(`cannot lock ${file}`, 1);
+}
+
+/** The pins of an iteration's inputs as they are on disk now. */
+export function iterationPins(benchDir: string, skillsDir: string): IterationPins {
+  return {
+    skillSet: skillSetHashOf(skillsDir),
+    models: hashTree(join(benchDir, 'models.json')),
+    gate: hashTree(join(benchDir, 'gate.json')),
+    splits: hashTree(join(benchDir, 'splits.json')),
+    tasks: hashTree(join(benchDir, 'tasks')),
+  };
+}
+
+const PIN_NAMES: Record<keyof IterationPins, string> = {
+  skillSet: 'the installed skill set',
+  models: 'bench/models.json',
+  gate: 'bench/gate.json',
+  splits: 'bench/splits.json',
+  tasks: 'the bench task set (bench/tasks)',
+};
+
+/** Refuses a resume whose inputs drifted from the iteration's creation (a state from before
+ * pins existed gets them now). Evaluations, controls and decisions all assume these inputs. */
+function checkPins(s: IterationState, o: IterateOptions): void {
+  const now = iterationPins(o.benchDir, o.skillsDir);
+  if (now.skillSet !== s.acceptedSkillSetHash) {
+    throw new IterationError(
+      `iteration ${s.iterationId} runs under the accepted skill set ${s.acceptedSkillSetHash.slice(0, 12)}, but the installed skills at ${o.skillsDir} hash to ${now.skillSet.slice(0, 12)}: restore the accepted skills, or start a new iteration`,
+      4,
+    );
+  }
+  if (!s.pins) {
+    s.pins = now;
+    return;
+  }
+  const pins = s.pins;
+  const drift = (Object.keys(PIN_NAMES) as (keyof IterationPins)[]).filter(
+    (k) => pins[k] !== now[k],
+  );
+  if (drift.length > 0) {
+    throw new IterationError(
+      `iteration ${s.iterationId} was created against other inputs: ${drift.map((k) => PIN_NAMES[k]).join(', ')} changed since. Restore them, or start a new iteration`,
+      4,
+    );
+  }
 }
 
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -511,11 +614,23 @@ function frontmatterOf(text: string): Record<string, unknown> {
   }
 }
 
-/** A skill's blast radius (08 §2.2 `blast-radius`), defaulting by the 06 §5.4 table. */
-export function blastRadius(skill: string, purposeMd: string | undefined): BlastRadius {
-  const r = purposeMd === undefined ? undefined : frontmatterOf(purposeMd)['blast-radius'];
-  if (r === 'low' || r === 'medium' || r === 'high') return r;
-  return HIGH_RADIUS.has(skill) ? 'high' : 'medium';
+const RADIUS_ORDER: readonly BlastRadius[] = ['low', 'medium', 'high'];
+
+/**
+ * A skill's blast radius (08 §2.2 `blast-radius`, 06 §5.4): the larger of the table's (high for
+ * the skills it names) and the ACCEPTED skill's `PURPOSE.md` (default medium). `acceptedPurposeMd`
+ * is read from the accepted skill set, never from a candidate copy and never from a create's own
+ * `purpose_md`: the proposer cannot lower the thresholds its candidate is gated by. A create has
+ * no accepted PURPOSE.md, so it is at least medium.
+ */
+export function blastRadius(skill: string, acceptedPurposeMd: string | undefined): BlastRadius {
+  const r =
+    acceptedPurposeMd === undefined ? undefined : frontmatterOf(acceptedPurposeMd)['blast-radius'];
+  const declared: BlastRadius = r === 'low' || r === 'medium' || r === 'high' ? r : 'medium';
+  const table: BlastRadius = HIGH_RADIUS.has(skill) ? 'high' : 'low';
+  return RADIUS_ORDER[
+    Math.max(RADIUS_ORDER.indexOf(declared), RADIUS_ORDER.indexOf(table))
+  ] as BlastRadius;
 }
 
 const readIf = (f: string): string | undefined =>
@@ -620,7 +735,22 @@ async function evaluation(
   st: EvalStep,
   over: Partial<BenchRunOptions>,
 ): Promise<{ ok: true; record: EvaluationRecord } | { ok: false; out: StepOutcome }> {
-  const resume = st.evaluationId && st.status !== 'done' ? st.evaluationId : undefined;
+  // A sealed evaluation is loaded, never resumed (the runner refuses to resume a complete one):
+  // after a crash between the runner's seal and this state's save, or a failed decision after
+  // the seal, the step continues from the record without a rollout.
+  const sealed =
+    (st.record
+      ? loadEvaluationRecords(c.o.wikiRoot).find((r) => r.hash === st.record)
+      : undefined) ??
+    (st.evaluationId ? sealedRecordFor(c.stateDir, c.o.wikiRoot, st.evaluationId) : undefined);
+  if (sealed) {
+    st.status = 'done';
+    st.record = sealed.hash;
+    st.remaining = undefined;
+    c.save();
+    return { ok: true, record: sealed };
+  }
+  const resume = st.evaluationId ? st.evaluationId : undefined;
   let r: RunResult;
   try {
     r = await runBench(runOptions(c, { ...over, ...(resume ? { resume } : {}) }));
@@ -1174,6 +1304,7 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
         keysDir: c.keysDir,
         records: loadRawStore(join(c.stateDir, 'raw')).records,
         ...(c.splits ? { splits: c.splits } : {}),
+        scope,
       });
       if (!checked.ok) {
         for (const e of checked.errors) zodIssue(ctx, e);
@@ -1235,12 +1366,17 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
   writeFileSync(join(c.dir, 'proposal.json'), `${JSON.stringify(record, null, 2)}\n`);
   p.proposal = proposal;
   p.proposalId = proposalId;
-  p.rawReads = readFileSync(join(bundleDir, 'access.jsonl'), 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as { command: string; target: string; refused?: string })
-    .filter((e) => e.command === 'read' && !e.refused && e.target.startsWith('raw:'))
-    .map((e) => e.target);
+  // Distinct reads, as checkProposal counts them (a re-read of one trace is one read).
+  p.rawReads = [
+    ...new Set(
+      readFileSync(join(bundleDir, 'access.jsonl'), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as { command: string; target: string; refused?: string })
+        .filter((e) => e.command === 'read' && !e.refused && e.target.startsWith('raw:'))
+        .map((e) => e.target),
+    ),
+  ];
   p.status = 'done';
   p.message = `${proposal.action}${'outlet' in proposal ? ` (${proposal.outlet})` : ''}: ${proposalId}`;
   if (proposal.action === 'no_action') {
@@ -1273,6 +1409,13 @@ export function materializeCandidate(
   assertOutsideSkills(skillsDir, dest, 'a candidate skill set');
   if (p.action !== 'create' && !(p.action === 'patch' && p.outlet === 'skill')) {
     return { ok: false, errors: [`a ${p.action} proposal has no skill set to build`] };
+  }
+  // One canonical path segment: a name never addresses another skill (`a/../b`, `b/`).
+  if (!SKILL_NAME_RE.test(p.name)) {
+    return { ok: false, errors: [`"${p.name}" is not a canonical skill name`] };
+  }
+  if (p.action === 'patch' && !loadSkills(skillsDir).some((s) => s.name === p.name)) {
+    return { ok: false, errors: [`skill ${p.name} is not an accepted skill`] };
   }
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(join(dest, '..'), { recursive: true });
@@ -1328,11 +1471,12 @@ async function evaluateCandidate(
   }
   cand.candidateSkillSetHash = hash;
   const skill = skillOf(proposal);
-  const purpose =
-    proposal.action === 'create'
-      ? proposal.purpose_md
-      : (readIf(join(dest, skill, 'PURPOSE.md')) ?? readIf(join(o.skillsDir, skill, 'PURPOSE.md')));
-  cand.radius ??= blastRadius(skill, purpose);
+  // 06 §5.4: from the ACCEPTED tree (pinned by the iteration's drift check) or the table, never
+  // the candidate's copy, and never a create's own purpose_md. Recomputed on every entry.
+  cand.radius = blastRadius(
+    skill,
+    proposal.action === 'patch' ? readIf(join(o.skillsDir, skill, 'PURPOSE.md')) : undefined,
+  );
   c.save();
   const r = await evaluation(c, step, cand, {
     split: 'val',
@@ -1346,7 +1490,7 @@ async function evaluateCandidate(
   const gateCfg = readGateCfg(o.benchDir);
   let d: GateDecision;
   try {
-    d = decide(baseline, r.record, {
+    d = (o.decide ?? decide)(baseline, r.record, {
       ts: cand.ts,
       radius: cand.radius,
       path: 'standard',
@@ -1367,6 +1511,7 @@ async function evaluateCandidate(
     });
   } catch (e) {
     cand.status = 'failed';
+    cand.decisionStatus = 'failed';
     cand.message = (e as Error).message;
     const what = e instanceof GateHarnessError ? 'harness error' : 'gate error';
     return stop(c, step, 'failed', `${step}: ${what}: ${cand.message}`, 1);
@@ -1382,6 +1527,7 @@ async function evaluateCandidate(
   };
   if (d.decision === 'invalid' || !d.ledgerEvent || !d.gateInput) {
     cand.status = 'failed';
+    cand.decisionStatus = 'failed';
     cand.message = `the evaluation is invalid: ${d.reasons
       .filter((x) => x.severity === 'invalid')
       .map((x) => x.code)
@@ -1390,6 +1536,7 @@ async function evaluateCandidate(
   }
   cand.gateInput = d.gateInput;
   cand.event = d.ledgerEvent;
+  cand.decisionStatus = 'done';
   cand.status = 'done';
   cand.message = `${d.ledgerEvent.stage}: ${d.ledgerEvent.reason ?? d.decision}`;
   c.save();
@@ -1423,14 +1570,43 @@ async function stepEvaluate(c: Ctx): Promise<StepOutcome> {
   // mechanism / doctor / verify (issue) and template (patch): outlets.ts (06 §5.6).
   e.kind = 'outlet';
   e.outlet ??= { ts: c.now().toISOString() };
+  const sourceRepo = c.o.outletContext?.sourceRepo ?? 'RTrentJones/greenlight';
+  // The trees are pinned on first entry: a resume never re-resolves HEAD, and a --candidate (or
+  // base) other than the pinned one is refused rather than silently judged.
+  const wantBase = c.o.outletBase ? pinTree(c.o.repoRoot, c.o.outletBase, sourceRepo) : undefined;
+  if (e.outlet.base && wantBase && wantBase.key !== e.outlet.base.key) {
+    return stop(
+      c,
+      'evaluate',
+      'blocked',
+      `evaluate: the outlet base is pinned to ${e.outlet.base.key}; refusing ${wantBase.key}`,
+      4,
+    );
+  }
+  e.outlet.base ??= wantBase ?? pinTree(c.o.repoRoot, { commit: 'HEAD' }, sourceRepo);
+  if (c.o.outletCandidate) {
+    const want = pinTree(c.o.repoRoot, c.o.outletCandidate, sourceRepo);
+    if (e.outlet.candidate && want.key !== e.outlet.candidate.key) {
+      return stop(
+        c,
+        'evaluate',
+        'blocked',
+        `evaluate: the candidate is pinned to ${e.outlet.candidate.key}; refusing --candidate ${want.key}`,
+        4,
+      );
+    }
+    e.outlet.candidate ??= want;
+  }
   c.save();
   const evaluate = c.o.evaluateOutlet ?? defaultEvaluateOutlet;
-  const base: OutletTreeRef = c.o.outletBase ?? { commit: headCommit(c.o.repoRoot) };
-  const candidate = c.o.outletCandidate;
+  const base: OutletTreeRef = e.outlet.base.tree;
+  const candidate = e.outlet.candidate?.tree;
   const fixedTs = e.outlet.ts;
   let result: OutletResult;
   try {
     result = await evaluate(proposal as never, {
+      // Caller-supplied fields first: the pinned trees, the id and the clock always win.
+      ...(c.o.outletContext ?? {}),
       repoRoot: c.o.repoRoot,
       proposalId,
       base,
@@ -1439,7 +1615,6 @@ async function stepEvaluate(c: Ctx): Promise<StepOutcome> {
       candidate: candidate ?? base,
       tasks: c.tasks.map((t) => t.spec),
       now: () => new Date(fixedTs),
-      ...(c.o.outletContext ?? {}),
     });
   } catch (err) {
     e.status = 'failed';
@@ -1472,16 +1647,33 @@ async function stepEvaluate(c: Ctx): Promise<StepOutcome> {
   return { ok: true };
 }
 
-function headCommit(repoRoot: string): string {
-  try {
-    return execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .toString()
-      .trim();
-  } catch {
-    return 'HEAD';
+/**
+ * Resolves an outlet tree once. A commit becomes its full sha. A directory is pinned to its clean
+ * HEAD (named as a `commit:` ref, which outlets.ts re-checks against the directory); a dirty one
+ * keeps no ref and is judged `unpinned-tree` there.
+ */
+export function pinTree(repoRoot: string, t: OutletTreeRef, sourceRepo: string): PinnedTree {
+  if ('commit' in t) {
+    try {
+      const sha = execFileSync(
+        'git',
+        ['-C', repoRoot, 'rev-parse', '--verify', `${t.commit}^{commit}`],
+        { stdio: ['ignore', 'pipe', 'ignore'] },
+      )
+        .toString()
+        .trim();
+      return { tree: { commit: sha }, key: `commit:${sha}` };
+    } catch {
+      return { tree: t, key: `commit:${t.commit}` };
+    }
   }
+  const dir = resolve(t.dir);
+  const head = cleanHead(dir);
+  const ref = t.ref ?? (head ? `commit:${sourceRepo}@${head}` : undefined);
+  return {
+    tree: ref ? { dir, ref } : { dir },
+    key: `dir:${dir}@${head ?? 'unpinned'}${t.ref ? `#${t.ref}` : ''}`,
+  };
 }
 
 /** `bench/controls/*.json` (06 §10.2 step 4, roadmap M2-03), each read with `loadControlArm`:
@@ -1512,6 +1704,13 @@ export function loadControls(
 
 async function stepControl(c: Ctx): Promise<StepOutcome> {
   const ctl = c.s.control;
+  if (c.s.baseline.earlyStop) {
+    // 06 §1.3: an early stop records no_action and returns; nothing else is evaluated.
+    ctl.status = 'skipped';
+    ctl.message = 'early stop: no control arm (06 §1.3)';
+    c.save();
+    return { ok: true };
+  }
   if (ctl.items.length === 0) {
     const found = loadControls(c.o.benchDir, c.s.settings.controlsDir);
     if (found.length === 0) {
@@ -1588,8 +1787,11 @@ function stepRecord(c: Ctx): StepOutcome {
   const events = ledgerEvents(o.wikiRoot);
   const wiki = loadWiki(o.wikiRoot);
   let log = wiki.log;
+  // Every event of this iteration that is in the ledger gets its log line once: one appended by
+  // an earlier, interrupted invocation (crash between the append and this write) is repaired.
   for (const [e] of pairs) {
-    if (!written.includes(e.eventId)) continue;
+    if (!events.some((x) => x.eventId === e.eventId)) continue;
+    if ((log ?? '').includes(`ledger event ${e.eventId}`)) continue;
     // No reason text: log.md is copied verbatim into agent bundles, and gate reasons name val
     // tasks (06 §1.4). The ledger holds the reason; bundles get only its projection.
     log = appendLogEntry(log, {
@@ -1631,14 +1833,17 @@ export interface Handoff {
 
 const fmt = (x: number) => x.toFixed(2);
 
-function resultsTable(results: readonly GateResult[]): string[] {
+function resultsTable(
+  results: readonly GateResult[],
+  heldOut: ReadonlyMap<string, string>,
+): string[] {
   if (results.length === 0) return ['_No per-model results._'];
   return [
     '| model | mode | split | runs | replay passing (cand/base of total) | regressions | capability before → after | Δ | p | decision |',
     '|---|---|---|---|---|---|---|---|---|---|',
     ...results.map(
       (r) =>
-        `| ${r.model} | ${r.mode} | ${r.split} | ${r.runs} | ${r.replay.candidatePassing}/${r.replay.baselinePassing} of ${r.replay.total} | ${r.replay.regressions.join(', ') || '—'} | ${fmt(r.capability.before)} → ${fmt(r.capability.after)} | ${r.capability.delta >= 0 ? '+' : ''}${fmt(r.capability.delta)} | ${r.capability.pValue ?? '—'} | ${r.decision} |`,
+        `| ${r.model} | ${r.mode} | ${r.split} | ${r.runs} | ${r.replay.candidatePassing}/${r.replay.baselinePassing} of ${r.replay.total} | ${r.replay.regressions.length ? countTasks(r.replay.regressions, heldOut) : '—'} | ${fmt(r.capability.before)} → ${fmt(r.capability.after)} | ${r.capability.delta >= 0 ? '+' : ''}${fmt(r.capability.delta)} | ${r.capability.pValue ?? '—'} | ${r.decision} |`,
     ),
   ];
 }
@@ -1685,7 +1890,11 @@ export function iterationCost(
     .sort((a, b) => a.model.localeCompare(b.model));
 }
 
-function candidateSection(c: HandoffCtx, cand: CandidateState, heading: string): string[] {
+function candidateSection(
+  c: HandoffCtx & { state: IterationState },
+  cand: CandidateState,
+  heading: string,
+): string[] {
   const gi = cand.gateInput?.hash;
   const out = [`### ${heading}`, ''];
   out.push(
@@ -1711,7 +1920,7 @@ function candidateSection(c: HandoffCtx, cand: CandidateState, heading: string):
       `greenlight bench gate --recompute ${gi}`,
       '```',
     );
-  out.push('', ...resultsTable(cand.decision?.results ?? []));
+  out.push('', ...resultsTable(cand.decision?.results ?? [], heldOutTasks(c.state, c)));
   const reasons = failReasons(cand.decision);
   if (reasons.length) out.push('', 'Reasons:', '', ...reasons);
   if (cand.candidateSkills) {
@@ -1734,11 +1943,58 @@ interface HandoffCtx {
   dir: string;
   skillsDir: string;
   wikiRoot: string;
+  /** Val and test task ids → split (from the bench); masked in the public hand-off (06 §1.4). */
+  heldOut?: ReadonlyMap<string, string>;
+}
+
+/** Val/test task ids the hand-off must not name: the bench's, plus every task id the state's
+ * val decisions name (a gate decision runs on val only). */
+function heldOutTasks(s: IterationState, c: HandoffCtx): Map<string, string> {
+  const out = new Map(c.heldOut ?? []);
+  const cands = [s.evaluate.candidate, ...s.control.items].filter(
+    (x): x is CandidateState => x !== undefined,
+  );
+  for (const cand of cands) {
+    for (const r of cand.decision?.results ?? [])
+      for (const t of r.replay.regressions) if (!out.has(t)) out.set(t, r.split);
+    for (const r of cand.decision?.reasons ?? [])
+      if (r.task && !out.has(r.task)) out.set(r.task, 'val');
+  }
+  for (const item of s.control.items) {
+    if (!out.has(item.expect.task)) out.set(item.expect.task, 'val');
+    for (const t of item.replayRegressions ?? []) if (!out.has(t)) out.set(t, 'val');
+  }
+  return out;
+}
+
+/** `2 val replay tasks`: what the public hand-off says instead of held-out task ids. */
+function countTasks(ids: readonly string[], heldOut: ReadonlyMap<string, string>): string {
+  const by = new Map<string, number>();
+  for (const id of ids) {
+    const k = `${heldOut.get(id) ?? 'val'} ${id.split('/')[0] ?? 'task'}`;
+    by.set(k, (by.get(k) ?? 0) + 1);
+  }
+  return [...by]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, n]) => `${n} ${k} task${n === 1 ? '' : 's'}`)
+    .join(', ');
+}
+
+/** Replaces every held-out task id left in `text` by its split and family, then redacts secrets:
+ * the hand-off is posted publicly (a PR or issue body). */
+function publicText(text: string, heldOut: ReadonlyMap<string, string>): string {
+  let out = text;
+  for (const id of [...heldOut.keys()].sort((a, b) => b.length - a.length)) {
+    out = out.split(id).join(`(a ${heldOut.get(id)} ${id.split('/')[0]} task)`);
+  }
+  return redact(out);
 }
 
 /** Builds the hand-off for an iteration from its state (pure apart from reading the ledger and the
  * candidate diff). */
-export function buildHandoff(s: IterationState, c: HandoffCtx): Handoff {
+export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
+  const c = { ...hc, state: s };
+  const heldOut = heldOutTasks(s, hc);
   const p = s.proposer.proposal;
   const e = s.evaluate.event;
   const cand = s.evaluate.candidate;
@@ -1795,6 +2051,11 @@ export function buildHandoff(s: IterationState, c: HandoffCtx): Handoff {
         '> **No ledger outcome.** The outlet rule could not be applied (an invalid evaluation never reaches the ledger, 06 §4.8). This is not a rejection: the proposal waits for what the reasons name (for example an owner-reviewed repro).',
       );
     else if (!r && s.evaluate.message) lines.push(`- not decided yet: ${s.evaluate.message}`);
+    if (outletName === 'verify' && (!r || r.decision === 'invalid'))
+      lines.push(
+        '',
+        '> In M2 a verify proposal is evaluated only programmatically (`OutletContext.artifacts`: the faulty and fixed artifacts and how to serve them); `bench iterate` takes no artifacts on the command line.',
+      );
     if (e?.evidence?.kind === 'template' && e.evidence.gateInput)
       lines.push('', '```sh', `greenlight bench gate --recompute ${e.evidence.gateInput}`, '```');
     lines.push('');
@@ -1829,8 +2090,8 @@ export function buildHandoff(s: IterationState, c: HandoffCtx): Handoff {
       lines.push(...candidateSection(c, item, `Control ${item.file}`));
       lines.push(
         '',
-        `- rejected for a replay regression: ${item.replayRegressions?.length ? `yes, on ${item.replayRegressions.map((t) => `\`${t}\``).join(', ')}` : 'no'}`,
-        `- expected: \`${item.expect.decision}\` for \`${item.expect.reason}\` on \`${item.expect.task}\` → ${item.expectMet === undefined ? 'not evaluated yet' : item.expectMet ? '**met** (`rejectedForReplayRegression`)' : '**NOT met**: the gate did not refuse the plausible but wrong lesson (06 §10.3)'}`,
+        `- rejected for a replay regression: ${item.replayRegressions?.length ? `yes, on ${countTasks(item.replayRegressions, heldOut)}` : 'no'}`,
+        `- expected: \`${item.expect.decision}\` for \`${item.expect.reason}\` on ${countTasks([item.expect.task], heldOut)} → ${item.expectMet === undefined ? 'not evaluated yet' : item.expectMet ? '**met** (`rejectedForReplayRegression`)' : '**NOT met**: the gate did not refuse the plausible but wrong lesson (06 §10.3)'}`,
         '',
       );
     }
@@ -1867,11 +2128,11 @@ export function buildHandoff(s: IterationState, c: HandoffCtx): Handoff {
   const gi = cand?.gateInput?.hash;
   return {
     kind,
-    title,
+    title: publicText(title, heldOut),
     labels: ['greenlight-evo'],
     draft,
     ...(branch ? { branch } : {}),
-    body: lines.join('\n'),
+    body: publicText(lines.join('\n'), heldOut),
     iterationId: s.iterationId,
     ...((s.proposer.proposalId ?? e?.proposalId)
       ? { proposalId: s.proposer.proposalId ?? e?.proposalId }
@@ -1879,6 +2140,16 @@ export function buildHandoff(s: IterationState, c: HandoffCtx): Handoff {
     ...(e ? { eventId: e.eventId } : {}),
     ...(gi ? { gateInput: gi, recompute: `greenlight bench gate --recompute ${gi}` } : {}),
   };
+}
+
+/** Val and test task ids of a bench, by split (`splits.json`, else each task's own split). */
+export function benchHeldOut(benchDir: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!existsSync(join(benchDir, 'tasks'))) return out;
+  for (const t of loadTasks(benchDir).tasks)
+    if (t.spec.split !== 'train') out.set(t.id, t.spec.split);
+  for (const [id, split] of readSplits(benchDir) ?? []) if (split !== 'train') out.set(id, split);
+  return out;
 }
 
 export function renderHandoffMarkdown(h: Handoff): string {
@@ -1901,10 +2172,17 @@ export function writeHandoff(o: {
   skillsDir: string;
   wikiRoot: string;
   iterationId: string;
+  /** The bench, for its val/test task ids (masked in the hand-off). */
+  benchDir?: string;
 }): { file: string; handoff: Handoff } {
   const s = loadIterationState(o.stateDir, o.iterationId);
   const dir = iterationDir(o.stateDir, o.iterationId);
-  const h = buildHandoff(s, { dir, skillsDir: o.skillsDir, wikiRoot: o.wikiRoot });
+  const h = buildHandoff(s, {
+    dir,
+    skillsDir: o.skillsDir,
+    wikiRoot: o.wikiRoot,
+    ...(o.benchDir ? { heldOut: benchHeldOut(o.benchDir) } : {}),
+  });
   const file = join(dir, 'handoff.md');
   writeFileSync(file, `${renderHandoffMarkdown(h)}\n`);
   writeFileSync(join(dir, 'handoff.json'), `${JSON.stringify(h, null, 2)}\n`);
@@ -1922,6 +2200,7 @@ function stepHandoff(c: Ctx): StepOutcome {
     skillsDir: c.o.skillsDir,
     wikiRoot: c.o.wikiRoot,
     iterationId: c.s.iterationId,
+    benchDir: c.o.benchDir,
   });
   c.s.handoff.file = relative(c.dir, file);
   c.save();
@@ -2006,63 +2285,71 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
   try {
     assertOutsideSkills(o.skillsDir, stateDir, 'iteration state');
     assertOutsideSkills(o.skillsDir, o.wikiRoot, 'the wiki');
-    let s: IterationState;
-    if (o.resume) {
-      s = loadIterationState(stateDir, o.resume);
-      if (o.sandbox !== s.settings.sandbox) {
-        throw new IterationError(
-          `iteration ${s.iterationId} runs in the ${s.settings.sandbox} sandbox; resume it there`,
-          4,
-        );
-      }
-      if (s.status === 'complete') {
-        return {
-          status: 'complete',
-          iterationId: s.iterationId,
-          step: 'handoff',
-          message: `iteration ${s.iterationId} is already complete`,
-          state: s,
-          exitCode: 0,
-        };
-      }
-    } else {
-      const id = o.iterationId ?? `iter-${newRawId(now())}`;
-      if (!ITERATION_ID_RE.test(id)) throw new IterationError(`"${id}" is not an iteration id`, 2);
-      if (existsSync(iterationStatePath(stateDir, id)))
-        throw new IterationError(`iteration ${id} exists; resume it with --resume ${id}`, 2);
-      const accepted = resolveAcceptedSkillSet(o.wikiRoot, o.skillsDir);
-      const wiki = loadWiki(o.wikiRoot);
-      if (o.scope && o.scope !== 'all' && !loadSkills(o.skillsDir).some((x) => x.name === o.scope))
-        throw new IterationError(`scope ${o.scope} is not a managed skill`, 2);
-      s = newState(o, { id, accepted, now: now(), wiki });
-      for (const inc of s.settings.incidents) {
-        const page = wiki.pages.get(inc);
-        if (!page || page.frontmatter.type !== 'incident')
-          throw new IterationError(`${inc} is not an incident page of the wiki`, 2);
-      }
-    }
-    const dir = iterationDir(stateDir, s.iterationId);
-    const unlock = acquireLock(dir);
-    const tasks = loadTasks(o.benchDir);
-    if (tasks.problems.length > 0) {
-      unlock();
-      throw new IterationError(tasks.problems.join('\n'), 3);
-    }
-    const c: Ctx = {
-      o,
-      s,
-      stateDir,
-      dir,
-      keysDir: join(stateDir, 'bundle-keys'),
-      templatesDir: o.templatesDir ?? join(o.repoRoot, 'tools'),
-      config: readModels(o.benchDir),
-      splits: readSplits(o.benchDir),
-      tasks: tasks.tasks,
-      now,
-      log,
-      save: () => saveState(stateDir, s, now()),
-    };
+    const id = o.resume ?? o.iterationId ?? `iter-${newRawId(now())}`;
+    if (!ITERATION_ID_RE.test(id)) throw new IterationError(`"${id}" is not an iteration id`, 2);
+    if (o.resume && !existsSync(iterationStatePath(stateDir, id)))
+      throw new IterationError(`no iteration ${id} at ${iterationStatePath(stateDir, id)}`, 2);
+    if (!o.resume && existsSync(iterationStatePath(stateDir, id)))
+      throw new IterationError(`iteration ${id} exists; resume it with --resume ${id}`, 2);
+    // The lock comes first: the state is loaded (or created) only by its holder.
+    const dir = iterationDir(stateDir, id);
+    const unlock = acquireLock(dir, log);
     try {
+      let s: IterationState;
+      if (o.resume) {
+        s = loadIterationState(stateDir, id);
+        if (o.sandbox !== s.settings.sandbox) {
+          throw new IterationError(
+            `iteration ${s.iterationId} runs in the ${s.settings.sandbox} sandbox; resume it there`,
+            4,
+          );
+        }
+        if (s.status === 'complete') {
+          return {
+            status: 'complete',
+            iterationId: s.iterationId,
+            step: 'handoff',
+            message: `iteration ${s.iterationId} is already complete`,
+            state: s,
+            exitCode: 0,
+          };
+        }
+        checkPins(s, o);
+      } else {
+        if (existsSync(iterationStatePath(stateDir, id)))
+          throw new IterationError(`iteration ${id} exists; resume it with --resume ${id}`, 2);
+        const accepted = resolveAcceptedSkillSet(o.wikiRoot, o.skillsDir);
+        const wiki = loadWiki(o.wikiRoot);
+        if (
+          o.scope &&
+          o.scope !== 'all' &&
+          !loadSkills(o.skillsDir).some((x) => x.name === o.scope)
+        )
+          throw new IterationError(`scope ${o.scope} is not a managed skill`, 2);
+        s = newState(o, { id, accepted, now: now(), wiki });
+        s.pins = iterationPins(o.benchDir, o.skillsDir);
+        for (const inc of s.settings.incidents) {
+          const page = wiki.pages.get(inc);
+          if (!page || page.frontmatter.type !== 'incident')
+            throw new IterationError(`${inc} is not an incident page of the wiki`, 2);
+        }
+      }
+      const tasks = loadTasks(o.benchDir);
+      if (tasks.problems.length > 0) throw new IterationError(tasks.problems.join('\n'), 3);
+      const c: Ctx = {
+        o,
+        s,
+        stateDir,
+        dir,
+        keysDir: join(stateDir, 'bundle-keys'),
+        templatesDir: o.templatesDir ?? join(o.repoRoot, 'tools'),
+        config: readModels(o.benchDir),
+        splits: readSplits(o.benchDir),
+        tasks: tasks.tasks,
+        now,
+        log,
+        save: () => saveState(stateDir, s, now()),
+      };
       s.status = 'running';
       s.message = undefined;
       c.save();
@@ -2117,12 +2404,16 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
 
 /**
  * Records the owner's review of an iteration's ledger rows (06 §0 condition 4, 13 §3 M2 #6). For
- * every recorded proposal of the iteration (the real one and each control):
- * - a `reject` of a `candidate-accepted` proposal is a `withdrawn` event (06 §6.1: abandoned after
- *   acceptance, with the reason), carrying the review;
+ * every recorded proposal of the iteration (the real one and each control), by the proposal's
+ * LATEST ledger stage (not the stage the iteration recorded, which may have moved on):
+ * - a `reject` of a proposal whose latest stage is accepted or later (`candidate-accepted`,
+ *   `merged`, `released`, `verified-in-production`) is a `withdrawn` event (06 §6.1: abandoned
+ *   after acceptance, with the reason), carrying the review;
  * - everything else is a `review` annotation event: a stage that may follow any stage, final ones
  *   included, and never moves the stage machine (08 §8).
- * Refuses an iteration with nothing recorded yet, or one already reviewed.
+ * Under the iteration lock, every event is computed first and saved in the state, then appended
+ * all or nothing (`appendEvents`); a retry after a crash appends the same events (same eventIds),
+ * so nothing is duplicated. Refuses an iteration with nothing recorded yet, or one already reviewed.
  */
 export function reviewIteration(o: {
   stateDir: string;
@@ -2131,55 +2422,102 @@ export function reviewIteration(o: {
   iterationId: string;
   decision: 'accept' | 'reject';
   reason: string;
+  benchDir?: string;
   now?: () => Date;
 }): { eventIds: string[]; events: LedgerEvent[] } {
   const now = o.now ?? (() => new Date());
   const reason = o.reason.trim();
   if (!reason) throw new IterationError('a review needs --reason', 2);
-  const s = loadIterationState(o.stateDir, o.iterationId);
-  if (s.review) {
-    throw new IterationError(
-      `iteration ${s.iterationId} was already reviewed (${s.review.decision}, ${s.review.ts})`,
-      4,
+  if (!ITERATION_ID_RE.test(o.iterationId))
+    throw new IterationError(`"${o.iterationId}" is not an iteration id`, 2);
+  if (!existsSync(iterationStatePath(o.stateDir, o.iterationId)))
+    throw new IterationError(`no iteration ${o.iterationId}`, 2);
+  const unlock = acquireLock(iterationDir(o.stateDir, o.iterationId));
+  try {
+    const s = loadIterationState(o.stateDir, o.iterationId);
+    if (s.review) {
+      throw new IterationError(
+        `iteration ${s.iterationId} was already reviewed (${s.review.decision}, ${s.review.ts})`,
+        4,
+      );
+    }
+    const recorded = new Set(s.record.eventIds ?? []);
+    const targets = [s.evaluate.event, ...s.control.items.map((i) => i.event)].filter(
+      (e): e is LedgerEvent => e !== undefined && recorded.has(e.eventId),
     );
-  }
-  const recorded = new Set(s.record.eventIds ?? []);
-  const targets = [s.evaluate.event, ...s.control.items.map((i) => i.event)].filter(
-    (e): e is LedgerEvent => e !== undefined && recorded.has(e.eventId),
-  );
-  if (s.record.status !== 'done' || targets.length === 0) {
-    throw new IterationError(
-      `iteration ${s.iterationId} has no recorded ledger rows to review yet (step ${s.step}: ${s.status})`,
-      4,
-    );
-  }
-  const ts = now().toISOString();
-  const written: LedgerEvent[] = [];
-  for (const target of targets) {
-    const withdraw = o.decision === 'reject' && target.stage === 'candidate-accepted';
-    const e = sealEvent({
-      ts,
-      proposalId: target.proposalId,
-      stage: withdraw ? 'withdrawn' : 'review',
-      ...(target.control ? { control: true } : {}),
-      reason: `owner review (${o.decision}): ${reason}`,
-      review: { decision: o.decision, iteration: s.iterationId },
+    if (s.record.status !== 'done' || targets.length === 0) {
+      throw new IterationError(
+        `iteration ${s.iterationId} has no recorded ledger rows to review yet (step ${s.step}: ${s.status})`,
+        4,
+      );
+    }
+    let pending = s.reviewPending;
+    if (pending && (pending.decision !== o.decision || pending.reason !== reason)) {
+      throw new IterationError(
+        `iteration ${s.iterationId} has a half-recorded review (${pending.decision}: ${pending.reason}); rerun it with the same --decision and --reason to finish it`,
+        4,
+      );
+    }
+    if (!pending) {
+      const ts = now().toISOString();
+      const ledger = ledgerEvents(o.wikiRoot);
+      const events = targets.map((target) => {
+        const latest = proposalHistory(ledger, target.proposalId as string).latest;
+        const withdraw =
+          o.decision === 'reject' && latest !== undefined && AFTER_ACCEPT.has(latest);
+        return sealEvent({
+          ts,
+          proposalId: target.proposalId,
+          stage: withdraw ? 'withdrawn' : 'review',
+          ...(target.control ? { control: true } : {}),
+          reason: `owner review (${o.decision}): ${reason}`,
+          review: { decision: o.decision, iteration: s.iterationId },
+        });
+      });
+      pending = { decision: o.decision, reason, ts, events };
+      s.reviewPending = pending;
+      saveState(o.stateDir, s, now());
+    }
+
+    try {
+      appendEvents(o.wikiRoot, pending.events);
+    } catch (e) {
+      // Nothing was written: the pending review is dropped so a corrected one can be recorded.
+      s.reviewPending = undefined;
+      saveState(o.stateDir, s, now());
+      throw new IterationError(`the review was refused: ${(e as Error).message}`, 4);
+    }
+    writeChangeset(o.wikiRoot, {
+      writes: [{ path: SKILL_IMPACT_FILE, content: renderSkillImpact(ledgerEvents(o.wikiRoot)) }],
     });
-    written.push(appendEvent(o.wikiRoot, e));
+    s.review = {
+      decision: o.decision,
+      reason,
+      ts: pending.ts,
+      eventIds: pending.events.map((e) => e.eventId),
+    };
+    s.reviewPending = undefined;
+    saveState(o.stateDir, s, now());
+    writeHandoff({
+      stateDir: o.stateDir,
+      skillsDir: o.skillsDir,
+      wikiRoot: o.wikiRoot,
+      iterationId: s.iterationId,
+      ...(o.benchDir ? { benchDir: o.benchDir } : {}),
+    });
+    return { eventIds: s.review.eventIds, events: pending.events };
+  } finally {
+    unlock();
   }
-  writeChangeset(o.wikiRoot, {
-    writes: [{ path: SKILL_IMPACT_FILE, content: renderSkillImpact(ledgerEvents(o.wikiRoot)) }],
-  });
-  s.review = { decision: o.decision, reason, ts, eventIds: written.map((e) => e.eventId) };
-  saveState(o.stateDir, s, now());
-  writeHandoff({
-    stateDir: o.stateDir,
-    skillsDir: o.skillsDir,
-    wikiRoot: o.wikiRoot,
-    iterationId: s.iterationId,
-  });
-  return { eventIds: s.review.eventIds, events: written };
 }
+
+/** Stages a reject withdraws (06 §6.1 `withdrawn`: reverted or abandoned after acceptance). */
+const AFTER_ACCEPT: ReadonlySet<string> = new Set([
+  'candidate-accepted',
+  'merged',
+  'released',
+  'verified-in-production',
+]);
 
 // ---- dry run ----------------------------------------------------------------------------------
 

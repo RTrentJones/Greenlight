@@ -6,6 +6,7 @@ import {
   FileLockTimeoutError,
   LedgerWriteError,
   appendEvent,
+  appendEvents,
   compareTs,
   ledgerProblems,
   orderLedgerEvents,
@@ -352,5 +353,32 @@ describe('withFileLock', () => {
     const lock = join(root, 'z.lock');
     writeFileSync(lock, 'live');
     expect(() => withFileLock(lock, () => 1, { timeoutMs: 50 })).toThrow(FileLockTimeoutError);
+  });
+});
+
+describe('appendEvents', () => {
+  it('appends all or nothing, and skips events already in the ledger (a retry)', () => {
+    const root = writeTree({});
+    const a = sealEvent({ ...event, proposalId: 'p-020' });
+    const b = sealEvent({ ...event, proposalId: 'p-021' });
+    expect(appendEvents(root, [a, b]).appended.map((e) => e.eventId)).toEqual([
+      a.eventId,
+      b.eventId,
+    ]);
+    // A retry of the same batch appends nothing twice.
+    const again = appendEvents(root, [a, b]);
+    expect(again.appended).toEqual([]);
+    expect(again.present.map((e) => e.eventId)).toEqual([a.eventId, b.eventId]);
+    const text = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+    // A batch whose second event breaks the stage machine writes nothing, not even the first.
+    const c = sealEvent({ ...event, proposalId: 'p-022' });
+    const bad = sealEvent({
+      ...event,
+      ts: '2026-10-07T09:00:00.000Z',
+      proposalId: 'p-020',
+      stage: 'merged',
+    });
+    expect(() => appendEvents(root, [c, bad])).toThrow(LedgerWriteError);
+    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8')).toBe(text);
   });
 });

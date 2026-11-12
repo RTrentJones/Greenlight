@@ -62,6 +62,16 @@ const FilePatchOpSchema = z.discriminatedUnion('op', [
     .strict(),
 ]);
 
+/** A skill (`provider-neon`) or a lane template (`_template-mcp`): exactly one path segment. */
+export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+export const TEMPLATE_NAME_RE = /^_template-[a-z0-9][a-z0-9-]*$/;
+const PatchName = z
+  .string()
+  .refine(
+    (n) => SKILL_NAME_RE.test(n) || TEMPLATE_NAME_RE.test(n),
+    'name must be a skill (kebab-case) or a lane template (_template-<lane>), one path segment',
+  );
+
 const Patterns = z.array(z.string().min(1)).min(1, 'a proposal cites at least one pattern');
 
 export const ProposerOutputSchema = z.discriminatedUnion('action', [
@@ -79,7 +89,9 @@ export const ProposerOutputSchema = z.discriminatedUnion('action', [
     .object({
       action: z.literal('patch'),
       outlet: z.enum(['skill', 'template']),
-      name: z.string().min(1),
+      // A skill name (kebab-case) or a lane template (`_template-<lane>`): one path segment, so a
+      // name can never address another skill (`a/../b`, `b/`). checkProposal narrows it by outlet.
+      name: PatchName,
       edits: z.array(FilePatchOpSchema).min(1),
       patterns: Patterns,
     })
@@ -107,6 +119,22 @@ export function touchesVersion(p: ProposerOutput): boolean {
     return p.edits.some(
       (e) => versionLine.test(e.text) || ('target' in e && versionLine.test(e.target)),
     );
+  }
+  return false;
+}
+
+/**
+ * The blast radius (06 §5.4) is the owner's, like `version` is the harness's: a proposal never
+ * writes a `blast-radius` line, so it cannot lower the thresholds its own candidate is gated by,
+ * nor those of a later iteration once merged. This is the textual check; `checkProposal` also
+ * compares the applied edit's `blast-radius` lines before and after (an edit whose target names
+ * only part of the line).
+ */
+export function touchesBlastRadius(p: ProposerOutput): boolean {
+  const line = /blast-radius/i;
+  if (p.action === 'create') return line.test(p.skill_md) || line.test(p.purpose_md);
+  if (p.action === 'patch') {
+    return p.edits.some((e) => line.test(e.text) || ('target' in e && line.test(e.target)));
   }
   return false;
 }

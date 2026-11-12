@@ -79,7 +79,7 @@ procedure ITERATE(scope, budget):
 
   # 3. Propose.
   R ← baseline(id, split=val)                        # per model, per mode; re-run if id changed (§5.1)
-  if R.allModels.capability == 1.0 and R.allModels.replayAllPass: record(no_action, "early stop"); return
+  if R.allModels.capability == 1.0 and R.allModels.replayAllPass: record(no_action, "early stop"); return   # no proposer, no control arm
   P ← proposer(index, skillImpact, trainSummary(T), valAggregate(R), readOnly(train traces, wiki, skills))
   validate(P)                                        # §3.4
 
@@ -132,6 +132,9 @@ The policy is enforced by mechanism. Instructions alone are not enough:
   projection carries no scores, since the maintainer sees no val results.
 - **Incidents reach the proposer only through pattern pages.** `wiki read <incident-id>` is
   refused for every role but `maintainer`.
+- **The iteration's hand-off names no val or test task.** `handoff.md` / `handoff.json` become a
+  public PR or issue body, so held-out task ids are replaced by their split and family (`1 val
+  replay task`), and every free-text field passes the secret redactor before it is written.
 
 ### 1.5 Baseline identity
 
@@ -389,6 +392,14 @@ Do not edit the version field; the harness sets it.
   with LR-11 to LR-13 on the result. A lint error rejects the proposal before any bench run is
   spent.
 - A `version` change inside `skill_md` or `edits` is rejected.
+- A `blast-radius` line is the owner's (§5.4): a `create` whose `skill_md` / `purpose_md` carries
+  one, or an edit whose text or target mentions one or whose applied result changes any
+  `blast-radius` line of the file, is rejected.
+- A `patch` `name` is one canonical path segment: a skill name (kebab-case) that is exactly an
+  accepted skill of the installed set, or a lane template `_template-<lane>`. A path
+  (`a/../b`, `b/`) is a schema error. An iteration scoped to one skill (`--scope <skill>`) accepts
+  only a skill patch of that skill: a `create`, a template patch or a patch of another skill is
+  rejected (`issue` proposals are unaffected).
 - `issue` proposals are deduplicated by an exact match of title and pattern set against open
   issues carrying the `greenlight-evo` label.
 
@@ -736,6 +747,13 @@ recomputed (§5.8).
 The loop skill sits at **high** (ADR-12). It drives every deploy, and a regression there reaches
 every tool at once.
 
+**Who sets the radius.** The radius a candidate is gated at is the larger of the table's (high for
+the skills the table names) and the `blast-radius` of the skill's **accepted** `PURPOSE.md`
+(medium when it declares none). It is never read from the candidate's copy, and a `create` has no
+accepted `PURPOSE.md`, so a new skill is gated at medium at least, whatever its `purpose_md`
+says. A proposal cannot write a `blast-radius` line at all (§3.4): the owner sets it, in a
+reviewed change of its own.
+
 ### 5.5 Tie-break (optional, off by default)
 
 
@@ -899,11 +917,19 @@ only start an investigation. The bench decides.
     in a local file, so it survives ephemeral CI runners.
   - **Serialization.** `evo.yml` runs in the concurrency group `greenlight-evo`, so concurrent
     gates cannot both read the same remaining budget.
+  - **Resuming on a fresh runner.** `evo.yml` runs only on an allow-listed branch. It restores an
+    earlier run's state only when that run is `evo.yml` of the same repository (not a fork) on an
+    allow-listed branch, downloads it into a temp directory, and copies only
+    `.greenlight/{bench,raw,quota}` and the wiki's writes (`scripts/evo-restore.mjs`), refusing a
+    ledger that does not extend the checkout's. Bundle keys and locks are never uploaded: an
+    in-flight proposer step reruns with a fresh bundle on the new runner. A resume refuses
+    (exit 4) when the installed skill set, `models.json`, `gate.json`, `splits.json` or the task
+    set differ from the iteration's creation.
   - **Refusal.** `bench run` reports the expected cost before running (§4.5). It refuses to start a
     gate whose expected cost exceeds `perGateMaxUsd`, `perGateMaxRollouts` or the month's
     remaining budget.
 - **Early stop:** if the baseline already has capability 1.0 with every replay passing on both
-  models, the proposer is not run, as in the paper.
+  models, the proposer is not run, as in the paper, and neither is the control arm.
 
 ## 10. The first iteration: probe the layer you are protecting
 

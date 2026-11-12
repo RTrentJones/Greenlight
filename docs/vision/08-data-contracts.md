@@ -118,7 +118,7 @@ only if the skill still works for an agent that ignores it (FR-AGENT-01).
 skill: deploy-verify-promote
 version: "3"                       # MUST equal SKILL.md version (LR-12)
 owner: framework                   # framework | project   (project skills live in a wrapper)
-blast-radius: high                 # low | medium | high   — gate strictness (06 §5.4)
+blast-radius: high                 # low | medium | high   — gate strictness (06 §5.4); owner-set, never by a proposal
 hooks: [on-start, on-failure, on-complete, on-incident]   # which wiki hooks the skill runs (05 §3)
 bench-slice: [loop/*, replay/*]    # bench task globs that measure this skill (06 §4)
 cites:                             # wiki pages that justify the skill's rules
@@ -521,8 +521,12 @@ equal instants keep append order):
 
 **The owner's review (roadmap M2-04, 06 §0 condition 4).** `greenlight bench review <iterationId>
 --decision accept|reject --reason "<text>"` records it for every proposal the iteration recorded,
-the control arm included. A `reject` of a `candidate-accepted` proposal is the `withdrawn` event
-(abandoned after acceptance) carrying `review`. Everything else is a `review` event: it needs a
+the control arm included. The proposal's LATEST stage in the ledger decides: a `reject` of a
+proposal whose latest stage is `candidate-accepted` or later (`merged`, `released`,
+`verified-in-production`) is the `withdrawn` event (abandoned after acceptance) carrying `review`.
+The events are computed under the iteration's lock and saved in its state before they are
+appended, all or nothing, in one write; an event whose `eventId` is already in the ledger is
+skipped, so a retry after a crash appends the same events once. Everything else is a `review` event: it needs a
 `reason` and `review`, may follow any stage including a final one, cannot open a history, and never
 changes which stage may come next, so `skill-impact.md` keeps showing the stage-machine stage and
 adds the review to the evidence column. `review` is the only annotation stage.

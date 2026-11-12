@@ -654,17 +654,18 @@ describe('checkProposal (06 §3.4)', () => {
       ok: false,
       code: 1,
     });
+    // A name is one canonical segment: the schema refuses a path.
     const outside = check(
       patch([{ op: 'append', file: 'SKILL.md', text: 'x' }], { name: '../../etc' }),
     );
-    expect(outside).toMatchObject({ ok: false, code: 4 });
+    expect(outside).toMatchObject({ ok: false, code: 1 });
     const tpl = check(
       patch([{ op: 'append', file: 'x.ts', text: 'x' }], {
         outlet: 'template',
         name: 'not-a-template',
       }),
     );
-    expect(!tpl.ok && tpl.errors.join()).toMatch(/outside/);
+    expect(!tpl.ok && tpl.errors.join()).toMatch(/not a template name/);
     const missing = check(patch([{ op: 'append', file: 'NOPE.md', text: 'x' }]));
     expect(!missing.ok && missing.errors.join()).toMatch(/does not exist/);
   });
@@ -684,6 +685,106 @@ describe('checkProposal (06 §3.4)', () => {
       patterns: ['pattern/neon-never-sleeps'],
     };
     expect(check(create)).toMatchObject({ ok: false, code: 4 });
+  });
+
+  it('a name must be exactly an accepted skill: no path, no trailing slash, no other dir', () => {
+    readFour();
+    mkdirSync(join(skillsDir, 'other'), { recursive: true });
+    writeFileSync(join(skillsDir, 'other/SKILL.md'), '---\nname: other\n---\n# Other\nRule one.\n');
+    const edit = [{ op: 'replace', file: 'SKILL.md', target: 'Rule one.', text: 'Rule two.' }];
+    for (const name of ['demo/', 'other/../demo', './demo', 'Demo', 'demo/.']) {
+      expect(check(patch(edit, { name })), name).toMatchObject({ ok: false, code: 1 });
+    }
+    // A directory under the skills dir that is not a loaded skill (no SKILL.md).
+    mkdirSync(join(skillsDir, 'notaskill'), { recursive: true });
+    writeFileSync(join(skillsDir, 'notaskill/README.md'), 'Rule one.\n');
+    const r = check(
+      patch([{ op: 'replace', file: 'README.md', target: 'Rule one.', text: 'x' }], {
+        name: 'notaskill',
+      }),
+    );
+    expect(!r.ok && r.errors.join()).toMatch(/not an accepted skill/);
+  });
+
+  it('a scoped iteration may only patch its own skill', () => {
+    readFour();
+    mkdirSync(join(skillsDir, 'other'), { recursive: true });
+    writeFileSync(join(skillsDir, 'other/SKILL.md'), '---\nname: other\n---\n# Other\nRule one.\n');
+    const scoped = (output: unknown, scope: string) =>
+      checkProposal({
+        output,
+        bundleDir,
+        wiki,
+        skillsDir,
+        templatesDir: join(root, 'tools'),
+        keysDir,
+        records: [...store, valStored],
+        splits: fixtureSplits(),
+        scope,
+      });
+    expect(scoped(good, 'demo').ok).toBe(true);
+    expect(scoped(good, 'all').ok).toBe(true);
+    const r = scoped(good, 'other');
+    expect(!r.ok && r.errors.join()).toMatch(/scoped to skill other/);
+    const create = {
+      action: 'create',
+      outlet: 'skill',
+      name: 'brand-new',
+      skill_md: '# x',
+      purpose_md: '# y',
+      patterns: ['pattern/probe-touches-wrong-layer'],
+    };
+    expect(scoped(create, 'all').ok).toBe(true);
+    const c = scoped(create, 'demo');
+    expect(!c.ok && c.errors.join()).toMatch(/out of scope/);
+  });
+
+  it('refuses any edit of a blast-radius line, whole or partial, and a create declaring one', () => {
+    readFour();
+    writeFileSync(
+      join(skillsDir, 'demo/PURPOSE.md'),
+      '---\nskill: demo\nblast-radius: high\n---\n# Purpose\nWhy.\n',
+    );
+    const cases = [
+      [
+        {
+          op: 'replace',
+          file: 'PURPOSE.md',
+          target: 'blast-radius: high',
+          text: 'blast-radius: low',
+        },
+      ],
+      // The target names only part of the line: caught by the before/after comparison.
+      [{ op: 'replace', file: 'PURPOSE.md', target: 'radius: high', text: 'radius: low' }],
+      [{ op: 'replace', file: 'PURPOSE.md', target: 'high\n---', text: 'low\n---' }],
+      [
+        {
+          op: 'insert_after',
+          file: 'PURPOSE.md',
+          target: 'skill: demo',
+          text: '\nblast-radius: low',
+        },
+      ],
+    ];
+    for (const edits of cases) {
+      const r = check(patch(edits));
+      expect(r, JSON.stringify(edits)).toMatchObject({ ok: false, code: 4 });
+      expect(!r.ok && r.errors.join()).toMatch(/blast-radius/);
+    }
+    // An edit elsewhere in PURPOSE.md is fine.
+    expect(
+      check(patch([{ op: 'replace', file: 'PURPOSE.md', target: 'Why.', text: 'Because.' }])).ok,
+    ).toBe(true);
+    const create = {
+      action: 'create',
+      outlet: 'skill',
+      name: 'brand-new',
+      skill_md: '# x',
+      purpose_md: '---\nskill: brand-new\nblast-radius: low\n---\n',
+      patterns: ['pattern/probe-touches-wrong-layer'],
+    };
+    const r = check(create);
+    expect(!r.ok && r.errors.join()).toMatch(/blast-radius/);
   });
 
   it('rejects a malformed output with exit 1', () => {
