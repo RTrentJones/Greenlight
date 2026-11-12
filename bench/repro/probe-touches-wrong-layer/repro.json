@@ -1,0 +1,9 @@
+{
+  "id": "repro/probe-touches-wrong-layer",
+  "description": "A needs-silence tool (Neon wired directly in infra) whose keepalive probe, or whose compose healthcheck, targets the store-querying readiness route /health must be flagged by `greenlight doctor` (DR-21, vision 07 §4.2); the same tool probing /health/live (C2) must not be. Fails on the doctor of 0.10.1, which has no DR-21.",
+  "patterns": ["pattern/probe-touches-wrong-layer", "pattern/neon-never-sleeps"],
+  "outlets": ["doctor"],
+  "script": "run.mjs",
+  "timeoutMs": 240000,
+  "reviewed": null
+}
