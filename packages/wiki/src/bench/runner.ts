@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
   existsSync,
@@ -71,6 +70,7 @@ import { type LoadedTask, loadTasks } from './check-graders';
 import { gradeRollout } from './grade';
 import type { JudgeFn } from './grader-api';
 import { computeIdentity, sameIdentity } from './identity';
+import { safeGit } from './outlets';
 import {
   type RunnerImage,
   type Sandbox,
@@ -607,11 +607,7 @@ function seedFor(task: string, model: string, run: number): number {
 
 function sourceRepo(repoRoot: string): string {
   try {
-    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    const url = safeGit(repoRoot, ['remote', 'get-url', 'origin']);
     const m = url.match(/[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
     if (m) return `${m[1]}/${m[2]}`;
   } catch {

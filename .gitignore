@@ -33,3 +33,6 @@ greenlight.config.ts
 
 # Sub-agent git worktrees (local orchestration only)
 .claude/worktrees/
+
+# Repo-local scratch of tests (a fresh tmpfs in the outlet sandbox; outlets.ts checkOutputDirs)
+.vitest-tmp/

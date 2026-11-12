@@ -1,15 +1,17 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProposerOutput } from '../../schema/io';
@@ -18,6 +20,7 @@ import {
   type OutletContext,
   buildEvaluatedTree,
   checkAllCommands,
+  checkOutputDirs,
   evaluateOutlet,
   extractAssertion,
   harnessConfigTouches,
@@ -25,6 +28,11 @@ import {
   loadRepros,
   parseAssertion,
   runSandboxedCheckAll,
+  runSandboxedRepro,
+  suppressionNotes,
+  treeContentHash,
+  treeSnapshot,
+  workspacePackages,
 } from '../outlets';
 import { dockerAvailable, ensureRunnerImage } from '../sandbox';
 
@@ -98,6 +106,32 @@ afterAll(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
+/** The toy repros run on the host in these tests (they read one file); the default runner is
+ * the docker sandbox, exercised below. */
+const hostRepro: NonNullable<OutletContext['runRepro']> = async (r, tree) => {
+  const res = spawnSync(process.execPath, [join(r.dir, r.spec.script), '--tree', tree], {
+    encoding: 'utf8',
+    timeout: r.spec.timeoutMs,
+  });
+  return {
+    verdict: res.status === 0 ? 'pass' : res.status === 1 ? 'fail' : 'error',
+    output: `${res.stdout ?? ''}${res.stderr ?? ''}`,
+  };
+};
+
+/** A copy of the toy repo at `commit` with no .git (a directory tree, as a mutant or an exported
+ * candidate is), `edit` applied. */
+function plainTree(commit: string, edit: (dir: string) => void = () => {}) {
+  const root = mkdtempSync(join(tmpdir(), 'outlets-test-plain-'));
+  git(repo, 'worktree', 'add', '-q', '--detach', join(root, 'wt'), commit);
+  const dir = join(root, 'c');
+  mkdirSync(dir);
+  for (const f of ['state.txt']) copyFileSync(join(root, 'wt', f), join(dir, f));
+  git(repo, 'worktree', 'remove', '--force', join(root, 'wt'));
+  edit(dir);
+  return { root, dir };
+}
+
 function ctx(over: Partial<OutletContext> = {}): OutletContext {
   return {
     repoRoot: repo,
@@ -108,6 +142,7 @@ function ctx(over: Partial<OutletContext> = {}): OutletContext {
     now: () => NOW,
     prepareTree: async () => {},
     checkAll: async () => ({ ok: true }),
+    runRepro: hostRepro,
     ...over,
   };
 }
@@ -208,30 +243,133 @@ describe('evaluateOutlet: mechanism and doctor (repro)', () => {
     rmSync(join(repo, 'bench', 'repro', 'doctor-only'), { recursive: true });
   });
 
-  it('takes a clean directory at its HEAD, an explicit ref, and refuses an unpinned one', async () => {
+  it('takes a directory only with a non-commit ref and its own contents; never a git checkout', async () => {
+    const plain = plainTree(sha.fixed as string);
     const dir = mkdtempSync(join(tmpdir(), 'outlets-test-clone-'));
     try {
-      git(dir, 'clone', '-q', repo, 'c');
-      const clone = join(dir, 'c');
-      git(clone, 'checkout', '-q', sha.fixed as string);
-      const r = await evaluateOutlet(issue('doctor'), ctx({ candidate: { dir: clone } }));
-      expect(r.decision).toBe('accept');
-      expect(r.evidence?.kind === 'repro' && r.evidence.candidate).toBe(
-        `commit:RTrentJones/greenlight@${sha.fixed}`,
-      );
-
-      writeFileSync(join(clone, 'untracked.txt'), 'dirty');
-      const dirty = await evaluateOutlet(issue('doctor'), ctx({ candidate: { dir: clone } }));
-      expect(dirty.decision).toBe('invalid');
-      expect(dirty.reasons[0]?.code).toBe('unpinned-tree');
-
       const ref = 'pr:RTrentJones/greenlight#42';
-      const pinned = await evaluateOutlet(issue('doctor'), ctx({ candidate: { dir: clone, ref } }));
+      const pinned = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: plain.dir, ref } }),
+      );
       expect(pinned.decision).toBe('accept');
       expect(pinned.evidence?.kind === 'repro' && pinned.evidence.candidate).toBe(ref);
+      // No ref, or a commit ref (unverifiable without git): unpinned.
+      const bare = await evaluateOutlet(issue('doctor'), ctx({ candidate: { dir: plain.dir } }));
+      expect(bare.reasons[0]?.code).toBe('unpinned-tree');
+      const asCommit = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: plain.dir, ref: `commit:RTrentJones/greenlight@${sha.fixed}` } }),
+      );
+      expect(asCommit.reasons[0]?.code).toBe('unpinned-tree');
+      // A pinned content hash binds the contents.
+      const hash = treeContentHash(plain.dir);
+      const same = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: plain.dir, ref, hash } }),
+      );
+      expect(same.decision).toBe('accept');
+      writeFileSync(join(plain.dir, 'extra.txt'), 'changed after the pin');
+      const changed = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: plain.dir, ref, hash } }),
+      );
+      expect(changed.decision).toBe('invalid');
+      expect(changed.reasons[0]?.code).toBe('unpinned-tree');
+      // A git checkout is refused whatever its ref: name the commit.
+      git(dir, 'clone', '-q', repo, 'c');
+      const clone = join(dir, 'c');
+      const checkout = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: clone, ref } }),
+      );
+      expect(checkout.decision).toBe('invalid');
+      expect(checkout.reasons[0]?.code).toBe('unpinned-tree');
+      expect(checkout.reasons[0]?.detail).toMatch(/own \.git/);
     } finally {
+      rmSync(plain.root, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('never runs host git in a candidate directory: a planted fsmonitor does not execute', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'outlets-test-fsmonitor-'));
+    try {
+      git(root, 'clone', '-q', repo, 'c');
+      const clone = join(root, 'c');
+      const marker = join(root, 'fsmonitor-ran');
+      const hook = join(root, 'hook.sh');
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+      git(clone, 'config', 'core.fsmonitor', hook);
+      git(clone, 'config', 'core.hooksPath', root);
+      for (const t of [{ dir: clone }, { dir: clone, ref: 'pr:RTrentJones/greenlight#1' }]) {
+        const r = await evaluateOutlet(issue('doctor'), ctx({ candidate: t }));
+        expect(r.decision).toBe('invalid');
+      }
+      // pinTree (iterate.ts) hashes the directory; it never asks git about it either.
+      const { pinTree } = await import('../iterate');
+      const pin = pinTree(repo, { dir: clone }, 'o/r');
+      expect(pin.key).toMatch(/^dir:.*@sha256:[0-9a-f]{64}$/);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('notes suppression markers the diff adds, without refusing them', async () => {
+    const c = plainTree(sha.fixed as string, (d) => {
+      mkdirSync(join(d, 'src'));
+      writeFileSync(
+        join(d, 'src', 'x.test.ts'),
+        "// @ts-ignore\nit.skip('a', () => {});\ndescribe.only('b', () => {});\n// biome-ignore lint: x\n",
+      );
+    });
+    try {
+      const r = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: c.dir, ref: 'pr:RTrentJones/greenlight#5' } }),
+      );
+      expect(r.decision).toBe('accept');
+      expect(r.notes).toEqual([
+        'the candidate adds `biome-ignore` ×1, `@ts-ignore` ×1, `.skip` ×1, `.only` ×1 in src/x.test.ts',
+      ]);
+      // Markers already in the base are not counted.
+      expect(suppressionNotes(c.dir, c.dir, ['src/x.test.ts'])).toEqual([]);
+    } finally {
+      rmSync(c.root, { recursive: true, force: true });
+    }
+  });
+
+  it('is invalid when the tree changes under check-all or a repro (candidate-mutated-tree)', async () => {
+    const underSuite = await evaluateOutlet(
+      issue('doctor'),
+      ctx({
+        checkAll: async (tree) => {
+          writeFileSync(join(tree, 'state.txt'), 'rewritten by a step\n');
+          return { ok: true };
+        },
+      }),
+    );
+    expect(underSuite.decision).toBe('invalid');
+    expect(underSuite.reasons[0]?.code).toBe('candidate-mutated-tree');
+    expect(underSuite.reasons[0]?.detail).toContain('state.txt');
+    expect(underSuite.ledgerEvent).toBeNull();
+    const underRepro = await evaluateOutlet(
+      issue('doctor'),
+      ctx({
+        runRepro: async (r, tree) => {
+          const res = await hostRepro(r, tree);
+          if (res.verdict === 'pass') {
+            mkdirSync(join(tree, 'node_modules', '.bin'), { recursive: true });
+            writeFileSync(join(tree, 'node_modules', '.bin', 'vitest'), 'planted');
+          }
+          return res;
+        },
+      }),
+    );
+    expect(underRepro.decision).toBe('invalid');
+    expect(underRepro.reasons[0]?.code).toBe('candidate-mutated-tree');
+    expect(underRepro.reasons[0]?.detail).toContain('node_modules/.bin/vitest');
   });
 
   it('labels a control proposal and records the issue ref', async () => {
@@ -414,19 +552,9 @@ describe('check-all on a candidate (harness commands, base + diff, docker sandbo
     });
   });
 
-  /** A clone of the toy repo at `fixed` with `edit` applied and committed (a clean candidate). */
-  function candidateClone(edit: (dir: string) => void): { root: string; dir: string } {
-    const root = mkdtempSync(join(tmpdir(), 'outlets-test-cand-'));
-    git(root, 'clone', '-q', repo, 'c');
-    const dir = join(root, 'c');
-    git(dir, 'checkout', '-q', sha.fixed as string);
-    git(dir, 'config', 'user.email', 'test@example.test');
-    git(dir, 'config', 'user.name', 'test');
-    edit(dir);
-    git(dir, 'add', '-A');
-    git(dir, 'commit', '-q', '-m', 'candidate');
-    return { root, dir };
-  }
+  /** The toy repo at `fixed` with `edit` applied, as a directory tree named by a PR ref. */
+  const candidateClone = (edit: (dir: string) => void) => plainTree(sha.fixed as string, edit);
+  const CAND_REF = 'pr:RTrentJones/greenlight#9';
 
   it.each([
     ['vitest.config.ts', 'export default {};\n'],
@@ -437,6 +565,9 @@ describe('check-all on a candidate (harness commands, base + diff, docker sandbo
     ['scripts/check-seam.ts', 'process.exit(0);\n'],
     ['bench/repro/toy/run.mjs', 'process.exit(0);\n'],
     ['.github/workflows/ci.yml', 'on: push\n'],
+    ['.gitignore', 'node_modules/\n'],
+    ['packages/x/.gitignore', '*\n'],
+    ['.pnpmfile.mjs', 'export default {};\n'],
   ])('refuses a candidate that edits %s, before anything of it runs', async (path, body) => {
     const c = candidateClone((d) => {
       mkdirSync(dirname(join(d, path)), { recursive: true });
@@ -447,7 +578,7 @@ describe('check-all on a candidate (harness commands, base + diff, docker sandbo
       const r = await evaluateOutlet(
         issue('doctor'),
         ctx({
-          candidate: { dir: c.dir },
+          candidate: { dir: c.dir, ref: CAND_REF },
           checkAll: async () => {
             ran = true;
             return { ok: true };
@@ -466,11 +597,10 @@ describe('check-all on a candidate (harness commands, base + diff, docker sandbo
 
   it('never uses a planted node_modules, .turbo cache or tsbuildinfo, and judges base + diff', async () => {
     const c = candidateClone((d) => {
-      writeFileSync(join(d, '.gitignore'), 'node_modules/\n.turbo/\n*.tsbuildinfo\n');
       writeFileSync(join(d, 'feature.txt'), 'the candidate change\n');
     });
     try {
-      // Ignored, so the clone stays clean, and planted: a fake vitest that always passes.
+      // Planted: a fake vitest that always passes, a turbo cache hit, a tsbuildinfo.
       mkdirSync(join(c.dir, 'node_modules', '.bin'), { recursive: true });
       writeFileSync(join(c.dir, 'node_modules', '.bin', 'vitest'), '#!/bin/sh\nexit 0\n', {
         mode: 0o755,
@@ -482,7 +612,7 @@ describe('check-all on a candidate (harness commands, base + diff, docker sandbo
       const r = await evaluateOutlet(
         issue('doctor'),
         ctx({
-          candidate: { dir: c.dir },
+          candidate: { dir: c.dir, ref: CAND_REF },
           checkAll: async (tree) => {
             seen.push(tree);
             return { ok: true };
@@ -597,34 +727,205 @@ describe('check-all on a candidate (harness commands, base + diff, docker sandbo
   );
 });
 
-describe('a directory named by a commit ref', () => {
-  it('must be a clean checkout at that commit', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'outlets-test-pin-'));
+describe('the sandbox for tree code: repros and check-all (B1, M1)', () => {
+  it('without docker, a repro is unavailable and the outlet invalid (never run on the host)', async () => {
+    const { repros } = loadRepros(join(repo, 'bench'));
+    const toy = repros.find((r) => r.spec.id === 'repro/toy');
+    expect(toy).toBeDefined();
+    const r = await runSandboxedRepro(repo, toy as never, repo, {
+      docker: 'greenlight-no-such-docker',
+    });
+    expect(r.unavailable).toBe(true);
+    const out = await evaluateOutlet(
+      issue('doctor'),
+      ctx({
+        runRepro: (x, t) => runSandboxedRepro(repo, x, t, { docker: 'greenlight-no-such-docker' }),
+      }),
+    );
+    expect(out.decision).toBe('invalid');
+    expect(out.reasons[0]?.code).toBe('no-sandbox');
+  });
+
+  it('declares the outputs per workspace package, from the base workspace globs', () => {
+    const t = mkdtempSync(join(tmpdir(), 'outlets-test-ws-'));
     try {
-      git(dir, 'clone', '-q', repo, 'c');
-      const clone = join(dir, 'c');
-      git(clone, 'checkout', '-q', sha.fixed as string);
-      const right = `commit:RTrentJones/greenlight@${sha.fixed}`;
-      const wrong = `commit:RTrentJones/greenlight@${sha.broken}`;
-      const ok = await evaluateOutlet(
-        issue('doctor'),
-        ctx({ candidate: { dir: clone, ref: right } }),
+      writeFileSync(
+        join(t, 'pnpm-workspace.yaml'),
+        'packages:\n  - "packages/*"\n  - "cli"\n  - "!packages/_template-*"\n',
       );
-      expect(ok.decision).toBe('accept');
-      const lie = await evaluateOutlet(
-        issue('doctor'),
-        ctx({ candidate: { dir: clone, ref: wrong } }),
-      );
-      expect(lie.decision).toBe('invalid');
-      expect(lie.reasons[0]?.code).toBe('unpinned-tree');
-      writeFileSync(join(clone, 'untracked.txt'), 'dirty');
-      const dirty = await evaluateOutlet(
-        issue('doctor'),
-        ctx({ candidate: { dir: clone, ref: right } }),
-      );
-      expect(dirty.decision).toBe('invalid');
+      for (const d of ['packages/a', 'packages/_template-x', 'cli', 'docs']) {
+        mkdirSync(join(t, d), { recursive: true });
+        writeFileSync(join(t, d, 'package.json'), '{}');
+      }
+      expect(workspacePackages(t)).toEqual(['.', 'cli', 'packages/a']);
+      expect(checkOutputDirs(t)).toEqual([
+        '.vitest-tmp',
+        'node_modules/.vite',
+        '.turbo',
+        'cli/.turbo',
+        'packages/a/.turbo',
+      ]);
+      // The repo's own: every workspace package gets its .turbo.
+      expect(checkOutputDirs(REPO)).toContain('packages/wiki/.turbo');
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(t, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(!DOCKER)(
+    'a repro runs the tree in the sandbox: no write outside it or into it, no secret, no network',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'outlets-test-repro-sandbox-'));
+      const was = process.env.GEMINI_API_KEY;
+      process.env.GEMINI_API_KEY = 'test-not-a-real-key';
+      const seen: string[] = [];
+      const server = createServer((sock) => {
+        seen.push('connection');
+        sock.destroy();
+      });
+      await new Promise<void>((res) => server.listen(0, '0.0.0.0', () => res()));
+      try {
+        const port = (server.address() as { port: number }).port;
+        const hostIp =
+          Object.values(networkInterfaces())
+            .flat()
+            .find((i) => i && i.family === 'IPv4' && !i.internal)?.address ?? '127.0.0.1';
+        // The trusted repro (harness side) runs the tree's own code, as the doctor repro does.
+        const reproDir = join(root, 'harness', 'bench', 'repro', 'exec');
+        mkdirSync(reproDir, { recursive: true });
+        writeFileSync(
+          join(reproDir, 'run.mjs'),
+          "import { spawnSync } from 'node:child_process';\nconst tree = process.argv[process.argv.indexOf('--tree') + 1];\nconst r = spawnSync(process.execPath, [tree + '/cand.mjs'], { stdio: 'inherit' });\nprocess.exit(r.status ?? 2);\n",
+        );
+        const tree = join(root, 'tree');
+        mkdirSync(tree);
+        const marker = join(root, 'outside-marker');
+        writeFileSync(
+          join(tree, 'cand.mjs'),
+          [
+            "import { readFileSync, writeFileSync } from 'node:fs';",
+            "import { connect } from 'node:net';",
+            'const out = {};',
+            `try { writeFileSync(${JSON.stringify(marker)}, 'x'); out.outside = true; } catch (e) { out.outside = e.code; }`,
+            `try { writeFileSync(${JSON.stringify(join(tree, 'planted.txt'))}, 'x'); out.tree = true; } catch (e) { out.tree = e.code; }`,
+            'out.env = process.env.GEMINI_API_KEY ?? null;',
+            "try { out.parentEnv = readFileSync('/proc/' + process.ppid + '/environ', 'utf8').includes('test-not-a-real-key'); } catch (e) { out.parentEnv = e.code; }",
+            `for (const host of ['127.0.0.1', ${JSON.stringify(hostIp)}]) {`,
+            '  out[host] = await new Promise((res) => {',
+            `    const s = connect(${port}, host);`,
+            "    s.on('connect', () => { s.destroy(); res(true); });",
+            "    s.on('error', (e) => res(e.code));",
+            "    setTimeout(() => { s.destroy(); res('timeout'); }, 3000);",
+            '  });',
+            '}',
+            "console.log('RESULT ' + JSON.stringify(out));",
+          ].join('\n'),
+        );
+        const image = ensureRunnerImage(join(REPO, 'bench', 'runner'));
+        const r = await runSandboxedRepro(
+          join(root, 'harness'),
+          {
+            dir: reproDir,
+            spec: {
+              id: 'repro/exec',
+              description: 'x',
+              patterns: [PATTERN],
+              outlets: ['doctor'],
+              script: 'run.mjs',
+              timeoutMs: 60_000,
+              reviewed: { by: 'owner', at: '2026-11-12' },
+            },
+          },
+          tree,
+          { image },
+        );
+        expect(r.unavailable, r.output).toBeUndefined();
+        expect(r.verdict, r.output).toBe('pass');
+        const line = r.output.split('\n').find((l) => l.startsWith('RESULT '));
+        const res = JSON.parse((line as string).slice(7));
+        expect(res.outside).not.toBe(true);
+        expect(res.tree).toBe('EROFS');
+        expect(res.env).toBeNull();
+        expect(res.parentEnv).not.toBe(true);
+        expect(res['127.0.0.1']).not.toBe(true);
+        expect(res[hostIp]).not.toBe(true);
+        expect(r.output).not.toContain('test-not-a-real-key');
+        expect(existsSync(marker)).toBe(false);
+        expect(existsSync(join(tree, 'planted.txt'))).toBe(false);
+        expect(seen).toEqual([]);
+      } finally {
+        server.close();
+        if (was === undefined) Reflect.deleteProperty(process.env, 'GEMINI_API_KEY');
+        else process.env.GEMINI_API_KEY = was;
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    300_000,
+  );
+
+  it.skipIf(!DOCKER)(
+    'check-all: a step cannot rewrite a later step, a harness script or node_modules; outputs are fresh',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'outlets-test-ro-'));
+      try {
+        const harness = join(root, 'harness');
+        mkdirSync(harness);
+        writeFileSync(
+          join(harness, 'package.json'),
+          JSON.stringify({
+            packageManager: 'pnpm@10.12.1',
+            scripts: {
+              'check-all': 'pnpm evil && pnpm guard',
+              evil: 'node evil.cjs',
+              guard: 'node scripts/guard.cjs',
+            },
+          }),
+        );
+        const tree = join(root, 'tree');
+        mkdirSync(join(tree, 'scripts'), { recursive: true });
+        mkdirSync(join(tree, 'node_modules', '.bin'), { recursive: true });
+        copyFileSync(join(harness, 'package.json'), join(tree, 'package.json'));
+        // The harness's guard fails unless something rewrote it.
+        writeFileSync(
+          join(tree, 'scripts', 'guard.cjs'),
+          'process.exit(fs_ok());\nfunction fs_ok() { return 1; }\n',
+        );
+        writeFileSync(join(tree, 'node_modules', '.bin', 'tool'), '#!/bin/sh\nexit 1\n', {
+          mode: 0o755,
+        });
+        // A candidate "test" that tries to rewrite them (swallowing errors) and checks that the
+        // declared outputs are writable and start empty.
+        writeFileSync(
+          join(tree, 'evil.cjs'),
+          [
+            "const fs = require('fs');",
+            "for (const [f, body] of [['scripts/guard.cjs', 'process.exit(0);'], ['node_modules/.bin/tool', '#!/bin/sh\\nexit 0\\n'], ['new-file.txt', 'x']]) {",
+            '  try { fs.writeFileSync(f, body); } catch {}',
+            '}',
+            "if (fs.readdirSync('.turbo').length !== 0 || fs.readdirSync('.vitest-tmp').length !== 0) process.exit(5);",
+            "fs.writeFileSync('.turbo/log', 'x'); fs.writeFileSync('.vitest-tmp/x', 'x');",
+          ].join('\n'),
+        );
+        const before = treeSnapshot(tree);
+        const image = ensureRunnerImage(join(REPO, 'bench', 'runner'));
+        const r = await runSandboxedCheckAll(harness, tree, { image });
+        expect(r.unavailable, r.detail).toBeUndefined();
+        expect(r.mutated, r.detail).toBeUndefined();
+        expect(r.ok, r.detail).toBe(false); // the pristine guard ran, and failed
+        expect(r.detail).toContain('$ node scripts/guard.cjs');
+        expect(readFileSync(join(tree, 'scripts', 'guard.cjs'), 'utf8')).toContain('return 1');
+        expect(readFileSync(join(tree, 'node_modules', '.bin', 'tool'), 'utf8')).toContain(
+          'exit 1',
+        );
+        expect(existsSync(join(tree, 'new-file.txt'))).toBe(false);
+        // Nothing of the run is left on the host: the outputs were tmpfs.
+        const after = treeSnapshot(tree);
+        expect([...after.entries.keys()]).toEqual([...before.entries.keys()]);
+        expect(readdirSync(join(tree, '.vitest-tmp'))).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    300_000,
+  );
 });

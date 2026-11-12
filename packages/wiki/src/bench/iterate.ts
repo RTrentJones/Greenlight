@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   cpSync,
@@ -95,15 +94,23 @@ import {
   loadGateConfig,
   rejectedForReplayRegression,
 } from './gate';
-import { graderSetHash, hashTree, skillSetHashOf, splitsHash, taskSetHash } from './identity';
+import {
+  depsHash,
+  graderSetHash,
+  hashTree,
+  skillSetHashOf,
+  splitsHash,
+  taskSetHash,
+} from './identity';
 import {
   type ControlArm,
   type OutletContext,
   type OutletResult,
   type OutletTreeRef,
-  cleanHead,
   evaluateOutlet as defaultEvaluateOutlet,
   loadControlArm,
+  safeGit,
+  treeContentHash,
 } from './outlets';
 import type { BlastRadius, PolicyReason, PolicyTask } from './policy';
 import {
@@ -113,10 +120,12 @@ import {
   type RunnerAssets,
   type SandboxKind,
   loadEvaluationRecords,
+  resolveModels,
+  rolloutRequestCap,
   runBench,
   sealedRecordFor,
 } from './runner';
-import { treeDiff } from './sandbox';
+import { ensureRunnerImage, treeDiff } from './sandbox';
 
 /**
  * `greenlight bench iterate` (vision 06 §1.3 steps 1–5, §10; roadmap M2-01, M2-04): one complete
@@ -499,7 +508,8 @@ interface LockHolder {
  * takers can never both win.
  *
  * - A holder on this host is alive when its pid runs with the same start time (a reused pid is
- *   not the holder); a dead holder's lock is stale.
+ *   not the holder); a dead holder's lock is stale. A lock naming THIS process (same pid and
+ *   start time, whatever its token) is live too: acquisition is never reentrant.
  * - A lock written on another host cannot be checked here: it is refused unless `breakLock` (the
  *   CLI's `--break-lock`) says the owner knows that run is gone.
  * - A stale or broken lock is removed compare-and-delete, under `withFileLock(<lock>.steal)`: only
@@ -568,11 +578,19 @@ export function acquireLock(
       removeIf(text);
       continue;
     }
+    const start = typeof held.start === 'string' ? held.start : null;
+    if (pid === process.pid && (start === null || start === processStart(process.pid))) {
+      // Ours or not, a lock held by this very process is live: a second acquisition in one
+      // process (reentrance) is refused, never treated as a stale lock.
+      throw new IterationError(
+        `iteration is already locked by this process (${pid}, ${file}); a lock is never reentrant`,
+        4,
+      );
+    }
     let alive = false;
     if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
       try {
         process.kill(pid, 0);
-        const start = typeof held.start === 'string' ? held.start : null;
         alive = start === null || processStart(pid) === null || processStart(pid) === start;
       } catch {
         alive = false;
@@ -588,11 +606,7 @@ export function acquireLock(
 /** The full sha of `repoRoot`'s HEAD, or undefined outside a git checkout. */
 function headCommit(repoRoot: string): string | undefined {
   try {
-    const out = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--verify', 'HEAD^{commit}'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .toString()
-      .trim();
+    const out = safeGit(repoRoot, ['rev-parse', '--verify', 'HEAD^{commit}']);
     return /^[0-9a-f]{40,64}$/.test(out) ? out : undefined;
   } catch {
     return undefined;
@@ -781,6 +795,8 @@ interface Ctx {
   now: () => Date;
   log: (s: string) => void;
   save: () => void;
+  /** The runner image's identity digest, resolved once (`identityExpectation`). */
+  imageDigest?: string;
 }
 
 type StepOutcome = { ok: true } | { ok: false; result: IterateResult };
@@ -855,16 +871,29 @@ export interface RecordBinding {
   skillSetHash: string;
 }
 
+/** What the rest of a record's identity must be for THIS iteration (06 §1.5): the models its
+ * settings resolve to in bench/models.json, the rollout limits its settings fix, isolation mode,
+ * the runner's dependencies, and the sandbox image. A field left out is not checked. */
+export interface IdentityExpectation {
+  models?: readonly string[];
+  limits?: Partial<NonNullable<EvaluationRecord['identity']['harness']['limits']>>;
+  mode?: EvaluationRecord['identity']['mode'];
+  depsHash?: string;
+  imageDigest?: string;
+}
+
 /**
  * Why `rec` is not the record of a step bound by `b`, or null when it is: its role, proposal,
- * skill set, task split (every task of the split, as the runner's identity lists them) and the
- * identity's pins over the bench inputs on disk now (task set, splits, graders).
+ * skill set, task split (every task of the split, as the runner's identity lists them), the
+ * identity's pins over the bench inputs on disk now (task set, splits, graders), and `expect`
+ * (models, limits, mode, deps, image).
  */
 export function recordBindingProblem(
   rec: EvaluationRecord,
   b: RecordBinding,
   benchDir: string,
   tasks: readonly LoadedTask[],
+  expect: IdentityExpectation = {},
 ): string | null {
   if (rec.role !== b.role) return `it is a ${rec.role} record, not ${b.role}`;
   if ((rec.proposalId ?? undefined) !== b.proposalId) {
@@ -888,7 +917,71 @@ export function recordBindingProblem(
   if (rec.identity.graderSetHash !== graderSetHash(benchDir, ids)) {
     return 'its graders are not the ones on disk';
   }
+  const id = rec.identity;
+  if (expect.models && id.models.join('\n') !== expect.models.join('\n')) {
+    return `it ran models ${id.models.join(', ')}, not ${expect.models.join(', ')} (bench/models.json)`;
+  }
+  if (expect.mode && id.mode !== expect.mode)
+    return `it ran in ${id.mode} mode, not ${expect.mode}`;
+  for (const [k, v] of Object.entries(expect.limits ?? {})) {
+    const have = (id.harness.limits as Record<string, unknown> | undefined)?.[k];
+    if (v !== undefined && have !== v) {
+      return `its rollout limit ${k} is ${JSON.stringify(have ?? null)}, not ${JSON.stringify(v)}`;
+    }
+  }
+  if (expect.depsHash && id.depsHash !== expect.depsHash) {
+    return "its runner dependencies (depsHash) are not this run's";
+  }
+  if (expect.imageDigest && id.harness.imageDigest !== expect.imageDigest) {
+    return `it ran in image ${id.harness.imageDigest}, not ${expect.imageDigest}`;
+  }
   return null;
+}
+
+/** The identity fields a reused record must carry in this run (`IdentityExpectation`). The
+ * image is resolved (built if needed) once, only for the docker sandbox. */
+function identityExpectation(c: Ctx): IdentityExpectation | string {
+  const st = c.s.settings;
+  let models: string[];
+  try {
+    models = resolveModels(c.config, st.models);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  const limits: IdentityExpectation['limits'] = {
+    ...(st.maxSteps !== undefined ? { maxSteps: st.maxSteps } : {}),
+    ...(st.rolloutRequestCap !== undefined
+      ? { requestsPerRollout: st.rolloutRequestCap }
+      : st.maxSteps !== undefined
+        ? { requestsPerRollout: rolloutRequestCap(st.maxSteps) }
+        : {}),
+    ...(c.o.rolloutTimeoutMs !== undefined ? { timeoutMin: c.o.rolloutTimeoutMs / 60_000 } : {}),
+  };
+  if (st.sandbox === 'process') c.imageDigest = 'process';
+  if (c.imageDigest === undefined) {
+    try {
+      c.imageDigest = ensureRunnerImage(join(c.o.benchDir, 'runner'), {
+        ...(c.o.dockerBin ? { docker: c.o.dockerBin } : {}),
+        log: c.log,
+      }).digest;
+    } catch (e) {
+      return `the runner image could not be resolved to check the record: ${(e as Error).message}`;
+    }
+  }
+  return {
+    models,
+    limits,
+    mode: 'isolation',
+    depsHash: depsHash(c.o.assets),
+    imageDigest: c.imageDigest,
+  };
+}
+
+/** `recordBindingProblem` with this run's `identityExpectation`. */
+function bindingProblem(c: Ctx, rec: EvaluationRecord, b: RecordBinding): string | null {
+  const expect = identityExpectation(c);
+  if (typeof expect === 'string') return expect;
+  return recordBindingProblem(rec, b, c.o.benchDir, c.tasks, expect);
 }
 
 async function evaluation(
@@ -899,7 +992,7 @@ async function evaluation(
   bind: RecordBinding,
 ): Promise<{ ok: true; record: EvaluationRecord } | { ok: false; out: StepOutcome }> {
   const unbound = (rec: EvaluationRecord) => {
-    const why = recordBindingProblem(rec, bind, c.o.benchDir, c.tasks);
+    const why = bindingProblem(c, rec, bind);
     if (!why) return null;
     st.status = 'failed';
     st.message = `evaluation record ${rec.hash} is not this step's record: ${why}`;
@@ -1677,12 +1770,11 @@ async function evaluateCandidate(
   );
   if (!r.ok) return r.out;
   const baseline = recordByHash(o.wikiRoot, c.s.baseline.record as string);
-  const baseWhy = recordBindingProblem(
-    baseline,
-    { role: 'baseline', split: 'val', skillSetHash: c.s.acceptedSkillSetHash },
-    o.benchDir,
-    c.tasks,
-  );
+  const baseWhy = bindingProblem(c, baseline, {
+    role: 'baseline',
+    split: 'val',
+    skillSetHash: c.s.acceptedSkillSetHash,
+  });
   if (baseWhy) {
     cand.status = 'failed';
     cand.message = `the baseline record ${baseline.hash} is not this iteration's: ${baseWhy}`;
@@ -1860,6 +1952,11 @@ async function stepEvaluate(c: Ctx): Promise<StepOutcome> {
     return stop(c, 'evaluate', 'blocked', `evaluate: ${e.message}`, 1);
   }
   e.outlet.result = { decision: result.decision, reasons, evidence: result.evidence };
+  // Suppression markers the candidate adds are the owner's to weigh (06 §5.6): noted, not judged.
+  for (const n of result.notes ?? []) {
+    const note = `${proposal.outlet} proposal ${proposalId}: ${n}`;
+    if (!c.s.notes.includes(note)) c.s.notes.push(note);
+  }
   if (result.decision === 'invalid' || !result.ledgerEvent) {
     // 06 §4.8 / outlets.ts: an invalid evaluation never reaches the ledger. The iteration records
     // it as a no-ledger outcome in the hand-off, never as a rejection.
@@ -1880,20 +1977,16 @@ async function stepEvaluate(c: Ctx): Promise<StepOutcome> {
 }
 
 /**
- * Resolves an outlet tree once. A commit becomes its full sha. A directory is pinned to its clean
- * HEAD (named as a `commit:` ref, which outlets.ts re-checks against the directory); a dirty one
- * keeps no ref and is judged `unpinned-tree` there.
+ * Resolves an outlet tree once. A commit becomes its full sha, resolved in the HARNESS repository
+ * (host git with `safeGit`). A directory is never opened with git: it is pinned by its content
+ * hash (`treeContentHash`), which outlets.ts re-checks, so a directory changed after the pin is
+ * refused on resume. A directory without an evidence ref, or with its own `.git`, is judged
+ * `unpinned-tree` there.
  */
-export function pinTree(repoRoot: string, t: OutletTreeRef, sourceRepo: string): PinnedTree {
+export function pinTree(repoRoot: string, t: OutletTreeRef, _sourceRepo: string): PinnedTree {
   if ('commit' in t) {
     try {
-      const sha = execFileSync(
-        'git',
-        ['-C', repoRoot, 'rev-parse', '--verify', `${t.commit}^{commit}`],
-        { stdio: ['ignore', 'pipe', 'ignore'] },
-      )
-        .toString()
-        .trim();
+      const sha = safeGit(repoRoot, ['rev-parse', '--verify', `${t.commit}^{commit}`]);
       return { tree: { commit: sha }, key: `commit:${sha}` };
     } catch {
       // Never pinned literally: an unresolvable name would be re-resolved (to anything) later.
@@ -1901,11 +1994,10 @@ export function pinTree(repoRoot: string, t: OutletTreeRef, sourceRepo: string):
     }
   }
   const dir = resolve(t.dir);
-  const head = cleanHead(dir);
-  const ref = t.ref ?? (head ? `commit:${sourceRepo}@${head}` : undefined);
+  const hash = existsSync(dir) ? treeContentHash(dir) : 'absent';
   return {
-    tree: ref ? { dir, ref } : { dir },
-    key: `dir:${dir}@${head ?? 'unpinned'}${t.ref ? `#${t.ref}` : ''}`,
+    tree: { dir, ...(t.ref ? { ref: t.ref } : {}), hash },
+    key: `dir:${dir}@sha256:${hash}${t.ref ? `#${t.ref}` : ''}`,
   };
 }
 

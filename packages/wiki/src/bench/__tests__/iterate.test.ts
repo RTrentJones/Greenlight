@@ -262,6 +262,44 @@ describe('resume hardening (second review)', () => {
     expect(pinTree(REPO, { commit: 'HEAD' }, 'o/r').key).toMatch(/^commit:[0-9a-f]{40}$/);
   });
 
+  it('pinTree: a directory is pinned by its contents, never by git', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'iterate-pin-dir-'));
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'one');
+      const a = pinTree(REPO, { dir, ref: 'pr:o/r#1' }, 'o/r');
+      expect(a.key).toMatch(/^dir:.*@sha256:[0-9a-f]{64}#pr:o\/r#1$/);
+      expect(a.tree).toMatchObject({ dir, ref: 'pr:o/r#1' });
+      writeFileSync(join(dir, 'a.txt'), 'two');
+      expect(pinTree(REPO, { dir, ref: 'pr:o/r#1' }, 'o/r').key).not.toBe(a.key);
+      expect(pinTree(REPO, { dir }, 'o/r').key).not.toContain('unpinned');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the lock is never reentrant: a lock naming this process is live, whatever its token', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'iterate-lock-self-'));
+    try {
+      const release = acquireLock(dir);
+      expect(() => acquireLock(dir)).toThrow(/already locked by this process/);
+      release();
+      writeFileSync(
+        join(dir, '.lock'),
+        JSON.stringify({ host: hostname(), pid: process.pid, token: 'not-ours' }),
+      );
+      expect(() => acquireLock(dir)).toThrow(/already locked by this process/);
+      expect(existsSync(join(dir, '.lock'))).toBe(true);
+      // The same pid with another start time is a reused pid: stale.
+      writeFileSync(
+        join(dir, '.lock'),
+        JSON.stringify({ host: hostname(), pid: process.pid, start: 'not-our-start', token: 'x' }),
+      );
+      acquireLock(dir)();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('the lock is taken atomically and released compare-and-delete', () => {
     const dir = mkdtempSync(join(tmpdir(), 'iterate-lock-'));
     try {

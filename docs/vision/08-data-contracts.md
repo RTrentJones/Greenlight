@@ -539,11 +539,22 @@ carries `pins` (sha256 of the installed skill set, `models.json`, `gate.json`, `
 `bench/tasks`, `bench/controls`, `bench/repro`; a missing pin refuses a resume unless
 `--adopt-pins`) and `baseCommit` (the checkout's HEAD at creation, against which a restore
 compares the wiki pages it would overwrite). Between CI runs the state travels only as the
-`scripts/evo-state.mjs` blob: `GLEVO1\n`, a 12-byte IV, the 16-byte GCM tag, then AES-256-GCM
-(associated data `greenlight-evo-state/v1`, key `EVO_STATE_KEY`: 32 bytes, base64 or hex) over a
-gzipped JSON manifest `{ v: 1, files: [{ path, sha256, data (base64) }] }`. Only paths the restore
-allow-list accepts may appear in it; a blob that fails authentication, or names another path, is
-refused whole.
+`scripts/evo-state.mjs` blob: `GLEVO2\n`, the sequence number `seq` (uint32, big-endian, in the
+clear), a 12-byte IV, the 16-byte GCM tag, then AES-256-GCM (associated data
+`greenlight-evo-state/v1|<iterationId>|<seq>`, key `EVO_STATE_KEY`: 32 bytes, base64 or hex) over
+a gzipped JSON manifest `{ v: 2, iterationId, seq, files: [{ path, sha256, data (base64) }] }`.
+The iteration id is never in the clear: the opener names it, and a blob of another iteration, or
+with an edited seq, fails authentication. `seq` is 1 for a new iteration and the restored seq + 1
+after a resume; an open is refused when another recent run's blob of the same iteration has a
+higher seq. Only paths the restore allow-list accepts may appear in it; a blob that fails
+authentication, or names another path, is refused whole.
+
+**Outlet trees (06 §5.6).** `OutletTreeRef` is `{ commit }` (resolved in the harness repository)
+or `{ dir, ref?, hash? }`: a directory needs a non-`commit:` evidence ref, must not hold its own
+`.git`, and `hash` (sha256 over its `listTreeEntries`, set by the iteration's pin, whose key is
+`dir:<path>@sha256:<hash>[#<ref>]`) must still match. An `OutletResult` may carry `notes`
+(suppression markers the diff adds) for the hand-off; `candidate-mutated-tree` is an `invalid`
+reason (the tree changed under a sandboxed step).
 
 `released` means "in a published CLI version" (06 §6.1), so it follows `merged` exactly for the
 outlets a CLI release carries: `mechanism`, `doctor`, `template` and `skill`. The `verify` outlet's

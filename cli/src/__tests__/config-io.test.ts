@@ -12,10 +12,14 @@ const base = {
   tools: [],
 };
 
-// Write round-trip configs inside the repo so jiti can resolve @rtrentjones/greenlight-shared.
+// Write round-trip configs inside the repo so jiti can resolve @rtrentjones/greenlight-shared:
+// under `.vitest-tmp/`, the one repo-local scratch directory tests write (the outlet sandbox
+// mounts the tree read-only and gives only that directory a fresh tmpfs; outlets.ts).
+const REPO_TMP = resolve(process.cwd(), '.vitest-tmp');
 const tmpFiles: string[] = [];
 function writeRepoTmp(name: string, contents: string): string {
-  const p = resolve(process.cwd(), name);
+  mkdirSync(REPO_TMP, { recursive: true });
+  const p = resolve(REPO_TMP, name);
   writeFileSync(p, contents);
   tmpFiles.push(p);
   return p;
@@ -138,7 +142,7 @@ describe('upsertTool (idempotent — completes a half-adoption)', () => {
 
 describe('runDoctor', () => {
   it('flags a missing tool directory and a missing mcp verify.config', () => {
-    const root = resolve(process.cwd(), '.vitest-doctor-root');
+    const root = resolve(REPO_TMP, 'doctor-root');
     mkdirSync(join(root, 'apps/blog'), { recursive: true });
     mkdirSync(join(root, 'tools/has-vc'), { recursive: true });
     writeFileSync(join(root, 'tools/has-vc/verify.config.ts'), 'export default {};');
@@ -162,7 +166,7 @@ describe('runDoctor', () => {
       envs: ['prod'],
       external: true,
     });
-    const checks = runDoctor(cfg, resolve(process.cwd(), '.vitest-nonexistent'));
+    const checks = runDoctor(cfg, resolve(REPO_TMP, 'nonexistent'));
     const reg = checks.find((c) => c.name === 'bamcp: external (registry)');
     expect(reg?.status).toBe('ok');
     expect(reg?.detail).toBe('https://bamcp.example.dev/mcp');

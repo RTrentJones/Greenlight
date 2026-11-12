@@ -86,8 +86,10 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
                        A quota deferral persists and exits 1; --resume continues on a later day.
                        --dry-run plans without a request; --handoff-only regenerates handoff.md.
-                       --candidate (mechanism / doctor): a commit, or a clean checkout (pinned to
-                       its HEAD); fixed on first use, a different one on resume is refused.
+                       --candidate (mechanism / doctor): a commit of this repository; fixed on
+                       first use, a different one on resume is refused. Git never runs in a
+                       given directory: a checkout is refused (name its commit), and a plain
+                       directory is pinned by content but has no evidence ref here (invalid).
                        A resume is refused (exit 4) when an input pin drifted or is missing;
                        --adopt-pins adopts the current inputs for MISSING pins only (you vouch
                        for them). --break-lock removes a lock written on another host.

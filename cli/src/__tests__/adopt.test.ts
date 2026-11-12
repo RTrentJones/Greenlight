@@ -37,8 +37,8 @@ describe('mergePackageJson', () => {
 
 describe('adoptCommand (poly-repo scaffold + central registry)', () => {
   const repoRoot = process.cwd();
-  const wrapper = resolve(repoRoot, '.vitest-adopt-wrapper');
-  const tool = resolve(repoRoot, '.vitest-adopt-tool');
+  const wrapper = resolve(repoRoot, '.vitest-tmp', 'adopt-wrapper');
+  const tool = resolve(repoRoot, '.vitest-tmp', 'adopt-tool');
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
