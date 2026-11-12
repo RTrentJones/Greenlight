@@ -6,7 +6,7 @@
   "skills": ["deploy-verify-promote"],
   "fidelity": "runtime",
   "split": "val",
-  "state": "pending",
+  "state": "active",
   "timeoutMin": 10,
   "modes": ["isolation", "production"],
   "trajectory": {

@@ -1,0 +1,253 @@
+{
+  "identity": {
+    "taskSetHash": "d244795ca570862b1149845da0590fbfcd584e627e5c90674fe4d32e2a3960c5",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"]
+      }
+    ],
+    "splitsHash": "f325e53a60ff2e031e2d23b5bd8b600e03048c7ead0b2f9d6429d27defce6d8a",
+    "graderSetHash": "1288f28ba1a2806dd2c675e8031549df96dd383ac038a529bc268ce3d41cdcfe",
+    "depsHash": "c3d396c20c56612f40c23949abb2d6e2b5d0b369a1455b35d69e6e50392826c1",
+    "harness": {
+      "runnerVersion": "0.2.1",
+      "imageDigest": "ctx:sha256:ac2daeb6600e5b23574d2080476cc800e1cc4b701501781e13f5fa5e653dd4f9",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null
+      }
+    },
+    "agent": {
+      "vendor": "greenlight-harness",
+      "version": "0.1.0"
+    },
+    "models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+    "skillSetHash": "b7cb0e89da058b38bfa6bc19f8d26c2efe71211d95590e0e7bd9a458c8129cc5",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "baseline",
+  "createdAt": "2026-11-12T04:27:38.092Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+        }
+      ],
+      "seed": "1356827611",
+      "rawId": "20261112T041313Z-71aaa70f",
+      "durationMs": 70543,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 60370,
+        "tokensOut": 1259
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+        }
+      ],
+      "seed": "1214773703",
+      "rawId": "20261112T041853Z-179716af",
+      "durationMs": 81097,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 18,
+        "tokensIn": 76237,
+        "tokensOut": 714
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: container healthcheck declared; keepalive target declared for ledgerline; zero store queries from the healthcheck; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1186048785",
+      "rawId": "20261112T041423Z-070d3591",
+      "durationMs": 79098,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 10,
+        "tokensIn": 68329,
+        "tokensOut": 543
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries from the keepalive; zero store queries over the idle window; store suspended at the end of the idle window; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "26537575",
+      "rawId": "20261112T042015Z-06355102",
+      "durationMs": 124361,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 22,
+        "tokensIn": 186500,
+        "tokensOut": 769
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1649237414",
+      "rawId": "20261112T041542Z-05c4b563",
+      "durationMs": 97290,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 17,
+        "tokensIn": 74773,
+        "tokensOut": 539
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1761483037",
+      "rawId": "20261112T042219Z-bd97a7a8",
+      "durationMs": 170891,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 25,
+        "tokensIn": 127959,
+        "tokensOut": 676
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule"
+        }
+      ],
+      "seed": "809085710",
+      "rawId": "20261112T041720Z-f04ecc1d",
+      "durationMs": 93846,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 15,
+        "tokensIn": 55333,
+        "tokensOut": 1348
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule"
+        }
+      ],
+      "seed": "2018048246",
+      "rawId": "20261112T042510Z-c56af12f",
+      "durationMs": 147737,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 22,
+        "tokensIn": 100619,
+        "tokensOut": 14078
+      }
+    }
+  ],
+  "hash": "35b2872dab324a01831e1ea657b4a75ea9d64d143fe84006775b03b41c421a58"
+}

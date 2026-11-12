@@ -5,7 +5,7 @@
   "skills": ["greenlight-wiki"],
   "fidelity": "structural",
   "split": "val",
-  "state": "pending",
+  "state": "active",
   "timeoutMin": 15,
   "modes": ["isolation", "production"],
   "mutants": [

@@ -7,7 +7,7 @@
   "fidelity": "runtime",
   "pattern": "pattern/keepalive-probe-misses-postgres",
   "split": "val",
-  "state": "pending",
+  "state": "active",
   "timeoutMin": 20,
   "modes": ["isolation", "production"],
   "mutants": [
