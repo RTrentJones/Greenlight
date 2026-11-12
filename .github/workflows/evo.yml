@@ -10,6 +10,12 @@ name: evo
 # - Commits nothing. The iteration's state, bundles and hand-off are uploaded as artifacts; the
 #   hand-off (a PR or issue body) is printed for the orchestrator, who posts it for owner review.
 #   Wiki and ledger writes ride the state artifact until a human commits them.
+# - Runs only on an allow-listed branch (EVO_BRANCHES). A state_run_id is restored only from an
+#   evo.yml run of THIS repository (not a fork) on an allow-listed branch, downloaded into a temp
+#   dir, and copied by scripts/evo-restore.mjs: only .greenlight/{bench,raw,quota} and the wiki's
+#   writes, never code, bench/, skills or node_modules, and only when its ledger extends ours.
+# - Bundle keys are never uploaded: each run makes its own, so an in-flight proposer step reruns
+#   with a fresh bundle on a new runner (its access log cannot be verified there). No .lock either.
 
 on:
   workflow_dispatch:
@@ -35,8 +41,14 @@ concurrency:
   group: greenlight-evo
   cancel-in-progress: false
 
+env:
+  # Space-separated branches evo runs on and restores state from.
+  EVO_BRANCHES: "2.0"
+
 jobs:
   iterate:
+    # The allow-list (EVO_BRANCHES above, kept in step here: `env` is not readable in a job `if`).
+    if: contains(fromJSON('["refs/heads/2.0"]'), github.ref)
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -51,14 +63,41 @@ jobs:
       - name: Docker is up
         run: docker info
 
-      - name: Restore the iteration state
+      # Provenance first: the run must be this workflow, in this repository (not a fork), on an
+      # allow-listed branch. Only then is its artifact downloaded, into a temp dir, never over
+      # the checkout.
+      - name: Check the state run's provenance
+        if: inputs.state_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.state_run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$RUN_ID" in ''|*[!0-9]*) echo "::error::state_run_id must be a numeric run id"; exit 2;; esac
+          gh api "repos/$REPO/actions/runs/$RUN_ID" > "$RUNNER_TEMP/state-run.json"
+          path=$(jq -r '.path' "$RUNNER_TEMP/state-run.json")
+          repo=$(jq -r '.repository.full_name' "$RUNNER_TEMP/state-run.json")
+          head_repo=$(jq -r '.head_repository.full_name' "$RUNNER_TEMP/state-run.json")
+          branch=$(jq -r '.head_branch' "$RUNNER_TEMP/state-run.json")
+          [ "${path%@*}" = ".github/workflows/evo.yml" ] || { echo "::error::run $RUN_ID is $path, not evo.yml"; exit 1; }
+          [ "$repo" = "$REPO" ] || { echo "::error::run $RUN_ID belongs to $repo"; exit 1; }
+          [ "$head_repo" = "$REPO" ] || { echo "::error::run $RUN_ID ran on a fork ($head_repo)"; exit 1; }
+          ok=no; for b in $EVO_BRANCHES; do [ "$branch" = "$b" ] && ok=yes; done
+          [ "$ok" = yes ] || { echo "::error::run $RUN_ID ran on branch $branch, not one of: $EVO_BRANCHES"; exit 1; }
+
+      - name: Download the iteration state
         if: inputs.state_run_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: greenlight-evo-state
           run-id: ${{ inputs.state_run_id }}
           github-token: ${{ github.token }}
-          path: .
+          path: ${{ runner.temp }}/evo-state
+
+      - name: Restore the iteration state (allow-listed paths only)
+        if: inputs.state_run_id != ''
+        run: node scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .
 
       - name: bench iterate
         id: iterate
@@ -94,19 +133,26 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: greenlight-evo-iterations
-          path: .greenlight/bench/iterations/**
+          path: |
+            .greenlight/bench/iterations/**
+            !.greenlight/**/.lock
           include-hidden-files: true
           if-no-files-found: ignore
 
-      # What a later run restores with state_run_id: raw records, bench run progress, quota, bundle
-      # keys (never inside a bundle) and the wiki writes (evaluation records, ledger, pages).
+      # What a later run restores with state_run_id (scripts/evo-restore.mjs): raw records, bench
+      # run progress, quota and the wiki writes (evaluation records, ledger, pages). Never the
+      # bundle keys (secrets; each run makes its own) and never a lock.
       - name: Upload the resumable state
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: greenlight-evo-state
           path: |
-            .greenlight/
+            .greenlight/bench/
+            .greenlight/raw/
+            .greenlight/quota/
             wiki/
+            !.greenlight/bundle-keys/
+            !.greenlight/**/.lock
           include-hidden-files: true
           if-no-files-found: ignore
