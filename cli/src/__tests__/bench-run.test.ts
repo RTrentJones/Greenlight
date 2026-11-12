@@ -42,6 +42,14 @@ const BENCH = join(REPO, 'bench');
 const LOOP = 'loop/fixture-preview-before-push-train';
 const SMALL = 'gemini-3.5-flash-lite';
 const FRONTIER = 'gemini-3.6-flash';
+/** The live daily quotas (bench/models.json, measured 2026-11-12): the scheduling tests pre-spend
+ * against these so they keep describing equal headroom whatever the models' real limits are. */
+const RPD: Record<'frontier' | 'small', number> = (() => {
+  const m = JSON.parse(readFileSync(join(BENCH, 'models.json'), 'utf8'));
+  return { frontier: m.roles.frontier.limits.rpd, small: m.roles.small.limits.rpd };
+})();
+/** Pre-spend the small model so it starts the day with `left` requests, like the frontier at 20. */
+const smallLeft = (left: number) => ({ [SMALL]: RPD.small - left });
 const DOCKER = dockerAvailable();
 /** On CI the isolation suite is not optional: without docker it FAILS (below) instead of passing
  * with its docker cases skipped. Locally they are skipped with a warning. */
@@ -719,7 +727,7 @@ describe('quota scheduling across models (M4)', () => {
         models: ['frontier', 'small'],
         runs: 2,
         maxSteps: 3, // cap 5: four rollouts of 3 requests fit in 20 RPD
-        quotaStore: memoryQuota({ [SMALL]: 2 }),
+        quotaStore: memoryQuota({ ...smallLeft(18), [FRONTIER]: RPD.frontier - 20 }),
       }),
     );
     expect(r.status, r.message).toBe('complete');
@@ -737,6 +745,7 @@ describe('quota scheduling across models (M4)', () => {
       models: ['frontier', 'small'],
       runs: 2,
       maxSteps: 4,
+      quotaStore: memoryQuota({ ...smallLeft(20), [FRONTIER]: RPD.frontier - 20 }),
     });
     const r = await runBench(o);
     expect(r.status, r.message).toBe('deferred');

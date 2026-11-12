@@ -13,9 +13,7 @@ JSON cannot carry comments, so the provenance of both files is recorded here (vi
 **Switched on 2026-11-04** (ADR-20 amendment, trigger 2). `gemini-3.8-flash`, the original
 frontier, returned 502/503 on every attempt for four consecutive days (Nov 1–4). The most capable
 model that kept answering, `gemini-3.6-flash`, became the frontier. `gemini-3.5-flash-lite`
-answered probes and became the small model. The free-tier limits of Flash-Lite are not verified
-(Google's page gives no per-model numbers), so the conservative 5 rpm / 20 rpd is kept until they
-are. Every earlier evaluation is incomparable and was abandoned.
+answered probes and became the small model. Its limits were measured on 2026-11-12 (below). Every earlier evaluation is incomparable and was abandoned.
 
 `temperature` is 0.2 (06 §4.8 "Determinism"). Both ids must be listed by `models.list` with
 `generateContent` among their `supportedGenerationMethods`. `checkModels()`
@@ -52,7 +50,16 @@ than model identity.
 
 ### Free-tier limits (`rpm`, `rpd`, `tpm`)
 
-Recorded value: **5 RPM, 20 RPD and 250,000 TPM for each model.**
+Recorded values, **measured on 2026-11-12** (fact page `wiki/facts/gemini-free.md`):
+`gemini-3.6-flash` at **5 RPM and 20 RPD**, both confirmed by the quota ids Google returned in its
+429 responses, and `gemini-3.5-flash-lite` at **10 RPM and 190 RPD**, lower bounds from 190
+requests that never hit a 429. TPM stays at 250,000 for both (not probed). With these values the
+small model fits about eleven 17-request rollouts per day, so its half of a gate finishes in about
+three days. The frontier still admits one rollout per day, and it sets the gate's length at about
+24 days.
+
+The history below records how the earlier, unverified 5 RPM / 20 RPD default for both models was
+chosen.
 
 These values were re-checked on 2026-11-01 and **still could not be verified against a
 Google-published table**:
@@ -72,8 +79,8 @@ The conservative default for unverified limits would be 5 RPM and 100 RPD. The r
 lower than that, so the lower value is recorded. Rate limits are per project, not per key. Daily
 quotas reset at midnight Pacific time, which the `RateLimiter` uses as its day key.
 
-Replace these values with the verified ones from the fact page `fact/gemini-free` once it is
-seeded (08 §10.6, 15 §5).
+The fact page `fact/gemini-free` was seeded on 2026-11-12 and now governs these values (08 §10.6,
+15 §5).
 
 ### The daily count survives processes
 

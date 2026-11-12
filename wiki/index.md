@@ -13,6 +13,10 @@
 - [A typo or unknown field in a verify spec silently disables an assertion](patterns/spec-typo-disables-assertion.md) — A check written to assert something passed even when that something was broken · The harness ignored fields it did not recognize, so a misspelling (or a field from a newer version) turned an assertion into a no-op while the gate read green · Strict specs: an unknown, wrong-typed or uncompilable field fails as `spec is valid — checks[i]: unsupported field "…"`
 - [A Terraform apply that replaces running compute without anyone planning it](patterns/unplanned-compute-replacement.md) — An env change on a container tool planned a delete-then-create of its instance, and apply-on-push executed it · Some attribute changes force replacement, and the free tier releases the old cores minutes late · Since 0.10.1 `infra.yml` fails a plan that replaces a running container instance unless dispatched with `allow_compute_replace=true`
 
+## fact
+
+- [Gemini API free tier (the bench's model provider)](facts/gemini-free.md) — Google publishes no per-model free-tier table, so these values were measured on 2026-11-12 with one-token `generateContent` probes against the project the bench's key belongs to
+
 ## decision
 
 - [Building agents never receive incident pages or unconfirmed patterns](decisions/incidents-hidden.md) — Skills give building agents intent, liveness, decisions, facts and contract pages
