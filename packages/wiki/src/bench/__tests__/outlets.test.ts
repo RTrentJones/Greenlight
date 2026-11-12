@@ -7,10 +7,13 @@ import type { ProposerOutput } from '../../schema/io';
 import { LedgerEventSchema } from '../../schema/ledger';
 import {
   type OutletContext,
+  checkAllCommands,
   evaluateOutlet,
   extractAssertion,
+  installEnv,
   loadRepros,
   parseAssertion,
+  runHarnessCheckAll,
 } from '../outlets';
 
 const REPO = resolve(__dirname, '../../../../..');
@@ -291,8 +294,8 @@ describe('verify assertions', () => {
 
 describe('evaluateOutlet: verify (artifact)', () => {
   let root: string;
-  const faultyRef = 'commit:RTrentJones/greenlight@aaaaaaa';
-  const fixedRef = 'commit:RTrentJones/greenlight@bbbbbbb';
+  const faultyRef = 'run:RTrentJones/greenlight/101';
+  const fixedRef = 'run:RTrentJones/greenlight/102';
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), 'outlets-test-artifacts-'));
     for (const [name, status] of [
@@ -368,5 +371,98 @@ describe('evaluateOutlet: verify (artifact)', () => {
     expect(noAssert.reasons[0]?.code).toBe('no-assertion');
     const bad = await evaluateOutlet(issue('verify', '```json verify\n{"path":"/"}\n```'), vctx());
     expect(bad.reasons[0]?.code).toBe('assertion-invalid');
+  });
+});
+
+describe('check-all on a candidate (harness commands, scrubbed env)', () => {
+  it("expands the harness's check-all through its own scripts", () => {
+    const h = mkdtempSync(join(tmpdir(), 'outlets-test-harness-'));
+    try {
+      writeFileSync(
+        join(h, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            'check-all': 'pnpm a && pnpm run b && echo c',
+            a: 'echo a1 && echo a2',
+            b: 'echo b',
+          },
+        }),
+      );
+      expect(checkAllCommands(h)).toEqual(['echo a1', 'echo a2', 'echo b', 'echo c']);
+    } finally {
+      rmSync(h, { recursive: true, force: true });
+    }
+  });
+
+  it('a candidate rewriting "check-all": "true" does not pass, and no secret reaches it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'outlets-test-checkall-'));
+    const was = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = 'test-not-a-real-key';
+    try {
+      const harness = join(root, 'harness');
+      mkdirSync(harness);
+      // The harness's suite: fails when a secret is visible, else passes iff the tree has `ok`.
+      writeFileSync(
+        join(harness, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            'check-all': 'pnpm suite',
+            suite:
+              "node -e \"if (process.env.GEMINI_API_KEY) process.exit(3); process.exit(require('fs').existsSync('ok') ? 0 : 1)\"",
+          },
+        }),
+      );
+      const cand = join(root, 'cand');
+      mkdirSync(cand);
+      writeFileSync(
+        join(cand, 'package.json'),
+        JSON.stringify({ scripts: { 'check-all': 'true' } }),
+      );
+      const bad = await runHarnessCheckAll(harness, cand);
+      expect(bad.ok).toBe(false);
+      writeFileSync(join(cand, 'ok'), '');
+      const good = await runHarnessCheckAll(harness, cand);
+      expect(good.ok, good.detail).toBe(true);
+      expect(installEnv({ PATH: '/bin', GEMINI_API_KEY: 'x', GITHUB_TOKEN: 'y' })).toEqual({
+        CI: '1',
+        PATH: '/bin',
+      });
+    } finally {
+      if (was === undefined) Reflect.deleteProperty(process.env, 'GEMINI_API_KEY');
+      else process.env.GEMINI_API_KEY = was;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a directory named by a commit ref', () => {
+  it('must be a clean checkout at that commit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'outlets-test-pin-'));
+    try {
+      git(dir, 'clone', '-q', repo, 'c');
+      const clone = join(dir, 'c');
+      git(clone, 'checkout', '-q', sha.fixed as string);
+      const right = `commit:RTrentJones/greenlight@${sha.fixed}`;
+      const wrong = `commit:RTrentJones/greenlight@${sha.broken}`;
+      const ok = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: clone, ref: right } }),
+      );
+      expect(ok.decision).toBe('accept');
+      const lie = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: clone, ref: wrong } }),
+      );
+      expect(lie.decision).toBe('invalid');
+      expect(lie.reasons[0]?.code).toBe('unpinned-tree');
+      writeFileSync(join(clone, 'untracked.txt'), 'dirty');
+      const dirty = await evaluateOutlet(
+        issue('doctor'),
+        ctx({ candidate: { dir: clone, ref: right } }),
+      );
+      expect(dirty.decision).toBe('invalid');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
