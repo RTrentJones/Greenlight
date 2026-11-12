@@ -1,0 +1,30 @@
+{
+  "control": true,
+  "id": "probe-layer-overgeneral",
+  "description": "The first iteration's control arm (vision 06 §10.2 step 4, roadmap M2-03): a hand-written, plausible but wrong skill patch that learns only the Supabase lesson. The harness evaluates it beside the real proposal, labels its ledger events control: true, and never merges it. The cycle passes its own check only if the gate rejects it with replay-regression on the Neon val replay (06 §10.3, rejectedForReplayRegression).",
+  "statement": "health checks and keepalive probes must always query the database",
+  "pair": { "id": "probe-layer-val", "rule": "overgeneral-a" },
+  "expect": {
+    "decision": "reject",
+    "reason": "replay-regression",
+    "task": "replay/idle-probe-leaves-store-asleep-val"
+  },
+  "proposal": {
+    "action": "patch",
+    "outlet": "skill",
+    "name": "deploy-verify-promote",
+    "edits": [
+      {
+        "op": "insert_after",
+        "file": "SKILL.md",
+        "target": "- Connect URL for MCP tools is the tool URL + `/mcp`; `verify`/`ship` handle this by lane.\n",
+        "text": "- **Health checks and keepalive probes must always query the database.** A probe that stops short of the store (a cached or schema-only answer) reports green while the database pauses, as HeistMind's keepalive did. Point every container healthcheck, keepalive target and uptime monitor at a route that runs a real query (for example `SELECT 1` in `/health/live`), so a green probe always proves the store is awake.\n"
+      }
+    ],
+    "patterns": [
+      "pattern/probe-touches-wrong-layer",
+      "pattern/keepalive-probe-misses-postgres",
+      "pattern/neon-never-sleeps"
+    ]
+  }
+}
