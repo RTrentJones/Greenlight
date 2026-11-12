@@ -53,6 +53,10 @@ const HELP = `greenlight <command>
   bench models --check                          verify bench/models.json against models.list
   bench gate --recompute <gateInputHash>        re-derive a recorded gate decision
   bench activate <taskId…>                      activate pending tasks that have a baseline
+  bench iterate [--scope s] [--resume <id>] [--dry-run] [--handoff-only] [--json]
+                                                one resumable WikiSkill iteration → ledger + hand-off
+  bench review <id> --decision accept|reject --reason "<text>"
+                                                record the owner's review of an iteration
   help                                          show this message
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;

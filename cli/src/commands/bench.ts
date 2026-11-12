@@ -4,6 +4,8 @@ import {
   type EvaluationRecord,
   GateHarnessError,
   GateInputRecordSchema,
+  type IterateOptions,
+  IterationError,
   LEDGER_FILE,
   ModelsConfigSchema,
   PrerequisiteError,
@@ -15,11 +17,15 @@ import {
   dockerAvailable,
   evalEvidencePath,
   formatReport,
+  iterate,
   loadEvaluationRecords,
   parseLedger,
+  planIteration,
   recompute,
+  reviewIteration,
   runBench,
   sameDecision,
+  writeHandoff,
 } from '@rtrentjones/greenlight-wiki';
 import { parseFlags } from '../args';
 
@@ -29,7 +35,8 @@ import { parseFlags } from '../args';
  * command: it reads `bench/` and builds the sandbox CLI with the checkout's esbuild.
  * Exit codes (07 §0): 0 done, 1 incomplete / mismatch / check failed, 2 usage, 3 missing
  * prerequisite, 4 refused by policy (budget, process sandbox for a gate role, changed identity).
- * `bench gate <proposal>` and `bench iterate` are M2.
+ * `bench iterate` (M2-01) drives one resumable WikiSkill iteration; `bench review` (M2-04) records
+ * the owner's review of its ledger rows. `bench gate <proposal>` stands alone in M3.
  */
 
 export interface BenchIo {
@@ -40,6 +47,8 @@ export interface BenchIo {
   /** Injected in tests: builds (or returns prebuilt) runner assets. */
   assets?: () => Promise<RunnerAssets>;
   fetchImpl?: typeof fetch;
+  /** Injected in tests: clocks, quota store, outlet evaluator… for `bench iterate`. */
+  iterate?: Partial<IterateOptions>;
 }
 
 const defaultIo = (): BenchIo => ({
@@ -69,6 +78,17 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        EvaluationRecords; exit 1 when it differs from the ledger event
   activate <taskId…>   flip pending tasks to active once a recorded baseline covers them on every
                        gate model (06 §4.1)
+  iterate [--scope <skill|all>] [--resume <iterationId>] [--sandbox docker|process] [--json]
+          [--dry-run] [--handoff-only] [--models frontier,small] [--runs n] [--max-steps n]
+          [--rollout-requests n] [--candidate <commit|dir>]
+                       one WikiSkill iteration (06 §1.3) as a resumable state machine: train
+                       evidence → maintainer → baseline → proposer → outlet evaluation → control
+                       arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
+                       A quota deferral persists and exits 1; --resume continues on a later day.
+                       --dry-run plans without a request; --handoff-only regenerates handoff.md.
+  review <iterationId> --decision accept|reject --reason "<text>"
+                       record the owner's review of an iteration's ledger rows (a review event;
+                       a reject of an accepted candidate is a withdrawn event)
 
 common: --bench <dir> (default bench), --root <wiki dir> (default wiki),
         --skills <dir> (default .claude/skills).
@@ -92,6 +112,10 @@ export async function benchCommand(args: string[], io: BenchIo = defaultIo()): P
         return gateCmd(rest, io);
       case 'activate':
         return activateCmd(rest, io);
+      case 'iterate':
+        return await iterateCmd(rest, io);
+      case 'review':
+        return reviewCmd(rest, io);
       case undefined:
       case 'help':
       case '--help':
@@ -106,6 +130,7 @@ export async function benchCommand(args: string[], io: BenchIo = defaultIo()): P
     io.err(msg);
     if (msg.includes('unknown flag') || msg.includes('needs a value')) return 2;
     if (err instanceof PrerequisiteError) return 3;
+    if (err instanceof IterationError) return err.exitCode;
     if (err instanceof GateHarnessError) return 1;
     return 1;
   }
@@ -333,4 +358,162 @@ function activateCmd(args: string[], io: BenchIo): number {
   for (const t of r.activated) io.out(`✔ ${t}: active`);
   for (const t of r.refused) io.err(`✘ ${t.task}: ${t.reason}`);
   return r.refused.length > 0 ? 1 : 0;
+}
+
+async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
+  const a = parseFlags('bench iterate', args, {
+    value: [
+      ...COMMON,
+      '--scope',
+      '--resume',
+      '--sandbox',
+      '--models',
+      '--runs',
+      '--max-steps',
+      '--rollout-requests',
+      '--candidate',
+    ],
+    boolean: ['--json', '--dry-run', '--handoff-only'],
+  });
+  const p = paths(io, a.values);
+  const v = a.values;
+  const stateDir = join(io.cwd, '.greenlight');
+  const sandbox = v['--sandbox'] ?? 'docker';
+  if (sandbox !== 'docker' && sandbox !== 'process') {
+    io.err('`greenlight bench iterate`: --sandbox needs a value (one of docker, process)');
+    return 2;
+  }
+  if (!existsSync(join(p.bench, 'tasks')))
+    throw new PrerequisiteError(`no bench at ${p.bench} (pass --bench <dir>)`);
+  const repoRoot = resolve(p.bench, '..');
+  if (a.flags.has('--handoff-only')) {
+    const id = v['--resume'];
+    if (!id) {
+      io.err('--handoff-only needs --resume <iterationId>');
+      return 2;
+    }
+    const { file, handoff } = writeHandoff({
+      stateDir,
+      skillsDir: p.skills,
+      wikiRoot: p.wiki,
+      iterationId: id,
+    });
+    if (a.flags.has('--json')) io.out(JSON.stringify({ file, handoff }));
+    else io.out(`${handoff.kind}: ${handoff.title}\n${file}`);
+    return 0;
+  }
+  const base = {
+    repoRoot,
+    benchDir: p.bench,
+    skillsDir: p.skills,
+    wikiRoot: p.wiki,
+    stateDir,
+    sandbox,
+    env: io.env,
+    ...(v['--scope'] ? { scope: v['--scope'] } : {}),
+    ...(v['--resume'] ? { resume: v['--resume'] } : {}),
+    ...(v['--models'] ? { models: v['--models'].split(',').filter(Boolean) } : {}),
+    ...(v['--runs'] ? { runs: posInt(v['--runs'], '--runs') } : {}),
+    ...(v['--max-steps'] ? { maxSteps: posInt(v['--max-steps'], '--max-steps') } : {}),
+    ...(v['--rollout-requests']
+      ? { rolloutRequestCap: posInt(v['--rollout-requests'], '--rollout-requests') }
+      : {}),
+    ...(v['--candidate']
+      ? {
+          // mechanism / doctor / verify: the candidate change the outlet rule judges.
+          outletCandidate: existsSync(resolve(io.cwd, v['--candidate']))
+            ? { dir: resolve(io.cwd, v['--candidate']) }
+            : { commit: v['--candidate'] },
+        }
+      : {}),
+    ...(io.fetchImpl ? { fetchImpl: io.fetchImpl } : {}),
+    log: (s: string) => io.err(s),
+    ...(io.iterate ?? {}),
+  } satisfies Partial<IterateOptions>;
+  if (a.flags.has('--dry-run')) {
+    const plan = planIteration({ ...base, assets: undefined as never } as IterateOptions);
+    if (a.flags.has('--json')) io.out(JSON.stringify({ plan: plan.lines }));
+    else for (const l of plan.lines) io.out(l);
+    return 0;
+  }
+  if (sandbox === 'docker' && !dockerAvailable()) {
+    io.err(
+      'docker is not available (start the daemon; baseline and candidate rollouts need the docker sandbox)',
+    );
+    return 3;
+  }
+  const assets = await (
+    io.assets ??
+    (async () => {
+      const { buildBenchAssets } = await import('../bench-assets');
+      return buildBenchAssets(repoRoot);
+    })
+  )();
+  const r = await iterate({ ...base, assets });
+  if (a.flags.has('--json')) {
+    io.out(
+      JSON.stringify({
+        status: r.status,
+        iterationId: r.iterationId,
+        step: r.step,
+        message: r.message,
+        ...(r.remaining ? { remaining: r.remaining } : {}),
+        ...(r.state?.handoff.file
+          ? {
+              handoff: join(
+                stateDir,
+                'bench',
+                'iterations',
+                r.iterationId as string,
+                r.state.handoff.file,
+              ),
+            }
+          : {}),
+      }),
+    );
+  }
+  for (const [m, keys] of Object.entries(r.remaining ?? {}))
+    io.err(`  ${m}: ${keys.length} rollout(s) left`);
+  io.err(`${r.status}${r.step ? ` at ${r.step}` : ''}: ${r.message}`);
+  if (r.iterationId && r.status !== 'complete')
+    io.err(`resume with \`greenlight bench iterate --resume ${r.iterationId}\``);
+  if (r.status === 'complete' && r.iterationId && !a.flags.has('--json')) {
+    const file = join(stateDir, 'bench', 'iterations', r.iterationId, 'handoff.md');
+    if (existsSync(file)) io.out(readFileSync(file, 'utf8'));
+  }
+  return r.exitCode;
+}
+
+function reviewCmd(args: string[], io: BenchIo): number {
+  const a = parseFlags('bench review', args, {
+    value: [...COMMON, '--decision', '--reason'],
+    boolean: ['--json'],
+  });
+  const id = a.positional[0];
+  const decision = a.values['--decision'];
+  const reason = a.values['--reason'];
+  if (
+    !id ||
+    a.positional.length > 1 ||
+    (decision !== 'accept' && decision !== 'reject') ||
+    !reason?.trim()
+  ) {
+    io.err(
+      'usage: greenlight bench review <iterationId> --decision accept|reject --reason "<text>"',
+    );
+    return 2;
+  }
+  const p = paths(io, a.values);
+  const r = reviewIteration({
+    stateDir: join(io.cwd, '.greenlight'),
+    wikiRoot: p.wiki,
+    skillsDir: p.skills,
+    iterationId: id,
+    decision,
+    reason,
+    ...(io.iterate?.now ? { now: io.iterate.now } : {}),
+  });
+  if (a.flags.has('--json')) io.out(JSON.stringify({ eventIds: r.eventIds }));
+  for (const e of r.events) io.err(`✔ ${e.stage} ${e.proposalId} (${e.eventId})`);
+  return 0;
 }

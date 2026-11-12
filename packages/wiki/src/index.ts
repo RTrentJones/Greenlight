@@ -30,6 +30,8 @@ export * from './bench/grade';
 export * from './bench/runner';
 // M2-02 / M2-03: outlet evaluation for the human-applied outlets, and the control arm.
 export * from './bench/outlets';
+// M2-01 / M2-04: the ITERATE state machine and the review hand-off.
+export * from './bench/iterate';
 export * from './ids';
 export * from './parse';
 export * from './load';
