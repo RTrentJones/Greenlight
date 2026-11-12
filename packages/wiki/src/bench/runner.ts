@@ -152,6 +152,10 @@ export interface BenchRunOptions {
   sandbox: SandboxKind;
   resume?: string;
   force?: boolean;
+  /** A baseline evaluation reuses a sealed baseline record of exactly this identity (the accepted
+   * skill set's R_best, 06 §5.1 step 1) that covers every requested rollout and is at most this
+   * many days old (`bench/gate.json` `maxBaselineAgeDays`). Unset: a baseline always runs. */
+  reuseBaselineMaxAgeDays?: number;
   /** Max ReAct steps per rollout (default {@link DEFAULT_MAX_STEPS}; on resume, the evaluation's). */
   maxSteps?: number;
   /** Hard cap on LLM requests per rollout, retries included (default `maxSteps + 2`). Part of the
@@ -337,12 +341,29 @@ export function findCachedTrain(
   identity: BaselineIdentity,
   keys: readonly string[],
 ): EvaluationRecord | undefined {
-  return records.find(
-    (r) =>
-      r.role === 'train' &&
-      sameIdentity(r.identity, identity) &&
-      keys.every((k) => r.outcomes.some((o) => ROLLOUT_KEY(o.task, o.model, o.run) === k)),
-  );
+  return findCachedRecord(records, identity, keys, 'train');
+}
+
+/** A sealed record of `role` with exactly this identity that covers every requested rollout,
+ * optionally created within a time window (epoch ms); the newest such record wins. */
+export function findCachedRecord(
+  records: readonly EvaluationRecord[],
+  identity: BaselineIdentity,
+  keys: readonly string[],
+  role: EvaluationRecord['role'],
+  window: { createdAfter?: number; createdBefore?: number } = {},
+): EvaluationRecord | undefined {
+  const at = (r: EvaluationRecord) => Date.parse(r.createdAt);
+  return records
+    .filter(
+      (r) =>
+        r.role === role &&
+        sameIdentity(r.identity, identity) &&
+        (window.createdAfter === undefined || at(r) >= window.createdAfter) &&
+        (window.createdBefore === undefined || at(r) <= window.createdBefore) &&
+        keys.every((k) => r.outcomes.some((o) => ROLLOUT_KEY(o.task, o.model, o.run) === k)),
+    )
+    .sort((a, b) => at(b) - at(a))[0];
 }
 
 function ledgerEvents(wikiRoot: string): LedgerEvent[] {
@@ -1267,6 +1288,20 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       return done(
         'cached',
         `reusing train evaluation ${hit.hash}: the identity is unchanged (06 §1.5); pass --force to re-run`,
+        { identity, record: hit, recordPath: join(o.wikiRoot, evalEvidencePath(hit.hash)) },
+      );
+    }
+  }
+  if (role === 'baseline' && o.reuseBaselineMaxAgeDays !== undefined && !o.force && !previous) {
+    const maxMs = o.reuseBaselineMaxAgeDays * 86_400_000;
+    const hit = findCachedRecord(loadEvaluationRecords(o.wikiRoot), identity, keys, 'baseline', {
+      createdAfter: now().getTime() - maxMs,
+      createdBefore: now().getTime(),
+    });
+    if (hit) {
+      return done(
+        'cached',
+        `reusing baseline evaluation ${hit.hash}: the identity is unchanged and it is at most ${o.reuseBaselineMaxAgeDays} days old (06 §5.1)`,
         { identity, record: hit, recordPath: join(o.wikiRoot, evalEvidencePath(hit.hash)) },
       );
     }

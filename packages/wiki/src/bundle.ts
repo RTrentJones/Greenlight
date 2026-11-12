@@ -106,6 +106,8 @@ export interface BundleManifest {
   seed: string;
   skill?: string;
   incident?: string;
+  /** Every bundled incident, when more than one (`incident` is the first). */
+  incidents?: string[];
   /** Raw records copied into the bundle (maintainer) — always field or train records. */
   rawIds: string[];
   /** Every file of the bundle, sorted; the bundle's own allow-list record. */
@@ -383,6 +385,8 @@ export interface MaintainerBundleInput {
   tool?: string;
   /** An incident page id to bundle under `incident/`. */
   incident?: string;
+  /** More incident pages to bundle under `incident/` (the first iteration bundles two). */
+  incidents?: readonly string[];
   /** Held-out task ids known beyond the raw store and `splits`. */
   heldOutTaskIds?: readonly string[];
   /** `bench/splits.json`: decides which bench records are train. Without it, none are. */
@@ -409,29 +413,39 @@ export function buildMaintainerBundle(input: MaintainerBundleInput): BundleFiles
   const sampled = [...failing, ...passing];
   for (const r of sampled) files.set(`raw/${r.rawId}.json`, bundledRecord(r));
 
-  let incident: string | undefined;
-  if (input.incident !== undefined) {
-    const page = resolveId(input.wiki, input.incident);
+  // One incident (`--incident`) or several (`incidents`, the first iteration's pair, 06 §10.1):
+  // each page under `incident/<slug>.md`, with its refs in `incident/refs.json`.
+  const wanted = [
+    ...new Set([
+      ...(input.incident !== undefined ? [input.incident] : []),
+      ...(input.incidents ?? []),
+    ]),
+  ];
+  const incidents: string[] = [];
+  const refs: Record<string, unknown>[] = [];
+  for (const ref of wanted) {
+    const page = resolveId(input.wiki, ref);
     if (!page || page.frontmatter.type !== 'incident') {
-      throw new Error(`--incident "${input.incident}" is not an incident page of this wiki`);
+      throw new Error(`--incident "${ref}" is not an incident page of this wiki`);
     }
-    incident = page.id;
+    if (incidents.includes(page.id)) continue;
+    incidents.push(page.id);
     const slug = page.id.split('/').at(-1) as string;
     files.set(`incident/${slug}.md`, page.raw);
+    refs.push({
+      incident: page.id,
+      evidence: page.frontmatter.evidence,
+      fetched: false,
+      note: 'issue and PR threads are fetched through gh from M3; until then read the refs as listed',
+    });
+  }
+  if (refs.length > 0) {
     files.set(
       'incident/refs.json',
-      `${JSON.stringify(
-        {
-          incident: page.id,
-          evidence: page.frontmatter.evidence,
-          fetched: false,
-          note: 'issue and PR threads are fetched through gh from M3; until then read the refs as listed',
-        },
-        null,
-        2,
-      )}\n`,
+      `${JSON.stringify(refs.length === 1 ? refs[0] : refs, null, 2)}\n`,
     );
   }
+  const incident = incidents[0];
 
   files.set('context.json', `${JSON.stringify(input.context, null, 2)}\n`);
   files.set(PROMPT_FILE, renderPrompt(MAINTAINER_PROMPT, input.dir, 'maintainer'));
@@ -444,6 +458,7 @@ export function buildMaintainerBundle(input: MaintainerBundleInput): BundleFiles
       seed,
       ...(input.skill ? { skill: input.skill } : {}),
       ...(incident ? { incident } : {}),
+      ...(incidents.length > 1 ? { incidents } : {}),
       rawIds: sampled.map((r) => r.rawId),
     },
     files,

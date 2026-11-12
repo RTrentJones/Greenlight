@@ -18,7 +18,13 @@ export const LEDGER_STAGES = [
   'withdrawn',
   'release-check',
   'spend',
+  'review',
 ] as const;
+
+/** Stages that annotate a proposal without moving it through the stage machine (06 §6.1): the
+ * owner's review of a ledger row (06 §0 condition 4, roadmap M2-04). A review may follow any
+ * stage, including a final one, and never changes which stage may come next. */
+export const ANNOTATION_STAGES: ReadonlySet<string> = new Set(['review']);
 
 const Mode = z.enum(['isolation', 'production']);
 
@@ -139,6 +145,16 @@ const LedgerEventObject = z
       })
       .strict()
       .optional(),
+    /** The owner's review (roadmap M2-04): REQUIRED on `review` events, and allowed on the
+     * `withdrawn` event an owner's reject-after-accept writes. `iteration` names the
+     * `bench iterate` run whose hand-off was reviewed. */
+    review: z
+      .object({
+        decision: z.enum(['accept', 'reject']),
+        iteration: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -148,8 +164,18 @@ export const LedgerEventSchema = LedgerEventObject.superRefine((e, ctx) => {
   const unattached = e.stage === 'spend' || e.stage === 'release-check';
   if (!unattached && !e.proposalId) issue('proposalId', `stage "${e.stage}" needs a proposalId`);
   if (e.stage.startsWith('candidate-') && !e.path) issue('path', 'candidate events need a path');
-  if ((e.stage === 'no-action' || e.stage === 'withdrawn' || e.path === 'neutral') && !e.reason) {
+  if (
+    (e.stage === 'no-action' ||
+      e.stage === 'withdrawn' ||
+      e.stage === 'review' ||
+      e.path === 'neutral') &&
+    !e.reason
+  ) {
     issue('reason', `a ${e.path === 'neutral' ? 'neutral-path' : e.stage} event needs a reason`);
+  }
+  if (e.stage === 'review' && !e.review) issue('review', 'a review event needs review');
+  if (e.review && e.stage !== 'review' && e.stage !== 'withdrawn') {
+    issue('review', 'only review and withdrawn events carry review');
   }
   if (e.stage === 'spend' && !e.spend) issue('spend', 'a spend event needs spend');
   if (e.stage !== 'spend' && e.spend) issue('spend', 'only spend events carry spend');
@@ -218,6 +244,11 @@ export function checkProposalHistory(events: readonly LedgerEvent[]): string[] {
   const outlet = outlets[0];
   let at = 'start';
   for (const e of events) {
+    if (ANNOTATION_STAGES.has(e.stage)) {
+      // An annotation reviews what exists; it cannot open a proposal's history.
+      if (at === 'start') out.push(`stage "${e.stage}" cannot open a proposal's history`);
+      continue;
+    }
     if (!nextStages(at, outlet).includes(e.stage)) {
       const why =
         e.stage === 'released' && outlet === 'verify' ? ' (outlet verify has no CLI release)' : '';

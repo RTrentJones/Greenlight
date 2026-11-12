@@ -850,6 +850,7 @@ stage is recorded separately, because each one proves something different:
 | `released` | harness, from the release workflow | it is in a published CLI version (`version` field) |
 | `verified-in-production` | `wiki remediate` with field evidence | the pattern's `catches` check went red→green on a deployed artifact |
 | `withdrawn` | human | reverted or abandoned after acceptance, with a reason |
+| `review` | `bench review`, for the owner | the owner reviewed the ledger row (an annotation that never moves the stage machine, 08 §8) |
 
 `skill-impact.md` shows one row per proposal, with its latest stage and links to each event.
 Release notes list proposals reaching `released`. Patterns become `confirmed` only from

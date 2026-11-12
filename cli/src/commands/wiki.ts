@@ -19,6 +19,7 @@ import {
   buildProposerBundle,
   checkProposal,
   fix,
+  introducedErrors,
   lint,
   lintExitCode,
   listTraces,
@@ -310,27 +311,8 @@ async function ingestCmd(args: string[], io: WikiIo): Promise<number> {
   return 0;
 }
 
-/**
- * The error findings `after` has beyond `before`, counted as a multiset by rule, page and message:
- * a finding has no location, so an identical new error on a page that already had one is still
- * introduced (its count went up), never masked by the pre-existing one.
- */
-export function introducedErrors(before: readonly Finding[], after: readonly Finding[]): Finding[] {
-  const key = (f: Finding) => `${f.rule}\0${f.page}\0${f.message}`;
-  const budget = new Map<string, number>();
-  for (const f of before) {
-    if (f.severity === 'error') budget.set(key(f), (budget.get(key(f)) ?? 0) + 1);
-  }
-  return after.filter((f) => {
-    if (f.severity !== 'error') return false;
-    const left = budget.get(key(f)) ?? 0;
-    if (left > 0) {
-      budget.set(key(f), left - 1);
-      return false;
-    }
-    return true;
-  });
-}
+/** Re-exported: the multiset rule lives with lint (`@rtrentjones/greenlight-wiki`). */
+export { introducedErrors };
 
 async function ingestApply(
   file: string,

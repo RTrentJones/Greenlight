@@ -465,7 +465,8 @@ type LedgerEvent = {
   eventId: string;                       // sha256 of the canonical JSON of the rest of the event
   proposalId?: string;                   // absent only for 'spend' and 'release-check'
   stage: 'no-action' | 'candidate-rejected' | 'candidate-accepted' | 'merged' | 'released'
-       | 'verified-in-production' | 'withdrawn' | 'release-check' | 'spend';
+       | 'verified-in-production' | 'withdrawn' | 'release-check' | 'spend'
+       | 'review';                       // an annotation: the owner's review (M2-04), below
   path?: 'standard' | 'safety-fix' | 'neutral';   // 06 §5.4; REQUIRED on candidate-* events
   control?: boolean;                     // true for control-arm proposals (06 §10.2); never merged
   pattern?: string[];
@@ -477,6 +478,7 @@ type LedgerEvent = {
   versionFrom?: string; versionTo?: string;   // on merged (skill/template)
   release?: string;                      // on released: the CLI version
   spend?: { usd: number; rollouts: number; requests: number; tokensIn: number; tokensOut: number; evaluationId?: string };  // requests: the free-tier binding constraint (ADR-20)
+  review?: { decision: 'accept' | 'reject'; iteration?: string };  // REQUIRED on review; allowed on withdrawn
 };
 
 type Evidence =
@@ -515,6 +517,15 @@ equal instants keep append order):
 | `released` | `verified-in-production`, `withdrawn` |
 | `verified-in-production` | `withdrawn` |
 | `no-action`, `candidate-rejected`, `withdrawn` | nothing (final) |
+| any stage (not start) | `review` (an annotation; the stage machine stays where it was) |
+
+**The owner's review (roadmap M2-04, 06 §0 condition 4).** `greenlight bench review <iterationId>
+--decision accept|reject --reason "<text>"` records it for every proposal the iteration recorded,
+the control arm included. A `reject` of a `candidate-accepted` proposal is the `withdrawn` event
+(abandoned after acceptance) carrying `review`. Everything else is a `review` event: it needs a
+`reason` and `review`, may follow any stage including a final one, cannot open a history, and never
+changes which stage may come next, so `skill-impact.md` keeps showing the stage-machine stage and
+adds the review to the evidence column. `review` is the only annotation stage.
 
 `released` means "in a published CLI version" (06 §6.1), so it follows `merged` exactly for the
 outlets a CLI release carries: `mechanism`, `doctor`, `template` and `skill`. The `verify` outlet's

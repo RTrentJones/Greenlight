@@ -13,6 +13,7 @@ import {
 import { dirname, join } from 'node:path';
 import { LEDGER_FILE, parseLedger } from './load';
 import {
+  ANNOTATION_STAGES,
   type GateResult,
   type LedgerEvent,
   LedgerEventSchema,
@@ -260,6 +261,7 @@ export interface ProposalHistory {
   proposalId: string;
   /** The proposal's events in time order (parsed instants; ties keep append order). */
   events: LedgerEvent[];
+  /** The latest stage-machine stage; a `review` annotation never counts as one. */
   latest?: LedgerEvent['stage'];
   /** Stage-machine violations (06 §6.1); empty for a well-formed history. */
   problems: string[];
@@ -273,7 +275,7 @@ export function proposalHistory(
   return {
     proposalId,
     events: own,
-    latest: own.at(-1)?.stage,
+    latest: [...own].reverse().find((e) => !ANNOTATION_STAGES.has(e.stage))?.stage,
     problems: checkProposalHistory(own),
   };
 }
@@ -339,7 +341,9 @@ interface Row {
 
 function proposalRow(history: ProposalHistory): Row {
   const evs = history.events;
-  const last = evs.at(-1) as LedgerEvent; // a history built from a seen id has ≥1 event
+  // A history built from a seen id has ≥1 event; the row's stage is the latest non-annotation one.
+  const last = ([...evs].reverse().find((e) => !ANNOTATION_STAGES.has(e.stage)) ??
+    evs.at(-1)) as LedgerEvent;
   const skill = evs.find((e) => e.skill)?.skill;
   const outlet = evs.find((e) => e.outlet)?.outlet;
   const target = [skill, outlet && (skill ? `(${outlet})` : outlet)].filter(Boolean).join(' ');
@@ -347,6 +351,9 @@ function proposalRow(history: ProposalHistory): Row {
   const path = [...evs].reverse().find((e) => e.path)?.path ?? '';
   const evidence = evs.flatMap(evidenceLines);
   if (unmeasured(evs)) evidence.push('**unmeasured**');
+  for (const e of evs) {
+    if (e.review) evidence.push(`owner review ${e.ts.slice(0, 10)}: ${e.review.decision}`);
+  }
   const cells = [
     last.ts.slice(0, 10),
     history.proposalId,
@@ -489,7 +496,8 @@ function projectedRow(id: string, evs: readonly ProjectedEvent[]): Row {
     .map((e, i) => ({ e, i }))
     .sort((x, y) => compareTs(x.e.ts, y.e.ts) || x.i - y.i)
     .map(({ e }) => e);
-  const last = ordered.at(-1) as ProjectedEvent;
+  const last = ([...ordered].reverse().find((e) => !ANNOTATION_STAGES.has(e.stage)) ??
+    ordered.at(-1)) as ProjectedEvent;
   const skill = ordered.find((e) => e.skill)?.skill;
   const outlet = ordered.find((e) => e.outlet)?.outlet;
   const target = [skill, outlet && (skill ? `(${outlet})` : outlet)].filter(Boolean).join(' ');
