@@ -7,14 +7,22 @@ name: evo
 # - workflow_dispatch ONLY: the proposer and gate never run on push (06 §9).
 # - One iteration at a time: the `greenlight-evo` concurrency group serializes runs, so two runs
 #   never read the same remaining budget; a queued run waits rather than cancelling one in flight.
-# - Commits nothing. The iteration's state, bundles and hand-off are uploaded as artifacts; the
-#   hand-off (a PR or issue body) is printed for the orchestrator, who posts it for owner review.
-#   Wiki and ledger writes ride the state artifact until a human commits them.
-# - Runs only on an allow-listed branch (EVO_BRANCHES). A state_run_id is restored only from an
-#   evo.yml run of THIS repository (not a fork) on an allow-listed branch, downloaded into a temp
-#   dir, and copied by scripts/evo-restore.mjs: only .greenlight/{bench,raw,quota} and the wiki's
-#   writes, never code, bench/, skills or node_modules, and only when its ledger extends ours.
-# - Bundle keys are never uploaded: each run makes its own, so an in-flight proposer step reruns
+# - Commits nothing. The hand-off (a PR or issue body, val/test ids masked) is printed and is the
+#   only plain artifact; the orchestrator posts it for owner review. Wiki and ledger writes ride
+#   the SEALED state until a human commits them.
+# - The state is sealed (scripts/evo-state.mjs: AES-256-GCM, key in the EVO_STATE_KEY secret):
+#   public artifacts never carry state.json, decisions or evaluation records (val ids) in the
+#   clear, and a restore accepts only a blob that authenticates, i.e. one an earlier evo run of
+#   this repository sealed. Without EVO_STATE_KEY a run may start a NEW iteration, but refuses to
+#   restore and uploads no state at all (fail closed; the job summary says so).
+# - Runs only on an allow-listed branch (EVO_BRANCHES). A state_run_id is restored only from a
+#   workflow_dispatch evo.yml run of THIS repository (not a fork), on a branch (not a tag) in the
+#   allow-list, whose head commit descends from EVO_SEALED_SINCE (the commit that introduced
+#   sealing). Its blob is opened in a temp dir and copied by scripts/evo-restore.mjs: only
+#   .greenlight/{bench,raw,quota}, a ledger whose bytes extend ours and that passes the stage
+#   machine, the evaluation records, and the wiki pages the iteration wrote (only where ours still
+#   equal the iteration's base commit); then `wiki lint --strict` must pass.
+# - Bundle keys are never sealed: each run makes its own, so an in-flight proposer step reruns
 #   with a fresh bundle on a new runner (its access log cannot be verified there). No .lock either.
 
 on:
@@ -25,7 +33,7 @@ on:
         required: false
         default: ""
       state_run_id:
-        description: "Restore .greenlight/ and wiki/ from this earlier evo run's state artifact (required to resume on a fresh runner)"
+        description: "Restore .greenlight/ and wiki/ from this earlier evo run's sealed state (required to resume on a fresh runner)"
         required: false
         default: ""
       scope:
@@ -44,6 +52,9 @@ concurrency:
 env:
   # Space-separated branches evo runs on and restores state from.
   EVO_BRANCHES: "2.0"
+  # The commit that introduced sealed state: a state run's head must descend from it (runs before
+  # it sealed nothing). Update it only if that history is rewritten.
+  EVO_SEALED_SINCE: "0000000000000000000000000000000000000000"
 
 jobs:
   iterate:
@@ -53,19 +64,37 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Full history: the restore compares wiki pages with the iteration's base commit.
+          fetch-depth: 0
+          # No token in .git/config: nothing an outlet or rollout runs can read it there.
+          persist-credentials: false
 
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
 
       - run: pnpm install --frozen-lockfile
 
-      # Baseline and candidate rollouts run only in the docker sandbox (06 §4.2); the hosted
-      # runner ships the docker daemon.
+      # Baseline and candidate rollouts, and an outlet's check-all on a candidate, run only in the
+      # docker sandbox (06 §4.2, §5.6); the hosted runner ships the docker daemon.
       - name: Docker is up
         run: docker info
 
-      # Provenance first: the run must be this workflow, in this repository (not a fork), on an
-      # allow-listed branch. Only then is its artifact downloaded, into a temp dir, never over
-      # the checkout.
+      # Fail closed: without the sealing key nothing is restored (and nothing is uploaded below).
+      - name: The state key is set
+        id: key
+        env:
+          EVO_STATE_KEY: ${{ secrets.EVO_STATE_KEY }}
+          RUN_ID: ${{ inputs.state_run_id }}
+        run: |
+          if [ -n "$EVO_STATE_KEY" ]; then echo "present=yes" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "present=no" >> "$GITHUB_OUTPUT"
+          echo "> **No EVO_STATE_KEY secret:** this run restores no state and uploads none (the state is only ever stored sealed). Add the secret to resume iterations across runs." >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$RUN_ID" ]; then echo "::error::state_run_id needs the EVO_STATE_KEY secret: refusing to restore unauthenticated state"; exit 1; fi
+
+      # Provenance first: the run must be a workflow_dispatch of this workflow, in this repository
+      # (not a fork), on an allow-listed BRANCH (not a tag of that name), at a commit descending
+      # from EVO_SEALED_SINCE. Only then is its blob downloaded, into a temp dir, never over the
+      # checkout, and only a blob that authenticates under EVO_STATE_KEY is opened.
       - name: Check the state run's provenance
         if: inputs.state_run_id != ''
         env:
@@ -80,24 +109,41 @@ jobs:
           repo=$(jq -r '.repository.full_name' "$RUNNER_TEMP/state-run.json")
           head_repo=$(jq -r '.head_repository.full_name' "$RUNNER_TEMP/state-run.json")
           branch=$(jq -r '.head_branch' "$RUNNER_TEMP/state-run.json")
+          event=$(jq -r '.event' "$RUNNER_TEMP/state-run.json")
+          head_sha=$(jq -r '.head_sha' "$RUNNER_TEMP/state-run.json")
           [ "${path%@*}" = ".github/workflows/evo.yml" ] || { echo "::error::run $RUN_ID is $path, not evo.yml"; exit 1; }
           [ "$repo" = "$REPO" ] || { echo "::error::run $RUN_ID belongs to $repo"; exit 1; }
           [ "$head_repo" = "$REPO" ] || { echo "::error::run $RUN_ID ran on a fork ($head_repo)"; exit 1; }
+          [ "$event" = "workflow_dispatch" ] || { echo "::error::run $RUN_ID was a $event run, not workflow_dispatch"; exit 1; }
           ok=no; for b in $EVO_BRANCHES; do [ "$branch" = "$b" ] && ok=yes; done
           [ "$ok" = yes ] || { echo "::error::run $RUN_ID ran on branch $branch, not one of: $EVO_BRANCHES"; exit 1; }
+          # A branch, not a tag of the same name.
+          ref=$(gh api "repos/$REPO/git/ref/heads/$branch" --jq .ref)
+          [ "$ref" = "refs/heads/$branch" ] || { echo "::error::$branch is not a branch of $REPO"; exit 1; }
+          if gh api "repos/$REPO/git/ref/tags/$branch" > /dev/null 2>&1; then echo "::error::a tag named $branch exists: refusing an ambiguous ref"; exit 1; fi
+          case "$head_sha" in ''|*[!0-9a-f]*) echo "::error::run $RUN_ID has no head sha"; exit 1;; esac
+          status=$(gh api "repos/$REPO/compare/$EVO_SEALED_SINCE...$head_sha" --jq .status)
+          case "$status" in ahead|identical) ;; *) echo "::error::run $RUN_ID ($head_sha) does not descend from $EVO_SEALED_SINCE ($status)"; exit 1;; esac
 
-      - name: Download the iteration state
+      - name: Download the sealed iteration state
         if: inputs.state_run_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: greenlight-evo-state
+          name: greenlight-evo-state-sealed
           run-id: ${{ inputs.state_run_id }}
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/evo-state
+          path: ${{ runner.temp }}/evo-sealed
 
-      - name: Restore the iteration state (allow-listed paths only)
+      - name: Open and restore the iteration state (authenticated, allow-listed paths only)
         if: inputs.state_run_id != ''
-        run: node scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .
+        env:
+          EVO_STATE_KEY: ${{ secrets.EVO_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          node scripts/evo-state.mjs open "$RUNNER_TEMP/evo-sealed/state.glevo" "$RUNNER_TEMP/evo-state"
+          pnpm exec tsx scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .
+          # Restored pages are used only once they lint clean.
+          pnpm greenlight wiki lint --strict
 
       - name: bench iterate
         id: iterate
@@ -128,31 +174,30 @@ jobs:
             cat "$f" >> "$GITHUB_STEP_SUMMARY"
           done
 
-      - name: Upload the iterations
+      # The only plain artifact: the hand-offs, whose val/test ids are already masked. Never
+      # state.json, decisions or evaluation records.
+      - name: Upload the hand-offs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: greenlight-evo-iterations
-          path: |
-            .greenlight/bench/iterations/**
-            !.greenlight/**/.lock
+          name: greenlight-evo-handoff
+          path: .greenlight/bench/iterations/*/handoff.md
           include-hidden-files: true
           if-no-files-found: ignore
 
-      # What a later run restores with state_run_id (scripts/evo-restore.mjs): raw records, bench
-      # run progress, quota and the wiki writes (evaluation records, ledger, pages). Never the
-      # bundle keys (secrets; each run makes its own) and never a lock.
-      - name: Upload the resumable state
-        if: always()
+      # What a later run restores with state_run_id: raw records, bench run progress, quota and
+      # the wiki writes, sealed (scripts/evo-state.mjs; never bundle keys, never a lock). No key,
+      # no state: it is never uploaded in the clear.
+      - name: Seal the resumable state
+        if: always() && steps.key.outputs.present == 'yes'
+        env:
+          EVO_STATE_KEY: ${{ secrets.EVO_STATE_KEY }}
+        run: node scripts/evo-state.mjs seal . "$RUNNER_TEMP/state.glevo"
+
+      - name: Upload the sealed state
+        if: always() && steps.key.outputs.present == 'yes'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: greenlight-evo-state
-          path: |
-            .greenlight/bench/
-            .greenlight/raw/
-            .greenlight/quota/
-            wiki/
-            !.greenlight/bundle-keys/
-            !.greenlight/**/.lock
-          include-hidden-files: true
-          if-no-files-found: ignore
+          name: greenlight-evo-state-sealed
+          path: ${{ runner.temp }}/state.glevo
+          if-no-files-found: error

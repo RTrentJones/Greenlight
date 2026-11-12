@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -21,6 +22,7 @@ import {
   type OutletContext,
   type QuotaStore,
   type RunnerAssets,
+  acquireLock,
   dockerAvailable,
   iterate,
   iterationDir,
@@ -381,6 +383,39 @@ describe('bench iterate (M2-01, M2-04)', () => {
           expect(saved.evaluate.candidate?.record).toBeTruthy();
           expect(saved.evaluate.candidate?.decisionStatus).toBe('failed');
           sealedCandidate = saved.evaluate.candidate?.record;
+          // A restored state is never trusted: a stored candidate hash, record or proposal id that
+          // is not this step's refuses (exit 4) before anything runs; a tampered candidate
+          // directory is rebuilt (checked after the loop).
+          const stateFile = join(iterationDir(env.stateDir, id), 'state.json');
+          const good = readFileSync(stateFile, 'utf8');
+          type Cand = NonNullable<IterationState['evaluate']['candidate']>;
+          const tamper = async (edit: (x: IterationState) => void, re: RegExp) => {
+            const x = JSON.parse(good) as IterationState;
+            edit(x);
+            writeFileSync(stateFile, JSON.stringify(x, null, 2));
+            const t = await iterate(env.options(day, { resume: id }));
+            expect(t.exitCode, t.message).toBe(4);
+            expect(t.message).toMatch(re);
+            writeFileSync(stateFile, good);
+          };
+          await tamper((x) => {
+            (x.evaluate.candidate as Cand).candidateSkillSetHash = '0'.repeat(64);
+          }, /rebuilt from the proposal hashes to/);
+          await tamper((x) => {
+            (x.evaluate.candidate as Cand).record = x.baseline.record as string;
+          }, /is not this step's record: it is a baseline record/);
+          await tamper((x) => {
+            x.proposer.proposalId = 'prop-deadbeefdead';
+          }, /is not its content id/);
+          const candSkill = join(
+            iterationDir(env.stateDir, id),
+            'candidates',
+            saved.evaluate.candidate?.proposalId as string,
+            'skills',
+            'greenlight-wiki',
+            'SKILL.md',
+          );
+          writeFileSync(candSkill, `${readFileSync(candSkill, 'utf8')}\nTAMPERED\n`);
           continue;
         }
         if (step === 'control') {
@@ -408,6 +443,19 @@ describe('bench iterate (M2-01, M2-04)', () => {
       }
       const s = loadIterationState(env.stateDir, id) as IterationState;
       const dir = iterationDir(env.stateDir, id);
+      expect(
+        readFileSync(
+          join(
+            dir,
+            'candidates',
+            s.evaluate.candidate?.proposalId as string,
+            'skills',
+            'greenlight-wiki',
+            'SKILL.md',
+          ),
+          'utf8',
+        ),
+      ).not.toContain('TAMPERED');
 
       // Maintainer: validated, applied, logged.
       expect(s.maintainer.applied).toBe(true);
@@ -595,6 +643,37 @@ describe('bench iterate (M2-01, M2-04)', () => {
         ),
       ).toBe(4);
       expect(o2b.join('\n')).toMatch(/half-recorded/);
+      // The pending events are re-derived, never appended as stored: a stored event that does
+      // not re-derive (here: another eventId) is refused, and the pending review is kept.
+      const forgedReview = JSON.parse(JSON.stringify(half)) as IterationState;
+      (forgedReview.reviewPending as NonNullable<IterationState['reviewPending']>).events[0] = {
+        ...(half.reviewPending?.events[0] as (typeof reviewEvents)[number]),
+        eventId: 'f'.repeat(64),
+      };
+      writeFileSync(join(dir, 'state.json'), `${JSON.stringify(forgedReview, null, 2)}\n`);
+      const o2c: string[] = [];
+      expect(
+        await benchCommand(
+          [
+            'review',
+            id,
+            '--decision',
+            'reject',
+            '--reason',
+            'owner wants a smaller rule',
+            '--root',
+            env.wiki,
+            '--skills',
+            env.skills,
+          ],
+          io(o2c),
+        ),
+      ).toBe(4);
+      expect(o2c.join('\n')).toMatch(/do not re-derive/);
+      expect(loadIterationState(env.stateDir, id).reviewPending).toBeTruthy();
+      writeFileSync(join(dir, 'state.json'), `${JSON.stringify(half, null, 2)}\n`);
+      // A torn trailing line (a crash mid-append) is cut under the ledger lock before the retry.
+      appendFileSync(join(env.wiki, 'ledger.jsonl'), '{"eventId":"torn-wri');
       expect(
         await benchCommand(
           [
@@ -615,6 +694,7 @@ describe('bench iterate (M2-01, M2-04)', () => {
       ).toBe(0);
       expect(ledger(env.wiki)).toHaveLength(after.length);
       expect(ledgerProblems(ledger(env.wiki))).toEqual([]);
+      expect(readFileSync(join(env.wiki, 'ledger.jsonl'), 'utf8')).not.toContain('torn-wri');
       const o3: string[] = [];
       expect(
         await benchCommand(
@@ -836,14 +916,19 @@ describe('evo.yml', () => {
     expect(text).toContain('.greenlight/bench/iterations/');
     expect(text).not.toMatch(/git (commit|push)/);
     expect(text).toMatch(/contents:\s*read/);
+    expect(text).toContain('persist-credentials: false');
   });
 
-  it('restores state only from a provenance-checked run, into a temp dir, allow-listed paths only', () => {
+  it('restores only a provenance-checked, authenticated blob, and uploads state only sealed', () => {
     const text = readFileSync(join(REPO, '.github/workflows/evo.yml'), 'utf8');
     // The job runs only on the allow-listed branch.
     expect(text).toMatch(
       /^\s{4}if: contains\(fromJSON\('\["refs\/heads\/2\.0"\]'\), github\.ref\)/m,
     );
+    // Without the key: no restore (fails), no state upload, and the summary says so.
+    expect(text).toContain('secrets.EVO_STATE_KEY');
+    expect(text).toMatch(/refusing to restore unauthenticated state/);
+    expect(text).toContain('No EVO_STATE_KEY secret');
     // Provenance: the run is resolved and checked before anything is downloaded.
     const check = text.indexOf("Check the state run's provenance");
     const download = text.indexOf('actions/download-artifact');
@@ -853,22 +938,81 @@ describe('evo.yml', () => {
     expect(text).toContain('.github/workflows/evo.yml');
     expect(text).toContain('.head_repository.full_name');
     expect(text).toContain('.head_branch');
-    // Downloaded into a temp dir, never over the checkout; copied by the allow-list script.
-    expect(text).toMatch(/path: \$\{\{ runner\.temp \}\}\/evo-state/);
+    expect(text).toContain('[ "$event" = "workflow_dispatch" ]');
+    expect(text).toContain('git/ref/heads/$branch');
+    expect(text).toContain('git/ref/tags/$branch');
+    expect(text).toContain('compare/$EVO_SEALED_SINCE...$head_sha');
+    expect(text).toMatch(/EVO_SEALED_SINCE: "[0-9a-f]{40}"/);
+    // Opened (authenticated) into a temp dir, restored by the allow-list script, then linted.
+    expect(text).toMatch(/path: \$\{\{ runner\.temp \}\}\/evo-sealed/);
     expect(text).not.toMatch(/download-artifact[\s\S]*?path: \.\s*$/m);
-    expect(text).toContain('node scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .');
-    // No bundle keys and no lock in any artifact; the state upload names its roots.
-    for (const m of text.matchAll(/upload-artifact[\s\S]*?path: \|([\s\S]*?)(?:\n\s{10}\w|$)/g)) {
-      const paths = m[1] as string;
-      expect(paths).not.toMatch(/^\s*\.greenlight\/\s*$/m);
-      expect(paths).toContain('!.greenlight/**/.lock');
-    }
-    expect(text).toContain('!.greenlight/bundle-keys/');
+    expect(text).toContain(
+      'node scripts/evo-state.mjs open "$RUNNER_TEMP/evo-sealed/state.glevo" "$RUNNER_TEMP/evo-state"',
+    );
+    expect(text).toContain('pnpm exec tsx scripts/evo-restore.mjs "$RUNNER_TEMP/evo-state" .');
+    expect(text).toContain('pnpm greenlight wiki lint --strict');
+    // Uploads: the masked hand-offs, and the sealed blob only when the key is present.
+    const uploads = [...text.matchAll(/upload-artifact[\s\S]*?path: (.*)/g)].map((m) => m[1]);
+    expect(uploads).toEqual([
+      '.greenlight/bench/iterations/*/handoff.md',
+      '${{ runner.temp }}/state.glevo',
+    ]);
+    expect(text).toMatch(
+      /Upload the sealed state\n\s+if: always\(\) && steps\.key\.outputs\.present == 'yes'/,
+    );
+    expect(text).not.toMatch(/name: greenlight-evo-state\s*$/m);
   });
 
-  it('evo-restore copies only state and wiki writes, and refuses a ledger that is not an extension', async () => {
+  it('evo-state seals with AES-256-GCM, opens only what authenticates, and only state paths', async () => {
+    const mod = (await import(join(REPO, 'scripts', 'evo-state.mjs'))) as {
+      parseKey: (t: string | undefined) => Buffer;
+      collect: (c: string) => { path: string; data: Buffer }[];
+      seal: (f: { path: string; data: Buffer }[], k: Buffer) => Buffer;
+      open: (b: Buffer, k: Buffer) => { path: string; data: Buffer }[];
+    };
+    const key = mod.parseKey(Buffer.alloc(32, 7).toString('base64'));
+    expect(() => mod.parseKey(undefined)).toThrow(/not set/);
+    expect(() => mod.parseKey('c2hvcnQ=')).toThrow(/32 bytes/);
+    const co = tmp('greenlight-evo-seal-');
+    const put = (rel: string, body: string) => {
+      mkdirSync(join(co, rel, '..'), { recursive: true });
+      writeFileSync(join(co, rel), body);
+    };
+    put('.greenlight/bench/iterations/iter-x/state.json', '{"v":1}');
+    put('.greenlight/bench/iterations/iter-x/.lock', 'lock');
+    put('.greenlight/bundle-keys/k.json', 'secret');
+    put('wiki/ledger.jsonl', '');
+    put('wiki/patterns/p.md', 'page');
+    const files = mod.collect(co);
+    expect(files.map((f) => f.path).sort()).toEqual([
+      '.greenlight/bench/iterations/iter-x/state.json',
+      'wiki/ledger.jsonl',
+      'wiki/patterns/p.md',
+    ]);
+    const blob = mod.seal(files, key);
+    expect(blob.includes(Buffer.from('iter-x'))).toBe(false); // nothing in the clear
+    expect(mod.open(blob, key).map((f) => f.path)).toEqual(files.map((f) => f.path));
+    // A wrong key, or any flipped byte, fails authentication.
+    expect(() => mod.open(blob, Buffer.alloc(32, 8))).toThrow(/fails authentication/);
+    const flipped = Buffer.from(blob);
+    flipped[flipped.length - 1] = (flipped[flipped.length - 1] as number) ^ 1;
+    expect(() => mod.open(flipped, key)).toThrow(/fails authentication/);
+    // A well-sealed blob naming a path outside the state is refused all the same.
+    const evil = mod.seal([{ path: 'package.json', data: Buffer.from('{}') }], key);
+    expect(() => mod.open(evil, key)).toThrow(/names a path it may not/);
+  });
+
+  it('evo-restore: state paths, a byte-prefix valid ledger, and only untouched maintainer pages', async () => {
     const mod = (await import(join(REPO, 'scripts', 'evo-restore.mjs'))) as {
-      restore: (a: string, c: string) => { restored: string[]; skipped: string[] };
+      restore: (
+        a: string,
+        c: string,
+        o: { validateLedger: (t: string) => string[] },
+      ) => { restored: string[]; skipped: string[] };
+    };
+    const validateLedger = (text: string) => {
+      const { events, errors } = parseLedger(text);
+      return [...errors.map((e) => e.message), ...ledgerProblems(events)];
     };
     const root = tmp('greenlight-evo-restore-');
     const art = join(root, 'artifact');
@@ -877,28 +1021,42 @@ describe('evo.yml', () => {
       mkdirSync(join(base, rel, '..'), { recursive: true });
       writeFileSync(join(base, rel), body);
     };
-    const line = (id: string) => `${JSON.stringify({ eventId: id })}\n`;
-    put(co, 'wiki/ledger.jsonl', line('a') + line('b'));
+    const ev = (n: number) =>
+      `${JSON.stringify(sealEvent({ ts: `2026-11-1${n}T00:00:00.000Z`, proposalId: `prop-00000000000${n}`, stage: 'no-action', change: { kind: 'no_action' }, reason: 'r' }))}\n`;
+    // The checkout: a git repo whose base commit holds the pages.
+    mkdirSync(co, { recursive: true });
+    gitOut(co, 'init', '-q', '-b', 'main');
+    put(co, 'wiki/ledger.jsonl', ev(1) + ev(2));
+    put(co, 'wiki/patterns/p.md', 'base page\n');
+    put(co, 'wiki/patterns/human.md', 'base human\n');
     put(co, 'package.json', '{"scripts":{"check-all":"pnpm test"}}');
+    gitOut(co, 'add', '-A');
+    gitOut(co, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'base');
+    const baseCommit = gitOut(co, 'rev-parse', 'HEAD');
+    const state = (writes: string[], base: string | null = baseCommit) =>
+      JSON.stringify({
+        v: 1,
+        ...(base ? { baseCommit: base } : {}),
+        maintainer: { writes: writes.map((path) => ({ path, sha256: 'x' })) },
+      });
+    put(art, '.greenlight/bench/iterations/iter-x/state.json', state(['patterns/p.md']));
     for (const rel of [
-      '.greenlight/bench/iterations/iter-x/state.json',
       '.greenlight/raw/r.json',
       '.greenlight/quota/m.json',
       'wiki/evidence/eval/abc.json',
-      'wiki/patterns/p.md',
+      'wiki/patterns/human.md', // not a maintainer write: never restored
       // Never restored:
       '.greenlight/bundle-keys/k.json',
       '.greenlight/bench/iterations/iter-x/.lock',
       'package.json',
       'bench/gate.json',
-      'bench/repro/x/run.mjs',
       '.claude/skills/x/SKILL.md',
-      'node_modules/x/index.js',
       'cli/src/bin.ts',
     ])
       put(art, rel, 'evil');
-    put(art, 'wiki/ledger.jsonl', line('a') + line('b') + line('c'));
-    const r = mod.restore(art, co);
+    put(art, 'wiki/patterns/p.md', 'maintainer page\n');
+    put(art, 'wiki/ledger.jsonl', ev(1) + ev(2) + ev(3));
+    const r = mod.restore(art, co, { validateLedger });
     expect(r.restored.sort()).toEqual(
       [
         '.greenlight/bench/iterations/iter-x/state.json',
@@ -909,14 +1067,33 @@ describe('evo.yml', () => {
         'wiki/patterns/p.md',
       ].sort(),
     );
+    expect(readFileSync(join(co, 'wiki/patterns/human.md'), 'utf8')).toBe('base human\n');
     expect(readFileSync(join(co, 'package.json'), 'utf8')).toContain('check-all');
     for (const rel of ['.greenlight/bundle-keys/k.json', 'bench/gate.json', 'cli/src/bin.ts'])
       expect(existsSync(join(co, rel))).toBe(false);
-    // A ledger that rewrites history (not a prefix extension) is refused, and nothing copied.
-    put(co, 'wiki/ledger.jsonl', line('a') + line('b') + line('c') + line('d'));
-    put(art, 'wiki/patterns/q.md', 'new');
-    expect(() => mod.restore(art, co)).toThrow(/does not extend/);
-    expect(existsSync(join(co, 'wiki/patterns/q.md'))).toBe(false);
+
+    const refused = (re: RegExp) => {
+      const before = readFileSync(join(co, 'wiki/ledger.jsonl'));
+      expect(() => mod.restore(art, co, { validateLedger })).toThrow(re);
+      expect(readFileSync(join(co, 'wiki/ledger.jsonl')).equals(before)).toBe(true);
+    };
+    // A page a human committed since the base is never reverted.
+    put(co, 'wiki/patterns/p.md', 'a human edit\n');
+    refused(/changed in the checkout since the iteration's base commit/);
+    put(co, 'wiki/patterns/p.md', 'base page\n');
+    // Same eventIds but other bytes (a reordered key, a rewritten line) is not an extension.
+    put(co, 'wiki/ledger.jsonl', `${ev(1).trim()} \n${ev(2)}`);
+    refused(/does not extend the checkout's ledger byte for byte/);
+    put(co, 'wiki/ledger.jsonl', ev(1) + ev(2));
+    // An extension that does not parse, or breaks the stage machine, is refused.
+    put(art, 'wiki/ledger.jsonl', `${ev(1) + ev(2)}{"eventId":"x"}\n`);
+    refused(/is not a valid ledger/);
+    put(art, 'wiki/ledger.jsonl', ev(1) + ev(2) + ev(2));
+    refused(/is not a valid ledger/);
+    put(art, 'wiki/ledger.jsonl', ev(1) + ev(2) + ev(3));
+    // A state with pages to restore but no base commit refuses.
+    put(art, '.greenlight/bench/iterations/iter-x/state.json', state(['patterns/p.md'], null));
+    refused(/records no base commit/);
   });
 });
 
@@ -962,17 +1139,42 @@ describe('bench iterate without docker (process sandbox)', () => {
     expect(skillDrift.message).toMatch(/installed skills/);
     writeFileSync(skillFile, skillText);
 
-    // A live lock on this host refuses; a lock written on another host is removed, with a
-    // warning, since a lock never travels with the state.
+    // Pins fail closed: a state missing a pin (here: from before bench/repro was pinned) is
+    // refused, unless --adopt-pins adopts the missing one; a present pin is still compared.
+    const unpinned = loadIterationState(env.stateDir, id);
+    const { repro: _repro, ...fewer } = unpinned.pins as NonNullable<IterationState['pins']>;
+    writeFileSync(
+      join(dir, 'state.json'),
+      `${JSON.stringify({ ...crashed, pins: fewer }, null, 2)}\n`,
+    );
+    const noPin = await iterate(opts(1, { resume: id }));
+    expect(noPin.exitCode).toBe(4);
+    expect(noPin.message).toMatch(/no pin for the trusted repros .*--adopt-pins/);
+    writeFileSync(join(dir, 'state.json'), `${JSON.stringify(crashed, null, 2)}\n`);
+
+    // A live lock on this host refuses; a dead holder's lock (or a reused pid, whose start time
+    // differs) is stale and removed; a lock written on another host is refused unless
+    // --break-lock says that run is gone.
     writeFileSync(join(dir, '.lock'), JSON.stringify({ host: hostname(), pid: process.ppid }));
     const locked = await iterate(opts(1, { resume: id }));
     expect(locked.exitCode).toBe(4);
     expect(locked.message).toMatch(/is running in process/);
+    writeFileSync(
+      join(dir, '.lock'),
+      JSON.stringify({ host: hostname(), pid: process.ppid, start: 'not-its-start-time' }),
+    );
+    const reused = acquireLock(dir);
+    reused();
+    expect(existsSync(join(dir, '.lock'))).toBe(false);
     writeFileSync(join(dir, '.lock'), JSON.stringify({ host: 'another-runner', pid: 1 }));
+    const foreign = await iterate(opts(1, { resume: id }));
+    expect(foreign.exitCode).toBe(4);
+    expect(foreign.message).toMatch(/on host another-runner.*--break-lock/);
+    expect(existsSync(join(dir, '.lock'))).toBe(true);
     const logs: string[] = [];
     env.fake.exhaust = null;
-    const r1 = await iterate(opts(1, { resume: id, log: (x) => logs.push(x) }));
-    expect(logs.join('\n')).toMatch(/removing the lock of process 1 on host another-runner/);
+    const r1 = await iterate(opts(1, { resume: id, breakLock: true, log: (x) => logs.push(x) }));
+    expect(logs.join('\n')).toMatch(/breaking the lock of process 1 on host another-runner/);
     expect(existsSync(join(dir, '.lock'))).toBe(false);
 
     // The sealed train record was loaded, not re-run; the maintainer applied; the baseline is

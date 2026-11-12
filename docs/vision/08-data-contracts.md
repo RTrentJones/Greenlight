@@ -526,10 +526,24 @@ proposal whose latest stage is `candidate-accepted` or later (`merged`, `release
 `verified-in-production`) is the `withdrawn` event (abandoned after acceptance) carrying `review`.
 The events are computed under the iteration's lock and saved in its state before they are
 appended, all or nothing, in one write; an event whose `eventId` is already in the ledger is
-skipped, so a retry after a crash appends the same events once. Everything else is a `review` event: it needs a
+skipped, so a retry after a crash appends the same events once. A failed append keeps the pending
+review; a retry re-derives the events from the state and the ledger (read without the pending
+eventIds) and refuses (exit 4) unless they reproduce the stored eventIds, and a torn trailing line
+(a last line without its newline that does not parse) is cut under the ledger lock first. Everything else is a `review` event: it needs a
 `reason` and `review`, may follow any stage including a final one, cannot open a history, and never
 changes which stage may come next, so `skill-impact.md` keeps showing the stage-machine stage and
 adds the review to the evidence column. `review` is the only annotation stage.
+
+**The iteration state and its sealed blob (06 §9).** `.greenlight/bench/iterations/<id>/state.json`
+carries `pins` (sha256 of the installed skill set, `models.json`, `gate.json`, `splits.json`,
+`bench/tasks`, `bench/controls`, `bench/repro`; a missing pin refuses a resume unless
+`--adopt-pins`) and `baseCommit` (the checkout's HEAD at creation, against which a restore
+compares the wiki pages it would overwrite). Between CI runs the state travels only as the
+`scripts/evo-state.mjs` blob: `GLEVO1\n`, a 12-byte IV, the 16-byte GCM tag, then AES-256-GCM
+(associated data `greenlight-evo-state/v1`, key `EVO_STATE_KEY`: 32 bytes, base64 or hex) over a
+gzipped JSON manifest `{ v: 1, files: [{ path, sha256, data (base64) }] }`. Only paths the restore
+allow-list accepts may appear in it; a blob that fails authentication, or names another path, is
+refused whole.
 
 `released` means "in a published CLI version" (06 §6.1), so it follows `merged` exactly for the
 outlets a CLI release carries: `mechanism`, `doctor`, `template` and `skill`. The `verify` outlet's

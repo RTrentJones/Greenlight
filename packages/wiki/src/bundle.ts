@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { type RawRecord, RawRecordSchema } from '@rtrentjones/greenlight-shared';
+import { parse as parseYaml } from 'yaml';
 import { normalizeId, pathToId, resolveId } from './ids';
 import {
   orderLedgerEvents,
@@ -1138,6 +1139,78 @@ export function checkProposal(input: ProposalCheckInput): ProposalCheck {
   if (manifest.role !== 'proposer') {
     return { ok: false, code: 4, errors: [`bundle ${manifest.id} is a ${manifest.role} bundle`] };
   }
+  const content = checkProposalContent(input);
+  if (!content.ok && content.code === 1) return content;
+  const errors = content.ok ? [] : [...content.errors];
+  const p = content.ok ? content.proposal : ProposerOutputSchema.parse(input.output);
+  if (p.action !== 'no_action') {
+    const log = readAccessLog(bundle);
+    if (log.problems.length > 0) {
+      errors.push(
+        `the access log fails verification, so none of it counts: ${log.problems.join('; ')}`,
+      );
+    }
+    const reads =
+      log.problems.length > 0 ? [] : rawReads(log.entries, input.records, 'proposer', input.splits);
+    if (reads.length < MIN_RAW_READS) {
+      errors.push(
+        `the access log shows ${reads.length} \`wiki read raw:\` call(s); at least ${MIN_RAW_READS} are required before a proposal`,
+      );
+    }
+  }
+  if (errors.length > 0) return { ok: false, code: 4, errors };
+  return { ok: true, proposalId: proposalIdOf(p), proposal: p };
+}
+
+/**
+ * The frontmatter of a skill's PURPOSE.md exactly as the iteration reads its `blast-radius`
+ * (iterate.ts `blastRadius`): the block between a leading `---` line and the next `---` line,
+ * parsed as YAML. `data` is null when the block is absent or does not parse to a mapping.
+ */
+export function purposeFrontmatter(text: string): {
+  present: boolean;
+  data: Record<string, unknown> | null;
+} {
+  const m = /^---\n([\s\S]*?)\n---/.exec(text);
+  if (!m) return { present: false, data: null };
+  try {
+    const v = parseYaml(m[1] as string) as unknown;
+    const mapping = v !== null && typeof v === 'object' && !Array.isArray(v);
+    return { present: true, data: mapping ? (v as Record<string, unknown>) : null };
+  } catch {
+    return { present: true, data: null };
+  }
+}
+
+/** Why an edit of a PURPOSE.md moves its blast radius, or null: the frontmatter's presence, that
+ * it parses, its key set and the parsed `blast-radius` value must all stay as they are (a change
+ * to the block's boundaries that moves the key in or out of it changes one of them). */
+export function purposeRadiusChange(before: string, after: string): string | null {
+  const a = purposeFrontmatter(before);
+  const b = purposeFrontmatter(after);
+  if (a.present !== b.present) return 'the edit adds or removes the frontmatter block';
+  if ((a.data === null) !== (b.data === null)) {
+    return 'the edit changes whether the frontmatter parses';
+  }
+  const keys = (d: Record<string, unknown> | null) =>
+    Object.keys(d ?? {})
+      .sort()
+      .join(',');
+  if (keys(a.data) !== keys(b.data)) return 'the edit changes the frontmatter keys';
+  const radius = (d: Record<string, unknown> | null) => canonicalJson(d?.['blast-radius'] ?? null);
+  if (radius(a.data) !== radius(b.data)) return 'the edit changes the blast-radius value';
+  return null;
+}
+
+/**
+ * The checks of `checkProposal` that need no bundle: the schema, the version and blast-radius
+ * rules, the scope, the target skill or template, that a patch applies, and that every pattern is
+ * a wiki page. A resumed iteration re-runs these on the proposal stored in its state (bundle keys
+ * are per runner, so the access log is checked only when the proposal is made).
+ */
+export function checkProposalContent(
+  input: Pick<ProposalCheckInput, 'output' | 'wiki' | 'skillsDir' | 'templatesDir' | 'scope'>,
+): ProposalCheck {
   const parsed = ProposerOutputSchema.safeParse(input.output);
   if (!parsed.success) {
     return {
@@ -1186,11 +1259,20 @@ export function checkProposal(input: ProposalCheckInput): ProposalCheck {
       if (!applied.ok) errors.push(...applied.errors);
       else {
         for (const w of applied.changeset.writes) {
-          const before = readFileSync(join(root, w.path), 'utf8');
+          const before = existsSync(join(root, w.path))
+            ? readFileSync(join(root, w.path), 'utf8')
+            : '';
           if (radiusLines(before).join('\n') !== radiusLines(w.content).join('\n')) {
             errors.push(
               `edits to ${w.path} change a blast-radius line; the owner sets it (06 §5.4)`,
             );
+          }
+          const moved =
+            w.path.split('/').at(-1) === 'PURPOSE.md'
+              ? purposeRadiusChange(before, w.content)
+              : null;
+          if (moved) {
+            errors.push(`edits to ${w.path}: ${moved}; the owner sets the blast radius (06 §5.4)`);
           }
         }
       }
@@ -1205,19 +1287,6 @@ export function checkProposal(input: ProposalCheckInput): ProposalCheck {
   if (p.action !== 'no_action') {
     for (const id of p.patterns) {
       if (!resolveId(input.wiki, id)) errors.push(`patterns: "${id}" is not a page of the wiki`);
-    }
-    const log = readAccessLog(bundle);
-    if (log.problems.length > 0) {
-      errors.push(
-        `the access log fails verification, so none of it counts: ${log.problems.join('; ')}`,
-      );
-    }
-    const reads =
-      log.problems.length > 0 ? [] : rawReads(log.entries, input.records, 'proposer', input.splits);
-    if (reads.length < MIN_RAW_READS) {
-      errors.push(
-        `the access log shows ${reads.length} \`wiki read raw:\` call(s); at least ${MIN_RAW_READS} are required before a proposal`,
-      );
     }
   }
   if (errors.length > 0) return { ok: false, code: 4, errors };

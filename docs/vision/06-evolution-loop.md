@@ -394,7 +394,11 @@ Do not edit the version field; the harness sets it.
 - A `version` change inside `skill_md` or `edits` is rejected.
 - A `blast-radius` line is the owner's (§5.4): a `create` whose `skill_md` / `purpose_md` carries
   one, or an edit whose text or target mentions one or whose applied result changes any
-  `blast-radius` line of the file, is rejected.
+  `blast-radius` line of the file, is rejected. For a `PURPOSE.md` the check is structural as
+  well: the frontmatter is parsed before and after the edit exactly as the gate reads it, and an
+  edit that adds or removes the block, changes whether it parses, changes its key set or the
+  parsed `blast-radius` value is rejected (closing the block early would otherwise move the key
+  out without touching its line).
 - A `patch` `name` is one canonical path segment: a skill name (kebab-case) that is exactly an
   accepted skill of the installed set, or a lane template `_template-<lane>`. A path
   (`a/../b`, `b/`) is a schema error. An iteration scoped to one skill (`--scope <skill>`) accepts
@@ -780,6 +784,23 @@ change agent behaviour.
 
 Every outlet's evidence lands in the same ledger, with its own `evidence.kind` (08 §8).
 
+**The mechanism and doctor trees.** The candidate is never run as it stands. The evaluated tree is
+a fresh copy of the base with the candidate's diff overlaid; neither tree's `node_modules`, `.git`,
+`.turbo` or `*.tsbuildinfo` is copied. A diff that touches the harness's own configuration is
+`invalid` (`candidate-touches-harness-config`), reviewed by a human and never evaluated: any
+`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, `.pnpmfile.cjs`, `turbo.json`,
+`vitest.config.*`, `biome.json*`, `tsconfig*.json`, `.dependency-cruiser.cjs`, `scripts/**`,
+`.github/**` and `bench/**` (repros, controls, graders, gate/models/budget/splits). A link that
+leaves the tree is `invalid` (`candidate-unsafe-tree`). Dependencies come from the base lockfile
+only (`--frozen-lockfile --ignore-scripts --ignore-pnpmfile`, the registry pinned to the
+harness's default). `check-all` is the HARNESS tree's script, expanded to its leaf commands, and
+runs inside the docker sandbox: one container per command from the bench runner image, uid
+10000, `--network none`, read-only root, no capabilities, `no-new-privileges`, tmpfs HOME and
+`/tmp`, the evaluated tree as the only writable mount (with a fresh `.git`: no remote, no
+credentials), and no harness environment variable. Without docker the outlet is `invalid`
+(`no-sandbox`); candidate code never runs unsandboxed. The trusted repro still runs on the host
+with a scrubbed environment, against the evaluated tree.
+
 For a template candidate, the gate takes the generated-app test result per lane and, per template
 mutant, whether those tests caught it. It applies the §5.4 replay safety rules unchanged and
 replaces the efficacy column with non-regression: capability may not fall by more than one
@@ -917,14 +938,37 @@ only start an investigation. The bench decides.
     in a local file, so it survives ephemeral CI runners.
   - **Serialization.** `evo.yml` runs in the concurrency group `greenlight-evo`, so concurrent
     gates cannot both read the same remaining budget.
-  - **Resuming on a fresh runner.** `evo.yml` runs only on an allow-listed branch. It restores an
-    earlier run's state only when that run is `evo.yml` of the same repository (not a fork) on an
-    allow-listed branch, downloads it into a temp directory, and copies only
-    `.greenlight/{bench,raw,quota}` and the wiki's writes (`scripts/evo-restore.mjs`), refusing a
-    ledger that does not extend the checkout's. Bundle keys and locks are never uploaded: an
-    in-flight proposer step reruns with a fresh bundle on the new runner. A resume refuses
-    (exit 4) when the installed skill set, `models.json`, `gate.json`, `splits.json` or the task
-    set differ from the iteration's creation.
+  - **Resuming on a fresh runner.** `evo.yml` runs only on an allow-listed branch. The state is
+    only ever stored sealed: `scripts/evo-state.mjs` packages the allow-listed paths and seals
+    them with AES-256-GCM under the `EVO_STATE_KEY` repository secret, and the masked hand-off is
+    the only plain artifact, so no public artifact carries val/test ids. Without the key a run may
+    start a new iteration but restores nothing and uploads no state. A restore takes a run that is
+    a `workflow_dispatch` of `evo.yml` in the same repository (not a fork), on an allow-listed
+    branch (not a tag of that name), at a commit descending from the one that introduced sealing;
+    opens its blob in a temp directory, refusing anything that fails authentication; and copies
+    (`scripts/evo-restore.mjs`) only `.greenlight/{bench,raw,quota}`, the evaluation records, a
+    ledger whose bytes extend the checkout's and whose every line parses and passes the stage
+    machine, and the wiki pages the iteration's maintainer wrote plus `log.md` and
+    `skill-impact.md`, each only while the checkout's copy equals the copy at the iteration's
+    base commit (a page a human committed since is never reverted). Restored pages must pass
+    `wiki lint --strict` before the iteration runs. Bundle keys and locks are never sealed: an
+    in-flight proposer step reruns with a fresh bundle on the new runner.
+  - **What a resume trusts.** A resume refuses (exit 4) when the installed skill set,
+    `models.json`, `gate.json`, `splits.json`, the task set, `bench/controls/**` or
+    `bench/repro/**` differ from the iteration's creation. Pins fail closed: a state missing any
+    pin is refused unless `--adopt-pins` (the owner vouches for the inputs on disk; only the
+    missing pins are adopted). Nothing restored is taken as is: the stored proposal is re-checked
+    (all of `checkProposal` but the per-runner access log) and its id must be its content id; the
+    candidate skill set is rebuilt from the accepted skills and the proposal, and must hash to the
+    stored hash; a control must equal its pinned file; every evaluation record a step uses must be
+    that step's (role, proposal, skill set, the split's tasks, and the identity's task-set, splits
+    and grader hashes over the bench on disk); a pending review's events are re-derived and must
+    reproduce the stored eventIds. Any mismatch is exit 4.
+  - **One process per iteration.** The iteration lock is taken atomically (a private temp file
+    `link()`ed to `.lock`) and holds host, pid, process start time and a token. A holder on this
+    host is alive only if its pid runs with the same start time; a stale lock is removed
+    compare-and-delete. A lock from another host cannot be checked and is refused unless
+    `--break-lock`.
   - **Refusal.** `bench run` reports the expected cost before running (§4.5). It refuses to start a
     gate whose expected cost exceeds `perGateMaxUsd`, `perGateMaxRollouts` or the month's
     remaining budget.

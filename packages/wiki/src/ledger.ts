@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  truncateSync,
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -270,7 +271,8 @@ function checkAppend(existing: readonly LedgerEvent[], next: LedgerEvent): void 
 export function appendEvents(
   root: string,
   events: readonly LedgerEventInput[],
-): { appended: LedgerEvent[]; present: LedgerEvent[] } {
+  opts: { repairTornTail?: boolean } = {},
+): { appended: LedgerEvent[]; present: LedgerEvent[]; repaired?: string } {
   const sealed = events.map((event) => {
     if ((event as { writer?: unknown }).writer !== 'harness') {
       throw new LedgerWriteError(
@@ -288,7 +290,26 @@ export function appendEvents(
   });
   const file = join(root, LEDGER_FILE);
   return withFileLock(`${file}.lock`, () => {
-    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    let text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    let repaired: string | undefined;
+    if (opts.repairTornTail && text !== '' && !text.endsWith('\n')) {
+      // A last line without its newline that does not parse is a torn write (a crash mid-append):
+      // it is cut, under the lock, before anything is appended. A complete last line only lacks
+      // its newline and is kept.
+      const cut = text.lastIndexOf('\n') + 1;
+      const tail = text.slice(cut);
+      let whole = false;
+      try {
+        whole = LedgerEventSchema.safeParse(JSON.parse(tail)).success;
+      } catch {
+        whole = false;
+      }
+      if (!whole) {
+        truncateSync(file, Buffer.byteLength(text.slice(0, cut)));
+        text = text.slice(0, cut);
+        repaired = tail;
+      }
+    }
     const acc = [...parseLedger(text).events];
     const appended: LedgerEvent[] = [];
     const present: LedgerEvent[] = [];
@@ -305,7 +326,7 @@ export function appendEvents(
       const lead = text !== '' && !/(^|\n)$/.test(text) ? '\n' : '';
       appendFileSync(file, `${lead}${appended.map((e) => `${canonicalJson(e)}\n`).join('')}`);
     }
-    return { appended, present };
+    return { appended, present, ...(repaired !== undefined ? { repaired } : {}) };
   });
 }
 

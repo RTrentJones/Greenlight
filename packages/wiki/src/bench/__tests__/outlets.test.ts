@@ -1,24 +1,37 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProposerOutput } from '../../schema/io';
 import { LedgerEventSchema } from '../../schema/ledger';
 import {
   type OutletContext,
+  buildEvaluatedTree,
   checkAllCommands,
   evaluateOutlet,
   extractAssertion,
+  harnessConfigTouches,
   installEnv,
   loadRepros,
   parseAssertion,
-  runHarnessCheckAll,
+  runSandboxedCheckAll,
 } from '../outlets';
+import { dockerAvailable, ensureRunnerImage } from '../sandbox';
 
 const REPO = resolve(__dirname, '../../../../..');
 const NOW = new Date('2026-11-12T10:00:00.000Z');
 const PATTERN = 'pattern/toy-condition';
+const DOCKER = dockerAvailable();
 
 const issue = (
   outlet: 'mechanism' | 'doctor' | 'verify',
@@ -374,7 +387,7 @@ describe('evaluateOutlet: verify (artifact)', () => {
   });
 });
 
-describe('check-all on a candidate (harness commands, scrubbed env)', () => {
+describe('check-all on a candidate (harness commands, base + diff, docker sandbox)', () => {
   it("expands the harness's check-all through its own scripts", () => {
     const h = mkdtempSync(join(tmpdir(), 'outlets-test-harness-'));
     try {
@@ -394,45 +407,194 @@ describe('check-all on a candidate (harness commands, scrubbed env)', () => {
     }
   });
 
-  it('a candidate rewriting "check-all": "true" does not pass, and no secret reaches it', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'outlets-test-checkall-'));
-    const was = process.env.GEMINI_API_KEY;
-    process.env.GEMINI_API_KEY = 'test-not-a-real-key';
+  it('install env carries no secret', () => {
+    expect(installEnv({ PATH: '/bin', GEMINI_API_KEY: 'x', GITHUB_TOKEN: 'y' })).toEqual({
+      CI: '1',
+      PATH: '/bin',
+    });
+  });
+
+  /** A clone of the toy repo at `fixed` with `edit` applied and committed (a clean candidate). */
+  function candidateClone(edit: (dir: string) => void): { root: string; dir: string } {
+    const root = mkdtempSync(join(tmpdir(), 'outlets-test-cand-'));
+    git(root, 'clone', '-q', repo, 'c');
+    const dir = join(root, 'c');
+    git(dir, 'checkout', '-q', sha.fixed as string);
+    git(dir, 'config', 'user.email', 'test@example.test');
+    git(dir, 'config', 'user.name', 'test');
+    edit(dir);
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-q', '-m', 'candidate');
+    return { root, dir };
+  }
+
+  it.each([
+    ['vitest.config.ts', 'export default {};\n'],
+    ['turbo.json', '{}\n'],
+    ['package.json', '{"scripts":{"check-all":"true"}}\n'],
+    ['packages/x/package.json', '{}\n'],
+    ['tsconfig.base.json', '{}\n'],
+    ['scripts/check-seam.ts', 'process.exit(0);\n'],
+    ['bench/repro/toy/run.mjs', 'process.exit(0);\n'],
+    ['.github/workflows/ci.yml', 'on: push\n'],
+  ])('refuses a candidate that edits %s, before anything of it runs', async (path, body) => {
+    const c = candidateClone((d) => {
+      mkdirSync(dirname(join(d, path)), { recursive: true });
+      writeFileSync(join(d, path), body);
+    });
     try {
-      const harness = join(root, 'harness');
-      mkdirSync(harness);
-      // The harness's suite: fails when a secret is visible, else passes iff the tree has `ok`.
-      writeFileSync(
-        join(harness, 'package.json'),
-        JSON.stringify({
-          scripts: {
-            'check-all': 'pnpm suite',
-            suite:
-              "node -e \"if (process.env.GEMINI_API_KEY) process.exit(3); process.exit(require('fs').existsSync('ok') ? 0 : 1)\"",
+      let ran = false;
+      const r = await evaluateOutlet(
+        issue('doctor'),
+        ctx({
+          candidate: { dir: c.dir },
+          checkAll: async () => {
+            ran = true;
+            return { ok: true };
           },
         }),
       );
-      const cand = join(root, 'cand');
-      mkdirSync(cand);
-      writeFileSync(
-        join(cand, 'package.json'),
-        JSON.stringify({ scripts: { 'check-all': 'true' } }),
-      );
-      const bad = await runHarnessCheckAll(harness, cand);
-      expect(bad.ok).toBe(false);
-      writeFileSync(join(cand, 'ok'), '');
-      const good = await runHarnessCheckAll(harness, cand);
-      expect(good.ok, good.detail).toBe(true);
-      expect(installEnv({ PATH: '/bin', GEMINI_API_KEY: 'x', GITHUB_TOKEN: 'y' })).toEqual({
-        CI: '1',
-        PATH: '/bin',
-      });
+      expect(r.decision).toBe('invalid');
+      expect(r.reasons[0]?.code).toBe('candidate-touches-harness-config');
+      expect(r.reasons[0]?.detail).toContain(path);
+      expect(r.ledgerEvent).toBeNull();
+      expect(ran).toBe(false);
     } finally {
-      if (was === undefined) Reflect.deleteProperty(process.env, 'GEMINI_API_KEY');
-      else process.env.GEMINI_API_KEY = was;
+      rmSync(c.root, { recursive: true, force: true });
+    }
+  });
+
+  it('never uses a planted node_modules, .turbo cache or tsbuildinfo, and judges base + diff', async () => {
+    const c = candidateClone((d) => {
+      writeFileSync(join(d, '.gitignore'), 'node_modules/\n.turbo/\n*.tsbuildinfo\n');
+      writeFileSync(join(d, 'feature.txt'), 'the candidate change\n');
+    });
+    try {
+      // Ignored, so the clone stays clean, and planted: a fake vitest that always passes.
+      mkdirSync(join(c.dir, 'node_modules', '.bin'), { recursive: true });
+      writeFileSync(join(c.dir, 'node_modules', '.bin', 'vitest'), '#!/bin/sh\nexit 0\n', {
+        mode: 0o755,
+      });
+      mkdirSync(join(c.dir, '.turbo', 'cache'), { recursive: true });
+      writeFileSync(join(c.dir, '.turbo', 'cache', 'hit.json'), '{}');
+      writeFileSync(join(c.dir, 'x.tsbuildinfo'), '{}');
+      const seen: string[] = [];
+      const r = await evaluateOutlet(
+        issue('doctor'),
+        ctx({
+          candidate: { dir: c.dir },
+          checkAll: async (tree) => {
+            seen.push(tree);
+            return { ok: true };
+          },
+        }),
+      );
+      expect(r.decision, JSON.stringify(r.reasons)).toBe('accept');
+      expect(seen).toHaveLength(1);
+      const tree = seen[0] as string;
+      expect(tree).not.toBe(c.dir);
+      expect(seen.some((t) => t.startsWith(c.root))).toBe(false);
+    } finally {
+      rmSync(c.root, { recursive: true, force: true });
+    }
+  });
+
+  it('builds base + the diff only: planted dirs absent, edits and deletions applied', () => {
+    const root = mkdtempSync(join(tmpdir(), 'outlets-test-overlay-'));
+    try {
+      const base = join(root, 'base');
+      const cand = join(root, 'cand');
+      for (const d of [base, cand]) mkdirSync(join(d, 'src'), { recursive: true });
+      writeFileSync(join(base, 'src', 'a.ts'), 'a0');
+      writeFileSync(join(base, 'src', 'gone.ts'), 'g');
+      writeFileSync(join(cand, 'src', 'a.ts'), 'a1');
+      writeFileSync(join(cand, 'src', 'new.ts'), 'n');
+      mkdirSync(join(cand, 'node_modules', '.bin'), { recursive: true });
+      writeFileSync(join(cand, 'node_modules', '.bin', 'vitest'), 'planted');
+      mkdirSync(join(base, 'node_modules'), { recursive: true });
+      writeFileSync(join(base, 'node_modules', 'base-dep'), 'not copied either');
+      const out = join(root, 'out');
+      const built = buildEvaluatedTree(base, cand, out);
+      expect(built).toEqual({
+        ok: true,
+        changed: ['src/a.ts', 'src/new.ts'],
+        removed: ['src/gone.ts'],
+      });
+      expect(readFileSync(join(out, 'src', 'a.ts'), 'utf8')).toBe('a1');
+      expect(existsSync(join(out, 'src', 'gone.ts'))).toBe(false);
+      expect(existsSync(join(out, 'node_modules'))).toBe(false);
+      symlinkSync('/etc/passwd', join(cand, 'src', 'leak'));
+      expect(buildEvaluatedTree(base, cand, join(root, 'out2'))).toEqual({
+        refused: 'unsafe-link',
+        paths: ['src/leak'],
+      });
+      expect(harnessConfigTouches(['a/b/package.json', 'src/x.ts', 'vitest.config.mts'])).toEqual([
+        'a/b/package.json',
+        'vitest.config.mts',
+      ]);
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('without docker, check-all is unavailable (the outlet is invalid, never unsandboxed)', async () => {
+    const r = await runSandboxedCheckAll(repo, repo, { docker: 'greenlight-no-such-docker' });
+    expect(r).toMatchObject({ ok: false, unavailable: true });
+    const out = await evaluateOutlet(
+      issue('doctor'),
+      ctx({
+        checkAll: (t) => runSandboxedCheckAll(repo, t, { docker: 'greenlight-no-such-docker' }),
+      }),
+    );
+    expect(out.decision).toBe('invalid');
+    expect(out.reasons[0]?.code).toBe('no-sandbox');
+  });
+
+  it.skipIf(!DOCKER)(
+    'runs in the sandbox: uid 10000, no network, no harness secret, only the tree mounted',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'outlets-test-sandbox-'));
+      const was = process.env.GEMINI_API_KEY;
+      process.env.GEMINI_API_KEY = 'test-not-a-real-key';
+      try {
+        const harness = join(root, 'harness');
+        mkdirSync(harness);
+        // The suite fails (exit 3..6) on any isolation breach, else passes iff the tree has `ok`.
+        const probe = [
+          "const os=require('os'),fs=require('fs');",
+          'if (process.env.GEMINI_API_KEY) process.exit(3);',
+          'if (process.getuid() !== 10000) process.exit(4);',
+          "if (Object.keys(os.networkInterfaces()).some((n) => n !== 'lo')) process.exit(5);",
+          `if (fs.existsSync(${JSON.stringify(harness)})) process.exit(6);`,
+          "if (!/^10\\.12\\.1/.test(require('child_process').execSync('pnpm --version').toString())) process.exit(7);",
+          "process.exit(fs.existsSync('ok') ? 0 : 1);",
+        ].join(' ');
+        writeFileSync(join(harness, 'probe.cjs'), probe);
+        writeFileSync(
+          join(harness, 'package.json'),
+          JSON.stringify({
+            packageManager: 'pnpm@10.12.1',
+            scripts: { 'check-all': 'pnpm suite', suite: 'node probe.cjs' },
+          }),
+        );
+        const tree = join(root, 'tree');
+        mkdirSync(tree);
+        copyFileSync(join(harness, 'probe.cjs'), join(tree, 'probe.cjs'));
+        const image = ensureRunnerImage(join(REPO, 'bench', 'runner'));
+        const bad = await runSandboxedCheckAll(harness, tree, { image });
+        expect(bad.ok, bad.detail).toBe(false);
+        expect(bad.unavailable).toBeUndefined();
+        writeFileSync(join(tree, 'ok'), '');
+        const good = await runSandboxedCheckAll(harness, tree, { image });
+        expect(good.ok, good.detail).toBe(true);
+      } finally {
+        if (was === undefined) Reflect.deleteProperty(process.env, 'GEMINI_API_KEY');
+        else process.env.GEMINI_API_KEY = was;
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    300_000,
+  );
 });
 
 describe('a directory named by a commit ref', () => {
