@@ -142,6 +142,18 @@ describe('applyMaintainerOutput', () => {
     expect(snapshot(root)).toEqual(before);
   });
 
+  it('an output without update_index gets the generated index, with nothing to correct (06 §2.3)', () => {
+    const { update_index: _dropped, ...out } = output();
+    const root = writeTree(goodFiles());
+    const r = applyMaintainerOutput(loadWiki(root), out, { actor: 'maintainer:test' });
+    if (!r.ok) throw new Error(r.errors.join('; '));
+    expect(r.indexCorrections).toEqual([]);
+    const index = r.changeset.writes.find((w) => w.path === 'index.md')?.content ?? '';
+    expect(index).toContain('patterns/new-lesson.md');
+    expect(index).toContain('patterns/maybe-cause.md');
+    expect(index).not.toContain('maintainer wording');
+  });
+
   it.each([
     ['an invalid output', { update_index: '' }, /update_index/],
     [

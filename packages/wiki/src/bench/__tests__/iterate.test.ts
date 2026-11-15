@@ -36,13 +36,15 @@ import { acquireLock, blastRadius, loadControls, materializeCandidate, pinTree }
 const BENCH = resolve(__dirname, '../../../../../bench');
 
 describe('model-facing JSON Schemas (one place, beside the zod schemas)', () => {
-  it('MaintainerOutput: the same top-level keys, all required', () => {
+  it('MaintainerOutput: the same top-level keys; all required but update_index (06 §2.3)', () => {
     const zodKeys = Object.keys(
       (MaintainerOutputSchema as unknown as { _def: { schema: { shape: object } } })._def.schema
         .shape,
     ).sort();
     expect(Object.keys(MAINTAINER_OUTPUT_JSON_SCHEMA.properties).sort()).toEqual(zodKeys);
-    expect([...MAINTAINER_OUTPUT_JSON_SCHEMA.required].sort()).toEqual(zodKeys);
+    expect([...MAINTAINER_OUTPUT_JSON_SCHEMA.required].sort()).toEqual(
+      zodKeys.filter((k) => k !== 'update_index'),
+    );
   });
 
   it('ProposerOutput: every field of every action is a property, and nothing else', () => {

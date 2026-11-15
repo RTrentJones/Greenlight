@@ -297,8 +297,9 @@ framework wiki, once the index passes 60 lines (LR-09), patterns are further gro
 ```
 
 For a non-pattern page the three clauses are replaced by a single summary. The index is generated
-by `wiki lint --fix` from frontmatter. A maintainer MUST still submit a full `update_index`, which
-lint then compares against the generated index (06 §2.3).
+by `wiki lint --fix` from frontmatter. A maintainer MAY submit a full `update_index`; it is
+reconciled with the generated index, which wins on which pages appear (06 §2.3). Without one the
+generated index is used.
 
 **`log.md`** is append-only. Each entry is:
 
@@ -577,8 +578,8 @@ is shown separately. Control proposals are shown in a separate table.
 interface MaintainerOutput {
   create_pages: { id: string; content: string }[];     // full file incl. frontmatter
   update_pages: { id: string; ops: PatchOp[] }[];
-  update_index: string;                                // REQUIRED, full index
   append_log: string;                                  // REQUIRED, the entry body (§4)
+  update_index?: string;                               // optional full index (06 §2.3)
 }
 type PatchOp =
   | { op: 'append'; text: string }

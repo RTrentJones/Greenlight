@@ -117,10 +117,12 @@ export function diffIndex(
  * better summaries than a generator. Returns the merged index and each correction made.
  */
 export function reconcileIndex(
-  submitted: string,
+  submitted: string | undefined,
   wiki: Wiki,
 ): { index: string; corrections: string[] } {
   const generated = generateIndex(wiki);
+  // No submitted index (it is optional, 06 §2.3): the generated one, with nothing to correct.
+  if (submitted === undefined) return { index: generated, corrections: [] };
   const wording = new Map(parseIndex(submitted).map((e) => [e.target, e.line]));
   const { missing, extra } = diffIndex(submitted, generated);
   const index = renderIndex(indexedPages(wiki), (p) => wording.get(p.path) ?? entryLine(p));

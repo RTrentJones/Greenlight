@@ -12,7 +12,9 @@ export const MaintainerOutputSchema = z
     update_pages: z.array(
       z.object({ id: z.string().min(1), ops: z.array(PatchOpSchema).min(1) }).strict(),
     ),
-    update_index: z.string().min(1),
+    /** Optional (06 §2.3): the harness regenerates the index from the pages. When submitted, its
+     * summary wording is kept for pages the generated index also lists. */
+    update_index: z.string().min(1).optional(),
     append_log: z.string().min(1),
   })
   .strict()
@@ -183,10 +185,14 @@ export const MAINTAINER_OUTPUT_JSON_SCHEMA = {
         required: ['id', 'ops'],
       },
     },
-    update_index: { type: 'string', description: 'REQUIRED: the complete index.md' },
     append_log: { type: 'string', description: 'REQUIRED: 2–6 lines, what changed and why' },
+    update_index: {
+      type: 'string',
+      description:
+        'OPTIONAL: the complete index.md. Omit it to let the harness regenerate the index; submit it only to word the summary lines yourself',
+    },
   },
-  required: ['create_pages', 'update_pages', 'update_index', 'append_log'],
+  required: ['create_pages', 'update_pages', 'append_log'],
 } as const;
 
 /**

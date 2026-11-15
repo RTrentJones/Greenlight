@@ -19,7 +19,6 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import {
   type BundleContext,
-  MAINTAINER_PROMPT,
   PROPOSAL_FILE,
   PROPOSER_PROMPT,
   acceptedSkillSet,
@@ -29,6 +28,7 @@ import {
   checkProposalContent,
   listTraces,
   loadRawStore,
+  maintainerRolePrompt,
   openBundle,
   proposalIdOf,
   readGateInput,
@@ -1336,7 +1336,7 @@ async function stepMaintainer(c: Ctx): Promise<StepOutcome> {
     r = await runReact<MaintainerOutput>({
       client: call.client,
       skills: [],
-      rolePrompt: MAINTAINER_PROMPT.replaceAll('{{dir}}', 'bundle'),
+      rolePrompt: maintainerRolePrompt('bundle'),
       task: [
         `Your maintainer bundle is mounted at bundle/ (${bundle.manifest.files.length} files, ${bundle.manifest.rawIds.length} raw record(s)${c.s.settings.incidents.length ? `, ${c.s.settings.incidents.length} incident(s)` : ''}).`,
         'Read it with read_file and list_dir. Submit your MaintainerOutput as the arguments of `finish`; a rejected submission comes back with its errors, and you have three.',
