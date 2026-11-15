@@ -19,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # bench-iterate.test.ts pins an outlet candidate to HEAD~1, so the checkout needs the
+          # parent commit (the default depth of 1 has none).
+          fetch-depth: 2
 
       # Installs node + pnpm from mise.toml — single source of truth with local dev.
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4

@@ -778,7 +778,14 @@ describe('bench iterate (M2-01, M2-04)', () => {
 
       // M3: the outlet trees are pinned on first entry; a different --candidate on resume is
       // refused, and outletContext cannot override the pinned base / candidate / id / clock.
-      const [head, prev] = [gitOut(REPO, 'rev-parse', 'HEAD'), gitOut(REPO, 'rev-parse', 'HEAD~1')];
+      // Needs a second commit in this checkout: a depth-1 clone has no HEAD~1 (ci.yml fetches 2).
+      const head = gitOut(REPO, 'rev-parse', 'HEAD');
+      let prev: string;
+      try {
+        prev = gitOut(REPO, 'rev-parse', 'HEAD~1');
+      } catch {
+        throw new Error('this test needs HEAD~1: fetch the checkout with a depth of at least 2');
+      }
       const seen: { base: unknown; candidate: unknown; proposalId: string }[] = [];
       let throwOnce = true;
       const fakeOutlet = (async (
