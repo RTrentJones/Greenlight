@@ -1,10 +1,14 @@
 {
   "loop/fixture-preview-before-push-train": "train",
   "loop/fixture-preview-before-push-val": "val",
+  "loop/new-route-joins-verify-train": "train",
+  "loop/new-route-joins-verify-val": "val",
   "replay/idle-probe-leaves-store-asleep-train": "train",
   "replay/idle-probe-leaves-store-asleep-val": "val",
   "replay/keepalive-probe-reaches-store-train": "train",
   "replay/keepalive-probe-reaches-store-val": "val",
+  "wiki/contradicted-root-cause-train": "train",
+  "wiki/contradicted-root-cause-val": "val",
   "wiki/probe-layer-incidents-train": "train",
   "wiki/probe-layer-incidents-val": "val"
 }

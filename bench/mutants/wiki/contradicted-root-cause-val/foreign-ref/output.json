@@ -1,0 +1,31 @@
+{
+  "create_pages": [
+    {
+      "id": "pattern/job-secret-stale-after-branch-reset",
+      "content": "---\nid: pattern/job-secret-stale-after-branch-reset\ntype: pattern\ntitle: A scheduled job fails because its database secret is stale after the store branch reset\nupdated: 2026-11-01\nstatus: hypothesis\nkind: failure\nclass: env-drift\natRisk: the login the scheduled job connects with\ncells: [\"next/vercel/neon\"]\naffects: \"*\"\nrelevance: app-code\nevidence:\n  - issue:fixture-org/inkwell#27\n  - run:fixture-org/inkwell/6790233104\n  - run:fixture-org/inkwell/6790561877\n  - raw:20261012T020004Z-7be2c905\n  - raw:20261012T084612Z-d0431f6a\ncatches:\n  description: the job records its connection error, and a check that runs after each branch reset connects with the job's role; an authentication failure is reported as a stale secret, not retried as a timeout\nremediation:\n  - { outlet: mechanism, ref: \"sync the job's database secret as a step of the branch reset\", verified: false }\nskills: [provider-neon]\n---\n## Symptom\nThe nightly digest job fails at its first query and succeeds when it is run later in the morning (run:fixture-org/inkwell/6790233104, run:fixture-org/inkwell/6790561877).\n\n## Root cause\nThe weekly reset of the store branch issued a new login for the job's role, and the job still held the secret synced a week earlier (issue:fixture-org/inkwell#27). Its connection was refused in 212 ms with an authentication failure while the compute had been awake for two minutes (raw:20261012T020004Z-7be2c905).\n\nThe store was not waking in this run, and the 30 s connect timeout was never reached (raw:20261012T020004Z-7be2c905).\n\n## Fix / workaround\nSync the job's secret whenever the branch reset runs. After a sync with no code change and no deploy, the job succeeded (raw:20261012T084612Z-d0431f6a).\n\n## How it is caught\nThe connection error tells the two apart: an authentication failure that returns in milliseconds is a stale secret, not a slow resume (raw:20261012T020004Z-7be2c905).\n\n## Related\nThe same reset broke the export job of another tool (issue:fixture-org/inkwell#44).\n"
+    }
+  ],
+  "update_pages": [
+    {
+      "id": "pattern/nightly-job-fails-while-store-wakes",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/job-secret-stale-after-branch-reset\n"
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-inkwell-digest-job-failed-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/job-secret-stale-after-branch-reset"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/job-secret-stale-after-branch-reset (hypothesis) from incident/2026-10-inkwell-digest-job-failed-with-long-timeout and the two records in raw/: the connection was refused in 212 ms on an authentication failure while the store was awake. Set pattern/nightly-job-fails-while-store-wakes to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run exists."
+}

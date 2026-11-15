@@ -1,0 +1,85 @@
+{
+  "id": "wiki/contradicted-root-cause-val",
+  "kind": "wiki",
+  "graders": ["maintainer"],
+  "skills": ["greenlight-wiki"],
+  "fidelity": "structural",
+  "split": "val",
+  "state": "pending",
+  "timeoutMin": 15,
+  "modes": ["isolation", "production"],
+  "mutants": [
+    {
+      "id": "edits-the-old-pattern-in-place",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that rewrites nightly-job-fails-while-store-wakes's title and root cause into the new claim, in place, from one that creates a new pattern and marks the old one superseded"
+    },
+    {
+      "id": "empties-the-old-pattern",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that supersedes nightly-job-fails-while-store-wakes and deletes its body (the nearest a maintainer output comes to deleting a page) from one that leaves the superseded page as it was written"
+    },
+    {
+      "id": "drops-an-evidence-ref",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that removes one of nightly-job-fails-while-store-wakes's evidence refs while superseding it from one that keeps every ref the page had"
+    },
+    {
+      "id": "foreign-ref",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output citing an evidence ref that is not in the bundle from one citing only bundle evidence"
+    },
+    {
+      "id": "uncited-claim",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output whose new pattern carries a claim with no evidence ref from a fully cited one"
+    },
+    {
+      "id": "overgeneral-claim",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that states the new root cause for every failure of the kind from one that claims only what the bundle shows"
+    },
+    {
+      "id": "old-pattern-left-standing",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that adds the new pattern and leaves nightly-job-fails-while-store-wakes a live hypothesis (two contradicting root causes) from one that marks it superseded"
+    },
+    {
+      "id": "superseded-by-an-unrelated-page",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that marks nightly-job-fails-while-store-wakes superseded by an existing, unrelated pattern and writes no new one from one that creates the pattern holding the new root cause"
+    },
+    {
+      "id": "new-pattern-repeats-the-old-cause",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output whose new pattern restates the contradicted root cause with a bigger number from one that states the cause the new evidence shows"
+    },
+    {
+      "id": "new-pattern-cites-only-old-evidence",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output whose new pattern cites only the earlier incident's evidence (none of the records that contradict the old cause) from one that cites the new evidence"
+    },
+    {
+      "id": "creates-the-new-pattern-confirmed",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output that creates the new pattern as confirmed (no deployed red-to-green run exists) from one that creates it as a hypothesis"
+    },
+    {
+      "id": "invalid-output",
+      "grader": "maintainer",
+      "kind": "maintainer-output",
+      "description": "an output without the required append_log from a valid MaintainerOutput"
+    }
+  ]
+}

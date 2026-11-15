@@ -3,7 +3,9 @@
 The evolution loop's benchmark (vision [06 §4](../docs/vision/06-evolution-loop.md), layout in
 [08 §10](../docs/vision/08-data-contracts.md)). M1 ships the fixtures and tasks of the first
 iteration (06 §10, 15 §8): two replay tasks whose lessons look opposite, the maintainer task that
-must reconcile them, and a loop control task.
+must reconcile them, and a loop control task. Two more objective families were added afterwards,
+one per skill, so that each skill's slice holds two tasks and its gate can reach p < 0.05 (06 §4.1,
+§5.2).
 
 ```
 bench/
@@ -33,7 +35,14 @@ A task id is `<kind-prefix>/<slug>-<split>`: every task FAMILY (the id the visio
 | `replay/keepalive-probe-reaches-store` | `…-train` (tool `quizpad`, App Router, probe table `keepalive_probe`) | `…-val` (tool `tripnote`, Pages Router, probe table `heartbeat`) |
 | `replay/idle-probe-leaves-store-asleep` | `…-train` (`scenesmith`, MCP on oci, node:http) | `…-val` (`ledgerline`, REST on docker, a small router, `STORE_URL`) |
 | `wiki/probe-layer-incidents` | `…-train` (the two real incidents, 15 §7) | `…-val` (a synthetic pair with the same structure and different evidence) |
+| `wiki/contradicted-root-cause` | `…-train` (`menuboard`, astro/workers: a post-deploy verify failure filed as a cold start, contradicted by a run where every request was fast and served the previous version) | `…-val` (`inkwell`, next/vercel/neon: a nightly job failure filed as a slow store resume, contradicted by a run where the login was rejected in milliseconds) |
 | `loop/fixture-preview-before-push` | `…-train` (`guestbook`) | `…-val` (`pinboard`) |
+| `loop/new-route-joins-verify` | `…-train` (`changelog`, `/releases.json`, an HTML page, ports 4330/4331) | `…-val` (`trailnotes`, `/trails.json`, a plain-text page behind a route table, ports 4340/4341) |
+
+The val split is 6 tasks: 4 objective, two per skill (`deploy-verify-promote`: the two `loop/`
+families; `greenlight-wiki`: the two `wiki/` families), and the 2 replay tasks. The two families
+of a skill measure different behaviour (06 §4.1): preview-before-push against "add it to the
+verify loop"; a rule conditional on the liveness model against the "wrong root cause" rule.
 
 Variants differ in tool name, store table names and app framework, so a val instance is unseen by
 the proposer (06 §10.2). `TaskSpec.split` must match both the suffix and `splits.json` (a test
@@ -58,6 +67,12 @@ store for that variant.
   reported over any window; the grader can stop the database.
 - `loop-tool/`: a two-tool wrapper whose tools are tiny HTTP apps with verify configs that use
   check ids.
+- `loop-route/`: another two-tool wrapper (other tools, ports and copy) for
+  `loop/new-route-joins-verify`. One tool renders a short list; its README adds a "Deploy gate"
+  section saying what `tools/<tool>/verify.config.mjs` is, the way a real wrapper's does.
+
+The wiki tasks' bundles (`wiki/`, `raw/`, `context.json`) are written directly under
+`tasks/wiki/<id>/fixture/`; they have no variant tree and `sync.mjs` does not touch them.
 
 Both fakes run on a simulated clock the grader advances, and expose `/__fake/*` introspection
 guarded by a per-start admin token. They are plain Node with no dependencies;
@@ -111,6 +126,8 @@ Isolation rules every grader follows:
 | idle-probe-leaves-store-asleep | `app` | runtime | starts the tree's app from its Dockerfile's last `CMD` (exec form, or shell form under `/bin/sh -c`; a `HEALTHCHECK … CMD` is never read as the app command) on the fake clock against the Neon-shaped fake, steps a 10-minute idle window (every app timer fires at its simulated time), fires the declared `HEALTHCHECK` on its interval and one keepalive sweep: zero store queries from either and from the idle app, store suspended, liveness 200 with the database stopped, `/health` still reports the database. What it accepts is listed under "What the idle-probe grader accepts" below |
 | probe-layer-incidents | `maintainer` | structural | the rubric in `graders/_lib/maintainer.mjs`: valid output applied by the real engine, cited claims, no evidence removed, status lifecycle, the liveness-model distinction with the right polarity on each branch citing both incidents, no overgeneral or inverted rule; plus, in every runner rollout (train and gate alike), an eval judge (below) |
 | fixture-preview-before-push | `trajectory` | runtime | evaluates `task.json` `trajectory.rules` with the rule DSL in `packages/wiki/src/bench/trajectory.ts`; the rules match on shim `meta` (below), never on argv spelling. Plus one tree check, `the requested change is in what was pushed`: the file the brief names contains the requested text in `ctx.pushedTree`, the tree of the origin's `develop` the runner exports after the rollout (a synthetic reference or mutant has no origin, so its working tree stands in). Without it a preview of the untouched fixture, an empty commit and a push passed |
+| new-route-joins-verify | `trajectory` | runtime | the same ordering rules (a passing `preview` of the tool before any push that is or may be to `develop`, at least one push that moved `develop`, no `promote`), plus three checks on `ctx.pushedTree` (`gradeTrajectory`'s `route` option): **the new route is served by what was pushed** (the tool's app is started under `ctx.spawnApp`; `GET <route>` answers 200 with a JSON object whose named key is an array of exactly the entries the page lists); **the pushed verify config checks the new route** (the tool's `verify.config.mjs` is loaded in its own process by `_lib/verify-config-host.mjs`: a spec, an array of specs or a function; some api check's path is the route, query string ignored); **the new check holds on what was pushed** (each such check is a GET whose `status` and `contains` match the app's answer; other assertion kinds are not evaluated, so they cannot fail a correct solution). `references/loop/reference-gates.test.ts` runs the real `greenlight preview` on the reference, on every alternative that changes the tree (it must pass) and on every mutant that exists to trip the last check (it must fail), so the grader and the real gate agree |
+| contradicted-root-cause | `maintainer` | structural | checks 1-4 of the maintainer rubric (valid output applied by the real engine, cited claims, no evidence removed, status lifecycle), then the supersede rubric of `graders/_lib/maintainer.mjs` (`rubric.json` `supersede`): **the contradicted pattern is superseded by a pattern this output creates** (`status: superseded`, `supersededBy` naming a created pattern page); **the superseded pattern keeps its original claim** (every paragraph and list item of its body and every frontmatter line but `status`, `updated`, `supersededBy` is still there; text may be added); **the new pattern states the root cause the new evidence shows** (its text matches the rubric's root-cause pattern and its claims cite a ref that only the new incident or the raw records carry); **no overgeneral rule** (no statement gives the new cause for every failure of the kind); plus, in every runner rollout, an eval judge with the supersede rubric (below) |
 
 ### What the idle-probe grader accepts
 
@@ -160,6 +177,20 @@ this). A missing judge, an error or a malformed verdict is NOT a verdict: the gr
 when the judge was merely unavailable (429/503 after its retries, a quota, the request cap). It is
 never a failing check, which would be sealed as a 0. check-graders never sets `useJudge`: no LLM
 runs there.
+
+**One grader, two rubrics.** `gradeMaintainer(ctx, rubric)` runs checks 1-4 for every wiki task and
+then the task's required distinction, chosen by its `graders/<task>/rubric.json`:
+`{ incidents, ruleHomes }` is the liveness-model rule above (unchanged); `{ supersede }` is the
+"wrong root cause" rule (`wiki/contradicted-root-cause-*`), whose four checks are in the table
+above. `supersede` holds the contradicted pattern's id (`old`), the pages that carry the new
+evidence (`contradictedBy`), a `rootCause` regex (the words any statement of the cause the records
+show has to use), `overgeneral` regexes, and `judge: { oldCause, newCause }`. Its judge
+(`SUPERSEDE_JUDGE_RUBRIC`, same verdict schema, same rules: runner rollouts only, after the
+deterministic checks pass, an unusable verdict is a grader error) is given those two causes as
+trusted context and the output's new claims as data, and asks whether the new text states the new
+cause, does not present the old one as the cause of the new failure, and claims no more than the
+evidence supports. The regex of the deterministic check cannot tell "the previous version was
+still serving" from "it was not the previous version"; the judge is there for that.
 
 ## Trajectories: the shim meta contract
 

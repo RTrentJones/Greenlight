@@ -449,19 +449,38 @@ the bench (template and skill changes). It never becomes verified at `candidate-
 
 The bench lives in `bench/` in the framework repo. Task layout and `TaskSpec` are in 08 §10.
 
-| kind | id prefix | grader kind (§4.6) | count in M1 | grows to | measures |
+| kind | id prefix | grader kind (§4.6) | families shipped | grows to | measures |
 |---|---|---|---|---|---|
 | replay | `replay/<pattern-slug>` | `app` and/or `trajectory` | 2 (the first iteration, §10) | one per `confirmed` reproducible failure pattern | build, loop, provider skills |
-| wiki | `wiki/<incident>` | `maintainer` | 1 (the paired incidents, §10) | 5 | maintainer output quality |
-| loop change | `loop/<fixture>-<change>` | `trajectory` | 1 (`loop/fixture-preview-before-push`) | 6 | the loop's action order |
+| wiki | `wiki/<incident>` | `maintainer` | 2: `wiki/probe-layer-incidents` (the paired incidents, §10) and `wiki/contradicted-root-cause` (a pattern whose root cause a new incident contradicts: supersede it, 04 §4) | 5 | maintainer output quality |
+| loop change | `loop/<fixture>-<change>` | `trajectory` | 2: `loop/fixture-preview-before-push` (the local gate comes before the push) and `loop/new-route-joins-verify` (a new route gets a check in the tool's verify config, and that check holds on what was pushed) | 6 | the loop's action order |
 | capability brief | `cap/<cell>-<app>` | `app` | 0 | ≥2 per available free-tier cell | kickoff and build |
 | routing | `route/<n>` | `routing` | 0 | 12 one-line requests | skill descriptions |
 | portfolio | `port/<scenario>` | `app` (structural) | 0 | 4 | portfolio |
 | mechanism | `mech/<pattern-slug>` | `repro` | 0 | as mechanism proposals arrive | framework fixes (§5.6) |
 
+Every family ships one `-train` and one `-val` task (different fixture variants, so the val
+instance is unseen by the proposer).
+
 `bench/splits.json` assigns each task to `train`, `val` or `test`. The proposer's traces come from
 `train`, the gate uses `val`, and `test` is reported only, at each release and monthly. Replay
 tasks are always in `val`, because the hard constraint must be checked on every gate.
+
+**Two objective families per skill is the minimum.** The efficacy test runs on the patched
+skill's slice (§5.2), and one task × 3 runs can reach p = 1/20 at best, which is not below 0.05:
+a one-task slice is `underpowered` whatever the candidate does. Two tasks × 3 runs reach 1/400. So
+each skill that has an objective task has two, and they measure different behaviour, because one
+behaviour measured twice adds rollouts without adding evidence:
+
+| skill | family | what a rollout must do | what the grader reads |
+|---|---|---|---|
+| `deploy-verify-promote` | `loop/fixture-preview-before-push` | change one line of copy and get it onto beta | a passing `preview` of the tool before any push that can reach `develop`; the text in what was pushed |
+| `deploy-verify-promote` | `loop/new-route-joins-verify` | add a JSON route and get it onto beta | the same ordering, plus, from the pushed branch: the route is served, the tool's verify config has a check on it ("add it to the verify loop"), and that check holds on the pushed app |
+| `greenlight-wiki` | `wiki/probe-layer-incidents` | reconcile two incidents whose lessons look opposite | a rule conditional on the liveness model, right polarity on each branch, citing both incidents |
+| `greenlight-wiki` | `wiki/contradicted-root-cause` | compile a new incident whose records contradict an existing pattern's root cause | the old pattern is `superseded` with `supersededBy` naming a pattern the output creates, the old page's text and evidence are kept, the new pattern states the cause the new records show and cites them |
+
+The val split is therefore 6 tasks: 4 objective (two per skill) and the 2 replay tasks, which are
+constraints only.
 
 **How a new task enters the baseline.** A task added to any split starts as `pending`
 (`TaskSpec.state`, 08 §10). It joins gating only after a baseline run under the currently accepted
@@ -772,9 +791,11 @@ instead.
   significant, and the gate does not pretend: the outcome is `underpowered` (§5.1), naming the
   minimum. So is a slice with no objective task (`no-slice`): a skill no objective task exercises
   cannot be shown to work. **One slice task × 3 runs is always underpowered** (1/20 is not below
-  0.05). The val split as first shipped has two objective tasks that exercise different skills, so
-  every skill's slice has at most one task and no skill can be accepted on it until its slice
-  grows to two objective tasks (or more runs).
+  0.05). The val split as first shipped had two objective tasks that exercised different skills,
+  so every skill's slice had one task and no skill could be accepted on it. The split now holds
+  two objective families per skill (§4.1), so each slice reaches 1/400 once its second task is
+  `active`; until that task has a sealed baseline it is `pending`, excluded from the slice, and
+  the slice is still underpowered (`shipped-shape.test.ts` asserts both shapes).
 
 **Operating characteristics, two slice tasks × 3 runs per arm, one model** (exhaustive
 enumeration of every baseline × candidate table; `stats.test.ts` asserts each figure):
@@ -1270,6 +1291,22 @@ manages. That layer depends on the tool's liveness model (`needs-traffic` versus
     rule is conditional on the liveness model, citing evidence from both incidents.
   - `loop/fixture-preview-before-push`, a trajectory grader. It is a control task that checks the
     trajectory machinery itself.
+  - Two further objective families, added so that each skill's slice holds two tasks and its
+    exact test can reach p < 0.05 (§4.1, §5.2). They are not part of the probe-layer story and
+    enter `pending`, like any new task:
+    - `loop/new-route-joins-verify`, a trajectory grader with three checks on the pushed branch.
+      The brief asks for a new JSON route on a fixture tool "onto beta". The fixture's README
+      says what the tool's `verify.config.mjs` is, and the skill's step "add it to the verify
+      loop" says what to do with it; the brief does not. The grader requires a passing preview
+      before the push, the route served by what was pushed, a check on that route in the tool's
+      verify config, and that check holding on the pushed app.
+    - `wiki/contradicted-root-cause`, a maintainer grader. The bundle holds a hypothesis pattern
+      ("the check failed because the thing was slow to start; fix: a longer timeout"), the
+      incident it came from, and a new incident with two raw records in which the same failure
+      recurs with the longer timeout in place and returns in milliseconds, for another reason.
+      The required distinction is the "wrong root cause" rule of 04 §4: a new pattern for the
+      cause the records show, the old one set to `superseded` with `supersededBy`, its text and
+      evidence untouched.
 - **Mutants:**
   - For the two replay tasks: the historical faulty implementations, and both overgeneralized
     rules, "every healthcheck queries the database" and "probes never touch the database". **Each
@@ -1277,6 +1314,13 @@ manages. That layer depends on the tool's liveness model (`needs-traffic` versus
     test of learning.
   - For the maintainer grader: an output that states either overgeneral rule, an output that drops
     one incident's evidence, and an output with an uncited claim.
+  - For `loop/new-route-joins-verify`: the ordering mutants of the preview task, plus a route
+    pushed with no check, a check pushed with no route, a check on another path or in the other
+    tool's config, a check that cannot hold, and a verify config that does not load.
+  - For `wiki/contradicted-root-cause`: the old pattern rewritten in place, emptied, left
+    standing next to the new one, or superseded by an unrelated page; an evidence ref dropped; a
+    ref that is not in the bundle; a new pattern that restates the old cause or cites only the
+    old evidence; and a claim that the new cause explains every failure of the kind.
 
 **Historical faults are regression fixtures, not new repairs.** The Supabase probe bug is already
 fixed in current Greenlight (probeTable, 0.9.0). The first iteration does not pretend that a new
@@ -1411,10 +1455,11 @@ per day, not dollars.
   `--resume` continues on a later day. Judge calls are charged to the judge model's own `spend`
   event, not to the rollout's model.
 - `bench/README-models.md` holds the budget arithmetic for the first M2 gate. That gate runs
-  isolation mode only and includes the baseline re-run: 48 rollouts and about 12 requests per
-  rollout, so 600 requests. Because the full cap of 17 is reserved per rollout, 20 RPD admits about
-  one rollout per model per day, so the gate takes about 24 days rather than the 15 the request
-  count alone suggests.
+  isolation mode only and includes the baseline re-run: 6 val tasks × 3 runs × 2 models × 2 = 72
+  rollouts at about 22 requests each, plus 24 judge calls, so about 1,600 requests. The full cap
+  of 27 requests is reserved per rollout, so the measured 190 and 250 requests per day admit 7
+  and 9 rollouts a day: the frontier model's 36 rollouts take 6 days and the small model's 4, and
+  the gate takes about six days rather than the five the request count alone suggests.
 
 A gate that cannot finish within one day's quota is split across days. This is safe because the
 baseline identity pins every input, and rollouts are independent. The rollout image is one of

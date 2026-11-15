@@ -1,0 +1,16 @@
+{
+  "supersede": {
+    "old": "pattern/nightly-job-fails-while-store-wakes",
+    "contradictedBy": ["incident/2026-10-inkwell-digest-job-failed-with-long-timeout"],
+    "rootCause": "\\b(stale|old|older|outdated|previous|earlier|rotat\\w*|reissued|expired|invalid\\w*|out\\s+of\\s+date|no\\s+longer\\s+valid|new)\\b[^.\\n]{0,80}\\b(password|credential\\w*|secret\\w*|login\\w*|role)\\b|\\b(password|credential\\w*|secret\\w*|login\\w*)\\b[^.\\n]{0,80}\\b(stale|rotat\\w*|reissued|out\\s+of\\s+date|outdated|not\\s+(been\\s+)?(re-?)?synced|old|expired|invalid\\w*|rejected|refused)\\b|authentication\\s+fail\\w*|28P01",
+    "overgeneral": [
+      "\\b(every|all|any|each)\\s+(nightly\\s+|scheduled\\s+|such\\s+|failed\\s+|failing\\s+)?(job|digest|cron)(\\s+(failure|failures|run|runs))?\\b[^.]{0,80}\\b(is|are|means?|comes?)\\b",
+      "\\b(job|digest)\\s+(failure|failures)\\b[^.]{0,80}\\b(always|never)\\b",
+      "\\b(slow|store|compute)\\s+(resume|resumes|wake|wakes|waking|cold start)\\w*\\b[^.]{0,40}\\b(never|cannot|can not|do not|does not)\\s+(happen|occur|cause|fail|matter)"
+    ],
+    "judge": {
+      "oldCause": "the nightly job failed because the scale-to-zero store was still resuming and the resume took longer than the client connect timeout (fix: a longer connect timeout).",
+      "newCause": "the connection was refused in 212 ms with an authentication failure while the store had been awake for minutes (and a 30 s connect timeout was in place): the weekly branch reset had issued a new login for the job role, and the job still used the secret synced a week earlier. The cause is a stale job secret after the reset (configuration drift), not a slow store resume; syncing the secret alone fixed it."
+    }
+  }
+}

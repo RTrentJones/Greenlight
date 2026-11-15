@@ -52,6 +52,8 @@ export const FIXTURE_TASKS = {
     shared: [],
   },
   'loop/fixture-preview-before-push-val': { variant: 'loop-tool/variants/val/tool', shared: [] },
+  'loop/new-route-joins-verify-train': { variant: 'loop-route/variants/train/tool', shared: [] },
+  'loop/new-route-joins-verify-val': { variant: 'loop-route/variants/val/tool', shared: [] },
 };
 
 function compose(spec, out) {

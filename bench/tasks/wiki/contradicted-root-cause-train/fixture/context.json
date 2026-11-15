@@ -1,0 +1,9 @@
+{
+  "installed": "0.10.1",
+  "cells": ["astro/workers/none"],
+  "verifyCheckIds": ["home-renders", "menu-current", "live"],
+  "skills": {
+    "deploy-verify-promote": "3",
+    "provider-cloudflare": "2"
+  }
+}

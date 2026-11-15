@@ -1,0 +1,31 @@
+{
+  "create_pages": [
+    {
+      "id": "pattern/deploy-returns-before-route-switches",
+      "content": "---\nid: pattern/deploy-returns-before-route-switches\ntype: pattern\ntitle: The deploy command returns before the route switches, so verify reads the old deployment\nupdated: 2026-11-01\nstatus: hypothesis\nkind: failure\nclass: artifact-identity\natRisk: which deployment answers the beta URL during verify\nprobed: the deployment that was live before the ship\ncells: [\"astro/workers/none\"]\naffects: \"*\"\nrelevance: both\nevidence:\n  - issue:fixture-org/menuboard#41\n  - run:fixture-org/menuboard/7861204418\n  - raw:20261021T140212Z-3c9d2e71\ncatches:\n  description: verify compares /__version with the commit it is shipping and stops with an identity mismatch when they differ\nremediation:\n  - { outlet: mechanism, ref: \"ship waits for the shipped sha at /__version before verify\", verified: false }\nskills: [deploy-verify-promote]\n---\n## Symptom\nA ship to beta goes red on a content assertion although the deploy step was green (run:fixture-org/menuboard/7861204418).\n\n## Root cause\nThe route was still answered by the deployment from two days before when verify began: `/__version` returned 9b1f7e2 while 5d0c3a9 was being shipped, and each response came back in 35 to 41 ms (raw:20261021T140212Z-3c9d2e71). The provider's log puts the switch 38 s after the deploy command returned (issue:fixture-org/menuboard#41).\n\n## Fix / workaround\nHold verify until `/__version` returns the commit being shipped (issue:fixture-org/menuboard#41).\n\n## How it is caught\nThe identity mismatch is visible in the failing run itself (raw:20261021T140212Z-3c9d2e71).\n"
+    }
+  ],
+  "update_pages": [
+    {
+      "id": "pattern/verify-fails-on-cold-start",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/deploy-returns-before-route-switches\n"
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-menuboard-verify-red-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/deploy-returns-before-route-switches"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/verify-runs-before-deploy-is-live (hypothesis) from incident/2026-10-menuboard-verify-red-with-long-timeout and the two verify runs in raw/: the failing requests were fast and served the previous version. Set pattern/verify-fails-on-cold-start to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run of the identity gate exists."
+}

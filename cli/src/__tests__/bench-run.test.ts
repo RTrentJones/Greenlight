@@ -1195,6 +1195,162 @@ describe('trajectory completeness and harness errors', () => {
   }, 120_000);
 });
 
+/**
+ * The second objective family of each skill (06 §4.1), end to end with a scripted model: the
+ * reference solution must score 1 through the real sandbox, shims, CLI and grading container, and
+ * the behaviour each family exists to measure must be what decides a 0.
+ */
+describe.each([
+  ['process', true],
+  ['docker', DOCKER],
+] as const)('the second objective families through the %s sandbox', (sandbox, enabled) => {
+  const maybe = enabled ? it : it.skip;
+  const ROUTE = 'loop/new-route-joins-verify-train';
+  const APP = 'tools/changelog/server.mjs';
+  const CFG = 'tools/changelog/verify.config.mjs';
+  const ref = (rel: string) => readFileSync(join(BENCH, 'references', ROUTE, 'tree', rel), 'utf8');
+  const write = (path: string): Step => ({
+    name: 'write_file',
+    args: { path, content: ref(path) },
+  });
+  const ship = bash(
+    'git switch -q develop && pnpm greenlight preview changelog && git add -A && git commit -qm "changelog: /releases.json" && git push -q origin develop',
+  );
+  const run = async (steps: Step[]) => {
+    const o = options({
+      fetchImpl: fakeModel((t) => steps[t] ?? finish).fetchImpl,
+      sandbox,
+      tasks: [ROUTE],
+    });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('complete');
+    return { o, r, outcome: r.record?.outcomes[0] };
+  };
+
+  maybe(
+    'a new route with a check in the verify config, previewed and then pushed, scores 1',
+    async () => {
+      const { o, r, outcome } = await run([write(APP), write(CFG), ship, finish]);
+      expect(outcome?.score, JSON.stringify(outcome?.graders)).toBe(1);
+      const traj = trajectoryOf(o, r.evaluationId as string, r.rollouts[0]?.rawId as string);
+      // The real preview ran the new check and passed with it.
+      const preview = traj.events.find((e) => e.meta?.subcommand === 'preview');
+      expect(preview?.meta).toMatchObject({ tool: 'changelog', passed: 'true' });
+    },
+    300_000,
+  );
+
+  maybe(
+    'the same route, previewed and pushed WITHOUT a verify check, scores 0 on that alone',
+    async () => {
+      const { outcome } = await run([write(APP), ship, finish]);
+      expect(outcome?.score).toBe(0);
+      const detail = String(outcome?.graders[0]?.detail);
+      expect(detail).toMatch(/the pushed verify config checks the new route/);
+      expect(detail).not.toMatch(/the new route is served/);
+      expect(detail).not.toMatch(/before\(|count\(|never\(/);
+    },
+    300_000,
+  );
+
+  maybe(
+    'a check that the route cannot satisfy fails the real preview, so nothing passing precedes the push',
+    async () => {
+      const broken: Step = {
+        name: 'write_file',
+        args: {
+          path: CFG,
+          content: readFileSync(
+            join(BENCH, 'mutants', ROUTE, 'check-cannot-pass/tree', CFG),
+            'utf8',
+          ),
+        },
+      };
+      const steps = [
+        write(APP),
+        broken,
+        bash(
+          'git switch -q develop; greenlight preview changelog; echo "preview=$?"; git add -A && git commit -qm wip && git push -q origin develop',
+        ),
+        finish,
+      ];
+      const m = fakeModel((t) => steps[t] ?? finish);
+      const o = options({ fetchImpl: m.fetchImpl, sandbox, tasks: [ROUTE] });
+      const r = await runBench(o);
+      expect(r.status, r.message).toBe('complete');
+      expect(toolOutputs(m.sent).join('\n')).toMatch(/preview=1/);
+      const outcome = r.record?.outcomes[0];
+      expect(outcome?.score).toBe(0);
+      const detail = String(outcome?.graders[0]?.detail);
+      // the ordering rule (no PASSING preview before the push) and the grader's own reading agree
+      expect(detail).toMatch(
+        /before\(greenlight \{subcommand=preview, tool=changelog, passed=true\}/,
+      );
+      expect(detail).toMatch(/the new check holds on what was pushed/);
+    },
+    300_000,
+  );
+
+  const WIKI = 'wiki/contradicted-root-cause-train';
+  const isJudge = (s: Sent) =>
+    Boolean(
+      (s.body as { generationConfig?: { responseJsonSchema?: unknown } }).generationConfig
+        ?.responseJsonSchema,
+    );
+  const output = (dir: string) =>
+    JSON.parse(readFileSync(join(BENCH, dir, WIKI, 'output.json'), 'utf8'));
+
+  maybe(
+    'the supersede bundle: the reference output scores 1 and is judged once, on its own rubric',
+    async () => {
+      const steps: Step[] = [
+        { name: 'read_file', args: { path: 'wiki/index.md' } },
+        { name: 'read_file', args: { path: 'wiki/patterns/verify-fails-on-cold-start.md' } },
+        { name: 'finish', args: output('references') },
+      ];
+      const m = fakeModel((t) => steps[t] ?? (steps[2] as Step));
+      const o = options({ fetchImpl: m.fetchImpl, sandbox, tasks: [WIKI] });
+      const r = await runBench(o);
+      expect(r.status, `${r.message} ${JSON.stringify(r.rollouts)}`).toBe('complete');
+      expect(r.record?.outcomes[0], JSON.stringify(r.record?.outcomes[0]?.graders)).toMatchObject({
+        task: WIKI,
+        score: 1,
+      });
+      const judged = m.sent.filter(isJudge);
+      expect(judged).toHaveLength(1);
+      const prompt = JSON.stringify(judged[0]?.body);
+      expect(prompt).toMatch(/marks the old pattern superseded by it/);
+      expect(prompt).toMatch(/was answered by the PREVIOUS version/);
+      expect(prompt).not.toMatch(/liveness model/);
+    },
+    300_000,
+  );
+
+  maybe(
+    'rewriting the old pattern in place is accepted by the patch engine and scored 0, unjudged',
+    async () => {
+      const inPlace = JSON.parse(
+        readFileSync(
+          join(BENCH, 'mutants', WIKI, 'edits-the-old-pattern-in-place/output.json'),
+          'utf8',
+        ),
+      );
+      const m = fakeModel(() => ({ name: 'finish', args: inPlace }));
+      const o = options({ fetchImpl: m.fetchImpl, sandbox, tasks: [WIKI] });
+      const r = await runBench(o);
+      expect(r.status, `${r.message} ${JSON.stringify(r.rollouts)}`).toBe('complete');
+      // One request: the submission is a valid MaintainerOutput, so it was not sent back.
+      expect(m.sent.filter((s) => !isJudge(s))).toHaveLength(1);
+      expect(r.record?.outcomes[0]?.score).toBe(0);
+      expect(String(r.record?.outcomes[0]?.graders[0]?.detail)).toMatch(
+        /the contradicted pattern is superseded by a pattern this output creates/,
+      );
+      expect(m.sent.filter(isJudge)).toHaveLength(0);
+    },
+    300_000,
+  );
+});
+
 describe('greenlight bench (CLI)', () => {
   const io = (cwd: string) => {
     const out: string[] = [];

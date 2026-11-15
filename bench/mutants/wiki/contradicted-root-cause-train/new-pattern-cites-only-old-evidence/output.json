@@ -1,0 +1,31 @@
+{
+  "create_pages": [
+    {
+      "id": "pattern/verify-runs-before-deploy-is-live",
+      "content": "---\nid: pattern/verify-runs-before-deploy-is-live\ntype: pattern\ntitle: Post-deploy verify checks the previous version because the new one is not serving yet\nupdated: 2026-11-01\nstatus: hypothesis\nkind: failure\nclass: artifact-identity\natRisk: the artifact actually serving at the tool's URL when verify runs\nprobed: the previous version, still answering while the new deploy rolled out\ncells: [\"astro/workers/none\"]\naffects: \"*\"\nrelevance: both\nevidence:\n  - issue:fixture-org/menuboard#31\n  - run:fixture-org/menuboard/7730119245\ncatches:\n  description: before any content check, verify reads /__version and requires the sha being shipped; another sha is reported as an identity mismatch, not as a content failure\nremediation:\n  - { outlet: verify, ref: \"requireIdentity: wait for /__version to report the shipped sha\", verified: false }\nskills: [deploy-verify-promote]\n---\n## Symptom\n`verify` fails on a content check right after a deploy and passes minutes later with nothing redeployed (run:fixture-org/menuboard/7730119245, issue:fixture-org/menuboard#31).\n\n## Root cause\nVerify started one second after the deploy command returned, while the route still served the previous version. The three attempts answered 200 in about 40 ms with the old page, and `/__version` reported the commit deployed two days earlier (run:fixture-org/menuboard/7730119245). The new version took over the route 38 s later (issue:fixture-org/menuboard#31).\n\nNo request was slow, so this run was not a cold start, and the 30 s timeout with two retries did not change its outcome (run:fixture-org/menuboard/7730119245).\n\n## Fix / workaround\nGate verify on identity: wait until `/__version` reports the sha being shipped, then run the content checks (issue:fixture-org/menuboard#31).\n\n## How it is caught\nAn identity check on `/__version` fails with a sha mismatch while the old version serves, which tells this apart from a slow start (run:fixture-org/menuboard/7730119245). The re-run passed once the shipped sha was serving (issue:fixture-org/menuboard#31).\n"
+    }
+  ],
+  "update_pages": [
+    {
+      "id": "pattern/verify-fails-on-cold-start",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/verify-runs-before-deploy-is-live\n"
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-menuboard-verify-red-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/verify-runs-before-deploy-is-live"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/verify-runs-before-deploy-is-live (hypothesis) from incident/2026-10-menuboard-verify-red-with-long-timeout and the two verify runs in raw/: the failing requests were fast and served the previous version. Set pattern/verify-fails-on-cold-start to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run of the identity gate exists."
+}
