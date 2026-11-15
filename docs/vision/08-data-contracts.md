@@ -501,10 +501,17 @@ type Evidence =
 interface GateResult {
   model: string; mode: 'isolation' | 'production'; split: 'val' | 'test'; runs: number;
   replay: { total: number; baselinePassing: number; candidatePassing: number; regressions: string[] };
-  capability: { before: number; after: number; delta: number; pValue: number | null };  // null when not computed
+  capability: { before: number; after: number; delta: number;   // over the patched skill's slice (06 §5.2)
+                pValue: number | null;                          // exact, one-sided; null when not computed
+                minP?: number | null };                         // the smallest p any candidate could reach against
+                                                                // this baseline; absent on older events
   decision: 'pass' | 'fail';                    // this model×mode under the policy table (06 §5.4)
 }
 ```
+
+Only a decision reaches the ledger. The gate's `invalid`, `blocked` (a flaky baseline replay task
+at high radius) and `underpowered` (the efficacy test cannot reach alpha) outcomes write no event
+and no gate input record (06 §5.1); the iteration's hand-off reports them.
 
 `evaluationRecords` replaces the earlier single `evaluationRecord` (which named only the isolation
 candidate): a list keeps every record the decision read under the retention rule without
@@ -717,14 +724,20 @@ interface BaselineIdentity {
     state: 'pending' | 'active' | 'quarantined';
     modes: ('isolation' | 'production')[];   // unique, in isolation, production order
     graders: TaskSpec['graders'];            // unique, in GRADER_KINDS order
+    skills?: string[];                       // TaskSpec.skills, sorted, unique: decides a skill's slice (06 §5.2);
+                                             // absent only in records written before the field existed
   }[];
   splitsHash: string;         // splits.json + each task's state
   graderSetHash: string;      // graders/ + mutants/ for those tasks
   depsHash: string;           // bench runner lockfile + installed @rtrentjones/greenlight version
   harness: { runnerVersion: string; imageDigest: string;   // imageDigest: "ctx:sha256:<build context + shim uid + apk -v list>" (M6), or "process"
+             processHost?: string;   // iff imageDigest is "process": sha256 over host name, platform, arch and Node
+                                     // version, since "process" alone is equal on every machine
              limits?: { maxSteps: number; requestsPerRollout: number; timeoutMin: number | null } };  // part of comparability; resume refuses a change
   agent: { vendor: string; version: string };
   models: string[];           // from models.json, in order
+  modelsConfigHash?: string;  // sha256 over { provider, temperature, judge model id, frontier and small { id, fallback } }
+                              // of models.json (§10.6); absent only in records written before the field existed
   skillSetHash: string;       // over every managed skill's SKILL.md + PURPOSE.md content
   mode: 'isolation' | 'production';
   wikiSnapshotHash: string | null;   // REQUIRED for production mode
@@ -732,12 +745,16 @@ interface BaselineIdentity {
 }
 ```
 
-Two evaluations are comparable iff all fields except `skillSetHash` are equal (06 §1.5). That
-includes `tasks`: a change in any task's state, kind, modes or graders makes two identities
+Two evaluations are comparable iff all fields except `skillSetHash` are equal (06 §1.5). A field
+only one side has (an older record) is a difference, so an identity written before
+`modelsConfigHash`, `processHost` or `tasks[].skills` existed is never equal to, nor comparable
+with, one that has it. That
+includes `tasks`: a change in any task's state, kind, modes, graders or skills makes two identities
 incomparable. `tasks` is what binds the gate's task list to the evaluated records: the gate
 (`decide`, `recompute`, `releaseCheck`, the early stop) requires its task list, projected to
-`(id, kind, state, modes)`, to equal every record's `identity.tasks` projected the same way, and
-throws a harness error naming the differing tasks otherwise. The caller therefore cannot exclude a
+`(id, kind, state, modes, skills)`, to equal every record's `identity.tasks` projected the same
+way, and throws a harness error naming the differing tasks otherwise. A record whose tasks carry
+no `skills` is refused outright: its slices are unknown. The caller therefore cannot exclude a
 task by passing it as `quarantined` (or change its kind or modes): a quarantine is a new identity,
 so a re-baseline (06 §4.1). The runner fills `tasks` from the task specs with `identityTasks()`
 (`packages/wiki/src/schema/bench.ts`), the canonical projection. `taskSetHash` hashes the full
@@ -781,39 +798,55 @@ interface GateInputRecord {
   hash: string;                        // sha256 of the canonical JSON of the rest
   kind: 'gate-input';
   proposalId: string;
+  algorithm?: number;                  // the decision algorithm (06 §5.2, §5.8). Absent = 1 (paired bootstrap);
+                                       // 2 = exact stratified permutation test on the skill's slice
   ts: string;                          // the ledger event's ts: seeds the eventId and the baseline-age check
   outlet: 'skill' | 'template';
   radius: 'high' | 'medium' | 'low';
   path: 'standard' | 'safety-fix' | 'neutral';
-  seed: string;                        // the bootstrap seed used (default `gate:<proposalId>`)
-  config: { alpha: number; runs: number; resamples: number; acceptShorterOnTie: boolean;
-            maxBaselineAgeDays: number };   // bench/gate.json, defaults resolved
+  config: { alpha: number; runs: number; acceptShorterOnTie: boolean; maxBaselineAgeDays: number;
+            nonRegressionFraction: number };   // bench/gate.json, defaults resolved (0.1: the bound, 06 §5.4)
   models: { frontier: string; small: string };
   modes: ('isolation' | 'production')[];    // evaluated, in isolation, production order
   modesDeclared: boolean;              // true for an explicit narrower posture (M1/M2 isolation only)
   acceptedSkillSetHash: string;        // every baseline record carries it
   candidateSkillSetHash: string;       // every candidate record carries it; ≠ accepted
   tasks: { id: string; kind: TaskSpec['kind']; state: TaskSpec['state'];
-           modes: ('isolation' | 'production')[] }[];   // sorted by id, modes resolved; equals every
-                                                       // listed record's identity.tasks without graders
+           modes: ('isolation' | 'production')[];
+           skills: string[] }[];                        // sorted by id, modes resolved, skills sorted; equals
+                                                       // every listed record's identity.tasks without graders
   baselineRecords: string[];           // EvaluationRecord hashes, one per mode, in mode order
   candidateRecords: string[];
   safetyFixTargets?: string[];         // sorted; safety-fix path only
   neutralReason?: string;
   neutralPendingForSkill?: boolean;
-  skillLines?: { before: number; after: number };     // the 06 §5.5 tie-break
-  skill?: string; pattern?: string[]; control?: boolean;
+  skillText?: { before: string; after: string };      // the target SKILL.md in the accepted and candidate
+                                                       // trees; only when acceptShorterOnTie is on. The gate
+                                                       // derives line counts and deletions-only itself (06 §5.5)
+  skill?: string;                      // the patched skill; REQUIRED for the skill outlet (its slice, 06 §5.2)
+  pattern?: string[]; control?: boolean;
   template?: { lanes: { lane: string; passed: boolean }[];
                mutants: { id: string; caught: boolean }[] };  // REQUIRED iff outlet is template
 }
 ```
 
+An algorithm-1 record differs: it has no `algorithm`, carries `seed` (the bootstrap seed) and
+`config.resamples`, has no `config.nonRegressionFraction` and no task `skills`, and may carry
+`skillLines: { before, after }` (caller-supplied line counts) instead of `skillText`. The schema
+still reads it, so `--recompute` can report it as made with the older algorithm (06 §5.8); it is
+never re-decided. A version-2 record carrying `seed`, `resamples` or `skillLines`, or lacking
+`skill` (skill outlet), the fraction or any task's `skills`, is invalid. `bench/gate.json` may
+still hold `resamples`; it is ignored.
+
+A gate input record is written for a decision only. `blocked` and `underpowered` outcomes (06
+§5.1) have none.
+
 The gate's identity rules over the record set (06 §1.5, §5.1): every baseline record carries
 `acceptedSkillSetHash` and every candidate record `candidateSkillSetHash`; all records agree on
 every `BaselineIdentity` field except `mode`, `wikiSnapshotHash` and `skillSetHash`; within one
-mode, baseline and candidate are comparable as above; and the gate's `tasks` equals every
-record's `identity.tasks` projected to `(id, kind, state, modes)` (§10.3), so a resealed gate input
-with a changed task state fails `--recompute`. A mode a gated task declares but that lacks
+mode, baseline and candidate are comparable as above; the two gate models differ; and the gate's
+`tasks` equals every record's `identity.tasks` projected to `(id, kind, state, modes, skills)`
+(§10.3), so a resealed gate input with a changed task state or slice fails `--recompute`. A mode a gated task declares but that lacks
 a record on either side makes the evaluation invalid unless the caller declared a narrower
 `modes`.
 

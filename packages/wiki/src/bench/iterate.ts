@@ -79,6 +79,7 @@ import {
   ProposerOutputSchema,
   SKILL_NAME_RE,
   evalEvidencePath,
+  movesSkillSet,
   normalizeProposerOutput,
   sealEvent,
 } from '../schema';
@@ -87,8 +88,10 @@ import { loadSkills } from '../skills';
 import { spendEvent } from './budget';
 import { type LoadedTask, loadTasks } from './check-graders';
 import {
+  type ControlOutcome,
   type GateDecision,
   GateHarnessError,
+  controlOutcome,
   decide,
   earlyStopEvent,
   loadGateConfig,
@@ -208,7 +211,8 @@ export interface DecisionSummary {
   path: GateDecision['path'];
   reasons: PolicyReason[];
   results: GateResult[];
-  seed: string;
+  /** The decision algorithm (06 §5.2). Absent in a state written before the exact test. */
+  algorithm?: number;
   baselineRecords: string[];
   candidateRecords: string[];
 }
@@ -239,6 +243,9 @@ export interface ControlState extends CandidateState {
   expect: ControlArm['expect'];
   /** True when the decision is `rejectedForReplayRegression(decision, expect.task)`. */
   expectMet?: boolean;
+  /** `controlOutcome(decision, expect.task)`: `inconclusive` when the gate could not have
+   * rejected for the expected regression (06 §10.3), which is not a failed control. */
+  outcome?: ControlOutcome;
   /** Val replay tasks the control was rejected for (`rejectedForReplayRegression`). */
   replayRegressions?: string[];
 }
@@ -1395,7 +1402,13 @@ const gateModels = (config: ModelsConfig) => ({
 });
 
 const policyTasks = (r: EvaluationRecord): PolicyTask[] =>
-  r.identity.tasks.map((t) => ({ id: t.id, kind: t.kind, state: t.state, modes: [...t.modes] }));
+  r.identity.tasks.map((t) => ({
+    id: t.id,
+    kind: t.kind,
+    state: t.state,
+    modes: [...t.modes],
+    ...(t.skills ? { skills: [...t.skills] } : {}),
+  }));
 
 async function stepBaseline(c: Ctx): Promise<StepOutcome> {
   const gateCfg = readGateCfg(c.o.benchDir);
@@ -1714,10 +1727,8 @@ export function materializeCandidate(
 const skillOf = (p: ProposerOutput): string =>
   p.action === 'create' || p.action === 'patch' ? p.name : '';
 
-function skillLines(dir: string, skill: string): number {
-  const t = readIf(join(dir, skill, 'SKILL.md'));
-  return t === undefined ? 0 : t.split('\n').length;
-}
+const skillText = (dir: string, skill: string): string =>
+  readIf(join(dir, skill, 'SKILL.md')) ?? '';
 
 /** Runs (or resumes) the candidate rollouts of one skill candidate, then decides it. */
 async function evaluateCandidate(
@@ -1786,6 +1797,9 @@ async function evaluateCandidate(
     d = (o.decide ?? decide)(baseline, r.record, {
       ts: cand.ts,
       radius: cand.radius,
+      // Always the standard path. The safety-fix and neutral paths waive efficacy, so the owner
+      // chooses them, never the proposer: ProposerOutput (08 §9.2) has no path field, and an
+      // iteration has no owner input at this step (06 §5.4).
       path: 'standard',
       models: gateModels(c.config),
       tasks: policyTasks(baseline),
@@ -1796,7 +1810,7 @@ async function evaluateCandidate(
         ...gateCfg,
         ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
       },
-      skillLines: { before: skillLines(o.skillsDir, skill), after: skillLines(dest, skill) },
+      skillText: { before: skillText(o.skillsDir, skill), after: skillText(dest, skill) },
       skill,
       ...(meta.pattern ? { pattern: meta.pattern } : {}),
       outlet: 'skill',
@@ -1814,10 +1828,27 @@ async function evaluateCandidate(
     path: d.path,
     reasons: d.reasons,
     results: d.results,
-    seed: d.seed,
+    algorithm: d.algorithm,
     baselineRecords: d.baselineRecords,
     candidateRecords: d.candidateRecords,
   };
+  if (d.decision === 'blocked' || d.decision === 'underpowered') {
+    // No decision (06 §5.2, §5.4): the baseline holds a flaky replay task, or the efficacy test
+    // cannot reach alpha at this shape. Neither is a verdict on the candidate, and a re-run of
+    // the same evaluation cannot change it, so nothing reaches the ledger and the iteration goes
+    // on to the hand-off, which says what the owner has to fix.
+    const why = d.reasons
+      .filter((x) => x.severity === 'blocked')
+      .map((x) => `${x.code}${x.detail ? ` (${x.detail})` : ''}`)
+      .join('; ');
+    cand.decisionStatus = 'done';
+    cand.status = 'done';
+    cand.message = `no decision (${d.decision}): ${why}`;
+    const note = `${meta.control ? 'control' : 'proposal'} ${cand.proposalId}: the gate made no decision (${d.decision}); it has no ledger row`;
+    if (!c.s.notes.includes(note)) c.s.notes.push(note);
+    c.save();
+    return { ok: true };
+  }
   if (d.decision === 'invalid' || !d.ledgerEvent || !d.gateInput) {
     cand.status = 'failed';
     cand.decisionStatus = 'failed';
@@ -2088,12 +2119,20 @@ async function stepControl(c: Ctx): Promise<StepOutcome> {
     item.replayRegressions = replayVal
       .map((t) => t.id)
       .filter((id) => rejectedForReplayRegression(d, id));
-    // 06 §10.3: the control counts only when rejected for the reason it encodes.
-    item.expectMet =
-      item.expect.decision === 'reject' &&
-      item.expect.reason === 'replay-regression' &&
-      rejectedForReplayRegression(d, item.expect.task);
-    const note = `control ${item.controlId}: ${item.expectMet ? 'rejected' : 'NOT rejected'} for replay-regression on ${item.expect.task} (06 §10.3)`;
+    // 06 §10.3: the control counts only when rejected for the reason it encodes. When the gate
+    // could not have rejected for that reason (no decision, or the expected task fails in the
+    // baseline so it cannot regress), the control is inconclusive, not failed.
+    const expectsRegression =
+      item.expect.decision === 'reject' && item.expect.reason === 'replay-regression';
+    item.outcome = expectsRegression ? controlOutcome(d, item.expect.task) : 'not-met';
+    item.expectMet = item.outcome === 'met';
+    const how =
+      item.outcome === 'met'
+        ? 'rejected'
+        : item.outcome === 'inconclusive'
+          ? 'INCONCLUSIVE (the gate could not have rejected it)'
+          : 'NOT rejected';
+    const note = `control ${item.controlId}: ${how} for replay-regression on ${item.expect.task} (06 §10.3)`;
     if (!c.s.notes.includes(note)) c.s.notes.push(note);
     c.save();
   }
@@ -2252,7 +2291,22 @@ function candidateSection(
     out.push(
       `- evaluation records: ${[...cand.decision.baselineRecords, ...cand.decision.candidateRecords].map((h) => `\`${h}\``).join(', ')}`,
     );
-    out.push(`- bootstrap seed: \`${cand.decision.seed}\``);
+    out.push(
+      `- decision: \`${cand.decision.decision}\` (exact stratified permutation test, algorithm ${cand.decision.algorithm ?? 1}, 06 §5.2)`,
+    );
+    if (cand.decision.decision === 'blocked' || cand.decision.decision === 'underpowered')
+      out.push(
+        '',
+        cand.decision.decision === 'blocked'
+          ? '> **No decision: the baseline is not gateable.** A replay task is flaky in the baseline at high blast radius (06 §5.4). This says nothing about the candidate: fix or quarantine the task named below, re-baseline, and gate again. Nothing was written to the ledger.'
+          : "> **No decision: the gate is underpowered here.** No candidate outcome could reach the significance level on this skill's bench slice (06 §5.2), so neither an accept nor a rejection would mean anything. Add objective tasks that exercise the skill (or runs), then gate again. Nothing was written to the ledger.",
+      );
+    const vacuous = cand.decision.reasons.filter((r) => r.code === 'safety-vacuous');
+    if (vacuous.length > 0)
+      out.push(
+        '',
+        `> **Replay safety is vacuous** on ${vacuous.map((r) => `${r.model}/${r.mode}`).join(', ')}: no replay task is baseline-passing there, so "no regression" proves nothing (06 §5.4).`,
+      );
   }
   if (gi)
     out.push(
@@ -2349,7 +2403,10 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
   let draft = false;
   let branch: string | undefined;
 
-  const stage = e?.stage ?? '(not recorded yet)';
+  // `blocked` / `underpowered` (06 §5.2, §5.4): the gate ran and made no decision.
+  const made = cand?.decision?.decision;
+  const noDecision = made === 'blocked' || made === 'underpowered' ? made : undefined;
+  const stage = e?.stage ?? (noDecision ? `no decision: ${noDecision}` : '(not recorded yet)');
   lines.push(`Greenlight evolution loop, iteration \`${s.iterationId}\` (vision 06 §1.3).`, '');
   lines.push(`**Outcome:** \`${stage}\`${e?.reason ? ` — ${e.reason}` : ''}`, '');
   if (s.evaluate.kind === 'skill' && p && (p.action === 'patch' || p.action === 'create')) {
@@ -2359,7 +2416,12 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
     branch = `evo/${s.proposer.proposalId}`;
     const what = p.action === 'create' ? 'new skill' : `${p.edits.length} edit(s)`;
     title = `evo(${p.name}): ${what} citing ${p.patterns.join(', ')} [${s.proposer.proposalId}]`;
-    if (!accepted)
+    if (noDecision)
+      lines.push(
+        '> The gate made no decision on this candidate: it is neither accepted nor rejected, and it has no ledger row. The PR documents the change and what blocks the gate; do not merge it.',
+        '',
+      );
+    else if (!accepted)
       lines.push(
         '> The gate did not accept this candidate. The PR documents the rejected change for review; do not merge it (the wiki keeps the rejection, 06 §6).',
         '',
@@ -2434,7 +2496,7 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
       lines.push(
         '',
         `- rejected for a replay regression: ${item.replayRegressions?.length ? `yes, on ${countTasks(item.replayRegressions, heldOut)}` : 'no'}`,
-        `- expected: \`${item.expect.decision}\` for \`${item.expect.reason}\` on ${countTasks([item.expect.task], heldOut)} → ${item.expectMet === undefined ? 'not evaluated yet' : item.expectMet ? '**met** (`rejectedForReplayRegression`)' : '**NOT met**: the gate did not refuse the plausible but wrong lesson (06 §10.3)'}`,
+        `- expected: \`${item.expect.decision}\` for \`${item.expect.reason}\` on ${countTasks([item.expect.task], heldOut)} → ${item.expectMet === undefined ? 'not evaluated yet' : item.expectMet ? '**met** (`rejectedForReplayRegression`)' : item.outcome === 'inconclusive' ? '**inconclusive**: the gate could not have rejected for this regression (no decision, or the task fails in the baseline so it cannot regress); the control shows nothing about the gate until the baseline passes that task (06 §10.3)' : '**NOT met**: the gate did not refuse the plausible but wrong lesson (06 §10.3)'}`,
         '',
       );
     }
@@ -2813,13 +2875,19 @@ export function reviewIteration(o: {
     const derive = (ts: string, without: ReadonlySet<string>) => {
       const ledger = ledgerEvents(o.wikiRoot).filter((e) => !without.has(e.eventId));
       return targets.map((target) => {
-        const latest = proposalHistory(ledger, target.proposalId as string).latest;
+        const history = proposalHistory(ledger, target.proposalId as string);
+        const latest = history.latest;
         const withdraw =
           o.decision === 'reject' && latest !== undefined && AFTER_ACCEPT.has(latest);
+        // 06 §6.1: withdrawing a MERGED skill change is a new accepted state, named by the
+        // installed skill set (the owner reverts the merge first, then records the review).
+        const reverts =
+          withdraw && latest !== 'candidate-accepted' && movesSkillSet(history.events);
         return sealEvent({
           ts,
           proposalId: target.proposalId,
           stage: withdraw ? 'withdrawn' : 'review',
+          ...(reverts ? { skillSetHash: skillSetHashOf(o.skillsDir) } : {}),
           ...(target.control ? { control: true } : {}),
           reason: `owner review (${o.decision}): ${reason}`,
           review: { decision: o.decision, iteration: s.iterationId },

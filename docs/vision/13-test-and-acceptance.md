@@ -227,10 +227,10 @@ silent.
 the policy table (06 §5.4). For each blast radius, model and mode, the vectors cover:
 
 - replay at 3/3, 2/3 and 1/3;
-- a flaky baseline task;
+- a flaky baseline task (high radius: `blocked`, not a rejection);
 - p = 0.049 and p = 0.051;
-- a capability delta exactly at one task-mean;
-- a production-mode drop exactly at one task-mean;
+- a capability delta exactly at the non-regression bound, and one pass beyond it;
+- a production-mode drop exactly at the bound;
 - the safety-fix path with the target replay at 1/3 → 2/3;
 - the neutral path with and without a recorded reason;
 - an early stop at R = 1.0.
@@ -239,6 +239,17 @@ Each vector has exactly one expected outcome and path label, stored beside it. *
 policy boundary vectors produce exactly one documented result.** Any change to the policy code
 that changes a vector's outcome fails CI until the expected outcome and 06 §5.4 are updated
 together.
+
+The vectors use ten capability tasks and pin p at the edge, so they test the thresholds, not the
+statistics. Two more suites cover what they cannot:
+
+- `packages/wiki/src/bench/__tests__/stats.test.ts` checks the exact test (06 §5.2) against
+  brute-force enumeration and asserts every figure of 06 §5.2's operating-characteristics tables.
+- `packages/wiki/src/bench/__tests__/shipped-shape.test.ts` runs the gate on the val split as
+  shipped (2 objective tasks, 2 replay, 3 runs, 2 models) and on the sealed baseline's pattern
+  (every objective cell 0/3, one replay 1/3 on `frontier`): the slice rule, `underpowered`, the
+  type-I rate with identical arms, a flaky baseline as `blocked`, vacuous safety surfaced, the
+  control arm inconclusive, and the bound at two tasks.
 
 ### 2.9 Evidence identity
 
@@ -324,7 +335,10 @@ ones. The drills for M0 to M2 are local and credential-free.
   2. A valid proposal, or a `no_action` with a reason, exists. It was produced from a bundle
      containing no val or test material (§2.7).
   3. The proposal was evaluated by its outlet's rule (06 §5.6).
-  4. **The control proposal is rejected**, because the Neon replay regresses.
+  4. **The control proposal is rejected**, because the Neon replay regresses
+     (`controlOutcome` is `met`, 06 §10.3). A control that is **inconclusive**, because the Neon
+     replay is not baseline-passing or the baseline blocked the gate, does not meet this
+     criterion and is not a gate failure: fix the baseline and run the iteration again.
   5. The ledger holds the events for both the proposal and the control. Their decisions reproduce
      with `bench gate --recompute`.
   6. The owner has reviewed the ledger rows, and the review is recorded.

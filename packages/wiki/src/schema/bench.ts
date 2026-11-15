@@ -176,9 +176,20 @@ export const IdentityTaskSchema = z
     state: TaskState,
     modes: z.array(Mode).min(1),
     graders: z.array(z.enum(GRADER_KINDS)).min(1),
+    /** The skills the task exercises (TaskSpec.skills), sorted and unique: they decide which
+     * objective tasks are a patched skill's slice (06 §5.2). Absent only in records written
+     * before the field existed, which then compare unequal to every record that has it. */
+    skills: z.array(z.string().min(1)).optional(),
   })
   .strict()
   .superRefine((t, ctx) => {
+    if (t.skills && !ascending(t.skills)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['skills'],
+        message: `task ${t.id} skills are sorted, unique`,
+      });
+    }
     if (!inOrder(t.modes, MODE_ORDER)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -199,7 +210,9 @@ export type IdentityTask = z.infer<typeof IdentityTaskSchema>;
 /** The canonical identity projection of task specs: sorted by id, modes and graders in canonical
  * order. The runner fills `BaselineIdentity.tasks` with this. */
 export function identityTasks(
-  specs: readonly Pick<TaskSpec, 'id' | 'kind' | 'state' | 'modes' | 'graders'>[],
+  specs: readonly (Pick<TaskSpec, 'id' | 'kind' | 'state' | 'modes' | 'graders'> & {
+    skills?: readonly string[];
+  })[],
 ): IdentityTask[] {
   return [...specs]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -209,6 +222,7 @@ export function identityTasks(
       state: t.state,
       modes: MODE_ORDER.filter((m) => t.modes.includes(m)),
       graders: GRADER_KINDS.filter((g) => t.graders.includes(g)),
+      skills: [...new Set(t.skills ?? [])].sort(),
     }));
 }
 
@@ -225,6 +239,11 @@ export const BaselineIdentitySchema = z
       .object({
         runnerVersion: z.string().min(1),
         imageDigest: z.string().min(1),
+        /** Process sandbox only (`imageDigest: "process"`): sha256 over the host name, platform,
+         * architecture and Node version. The process sandbox has no image to pin, so two machines
+         * (or two Node versions) are never comparable. Absent for a docker image and in records
+         * written before the field existed. */
+        processHost: Sha256.optional(),
         /** The rollout limits: a 10-step run says nothing about a 20-step one (06 §1.5). Absent
          * only in records written before the field existed, which then compare unequal to every
          * record that has it. `timeoutMin` null = each task's own `timeoutMin` (in taskSetHash). */
@@ -240,6 +259,11 @@ export const BaselineIdentitySchema = z
       .strict(),
     agent: z.object({ vendor: z.string().min(1), version: z.string().min(1) }).strict(),
     models: z.array(z.string().min(1)).min(1),
+    /** sha256 over the outcome-changing settings of `bench/models.json` (`modelsConfigIdentity`):
+     * provider, temperature, the judge's model id, and each gate role's id and fallback. Absent
+     * only in records written before the field existed, which then compare unequal to every
+     * record that has it. */
+    modelsConfigHash: Sha256.optional(),
     skillSetHash: Sha256,
     mode: Mode,
     wikiSnapshotHash: Sha256.nullable(),
@@ -269,7 +293,8 @@ export type BaselineIdentity = z.infer<typeof BaselineIdentitySchema>;
  * difference is `skillSetHash` (vision 06 §1.5); anything else forces a re-baseline — including
  * `tasks`, so a change in any task's state, kind, modes or graders (e.g. a quarantine) does. */
 export function identityDiff(a: BaselineIdentity, b: BaselineIdentity): string[] {
-  const keys = Object.keys(a) as (keyof BaselineIdentity)[];
+  // The union of both key sets: a field only one side has (an older record) is a difference.
+  const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])] as (keyof BaselineIdentity)[];
   return keys.filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
 }
 
@@ -398,21 +423,28 @@ export const GateInputRecordSchema = z
     hash: Sha256,
     kind: z.literal('gate-input'),
     proposalId: z.string().min(1),
+    /** The decision algorithm (`GATE_ALGORITHM`, 06 §5.2). Absent: 1, the paired bootstrap over
+     * task means. `--recompute` re-derives only records of the algorithm it implements, and
+     * reports any other as made with an older (or newer) algorithm. */
+    algorithm: z.number().int().min(1).optional(),
     /** The ledger event's ts; it seeds the eventId and the baseline-age check. */
     ts: IsoDateTime,
     outlet: z.enum(['skill', 'template']),
     radius: Radius,
     path: GatePathEnum,
-    /** The bootstrap seed actually used (default `gate:<proposalId>`, or the caller's override). */
-    seed: z.string().min(1),
+    /** Algorithm 1 only: the bootstrap seed. The exact test has no seed. */
+    seed: z.string().min(1).optional(),
     /** bench/gate.json as resolved, defaults filled in. */
     config: z
       .object({
         alpha: z.number().gt(0).lt(1),
         runs: z.number().int().min(1),
-        resamples: z.number().int().min(1),
+        /** Algorithm 1 only. */
+        resamples: z.number().int().min(1).optional(),
         acceptShorterOnTie: z.boolean(),
         maxBaselineAgeDays: z.number().int().min(1),
+        /** Algorithm ≥ 2: the non-regression bound's fraction (06 §5.4). */
+        nonRegressionFraction: z.number().gt(0).lt(1).optional(),
       })
       .strict(),
     models: z.object({ frontier: z.string().min(1), small: z.string().min(1) }).strict(),
@@ -433,6 +465,8 @@ export const GateInputRecordSchema = z
             kind: z.enum(TASK_KINDS),
             state: TaskState,
             modes: z.array(Mode).min(1),
+            /** Algorithm ≥ 2: the skills the task exercises, sorted (the slice rule, 06 §5.2). */
+            skills: z.array(z.string().min(1)).optional(),
           })
           .strict(),
       )
@@ -443,10 +477,15 @@ export const GateInputRecordSchema = z
     safetyFixTargets: z.array(z.string().min(1)).optional(),
     neutralReason: z.string().min(1).optional(),
     neutralPendingForSkill: z.boolean().optional(),
+    /** Algorithm 1 only: caller-supplied SKILL.md line counts for the tie-break. */
     skillLines: z
       .object({ before: z.number().int().min(0), after: z.number().int().min(0) })
       .strict()
       .optional(),
+    /** Algorithm ≥ 2, and only when `config.acceptShorterOnTie` is on: the target SKILL.md before
+     * and after. The gate derives the line counts and the deletions-only claim from them (06
+     * §5.5). */
+    skillText: z.object({ before: z.string(), after: z.string() }).strict().optional(),
     skill: z.string().min(1).optional(),
     pattern: z.array(z.string().min(1)).optional(),
     control: z.boolean().optional(),
@@ -492,6 +531,25 @@ export const GateInputRecordSchema = z
     }
     if ((g.outlet === 'template') !== (g.template !== undefined)) {
       issue('template', 'template results are required iff the outlet is "template"');
+    }
+    if ((g.algorithm ?? 1) === 1) {
+      if (g.seed === undefined) issue('seed', 'an algorithm-1 gate input names its bootstrap seed');
+      if (g.config.resamples === undefined) issue('config', 'algorithm 1 records its resamples');
+    } else {
+      if (g.seed !== undefined) issue('seed', 'the exact test has no seed');
+      if (g.config.resamples !== undefined) issue('config', 'the exact test has no resamples');
+      if (g.config.nonRegressionFraction === undefined) {
+        issue('config', 'the gate input records the non-regression fraction');
+      }
+      if (g.skillLines !== undefined) issue('skillLines', 'superseded by skillText');
+      if (g.outlet === 'skill' && g.skill === undefined) {
+        issue('skill', 'a skill gate names the patched skill (its slice is the efficacy set)');
+      }
+      for (const t of g.tasks) {
+        if (t.skills === undefined || !ascending(t.skills)) {
+          issue('tasks', `task ${t.id} lists its skills, sorted and unique`);
+        }
+      }
     }
   });
 

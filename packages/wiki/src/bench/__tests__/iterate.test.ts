@@ -26,7 +26,16 @@ import {
   normalizeProposerOutput,
   sealEvent,
 } from '../../schema';
-import { acquireLock, blastRadius, loadControls, materializeCandidate, pinTree } from '../iterate';
+import {
+  type IterationState,
+  acquireLock,
+  blastRadius,
+  buildHandoff,
+  loadControls,
+  materializeCandidate,
+  pinTree,
+} from '../iterate';
+import type { PolicyReason } from '../policy';
 
 /** Unit cases for `bench iterate` (roadmap M2-01/M2-04) that need no rollout: the hand-written
  * JSON Schemas stay in step with the zod contracts, the review annotation's place in the stage
@@ -351,5 +360,126 @@ describe('resume hardening (second review)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('the hand-off says when the gate made no decision (06 §5.2, §5.4, §10.3)', () => {
+  const IDLE = 'replay/idle-probe-leaves-store-asleep-val';
+  const KEEPALIVE = 'replay/keepalive-probe-reaches-store-val';
+  const result = (model: string) => ({
+    model,
+    mode: 'isolation' as const,
+    split: 'val' as const,
+    runs: 3,
+    replay: { total: 2, baselinePassing: 0, candidatePassing: 0, regressions: [] },
+    capability: { before: 0, after: 0, delta: 0, pValue: 1, minP: 0.05 },
+    decision: 'fail' as const,
+  });
+  const state = (decision: 'blocked' | 'underpowered', reasons: PolicyReason[]): IterationState =>
+    ({
+      v: 1,
+      iterationId: 'iter-20261115T000000Z-aaaaaaaa',
+      settings: { incidents: [] },
+      notes: [],
+      train: { status: 'done' },
+      baseline: { status: 'done' },
+      maintainer: { status: 'done' },
+      proposer: {
+        status: 'done',
+        proposalId: 'prop-1',
+        proposal: {
+          action: 'patch',
+          outlet: 'skill',
+          name: 'deploy-verify-promote',
+          edits: [],
+          patterns: ['pattern/probe-touches-wrong-layer'],
+        },
+      },
+      evaluate: {
+        kind: 'skill',
+        candidate: {
+          status: 'done',
+          proposalId: 'prop-1',
+          skill: 'deploy-verify-promote',
+          radius: 'high',
+          decision: {
+            decision,
+            path: 'standard',
+            reasons,
+            results: ['f', 's'].map(result),
+            algorithm: 2,
+            baselineRecords: ['a'.repeat(64)],
+            candidateRecords: ['b'.repeat(64)],
+          },
+        },
+      },
+      control: {
+        status: 'done',
+        items: [
+          {
+            status: 'done',
+            file: 'controls/probe-layer-overgeneral.json',
+            controlId: 'probe-layer-overgeneral',
+            proposalId: 'control-1',
+            skill: 'deploy-verify-promote',
+            expect: { decision: 'reject', reason: 'replay-regression', task: IDLE },
+            expectMet: false,
+            outcome: 'inconclusive',
+            replayRegressions: [],
+          },
+        ],
+      },
+      record: { status: 'done', eventIds: [] },
+    }) as unknown as IterationState;
+  const handoff = (s: IterationState) => {
+    const root = mkdtempSync(join(tmpdir(), 'greenlight-handoff-'));
+    return buildHandoff(s, { dir: root, skillsDir: root, wikiRoot: root });
+  };
+
+  it('blocked by a flaky baseline task: not a rejection, the task is named for the owner', () => {
+    const h = handoff(
+      state('blocked', [
+        {
+          code: 'flaky-baseline',
+          severity: 'blocked',
+          model: 'f',
+          mode: 'isolation',
+          task: KEEPALIVE,
+          detail: `baseline 1/3: fix or quarantine ${KEEPALIVE}, then re-baseline; this says nothing about the candidate`,
+        },
+        { code: 'safety-vacuous', severity: 'info', model: 'f', mode: 'isolation' },
+        { code: 'safety-vacuous', severity: 'info', model: 's', mode: 'isolation' },
+      ]),
+    );
+    expect(h.body).toContain('**Outcome:** `no decision: blocked`');
+    expect(h.body).toContain('neither accepted nor rejected');
+    expect(h.body).not.toContain('The gate did not accept this candidate');
+    expect(h.body).toContain('**No decision: the baseline is not gateable.**');
+    expect(h.body).toContain('- `flaky-baseline` (f / isolation / (a val replay task))');
+    expect(h.body).toContain('**Replay safety is vacuous** on f/isolation, s/isolation');
+    expect(h.body).toContain('**inconclusive**: the gate could not have rejected');
+    expect(h.body).not.toContain('**NOT met**');
+    // 06 §1.4: the public hand-off names no val task.
+    expect(h.body).not.toContain(KEEPALIVE);
+    expect(h.draft).toBe(true);
+    expect(h.eventId).toBeUndefined();
+  });
+
+  it('underpowered: says the slice is too small, and that nothing reached the ledger', () => {
+    const h = handoff(
+      state('underpowered', [
+        {
+          code: 'underpowered',
+          severity: 'blocked',
+          model: 'f',
+          mode: 'isolation',
+          detail: 'attainable minimum p 0.05 ≥ 0.05: 1 slice task(s) × 3 runs, baseline 0/3',
+        },
+      ]),
+    );
+    expect(h.body).toContain('**Outcome:** `no decision: underpowered`');
+    expect(h.body).toContain('**No decision: the gate is underpowered here.**');
+    expect(h.body).toContain('attainable minimum p 0.05 ≥ 0.05');
+    expect(h.body).toContain('Nothing was written to the ledger');
   });
 });

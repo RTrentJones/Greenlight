@@ -122,7 +122,11 @@ function tinyBench(root: string, withControl: boolean): string {
       writeFileSync(f, `${JSON.stringify(spec, null, 2)}\n`);
     }
   }
-  writeFileSync(join(bench, 'gate.json'), '{ "alpha": 0.05, "runs": 1, "resamples": 1000 }\n');
+  // One run per task keeps this end-to-end test short, but the exact test (06 §5.2) cannot go
+  // below p = 1/2 on one slice task × 1 run, so at alpha 0.05 the gate would (rightly) answer
+  // `underpowered`. alpha 0.6 makes this tiny shape decidable: the test is about the iteration's
+  // plumbing; the statistics have their own tests (stats.test.ts, shipped-shape.test.ts).
+  writeFileSync(join(bench, 'gate.json'), '{ "alpha": 0.6, "runs": 1 }\n');
   const models = JSON.parse(readFileSync(join(bench, 'models.json'), 'utf8'));
   for (const r of ['frontier', 'small']) models.roles[r].limits = { rpm: 60, rpd: 1000, tpm: 1e7 };
   writeFileSync(join(bench, 'models.json'), `${JSON.stringify(models, null, 2)}\n`);
@@ -1179,7 +1183,7 @@ describe('bench iterate without docker (process sandbox)', () => {
     // Drift is refused before anything runs: the gate config, then the installed skills.
     const gate = join(env.bench, 'gate.json');
     const gateText = readFileSync(gate, 'utf8');
-    writeFileSync(gate, '{ "alpha": 0.05, "runs": 2, "resamples": 1000 }\n');
+    writeFileSync(gate, '{ "alpha": 0.6, "runs": 2 }\n');
     const drift = await iterate(opts(1, { resume: id }));
     expect(drift.exitCode).toBe(4);
     expect(drift.message).toMatch(/bench\/gate\.json changed/);

@@ -13,7 +13,13 @@ import {
 import { GateResultSchema } from '../../schema/ledger';
 import { type PolicyInput, applyPolicy, earlyStop, releasePolicy } from '../policy';
 
-const LETTER = { accept: 'A', reject: 'R', invalid: 'I' } as const;
+const LETTER = {
+  accept: 'A',
+  reject: 'R',
+  invalid: 'I',
+  blocked: 'B',
+  underpowered: 'U',
+} as const;
 
 describe('policy boundary vectors (13 §2.8)', () => {
   const rows = VECTORS.flatMap((v) =>
@@ -52,6 +58,14 @@ describe('policy boundary vectors (13 §2.8)', () => {
       // the overall decision is exactly "every model × mode passes and no path rule failed"
       const allPass = out.results.every((r) => r.decision === 'pass');
       if (out.decision === 'accept') expect(allPass).toBe(true);
+      if (out.decision === 'blocked') {
+        // 06 §5.4: a flaky baseline is the baseline's problem; nothing is held against the candidate.
+        expect(out.reasons.some((r) => r.severity === 'fail')).toBe(false);
+        const why = out.reasons.filter((r) => r.severity === 'blocked');
+        expect(why.map((r) => r.code)).toEqual(['flaky-baseline']);
+        expect(why[0]?.task).toBe('replay/b');
+        expect(why[0]?.detail).toMatch(/fix or quarantine replay\/b/);
+      }
       if (out.decision === 'reject') {
         expect(out.reasons.some((r) => r.severity === 'fail')).toBe(true);
         if (v.rejectCode) expect(out.reasons.map((r) => r.code)).toContain(v.rejectCode);
@@ -85,7 +99,6 @@ function clean(over: Partial<PolicyInput> = {}): PolicyInput {
     tasks: TASKS,
     baseline,
     candidate,
-    seed: 'clean',
     ...over,
   };
 }
@@ -117,7 +130,7 @@ describe('applyPolicy details', () => {
     }
   });
 
-  it('accepts the clean world with real bootstrap p-values and reports the GateResult figures', () => {
+  it('accepts the clean world with the exact p-value and reports the GateResult figures', () => {
     const out = applyPolicy(clean());
     expect(out.decision).toBe('accept');
     const iso = out.results[0];
@@ -125,7 +138,10 @@ describe('applyPolicy details', () => {
     expect(iso?.mode).toBe('isolation');
     expect(iso?.capability.before).toBeCloseTo(0.5);
     expect(iso?.capability.after).toBeCloseTo(0.9);
-    expect(iso?.capability.pValue).toBeLessThan(0.05);
+    // c6–c9 go 0/3 → 3/3 (each 1/20), c1–c5 and c10 do not move (each 1): p = 20⁻⁴ exactly.
+    expect(iso?.capability.pValue).toBeCloseTo(1 / 160000, 12);
+    // Against this baseline the best any candidate could do is lift c6–c10: 20⁻⁵.
+    expect(iso?.capability.minP).toBeCloseTo(1 / 3200000, 12);
     expect(iso?.replay).toEqual({
       total: 3,
       baselinePassing: 3,
@@ -135,8 +151,7 @@ describe('applyPolicy details', () => {
     expect(out.results[1]?.capability.pValue).toBeNull(); // production: not computed
   });
 
-  it('bootstraps over tasks sorted by id: the p-value does not depend on ctx.tasks order', () => {
-    // An uneven gain, so resampling by position would see different diffs under a reorder.
+  it('does not depend on ctx.tasks order', () => {
     const base = clean();
     const uneven = {
       ...base,
@@ -250,7 +265,7 @@ describe('applyPolicy details', () => {
     expect(out.reasons.map((r) => r.code)).toContain('neutral-already-pending');
   });
 
-  it('rejects with no objective tasks (strict improvement is impossible) and says so', () => {
+  it('is underpowered with no objective tasks: no slice, so no decision, and it says so', () => {
     const tasks = TASKS.filter((t) => t.kind === 'replay');
     const base = clean({ tasks });
     const keep = (o: { task: string }) => o.task.startsWith('replay/');
@@ -259,12 +274,32 @@ describe('applyPolicy details', () => {
       baseline: base.baseline.filter(keep),
       candidate: base.candidate.filter(keep),
     });
-    expect(out.decision).toBe('reject');
-    expect(out.results[0]?.capability).toEqual({ before: 0, after: 0, delta: 0, pValue: null });
+    expect(out.decision).toBe('underpowered');
+    expect(out.results[0]?.capability).toEqual({
+      before: 0,
+      after: 0,
+      delta: 0,
+      pValue: null,
+      minP: null,
+    });
     expect(out.reasons.map((r) => r.code)).toContain('no-objective-tasks');
+    expect(out.reasons).toContainEqual(
+      expect.objectContaining({ code: 'no-slice', severity: 'blocked', model: F }),
+    );
+    expect(out.reasons.some((r) => r.severity === 'fail')).toBe(false);
+  });
+
+  it('refuses a gate pair that is one model twice (06 §5.3)', () => {
+    const out = applyPolicy(clean({ models: { frontier: F, small: F } }));
+    expect(out.decision).toBe('invalid');
+    expect(out.reasons.map((r) => r.code)).toContain('models-not-distinct');
   });
 
   describe('tie-break (06 §5.5)', () => {
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`).join('\n');
+    const BEFORE = lines(100);
+    /** The first `n` lines of BEFORE: a pure deletion. */
+    const cut = (n: number) => lines(n);
     const flat = () => {
       const base = clean();
       return { ...base, candidate: base.baseline.map((o) => o) } as PolicyInput;
@@ -278,16 +313,49 @@ describe('applyPolicy details', () => {
         candidate: flat().baseline.map((o) =>
           o.task.startsWith('replay/p') || o.task.startsWith('replay/q') ? { ...o, score: 0 } : o,
         ),
-        tieBreak: { enabled: true, linesBefore: 100, linesAfter: 90 },
+        tieBreak: { enabled: true, before: BEFORE, after: cut(90) },
       });
       expect(ok.decision).toBe('accept');
       expect(ok.tieBreak).toBe(true);
-      expect(ok.reasons.map((r) => r.code)).toContain('tie-break-shorter');
+      expect(ok.reasons.find((r) => r.code === 'tie-break-shorter')?.detail).toBe(
+        'SKILL.md 100 → 90 lines, deletions only',
+      );
+    });
+    it('verifies the claim from the texts: a rewrite of the same length saving is not a deletion', () => {
+      // 90 lines, but one of them is new text: shorter by 10%, yet not deletions only.
+      const rewritten = `${cut(89)}\na new instruction`;
+      const out = applyPolicy({
+        ...flat(),
+        tieBreak: { enabled: true, before: BEFORE, after: rewritten },
+      });
+      expect(out.decision).toBe('reject');
+      expect(out.tieBreak).toBe(false);
+      // reordered lines are not a deletion either
+      const reordered = [...cut(90).split('\n')].reverse().join('\n');
+      expect(
+        applyPolicy({ ...flat(), tieBreak: { enabled: true, before: BEFORE, after: reordered } })
+          .decision,
+      ).toBe('reject');
+    });
+    it('a tie is equal pass counts within ⌊rollouts/20⌋: −1 of 30 ties, −2 does not', () => {
+      const drop = (n: number) => {
+        const base = flat();
+        return applyPolicy({
+          ...base,
+          candidate: base.candidate.map((o) =>
+            o.task === 'cap/c1' && o.model === S && o.run <= n ? { ...o, score: 0 } : o,
+          ),
+          tieBreak: { enabled: true, before: BEFORE, after: cut(50) },
+        });
+      };
+      expect(drop(1).decision).toBe('accept');
+      // Under the old "|Δ| < one task-mean" rule this −2 on both modes was a tie.
+      expect(drop(2).decision).toBe('reject');
     });
     it('needs at least 10% fewer lines', () => {
       const out = applyPolicy({
         ...flat(),
-        tieBreak: { enabled: true, linesBefore: 100, linesAfter: 91 },
+        tieBreak: { enabled: true, before: BEFORE, after: cut(91) },
       });
       expect(out.decision).toBe('reject');
     });
@@ -298,7 +366,7 @@ describe('applyPolicy details', () => {
         candidate: base.candidate.map((o) =>
           o.task === 'cap/c1' && o.model === S ? { ...o, score: 0 } : o,
         ),
-        tieBreak: { enabled: true, linesBefore: 100, linesAfter: 50 },
+        tieBreak: { enabled: true, before: BEFORE, after: cut(50) },
       });
       expect(out.decision).toBe('reject');
     });
@@ -309,7 +377,7 @@ describe('applyPolicy details', () => {
         candidate: base.candidate.map((o) =>
           o.task === 'replay/a' && o.run > 1 ? { ...o, score: 0 } : o,
         ),
-        tieBreak: { enabled: true, linesBefore: 100, linesAfter: 50 },
+        tieBreak: { enabled: true, before: BEFORE, after: cut(50) },
       });
       expect(out.decision).toBe('reject');
       expect(out.tieBreak).toBe(false);
@@ -392,7 +460,7 @@ describe('releasePolicy (06 §5.7)', () => {
     expect(out.decision).toBe('blocked');
     expect(out.results.every((r) => r.split === 'test')).toBe(true);
   });
-  it('allows a drop of exactly one task-mean and blocks one run beyond', () => {
+  it('allows a drop of exactly the bound (3 of 30 passes) and blocks one pass beyond', () => {
     expect(
       releasePolicy(
         both((w) => {
