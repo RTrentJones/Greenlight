@@ -706,8 +706,8 @@ bundle and writes `maintainer-output.json` (08 §9.1).
    `status: hypothesis`, because a maintainer cannot create confirmed pages.
 2. Status changes go in `update_pages` ops on the frontmatter. A move to `confirmed` must pass
    LR-05 against the evidence present.
-3. It compares `update_index` with the generated index. A mismatch is a warning, and the generated
-   index wins.
+3. It compares `update_index`, when the output has one, with the generated index. A mismatch is
+   a warning, and the generated index wins. Without one the generated index is written.
 4. It applies every change atomically: all of them are staged in a temporary copy and moved into
    place only if all succeed. Then it appends the `append_log` entry with actor
    `maintainer:<GREENLIGHT_MODEL>`.

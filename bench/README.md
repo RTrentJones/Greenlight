@@ -93,9 +93,13 @@ Isolation rules every grader follows:
   `graders/_lib/fake-clock-coordinator.mjs` over a unix socket in a temp dir: the grader advances
   every participant to the same instant, in lockstep with the fake store's clock, so a 30-second
   poll fires twenty times in the ten-minute window whether it runs on a timer, a `performance.now()`
-  guard, an `AbortSignal.timeout` loop, a worker or a child. A process the app starts that never
-  joins the clock (a long-lived non-Node child), or a participant that stops answering, fails the
-  window. Out of scope: Node-internal timers (socket timeouts), `spawnSync` children, native code,
+  guard, an `AbortSignal.timeout` loop, a worker or a child. A child or worker the app starts is
+  waited for as long as its process is alive (one that exits before joining is dropped): how long a
+  Node process takes to boot depends on the machine's load, and the former 5-second wall-clock
+  deadline turned CPU contention into a failed grade (the "20 polls" flake). A child that is still
+  alive and has not joined after the cap (120 s: a long-lived non-Node child) is a HARNESS error
+  (`ClockJoinTimeoutError`, a grader error, invalid at the gate), not a failing check; a
+  participant that stops answering still fails the window. Out of scope: Node-internal timers (socket timeouts), `spawnSync` children, native code,
   and code that attacks the shim itself (the sandbox is the isolation boundary). The env carries
   only a socket path and a timestamp.
 - **Production semantics.** The maintainer grader applies the output with the real patch engine
@@ -104,9 +108,32 @@ Isolation rules every grader follows:
 | task family | kind | fidelity | what the grader does |
 |---|---|---|---|
 | keepalive-probe-reaches-store | `app` | runtime | runs the tree's own keepalive Worker (in its own process) over its `targets.json` on a simulated Workers runtime (edge cache, bypassed by `cache: 'no-store' \| 'no-cache' \| 'reload'`; the `no-store` + `cf.cacheTtl` conflict throws) every 3 days for 21 days against the Supabase-shaped fake: not paused, every sweep ran a query, a paused store reads as failing, no user columns read; plus the structural `probeTable` check |
-| idle-probe-leaves-store-asleep | `app` | runtime | starts the tree's app from its Dockerfile `CMD` on the fake clock against the Neon-shaped fake, steps a 10-minute idle window (every app timer fires at its simulated time), fires the declared `HEALTHCHECK` on its interval and one keepalive sweep: zero store queries from either and from the idle app, store suspended, liveness 200 with the database stopped, `/health` still reports the database |
-| probe-layer-incidents | `maintainer` | structural | the rubric in `graders/_lib/maintainer.mjs`: valid output applied by the real engine, cited claims, no evidence removed, status lifecycle, the liveness-model distinction with the right polarity on each branch citing both incidents, no overgeneral or inverted rule; plus, in real gate grading only, an eval judge (below) |
-| fixture-preview-before-push | `trajectory` | runtime | evaluates `task.json` `trajectory.rules` with the rule DSL in `packages/wiki/src/bench/trajectory.ts`; the rules match on shim `meta` (below), never on argv spelling |
+| idle-probe-leaves-store-asleep | `app` | runtime | starts the tree's app from its Dockerfile's last `CMD` (exec form, or shell form under `/bin/sh -c`; a `HEALTHCHECK … CMD` is never read as the app command) on the fake clock against the Neon-shaped fake, steps a 10-minute idle window (every app timer fires at its simulated time), fires the declared `HEALTHCHECK` on its interval and one keepalive sweep: zero store queries from either and from the idle app, store suspended, liveness 200 with the database stopped, `/health` still reports the database. What it accepts is listed under "What the idle-probe grader accepts" below |
+| probe-layer-incidents | `maintainer` | structural | the rubric in `graders/_lib/maintainer.mjs`: valid output applied by the real engine, cited claims, no evidence removed, status lifecycle, the liveness-model distinction with the right polarity on each branch citing both incidents, no overgeneral or inverted rule; plus, in every runner rollout (train and gate alike), an eval judge (below) |
+| fixture-preview-before-push | `trajectory` | runtime | evaluates `task.json` `trajectory.rules` with the rule DSL in `packages/wiki/src/bench/trajectory.ts`; the rules match on shim `meta` (below), never on argv spelling. Plus one tree check, `the requested change is in what was pushed`: the file the brief names contains the requested text in `ctx.pushedTree`, the tree of the origin's `develop` the runner exports after the rollout (a synthetic reference or mutant has no origin, so its working tree stands in). Without it a preview of the untouched fixture, an empty commit and a push passed |
+
+### What the idle-probe grader accepts
+
+Decided from the keepalive Worker's own contract (`infra/modules/keepalive/worker.js`, vendored in
+the fixture as `keepalive/worker.mjs`), not from one spelling of the solution:
+
+- **The keepalive target.** The structural check asks only for a target named after the tool with
+  an absolute `url` (a malformed `url` fails the check; it used to crash the grader). The `kind` is
+  NOT checked structurally: the Worker probes `kind: "oci"` as a plain service URL (any status
+  below 500, `probePath` default `/`) and every other kind as a Supabase API (anon key required,
+  2xx only). The grader runs that Worker over the tree's `targets.json`, so a target the Worker
+  cannot probe (`"kind": "docker"`, which the Worker does not know, with no anon key) fails the
+  runtime check with the Worker's own error, and one it can probe passes whatever it is called.
+  `target: docker` in the manifest therefore still needs `kind: "oci"` in the keepalive target:
+  that is the Worker's only service-URL kind, and the fixture's `keepalive/worker.mjs` header says
+  so.
+- **The healthcheck URL.** The grader fires the healthcheck itself, so it must read the path from
+  the `HEALTHCHECK` (or compose `healthcheck`) command: `http://localhost|127.0.0.1|0.0.0.0|[::1]`,
+  an optional port, a path. The port may be a number, `$PORT`, `${PORT:-3000}`,
+  `${process.env.PORT}` or a string concatenation (`'http://localhost:' + process.env.PORT +
+  '/health/live'`). A port written any other way (`$(printenv PORT)`) FAILS the check with the
+  command quoted; it is never graded as a probe of `/`. A healthcheck with no URL in it (a script
+  file) cannot be simulated and fails the same way.
 
 ## The maintainer grader: polarity and the eval judge
 
@@ -120,15 +147,19 @@ within its claim. `references/wiki/<task>/alternatives/` holds correct paraphras
 and the `traffic-*`/`silence-*`/`overgeneral-*` mutants inverted or overgeneral ones that must fail;
 widen the reading only together with both.
 
-Check 7, the eval judge (06 §4.6), runs only when a job sets `GraderJob.useJudge` (the runner's real
-gate grading) and only after checks 1-6 pass, so the deterministic check is a prefilter and a judge
+Check 7, the eval judge (06 §4.6), runs only when a job sets `GraderJob.useJudge` (every runner
+rollout: train is graded exactly like val, or a train pass the judge would have failed tells the
+proposer a skill works when the gate will say it does not) and only after checks 1-6 pass, so the deterministic check is a prefilter and a judge
 can only reject. The grader calls `ctx.judge(prompt)` → `{ passed, rationale }` with the fixed
 `JUDGE_RUBRIC` (probe exactly the layer at risk, conditional on the liveness model) and the
 output's new claims as delimited data; `JUDGE_SCHEMA` is the verdict schema for a structured call.
 In a grader child `ctx.judge` is an IPC proxy: the parent answers `{ judge: { id, prompt } }` with
 `{ judgeResult: { id, passed, rationale } | { id, error } }` (`runInChild(job, ms, { judge })` does
-this). A missing judge, an error or a malformed verdict fails closed. check-graders never sets
-`useJudge`: no LLM runs there.
+this). A missing judge, an error or a malformed verdict is NOT a verdict: the grader throws
+(`JudgeUnavailableError`), so the grading is a grader error, and the runner defers the rollout
+when the judge was merely unavailable (429/503 after its retries, a quota, the request cap). It is
+never a failing check, which would be sealed as a 0. check-graders never sets `useJudge`: no LLM
+runs there.
 
 ## Trajectories: the shim meta contract
 
@@ -144,7 +175,7 @@ remote's refs), and its own `passed` observation. All fields are optional and on
 | command | meta |
 |---|---|
 | `git …` | `subcommand`: the builtin that runs after global options and transitive alias expansion over the EFFECTIVE config (file config, then `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, then `GIT_CONFIG_PARAMETERS`, then `-c`/`--config-env` in argv order). `"unknown"` for a non-builtin with no alias, a cycle, a `!shell` alias, an alias that changes the env, an option git rejects, `send-pack`/`http-push`/`submodule foreach`, and ANY non-push command that moved a remote ref (a hook: `invoked` names it) |
-| `git push …` | `remote`; `dstRef`, the one remote ref updated, resolved from refspecs (`develop`, `HEAD:develop`, `+HEAD:refs/heads/develop`, `:develop`) or, for a bare push, from `remote.<r>.push`, the effective push.default and the upstream, else `"unknown"` (several refs, `--all`/`--mirror`/`--tags`/`--prune`, a namespace, wildcards, no upstream, config the shim cannot see: `-C` elsewhere, `GIT_DIR`, `GIT_CONFIG_GLOBAL`, `include.path`); `movedRefs`, when given, decides it; `dstRefs`; `delete`, `force`, `dryRun`; `pushed`: a remote ref really moved (`remoteMoved`/`movedRefs`; without them, `exit 0` and not a dry run) |
+| `git push …` | `remote`; `dstRef`, the one remote ref updated, resolved from refspecs (`develop`, `HEAD:develop`, `+HEAD:refs/heads/develop`, `:develop`) or, for a bare push, from `remote.<r>.push`, the effective push.default and the upstream, else `"unknown"` (several refs, `--all`/`--mirror`/`--tags`/`--prune`, a namespace, wildcards, no upstream, config the shim cannot see: `-C` elsewhere, `GIT_DIR`, `GIT_CONFIG_GLOBAL`, `include.path`); `movedRefs`, when given, decides it; `dstRefs`, every resolved destination (a matcher on `dstRef: "<ref>"` also matches an event whose `dstRefs` contains it, so `git push origin develop feat/x` counts as a push to develop); `delete`, `force`, `dryRun`; `pushed`: a remote ref really moved (`remoteMoved`/`movedRefs`; without them, `exit 0` and not a dry run) |
 | `greenlight …` (also via `npx [--package <pkg>]`, `pnpm [--filter x\|-r\|-C d] [exec\|dlx\|run]`, `yarn [exec\|dlx\|run]`, `bunx`, `npm exec\|x\|run [--]`) | `subcommand`; `tool`, the positional the CLI resolves after consuming its value flags; `env`; `argError` when the CLI would reject the argv (unknown flag, missing value); `passed` (`exit 0`, no `argError`, and the shim's own observation not false) |
 
 A meta matcher matches only `source: "shim"` events. A rule MUST treat `dstRef: "unknown"` and
@@ -214,14 +245,14 @@ and grades it somewhere else (06 §4.2). What runs where:
 | where | what | sees |
 |---|---|---|
 | host | the ReAct loop (the only holder of model access: `GEMINI_API_KEY` in the host env, or none when an egress proxy injects it, with `NODE_USE_ENV_PROXY=1`), the shim socket server, the trajectory writer, the origin and tree read-out, the diff, raw/evaluation records | everything |
-| rollout container | every agent tool call (`read_file`, `write_file`, `list_dir`, `bash`) via `docker exec` as uid 10000 | tmpfs `/work` (fixture + `.claude/skills/`, fresh git repo), tmpfs `/srv/origin.git` (bare origin), `/opt/real/greenlight` (the built CLI, read-only, inside a root:shim 0750 directory), `/run/greenlight-shim` (read-only; socket 0600 owned by the shim user) |
+| rollout container | every agent tool call (`read_file`, `write_file`, `list_dir`, `list_files`, `bash`; a maintainer rollout gets the three read tools only) via `docker exec` as uid 10000 | tmpfs `/work` (fixture + `.claude/skills/`, fresh git repo), tmpfs `/srv/origin.git` (bare origin), `/opt/real/greenlight` (the built CLI, read-only, inside a root:shim 0750 directory), `/run/greenlight-shim` (read-only; socket 0600 owned by the shim user) |
 | grading container | `graders/<id>/grade.mjs` as root (DAC_OVERRIDE/SETUID/SETGID/KILL only), the agent's app as uid 10000 | the exported tree and trajectory (read-only), a staged copy of `tasks/<id>/task.json`, `graders/<id>/`, `graders/_lib/`, `fixtures/` |
 
 Rollout container: `--network none`, `--read-only`, `--cap-drop ALL` + SETUID/SETGID (the
 recorder's doas hops), pids/memory/cpu limits, `GREENLIGHT_WIKI=off` (isolation mode). No mount of
 `bench/`, graders, mutants, references or the repo source; no secret in any environment.
 
-**Shims.** `git greenlight wrangler vercel gh terraform docker curl` on the agent's PATH are
+**Shims.** `git greenlight pnpm npx wrangler vercel gh terraform docker curl` on the agent's PATH are
 `shim.sh`, which hands the command to `record.mjs` running as the shim user (`doas -u shim`; the
 agent's env travels as data, never as the recorder's env). The recorder reads the git state with
 the command's own `-c`/`-C` options and the agent's `GIT_CONFIG_*`, snapshots the bare origin's
@@ -229,7 +260,13 @@ refs, runs the real command as the agent through `/opt/runner/run-real` (`doas -
 immediately `setpriv`s to uid agent with the extra group `shim`), and sends one JSON line to the
 socket. The host stamps each event (and each tool call) with one global sequence on arrival and
 builds meta with `normalizeShimEvent`; `pushed` is true only when an origin ref really moved.
-Commands not installed in the image are recorded with exit 127.
+Commands not installed in the image are recorded with exit 127. `pnpm` and `npx` are package
+runners with nothing to run: the image has no package manager and no network. Because the skills
+write `pnpm greenlight …`, the recorder passes `pnpm [options] [exec|dlx|run] greenlight …` and
+`npx [options] [--package …] greenlight|@rtrentjones/greenlight …` straight to the greenlight CLI
+and records that greenlight command (so `pnpm greenlight preview x` is the same event as
+`greenlight preview x`); any other `pnpm`/`npx` command exits 127 at once with a message naming
+the CLI, instead of hanging on a registry lookup.
 
 **The real binaries run only through the recorder.** `/usr/bin/git` (and `git-shell`,
 `/usr/libexec/git-core/`), `/usr/bin/curl` and the CLI under `/opt/real/` are root:shim 0750 (any
@@ -275,38 +312,68 @@ a throwaway repository with no system, global or repository config, so diff and 
 one snapshot and nothing the agent configured (filter, fsmonitor, textconv, hook) runs on the
 host. The container is removed, and only then is the rollout graded. In the grading container the
 driver talks to the host over stdin/stdout lines; the maintainer grader's eval judge
-(`GraderJob.useJudge`, baseline and candidate grading only, never train rollouts or
-check-graders) is relayed to the host, which answers with one structured call on the judge model
+(`GraderJob.useJudge`: every runner rollout, never check-graders) is relayed to the host, which answers with one structured call on the judge model
 (`bench/models.json` `judge`, fallback off, counted in the rollout's cost and spent on the judge
-model's own `spend` event).
+model's own `spend` event). After the tree, the runner also exports the tree of the origin's
+`develop` branch (`git archive` of the bare origin, checked like the tree export) for the loop
+grader's tree check.
 
-**Limits are identity.** `--max-steps` (default 15), the per-rollout request cap
+**What the model is told and given.** The system prompt is the task's declared skills in full,
+then the role prompt, then the rollout's budget: the step cap and the request cap. From 5 steps
+left, every tool response carries `steps_remaining`. A declared skill that is not in the skills
+directory fails the RUN before any request (it used to be dropped silently, so a rollout was
+graded as if the skill had been there). `read_file` takes `offset`/`limit` (lines) and keeps the
+head of a long file; `list_files` lists a tree in one call; `write_file` with a non-string
+`content` is an error, not an empty file. A maintainer rollout (the `wiki/*` tasks) gets the
+production maintainer prompt (`MAINTAINER_PROMPT`, 06 §2.2) with the fixture as the bundle at the
+working directory, the `greenlight-wiki` skill, the read tools only, and a `finish` whose
+parameters are the production `MaintainerOutput` JSON schema: a submission is validated with
+`MaintainerOutputSchema` and the patch engine against the fixture's wiki, and a rejected one goes
+back with its issues, up to three times (06 §2.4).
+
+**The send guard and the fixture.** Every request is scanned by the secret detector and refused
+if anything is flagged (06 §4.8). The detector reads context, so a fixture's publishable key that
+is clean in `targets.json` was flagged in the model's own `curl -H "apikey: …"`, and that refusal
+stopped the evaluation. A flagged value that occurs verbatim in the task's fixture or brief, and
+that the detector does not flag there, is let through; a value flagged in the fixture itself (a
+real token committed by mistake) or absent from it still refuses the send.
+
+**Limits are identity.** `--max-steps` (default 25), the per-rollout request cap
 (`--rollout-requests`, default max-steps + 2: one request per step plus two retries' headroom)
 and the rollout timeout override are `harness.limits` in the BaselineIdentity: a cached 10-step
 train run is not reused for `--max-steps 20`, a gate never compares records run under different
 limits, and `--resume` refuses an explicitly changed limit (an unset one is the evaluation's own).
+The request cap ends a rollout like the step limit (its tree is graded) only when the model used
+it up, one request per turn. A cap eaten by transient retries (429/5xx: more requests than turns)
+says nothing about the model: that rollout is deferred and re-run.
 
 **Quota scheduling.** Before each rollout the runner checks the model's remaining daily quota
 (`.greenlight/quota/`, seeded from today's `spend` events) against the rollout's request cap
-(plus one judge call on the judge model for a maintainer gate rollout). A model below it is
+(plus one judge call on the judge model for a maintainer rollout). A model below it is
 skipped for today and the other keeps running; the model with the most quota left always goes
 next, so the models interleave. No rollout ever falls back to another model (train included: a
 fallback-served train outcome would be evidence about the wrong model and spend the other's
 quota). A rollout deferred anyway (model unavailable with fallback off, quota spent by another
-process) defers only its model. The run then returns `deferred` (exit 1) with the keys left per
+process, its request cap eaten by retries, the eval judge unavailable) defers only its model. The run then returns `deferred` (exit 1) with the keys left per
 model (`--json`: `remaining`, `deferredModels`); `--resume <evaluationId>` continues it on a later
 day. A deferred rollout's requests are lost (a ReAct run cannot resume mid-way) but still counted
 in `spend`; it leaves no raw record.
 
-**Image reproducibility (resume across days).** The Dockerfile pins the base image by digest and
-every apk package by version. `harness.imageDigest` is `ctx:sha256:<hash>` over this directory's
-content, the shim uid and the installed package list (`apk info -v`), not the local image id,
-which changes on every rebuild: a pruned and rebuilt image with the same content resumes; a
-drifted package changes the identity. A pin the Alpine mirror no longer serves makes the build fail
-instead of drift. Operational discipline for a gate split across days:
+**Image identity (resume across days).** The Dockerfile pins the base image by digest and
+installs its apk packages (`git bash curl doas setpriv`) WITHOUT version pins: Alpine's mirror
+serves only the current revision of a package, so an exact pin makes every from-scratch build
+fail the day a security patch lands (2026-11-15: `git=2.54.0-r0` was gone, and the image built
+only where it was cached). What was installed is recorded instead: `harness.imageDigest` is
+`ctx:sha256:<hash>` over this directory's content, the shim uid and the package list read out of
+the built image (`apk info -v`: name and version of every package), not the local image id,
+which changes on every rebuild. So a pruned and rebuilt image with the same packages resumes, and
+a rebuild that picked up a package update gets a NEW identity: sealed evaluations on the old
+image are not comparable with it, and a resume across the update is refused (re-baseline). A
+package update never breaks the build. Operational discipline for a gate split across days:
 
 - do not `docker image prune`/`docker system prune` the `greenlight-bench-runner:*` images while
-  an evaluation is unsealed (a rebuild needs the pinned versions to still be on the mirror);
+  an evaluation is unsealed (a rebuild may install newer packages, which changes the identity and
+  refuses the resume);
 - keep the checkout frozen: `depsHash` covers the lockfile and the whole built CLI bundle
   (`cliBuild`), so any change to the CLI source, the lockfile, `bench/` or the skills between
   days refuses the resume (`git stash`/a separate worktree for other work);
@@ -319,8 +386,10 @@ records carry `harness.imageDigest: "process"` (never comparable with a docker e
 `bench run` refuses it for `--role baseline` (and candidate).
 
 **Records.** One `bench` raw record per rollout that ran to an end (`.greenlight/raw/`, excerpt
-redacted and truncated; transcript, trajectory, diff, grade report and final tree under
-`.greenlight/bench/runs/<evaluationId>/<rawId>/`), one `spend` ledger event per model per
+redacted and truncated; transcript, trajectory, diff, maintainer output, grade report and final
+tree under `.greenlight/bench/runs/<evaluationId>/<rawId>/`: `transcript.json`,
+`trajectory.jsonl`, `diff.patch` and `output.json` are stored REDACTED, rewritten once grading has
+read the originals; `tree/` and `pushed/` are the agent's files as they were), one `spend` ledger event per model per
 invocation, and a sealed EvaluationRecord (`wiki/evidence/eval/<hash>.json`) once every rollout has
 an outcome. A grader crash or an incomplete trajectory is an outcome with `graderError` (invalid at
 the gate, never a fake 0); a harness error, a redaction refusal or a model error leaves the

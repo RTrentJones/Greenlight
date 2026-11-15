@@ -12,7 +12,8 @@
  *   - the store's compute is suspended at the end of the window;
  *   - the healthcheck and keepalive routes answer 200 while the database is stopped;
  *   - `/health` still reports the database (the readiness check verify calls).
- * Structural checks: a container healthcheck and an oci keepalive target are declared.
+ * Structural checks: a container healthcheck whose local URL the grader can read, and a keepalive
+ * target with a usable URL (whether the Worker can probe it is decided by running the Worker).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -28,10 +29,47 @@ const STEP_MS = 1000;
 const MAX_STEPS = 2000;
 const REAL_BUDGET_MS = 30_000;
 
-/** Reads the HEALTHCHECK instruction from a Dockerfile (or a compose healthcheck). */
+/** A Dockerfile's instructions: comments dropped, `\` continuations joined, one per entry. */
+function instructions(dockerfile) {
+  return dockerfile
+    .replace(/\\[ \t]*\r?\n/g, ' ')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#'));
+}
+
+const LOCAL_HOST = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/;
+/** The forms a port takes in a healthcheck command: a number, a shell or template variable
+ * (`$PORT`, `${PORT:-3000}`, `${process.env.PORT}`), or a string concatenation
+ * (`'http://localhost:' + process.env.PORT + '/live'`). */
+const PORT_FORMS = [/^\d+/, /^\$\{[^}\n]*\}/, /^\$[A-Za-z_]\w*/, /^['"`]\s*\+[^'"`\n]+?\+\s*['"`]/];
+const PATH_FORM = /^\/[^\s"'`\\)|;&]*/;
+
+/**
+ * The local URL path a healthcheck command probes, or null when there is none the grader can
+ * read. A URL with no path probes `/`. A port written as an expression the grader does not
+ * recognise yields null (the check then FAILS with the command quoted): guessing `/` there would
+ * grade a different route than the one the container probes.
+ */
+export function healthcheckPath(text) {
+  const m = LOCAL_HOST.exec(text);
+  if (!m) return null;
+  let rest = text.slice(m.index + m[0].length);
+  if (rest.startsWith(':')) {
+    rest = rest.slice(1);
+    const port = PORT_FORMS.map((re) => re.exec(rest)).find(Boolean);
+    if (!port) return null;
+    rest = rest.slice(port[0].length);
+  }
+  return PATH_FORM.exec(rest)?.[0] ?? '/';
+}
+
+/** Reads the HEALTHCHECK instruction from a Dockerfile (or a compose healthcheck). The last
+ * HEALTHCHECK wins, as in Docker. */
 export function parseHealthcheck(dockerfile, compose = '') {
-  const joined = dockerfile.replace(/\\\r?\n/g, ' ');
-  const line = joined.split(/\r?\n/).find((l) => /^\s*HEALTHCHECK\s+/i.test(l));
+  const line = instructions(dockerfile)
+    .filter((l) => /^HEALTHCHECK\s+/i.test(l))
+    .pop();
   let text;
   let interval = 30_000;
   if (line) {
@@ -46,23 +84,32 @@ export function parseHealthcheck(dockerfile, compose = '') {
     const m = /interval:\s*["']?(\d+(?:\.\d+)?)(ms|s|m|h)/i.exec(text);
     if (m) interval = Number(m[1]) * UNIT[m[2].toLowerCase()];
   }
-  const u =
-    /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::(?:\d+|\$\{?PORT\}?))?(\/[^\s"'\\)|;&]*)?/.exec(
-      text,
-    );
-  if (!u) return { path: null, intervalMs: interval, raw: text.trim() };
-  return { path: u[1] ?? '/', intervalMs: interval, raw: text.trim() };
+  return { path: healthcheckPath(text), intervalMs: interval, raw: text.trim() };
 }
 
+/**
+ * The command the container runs: the LAST `CMD` instruction (Docker's rule), as argv. The
+ * `CMD` that belongs to a `HEALTHCHECK` (also when it sits on a continuation line) is not an
+ * instruction of its own and is never read as the app command. Exec form (`CMD ["node", "x"]`) is
+ * used as written; shell form (`CMD node x`) runs under `/bin/sh -c`, as Docker runs it.
+ */
 export function parseCmd(dockerfile) {
-  const m = /^\s*CMD\s+(\[.*\])\s*$/im.exec(dockerfile);
-  if (!m) return null;
-  try {
-    const argv = JSON.parse(m[1]);
-    return Array.isArray(argv) && argv.every((a) => typeof a === 'string') ? argv : null;
-  } catch {
-    return null;
+  const line = instructions(dockerfile)
+    .filter((l) => /^CMD\s+/i.test(l))
+    .pop();
+  if (!line) return null;
+  const body = line.replace(/^CMD\s+/i, '').trim();
+  if (body.startsWith('[')) {
+    try {
+      const argv = JSON.parse(body);
+      return Array.isArray(argv) && argv.length > 0 && argv.every((a) => typeof a === 'string')
+        ? argv
+        : null;
+    } catch {
+      return null;
+    }
   }
+  return body === '' ? null : ['/bin/sh', '-c', body];
 }
 
 async function get(url) {
@@ -92,7 +139,11 @@ export async function gradeNeonIdle(ctx, { variant }) {
   add(
     'container healthcheck declared',
     hc?.path,
-    hc ? (hc.path ? `${hc.path} every ${hc.intervalMs} ms` : `no local URL in: ${hc.raw}`) : 'none',
+    hc
+      ? hc.path
+        ? `${hc.path} every ${hc.intervalMs} ms`
+        : `no local URL the grader can read (http://localhost[:port]/path) in: ${hc.raw}`
+      : 'none',
   );
   let targets = [];
   try {
@@ -101,14 +152,29 @@ export async function gradeNeonIdle(ctx, { variant }) {
     add('keepalive targets parse', false, e.message);
   }
   const target = (Array.isArray(targets) ? targets : []).find((t) => t?.name === cfg.tool);
+  // Which `kind` the target carries is the Worker's business, not this check's: the vendored
+  // Worker (keepalive/worker.mjs, the contract of infra/modules/keepalive/worker.js) probes
+  // `kind: "oci"` targets as a plain service URL and everything else as a Supabase API (anon key
+  // required, 2xx only). The sweep below runs that Worker, so a target it cannot probe fails
+  // there, with the Worker's own error. Here the target only has to exist with a usable URL.
+  let targetOrigin = null;
+  try {
+    if (typeof target?.url === 'string') targetOrigin = new URL(target.url).origin;
+  } catch {
+    // not a URL: the check below says so
+  }
   add(
     `keepalive target declared for ${cfg.tool}`,
-    target && target.kind === 'oci' && typeof target.url === 'string',
-    target ? `kind ${target.kind ?? 'supabase'}, probePath ${target.probePath ?? '/'}` : 'none',
+    target && targetOrigin,
+    target
+      ? targetOrigin
+        ? `kind ${target.kind ?? 'supabase'}, probePath ${target.probePath ?? '/'}`
+        : `url is not an absolute URL: ${JSON.stringify(target.url)?.slice(0, 120)}`
+      : 'none',
   );
   const cmd = parseCmd(dockerfile);
   if (!cmd) {
-    add('container CMD runnable', false, 'no exec-form CMD in the Dockerfile');
+    add('container CMD runnable', false, 'no CMD instruction in the Dockerfile');
     return ctx.result(checks);
   }
 
@@ -134,6 +200,7 @@ export async function gradeNeonIdle(ctx, { variant }) {
   try {
     ({ next } = await clock.waitForParticipant());
   } catch (e) {
+    if (e?.harness) throw e; // a harness error is a grader error, never a failing check
     add('app runs on the simulated clock', false, e.message);
     return ctx.result(checks);
   }
@@ -142,13 +209,13 @@ export async function gradeNeonIdle(ctx, { variant }) {
   ctx.onCleanup(() => stub.stop());
   let worker = null;
   const workerPath = join(ctx.tree, 'keepalive/worker.mjs');
-  if (target && existsSync(workerPath)) {
+  if (targetOrigin && existsSync(workerPath)) {
     const h = await startWorkerHost(ctx, workerPath);
     if (h.error) add('keepalive worker loads', false, h.error);
     else worker = h;
   }
   const runtime = createWorkersFetch({
-    routes: target ? { [new URL(target.url).origin]: app.url } : {},
+    routes: targetOrigin ? { [targetOrigin]: app.url } : {},
     fallback: stub.url,
     clock: fake.clock,
   });
@@ -173,6 +240,7 @@ export async function gradeNeonIdle(ctx, { variant }) {
       try {
         ({ next } = await clock.advance(to));
       } catch (e) {
+        if (e?.harness) throw e;
         truncated = `${e.message} at +${Math.round((to - simStart) / 1000)} s simulated`;
         return;
       }

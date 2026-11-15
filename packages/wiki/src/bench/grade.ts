@@ -47,7 +47,13 @@ export interface GradeJob {
   trajectoryPath?: string;
   maintainerOutputPath?: string;
   bundleDir?: string;
-  /** Ask the grader's eval judge layer (real gate grading only). */
+  /** The tree of the origin branch the task's change must reach, as the rollout left it
+   * (`Sandbox.exportOriginBranch`); absent when the origin has no such branch. */
+  pushedTree?: string;
+  /** The runner looked at the origin (a real rollout): `pushedTree` or its absence is ground
+   * truth. Unset for synthetic layers, whose working tree stands in. */
+  pushedKnown?: boolean;
+  /** Ask the grader's eval judge layer. */
   useJudge?: boolean;
 }
 
@@ -189,6 +195,7 @@ export async function gradeRollout(job: GradeJob, o: GradeOptions): Promise<Grad
       appUid: AGENT_UID,
       appGid: AGENT_UID,
       ...(job.useJudge ? { useJudge: true } : {}),
+      ...(job.pushedKnown ? { pushedKnown: true } : {}),
     };
     if (job.trajectoryPath) {
       mounts.push('-v', `${job.trajectoryPath}:/grade/trajectory.jsonl:ro`);
@@ -201,6 +208,10 @@ export async function gradeRollout(job: GradeJob, o: GradeOptions): Promise<Grad
     if (job.bundleDir) {
       mounts.push('-v', `${job.bundleDir}:/grade/bundle:ro`);
       inJob.bundleDir = '/grade/bundle';
+    }
+    if (job.pushedTree) {
+      mounts.push('-v', `${job.pushedTree}:/grade/pushed:ro`);
+      inJob.pushedTree = '/grade/pushed';
     }
     const bundleName = o.gradeBundle.split('/').pop() as string;
     const args = [

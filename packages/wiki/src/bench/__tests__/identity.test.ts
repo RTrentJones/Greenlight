@@ -71,7 +71,7 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
     expect(a.modelsConfigHash).toBe(modelsConfigHashOf(w.bench));
     expect(a.harness).not.toHaveProperty('processHost'); // a docker image pins itself
     expect(a.wikiSnapshotHash).toBeNull();
-    expect(a.harness.runnerVersion).toBe('0.2.1');
+    expect(a.harness.runnerVersion).toBe('0.3.0');
     expect(a.harness.limits).toEqual({ maxSteps: 15, requestsPerRollout: 17, timeoutMin: null });
   });
 

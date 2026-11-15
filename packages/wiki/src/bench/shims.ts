@@ -8,7 +8,7 @@ import { type ShimContext, normalizeShimEvent } from './trajectory';
 /**
  * The host side of the trajectory shims (vision 06 §4.2, §4.6; 08 §10.2).
  *
- * Inside a rollout, `git`, `greenlight`, `wrangler`, `vercel`, `gh`, `terraform`, `docker` and
+ * Inside a rollout, `git`, `greenlight`, `pnpm`, `npx`, `wrangler`, `vercel`, `gh`, `terraform`, `docker` and
  * `curl` on the agent's PATH are shims (`bench/runner/shim.sh` → `bench/runner/record.mjs`). Each
  * runs the real command and then sends ONE line of JSON ({@link ShimMessage}) to a unix socket the
  * host serves ({@link ShimChannel}). In the docker sandbox that socket is owned by the shim user
@@ -30,6 +30,10 @@ import { type ShimContext, normalizeShimEvent } from './trajectory';
 export const SHIMMED_COMMANDS = [
   'git',
   'greenlight',
+  // Package runners: the recorder passes `pnpm|npx … greenlight …` through to the greenlight CLI
+  // (recorded as that greenlight command) and fails anything else at once (bench/runner/record.mjs).
+  'pnpm',
+  'npx',
   'wrangler',
   'vercel',
   'gh',

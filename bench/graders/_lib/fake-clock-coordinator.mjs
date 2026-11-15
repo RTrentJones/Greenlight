@@ -6,7 +6,13 @@
  * of them to `to` together: each fires its own timers due by then, in due order, and settles;
  * a participant that starts during the step (a child spawned by a timer, a new worker) is
  * waited for (its parent announced it with `expect`), starts at its parent's simulated time and
- * is advanced to `to` as well. A participant that does not answer in `answerTimeoutMs` (a thread
+ * is advanced to `to` as well. An announced child is waited for AS LONG AS ITS PROCESS IS ALIVE
+ * (a child that exits before joining is simply dropped): how long a Node process takes to boot
+ * and load the shim depends on the machine's load, so a short wall-clock deadline there turned
+ * CPU contention into a failed grade. Only a child that is still alive and has not joined after
+ * `joinTimeoutMs` (a large cap) stops the wait, and that is a HARNESS error
+ * (`ClockJoinTimeoutError`, which `advance` / `waitForParticipant` throw): the grader must let it
+ * propagate (a grader error, never a failing check), because nothing was learnt about the app. A participant that does not answer in `answerTimeoutMs` (a thread
  * busy-waiting on the clock, say) makes `advance` throw: the grader then fails the window,
  * because time did not pass for that participant.
  *
@@ -19,12 +25,38 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const realNow = () => performance.now();
+
+/** An announced child / worker whose process is still alive never joined the clock within the
+ * cap: a harness error (a grader error), not a verdict about the app. */
+export class ClockJoinTimeoutError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ClockJoinTimeoutError';
+    this.harness = true;
+  }
+}
+
+/** The pid of an expect key (`p:<pid>` a child process, `t:<pid>:<thread>` a worker thread). */
+const pidOf = (key) => {
+  const m = /^[pt]:(\d+)/.exec(key);
+  return m ? Number(m[1]) : null;
+};
+const alive = (pid) => {
+  if (pid === null) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: it exists, as another uid (the grading container runs the app as the agent user).
+    return e?.code === 'EPERM';
+  }
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function startClockCoordinator({
   start,
   answerTimeoutMs = 10_000,
-  joinTimeoutMs = 5000,
+  joinTimeoutMs = 120_000,
 }) {
   const dir = mkdtempSync(join(tmpdir(), 'gl-clock-'));
   const socketPath = join(dir, 'clock.sock');
@@ -139,14 +171,20 @@ export async function startClockCoordinator({
     });
   }
 
-  /** Waits until every announced child / worker has joined, exited, or timed out. */
+  /** Waits until every announced child / worker has joined or exited. One that is still alive
+   * and has not joined after the cap is a harness error. */
   async function waitForJoins() {
     for (;;) {
       const t = realNow();
       for (const [k, e] of expects) {
-        if (e.deadline <= t) {
+        if (!alive(pidOf(k))) {
+          // It exited before joining (its `unexpect` may still be in flight).
           expects.delete(k);
-          problems.push(`${k} was announced but never joined the clock`);
+        } else if (e.deadline <= t) {
+          expects.delete(k);
+          const why = `${k} was announced, is still running, and did not join the clock in ${joinTimeoutMs} ms`;
+          problems.push(why);
+          throw new ClockJoinTimeoutError(why);
         }
       }
       if (expects.size === 0) return;

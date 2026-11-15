@@ -258,7 +258,8 @@ function wikiAllowList(wiki: Wiki): [string, string][] {
 
 // ---- prompts --------------------------------------------------------------------------------
 
-/** The maintainer prompt, 06 §2.2, verbatim. `{{dir}}` is filled with the bundle path. */
+/** The maintainer prompt, 06 §2.2, verbatim. `{{dir}}` is filled with the bundle path
+ * (`maintainerRolePrompt`). */
 export const MAINTAINER_PROMPT = `You are the Wiki Maintainer for a Greenlight installation. Greenlight keeps a portfolio of web
 apps and services alive on free tiers and ships every change through a verified loop. Your job is
 to compile execution evidence into durable knowledge. You do not change code, skills or
@@ -301,18 +302,29 @@ Rules for pages:
   framework pages. Describe tools by cell (e.g. "a next/vercel/supabase app"), not by name.
 - Incident pages record a timeline and evidence; the analysis belongs in patterns.
 
-Output exactly one JSON object and nothing else:
+Your output is exactly one MaintainerOutput JSON object. When you have a \`finish\` tool, submit the
+object as its arguments (not as a string, and with no text around it); otherwise write the object
+and nothing else to a file for \`greenlight wiki ingest --apply\`:
 {
   "create_pages": [{"id": "...", "content": "<full file with frontmatter>"}],
   "update_pages": [{"id": "...", "ops": [{"op": "append"|"replace"|"insert_after", "target"?: "...", "text": "..."}]}],
-  "update_index": "<the complete index.md>",
-  "append_log": "<2–6 lines: what changed and why; page ids>"
+  "append_log": "<2–6 lines: what changed and why; page ids>",
+  "update_index"?: "<the complete index.md>"
 }
-"update_index" and "append_log" are REQUIRED. Always provide them, even if nothing else changed.
+"append_log" is REQUIRED. Always provide it, even if nothing else changed. "update_index" is
+OPTIONAL: the index is regenerated from the pages, so omit it unless you want to word the summary
+lines yourself.
 \`target\` must be an exact substring that occurs exactly once in the current page.
 There is no limit on how many pages you create or update, but each must be justified by evidence
 in this bundle.
 `;
+
+/** The maintainer prompt as a role prompt, its paths relative to `dir`; `''` when the bundle IS
+ * the working directory (a bench rollout: `wiki/index.md`, `raw/`, `context.json`). */
+export const maintainerRolePrompt = (dir: string): string =>
+  dir === ''
+    ? MAINTAINER_PROMPT.replaceAll('{{dir}}/', '')
+    : MAINTAINER_PROMPT.replaceAll('{{dir}}', dir);
 
 /** The proposer prompt, 06 §3.3, verbatim. `{{dir}}` is filled with the bundle path. */
 export const PROPOSER_PROMPT = `You are the Skill Proposer for a Greenlight installation. You propose exactly ONE change that will

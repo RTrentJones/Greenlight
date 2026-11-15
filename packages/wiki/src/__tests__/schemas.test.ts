@@ -377,14 +377,21 @@ describe('ledger (M0-04)', () => {
 });
 
 describe('maintainer and proposer I/O (M0-05)', () => {
-  it('maintainer output requires update_index and append_log', () => {
+  it('maintainer output requires append_log; update_index is optional (06 §2.3)', () => {
     ok(MaintainerOutputSchema, {
       create_pages: [],
       update_pages: [],
       update_index: '# index',
       append_log: 'no changes: why',
     });
-    bad(MaintainerOutputSchema, { create_pages: [], update_pages: [], append_log: 'x' });
+    ok(MaintainerOutputSchema, { create_pages: [], update_pages: [], append_log: 'x' });
+    bad(MaintainerOutputSchema, { create_pages: [], update_pages: [], update_index: '# index' });
+    bad(MaintainerOutputSchema, {
+      create_pages: [],
+      update_pages: [],
+      update_index: '',
+      append_log: 'x',
+    });
   });
 
   it('maintainer output may not touch one page twice', () => {

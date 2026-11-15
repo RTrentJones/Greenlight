@@ -1,8 +1,8 @@
 /**
  * Hidden maintainer grader for `wiki/probe-layer-incidents-*` (vision 06 §4.6, 15 §8.4). Checks
  * 1-6 are structural or a deterministic reading of each statement's polarity (below); check 7, an
- * LLM eval judge, runs only when the context asks for it (`ctx.useJudge`, real gate grading) and
- * only after 1-6 pass. check-graders never enables it: every reference, alternative and mutant is
+ * LLM eval judge, runs only when the context asks for it (`ctx.useJudge`: every runner rollout,
+ * train and gate alike) and only after 1-6 pass. check-graders never enables it: every reference, alternative and mutant is
  * graded by 1-6 alone.
  *
  * RUBRIC
@@ -35,7 +35,9 @@
  *      for `needs-silence`/`needs-heal`, or stance `avoid` for `needs-traffic`.
  * 7. (judge mode only) `ctx.judge(prompt)` → `{ passed, rationale }` on JUDGE_RUBRIC: the
  *    principle "probe exactly the layer at risk, conditional on the liveness model", with the
- *    output's new claims as delimited data. Malformed verdicts and judge errors fail closed.
+ *    output's new claims as delimited data. A judge error or a malformed verdict is not a
+ *    verdict: it throws (`JudgeUnavailableError`), so the grading is a grader error (and the
+ *    runner defers the rollout), never a sealed 0.
  *
  * The deterministic reading is held to `references/<task>/alternatives/` (correct paraphrases
  * that must pass) and the paraphrase mutants (inverted or overgeneral rules that must fail).
@@ -524,12 +526,12 @@ export async function gradeMaintainer(ctx, rubric) {
   }
   add('no overgeneral rule', over.length === 0, over.join(' | ') || undefined);
 
-  // 7. Optional eval judge (06 §4.6): REAL gate grading only, never check-graders.
+  // 7. Optional eval judge (06 §4.6): every runner rollout, never check-graders.
   if (ctx.useJudge) {
     if (!checks.every((c) => c.passed)) {
       add(JUDGE_CHECK, false, 'skipped: the deterministic prefilter failed');
     } else if (typeof ctx.judge !== 'function') {
-      add(JUDGE_CHECK, false, 'useJudge is set but the context has no judge');
+      throw new JudgeUnavailableError('useJudge is set but the context has no judge');
     } else {
       const v = await runJudge(ctx.judge, judgePrompt(claimsByPage));
       add(JUDGE_CHECK, v.passed, v.rationale);
@@ -586,25 +588,36 @@ export function judgePrompt(claimsByPage) {
   return `${JUDGE_RUBRIC}\n\n<output>\n${text}\n</output>\n`;
 }
 
-/** Calls the injected judge and validates its verdict; anything malformed fails closed. */
-export async function runJudge(judge, prompt) {
-  try {
-    const v = await judge(prompt);
-    if (!v || typeof v.passed !== 'boolean') {
-      return {
-        passed: false,
-        rationale: `malformed judge verdict: ${JSON.stringify(v)?.slice(0, 200)}`,
-      };
-    }
-    const rationale =
-      typeof v.rationale === 'string' && v.rationale.trim() ? v.rationale.trim() : '(no rationale)';
-    return { passed: v.passed, rationale: `judge: ${rationale.slice(0, 500)}` };
-  } catch (e) {
-    return {
-      passed: false,
-      rationale: `judge error: ${e instanceof Error ? e.message : String(e)}`,
-    };
+/** The judge gave no usable verdict (an outage: 429/503, a quota, a malformed answer). That is
+ * the HARNESS failing to grade, not the output failing the rubric, so it is thrown: the grading
+ * ends as a grader error (invalid at the gate, and the runner defers the rollout when the judge
+ * was merely unavailable), never as a failing check that would be sealed as a 0. */
+export class JudgeUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'JudgeUnavailableError';
   }
+}
+
+/** Calls the injected judge and validates its verdict. Only a well-formed verdict is a result;
+ * an error or a malformed verdict throws `JudgeUnavailableError`. */
+export async function runJudge(judge, prompt) {
+  let v;
+  try {
+    v = await judge(prompt);
+  } catch (e) {
+    throw new JudgeUnavailableError(
+      `eval judge unavailable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!v || typeof v.passed !== 'boolean') {
+    throw new JudgeUnavailableError(
+      `eval judge returned a malformed verdict: ${JSON.stringify(v)?.slice(0, 200)}`,
+    );
+  }
+  const rationale =
+    typeof v.rationale === 'string' && v.rationale.trim() ? v.rationale.trim() : '(no rationale)';
+  return { passed: v.passed, rationale: `judge: ${rationale.slice(0, 500)}` };
 }
 
 export function loadRubric(dir) {

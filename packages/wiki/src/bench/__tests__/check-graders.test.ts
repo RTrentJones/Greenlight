@@ -361,9 +361,18 @@ describe('the first-iteration bench (13 §3 M1, criterion 1)', () => {
         e.isDirectory() ? walk(join(dir, e.name)).map((p) => `${e.name}/${p}`) : [e.name],
       );
     const above = [1, 2, 3, 4].map((n) => resolve(BENCH, ...Array(n).fill('..')));
+    // Scratch directories the test suite and the build create themselves, in parallel with this
+    // test (cli tests write under the repo-root `.vitest-tmp/`, turbo under `.turbo/`): they are
+    // not a grader's doing, and on a cold CI checkout they appear mid-run. Everything else that
+    // shows up next to or above `bench/` still fails the guard.
+    const OWN_SCRATCH = new Set(['.vitest-tmp', '.turbo']);
     const snapshot = () => ({
       bench: walk(BENCH).sort(),
-      above: above.map((d) => readdirSync(d).sort()),
+      above: above.map((d) =>
+        readdirSync(d)
+          .filter((n) => !OWN_SCRATCH.has(n))
+          .sort(),
+      ),
     });
     const before = snapshot();
     const r = await checkGraders({ benchDir: BENCH, timeoutMs: 60_000 });
@@ -439,7 +448,7 @@ describe('the maintainer eval judge (re-review 6): real gate grading only', () =
     expect(ok.verdict).toBe('pass');
   }, 120_000);
 
-  it('is never called without useJudge or when the prefilter fails; no judge fails closed', async () => {
+  it('is never called without useJudge or when the prefilter fails; no judge is a grader error', async () => {
     let calls = 0;
     const judge = async () => {
       calls++;
@@ -456,8 +465,24 @@ describe('the maintainer eval judge (re-review 6): real gate grading only', () =
     expect(inverted.verdict).toBe('fail');
     expect(judgeCheck(inverted)?.detail).toMatch(/prefilter/);
     expect(calls).toBe(0);
+    // No judge to ask: nothing was learnt about the output, so it is an ERROR, never a fail.
     const none = await runInChild(job([REF], true), 60_000);
-    expect(none.verdict).toBe('fail');
-    expect(judgeCheck(none)?.detail).toMatch(/judge/);
+    expect(none.verdict).toBe('error');
+    expect(none.error).toMatch(/judge/);
+  }, 120_000);
+
+  it('a judge outage or a malformed verdict is a grader error, never a failing score', async () => {
+    const outage = await runInChild(job([REF], true), 60_000, {
+      judge: async () => {
+        throw new Error('HTTP 503 overloaded');
+      },
+    });
+    expect(outage.verdict).toBe('error');
+    expect(outage.error).toMatch(/eval judge unavailable: HTTP 503/);
+    const malformed = await runInChild(job([REF], true), 60_000, {
+      judge: async () => ({ rationale: 'no verdict' }) as never,
+    });
+    expect(malformed.verdict).toBe('error');
+    expect(malformed.error).toMatch(/judge/);
   }, 120_000);
 });
