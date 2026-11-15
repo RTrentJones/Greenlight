@@ -1,13 +1,17 @@
-import { existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   FileLockTimeoutError,
   LedgerWriteError,
+  acceptedSkillSetState,
   appendEvent,
   appendEvents,
   compareTs,
+  holderIsDead,
   ledgerProblems,
   orderLedgerEvents,
   proposalHistory,
@@ -16,7 +20,7 @@ import {
 } from '../ledger';
 import { lint } from '../lint';
 import { loadWiki } from '../load';
-import { type LedgerEvent, sealEvent } from '../schema';
+import { type LedgerEvent, sealEvent, sealGateInput } from '../schema';
 import { goodContext, goodFiles, ledgerEvents, ledgerText, writeTree } from './fixtures';
 import { race } from './race';
 
@@ -45,11 +49,27 @@ describe('appendEvent', () => {
   });
 
   it('accepts an already sealed event and keeps earlier lines untouched', () => {
-    const root = writeTree({ 'ledger.jsonl': 'earlier line without newline' });
+    // A complete last line that only lacks its newline is kept, and gets its newline.
+    const earlier = JSON.stringify(sealEvent({ ...event, proposalId: 'p-000' }));
+    const root = writeTree({ 'ledger.jsonl': `not json, but a whole line\n${earlier}` });
     const sealed = sealEvent({ ...event });
     expect(appendEvent(root, sealed)).toEqual(sealed);
     const text = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
-    expect(text.startsWith('earlier line without newline\n{')).toBe(true);
+    expect(text.startsWith(`not json, but a whole line\n${earlier}\n{`)).toBe(true);
+    expect(loadWiki(root).ledger.map((e) => e.proposalId)).toEqual(['p-000', 'p-010']);
+  });
+
+  it('cuts a torn tail under the lock before appending, as appendEvents does', () => {
+    // A crash mid-append leaves a last line without its newline that does not parse.
+    const whole = JSON.stringify(sealEvent({ ...event, proposalId: 'p-000' }));
+    const root = writeTree({ 'ledger.jsonl': `${whole}\n{"ts":"2026-10-06T09:00:00.000Z","wri` });
+    appendEvent(root, event);
+    const text = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+    expect(text.split('\n')).toHaveLength(3);
+    expect(text).not.toContain('"wri\n');
+    const wiki = loadWiki(root);
+    expect(wiki.ledgerErrors).toEqual([]);
+    expect(wiki.ledger.map((e) => e.proposalId)).toEqual(['p-000', 'p-010']);
   });
 
   it.each([
@@ -71,8 +91,17 @@ describe('appendEvent', () => {
 
   const at = (stage: LedgerEvent['stage'], ts: string, extra: Record<string, unknown> = {}) =>
     ({ ts, writer: 'harness' as const, proposalId: 'p-020', stage, ...extra }) as never;
+  // Repro evidence: an accepted event always carries the evidence it was accepted on.
+  const repro = {
+    evidence: {
+      kind: 'repro',
+      base: 'commit:owner/repo@abcdef1',
+      candidate: 'commit:owner/repo@abcdef2',
+      reproTask: 'mechanism/x',
+    },
+  };
   const accepted = (ts = '2026-10-06T09:00:00.000Z') =>
-    at('candidate-accepted', ts, { path: 'standard', outlet: 'skill' });
+    at('candidate-accepted', ts, { path: 'standard', outlet: 'skill', ...repro });
 
   it('refuses a stage the history does not allow, and writes nothing', () => {
     const root = writeTree({});
@@ -108,7 +137,11 @@ describe('appendEvent', () => {
     const verify = writeTree({});
     appendEvent(
       verify,
-      at('candidate-accepted', '2026-10-06T09:00:00.000Z', { path: 'standard', outlet: 'verify' }),
+      at('candidate-accepted', '2026-10-06T09:00:00.000Z', {
+        path: 'standard',
+        outlet: 'verify',
+        ...repro,
+      }),
     );
     appendEvent(verify, at('merged', '2026-10-07T09:00:00.000Z'));
     appendEvent(verify, at('verified-in-production', '2026-10-08T09:00:00.000Z', field));
@@ -135,6 +168,64 @@ describe('appendEvent', () => {
     expect(() => appendEvent(root, at('merged', '2026-10-05T09:00:00.000Z'))).toThrow(
       /earlier than the proposal's latest event/,
     );
+  });
+
+  it('refuses merged or released once ANY event of the proposal carries control', () => {
+    // The flag on the accepted event only: the later events do not repeat it.
+    const root = writeTree({});
+    appendEvent(root, { ...(accepted() as LedgerEvent), control: true });
+    const before = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+    expect(() => appendEvent(root, at('merged', '2026-10-07T09:00:00.000Z'))).toThrow(
+      /a control-arm proposal is never merged or released/,
+    );
+    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8')).toBe(before);
+    // In a committed ledger (LR-14): both the merge and the release are reported.
+    const events = [
+      sealEvent({ ...(accepted() as LedgerEvent), control: true }),
+      sealEvent(at('merged', '2026-10-07T09:00:00.000Z')),
+      sealEvent(at('released', '2026-10-08T09:00:00.000Z', { release: '2.0.1' })),
+    ];
+    expect(ledgerProblems(events)).toEqual([
+      'proposal p-020: stage "merged": a control-arm proposal is never merged or released',
+      'proposal p-020: stage "released": a control-arm proposal is never merged or released',
+    ]);
+    // The flag arriving late (on a review) taints the history just the same.
+    const late = [
+      sealEvent(accepted() as LedgerEvent),
+      sealEvent(at('merged', '2026-10-07T09:00:00.000Z')),
+      sealEvent(
+        at('review', '2026-10-08T09:00:00.000Z', {
+          control: true,
+          reason: 'r',
+          review: { decision: 'accept' },
+        }),
+      ),
+    ];
+    expect(ledgerProblems(late)).toHaveLength(1);
+  });
+
+  it('refuses a repeat of a violation the history already holds', () => {
+    // A committed ledger that already holds `merged` after `merged` once.
+    const twice = [
+      sealEvent(accepted() as LedgerEvent),
+      sealEvent(at('merged', '2026-10-07T09:00:00.000Z')),
+      sealEvent(at('merged', '2026-10-07T10:00:00.000Z')),
+    ];
+    const problem = 'stage "merged" cannot follow "merged"';
+    expect(ledgerProblems(twice)).toEqual([`proposal p-020: ${problem}`]);
+    const root = writeTree({
+      'ledger.jsonl': twice.map((e) => `${JSON.stringify(e)}\n`).join(''),
+    });
+    const before = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+    // A third `merged` adds the SAME problem text again. De-duplicating the problems by string
+    // let it through; counted as a multiset it is refused.
+    expect(() => appendEvent(root, at('merged', '2026-10-07T11:00:00.000Z'))).toThrow(
+      /refused for proposal p-020: stage "merged" cannot follow "merged"/,
+    );
+    expect(() => appendEvents(root, [at('merged', '2026-10-07T11:00:00.000Z')])).toThrow(
+      /cannot follow "merged"/,
+    );
+    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8')).toBe(before);
   });
 
   it('records invalid lines on load instead of throwing', () => {
@@ -353,6 +444,31 @@ describe('withFileLock', () => {
     const lock = join(root, 'z.lock');
     writeFileSync(lock, 'live');
     expect(() => withFileLock(lock, () => 1, { timeoutMs: 50 })).toThrow(FileLockTimeoutError);
+    // A lock held by a live process of this host (the parent) is live, whatever its age rule.
+    writeFileSync(lock, `${process.ppid}.${'ab'.repeat(12)}@${hostname()}`);
+    expect(() => withFileLock(lock, () => 1, { timeoutMs: 50 })).toThrow(FileLockTimeoutError);
+  });
+
+  it('takes over at once from a holder that was killed (no wait for staleMs)', () => {
+    // A process that exited: its pid is dead on this host.
+    const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']);
+    const pid = Number(dead.stdout.toString());
+    const token = `${pid}.${'0f'.repeat(12)}@${hostname()}`;
+    expect(holderIsDead(token)).toBe(true);
+    expect(holderIsDead(`${pid}.${'0f'.repeat(12)}@another-host`)).toBe(false);
+    expect(holderIsDead(`${process.pid}.${'0f'.repeat(12)}@${hostname()}`)).toBe(false);
+    expect(holderIsDead('crashed-holder')).toBe(false);
+    const root = writeTree({});
+    const lock = join(root, 'k.lock');
+    writeFileSync(lock, token); // fresh mtime: far younger than staleMs
+    const started = Date.now();
+    // timeoutMs (1 s) is far below staleMs (30 s): before, this failed for 30 s.
+    expect(withFileLock(lock, () => 'ran', { timeoutMs: 1_000, staleMs: 30_000 })).toBe('ran');
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(existsSync(lock)).toBe(false);
+    // The same for the ledger: an append right after a SIGKILL of the previous appender.
+    writeFileSync(join(root, 'ledger.jsonl.lock'), token);
+    expect(appendEvent(root, event).proposalId).toBe('p-010');
   });
 });
 
@@ -380,5 +496,165 @@ describe('appendEvents', () => {
     });
     expect(() => appendEvents(root, [c, bad])).toThrow(LedgerWriteError);
     expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8')).toBe(text);
+  });
+});
+
+describe('the accepted skill set follows merge order (06 §6.1)', () => {
+  const H = (c: string) => c.repeat(64);
+  const S0 = H('0');
+  const S1 = H('1');
+  const S2 = H('2');
+  const result = {
+    model: 'm',
+    mode: 'isolation' as const,
+    split: 'val' as const,
+    runs: 3,
+    replay: { total: 1, baselinePassing: 1, candidatePassing: 1, regressions: [] },
+    capability: { before: 0, after: 1, delta: 1, pValue: 0.0025 },
+    decision: 'pass' as const,
+  };
+  /** A sealed gate input for a proposal gated on `from`, proposing `to`. Only its two skill-set
+   * hashes matter here, so it is written in the oldest (algorithm-1) shape every build reads. */
+  const gateInput = (proposalId: string, from: string, to: string) =>
+    sealGateInput({
+      kind: 'gate-input',
+      proposalId,
+      ts: '2026-10-01T00:00:00.000Z',
+      outlet: 'skill',
+      radius: 'medium',
+      path: 'standard',
+      seed: `gate:${proposalId}`,
+      config: {
+        alpha: 0.05,
+        runs: 3,
+        resamples: 1000,
+        acceptShorterOnTie: false,
+        maxBaselineAgeDays: 30,
+      },
+      models: { frontier: 'f', small: 's' },
+      modes: ['isolation'],
+      modesDeclared: true,
+      acceptedSkillSetHash: from,
+      candidateSkillSetHash: to,
+      tasks: [{ id: 'cap/a', kind: 'capability', state: 'active', modes: ['isolation'] }],
+      baselineRecords: [H('a')],
+      candidateRecords: [H('b')],
+    });
+  const day = (n: number) => `2026-10-${String(n).padStart(2, '0')}T00:00:00.000Z`;
+  const gated = (
+    id: string,
+    n: number,
+    gi: ReturnType<typeof gateInput>,
+    stage: 'candidate-accepted' | 'candidate-rejected' = 'candidate-accepted',
+    control = false,
+  ) =>
+    sealEvent({
+      ts: day(n),
+      proposalId: id,
+      stage,
+      path: 'standard',
+      outlet: 'skill',
+      ...(control ? { control: true } : {}),
+      evidence: {
+        kind: 'bench',
+        gateInput: gi.hash,
+        evaluationRecords: [H('a')],
+        results: [result],
+      },
+    });
+  const merged = (id: string, n: number) =>
+    sealEvent({ ts: day(n), proposalId: id, stage: 'merged' });
+  const withdrawn = (id: string, n: number, skillSetHash?: string) =>
+    sealEvent({
+      ts: day(n),
+      proposalId: id,
+      stage: 'withdrawn',
+      reason: 'reverted',
+      ...(skillSetHash ? { skillSetHash } : {}),
+    });
+  const giA = gateInput('A', S0, S1);
+  const giB = gateInput('B', S0, S2);
+  const giC = gateInput('C', S1, S2);
+  const all = [giA, giB, giC];
+  const lookup = (h: string) => all.find((g) => g.hash === h);
+  const state = (events: LedgerEvent[]) => acceptedSkillSetState(events, lookup);
+  /** A wiki root holding the gate inputs, so appendEvent can read them. */
+  const rootWith = () => {
+    const root = writeTree({});
+    mkdirSync(join(root, 'evidence', 'eval'), { recursive: true });
+    for (const g of all) {
+      writeFileSync(join(root, 'evidence', 'eval', `${g.hash}.json`), JSON.stringify(g));
+    }
+    return root;
+  };
+
+  it('before any merge: the baseline of the newest gated proposal; after one: its candidate', () => {
+    expect(state([])).toEqual({ hash: undefined, problems: [] });
+    expect(state([gated('A', 1, giA)]).hash).toBe(S0);
+    expect(state([gated('A', 1, giA), merged('A', 2)]).hash).toBe(S1);
+  });
+
+  it('(a) A merged S0→S1, C gated on S1, A withdrawn: the set the withdrawal names, never S1', () => {
+    const events = [gated('A', 1, giA), merged('A', 2), gated('C', 3, giC), withdrawn('A', 4, S0)];
+    expect(state(events)).toEqual({ hash: S0, problems: [] });
+    // A revert that lands somewhere else is whatever it names.
+    expect(state([...events.slice(0, 3), withdrawn('A', 4, H('9'))]).hash).toBe(H('9'));
+    // A withdrawal that names nothing leaves the state unknown, and is a history problem.
+    const unnamed = [...events.slice(0, 3), withdrawn('A', 4)];
+    expect(state(unnamed).hash).toBeUndefined();
+    expect(ledgerProblems(unnamed)).toEqual([
+      'proposal A: a withdrawn event of a merged proposal names the resulting accepted skill set (skillSetHash)',
+    ]);
+  });
+
+  it('(b) A merged, then B (baseline S0) rejected later: still S1', () => {
+    const events = [gated('A', 1, giA), merged('A', 2), gated('B', 3, giB, 'candidate-rejected')];
+    expect(state(events)).toEqual({ hash: S1, problems: [] });
+  });
+
+  it('(c) A and B both accepted on S0: the second merge is refused until B is gated again', () => {
+    const events = [gated('A', 1, giA), gated('B', 2, giB), merged('A', 3), merged('B', 4)];
+    const s = state(events);
+    expect(s.hash).toBe(S1); // never S2: S0 + A + B is a tree no evaluation ran
+    expect(s.problems).toEqual([
+      `proposal B: merged, but it was gated against skill set ${S0.slice(0, 12)} and the accepted set is now ${S1.slice(0, 12)}; gate it again on the accepted set first`,
+    ]);
+    expect(ledgerProblems(events, lookup)).toEqual(s.problems);
+
+    const root = rootWith();
+    for (const e of events.slice(0, 3)) appendEvent(root, e);
+    const before = readFileSync(join(root, 'ledger.jsonl'), 'utf8');
+    expect(() => appendEvent(root, merged('B', 4))).toThrow(/gate it again on the accepted set/);
+    expect(() => appendEvents(root, [merged('B', 4)])).toThrow(/gate it again/);
+    expect(readFileSync(join(root, 'ledger.jsonl'), 'utf8')).toBe(before);
+    // C was gated on S1, the accepted set: it merges.
+    appendEvent(root, gated('C', 5, giC));
+    appendEvent(root, merged('C', 6));
+    expect(acceptedSkillSetState(loadWiki(root).ledger, lookup)).toEqual({
+      hash: S2,
+      problems: [],
+    });
+  });
+
+  it('a merge whose gate input cannot be read is refused; a withdrawal must name its result', () => {
+    const root = writeTree({});
+    appendEvent(root, gated('A', 1, giA));
+    expect(() => appendEvent(root, merged('A', 2))).toThrow(/gate input .* is not readable/);
+    const ok = rootWith();
+    appendEvent(ok, gated('A', 1, giA));
+    appendEvent(ok, merged('A', 2));
+    expect(() => appendEvent(ok, withdrawn('A', 3))).toThrow(
+      /names the resulting accepted skill set/,
+    );
+    appendEvent(ok, withdrawn('A', 3, S0));
+    // Only a withdrawal that moves the skill set carries the field.
+    appendEvent(ok, gated('B', 4, giB));
+    expect(() => appendEvent(ok, withdrawn('B', 5, S0))).toThrow(/never moved the skill set/);
+  });
+
+  it('a control-arm proposal never moves the accepted set', () => {
+    const control = gated('C', 3, giC, 'candidate-accepted', true);
+    expect(state([gated('A', 1, giA), merged('A', 2), control]).hash).toBe(S1);
+    expect(state([control]).hash).toBeUndefined();
   });
 });

@@ -11,10 +11,12 @@ import {
   truncateSync,
   writeSync,
 } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { LEDGER_FILE, parseLedger } from './load';
 import {
   ANNOTATION_STAGES,
+  GateInputRecordSchema,
   type GateResult,
   type LedgerEvent,
   LedgerEventSchema,
@@ -48,7 +50,9 @@ export class FileLockTimeoutError extends Error {
 export interface FileLockOptions {
   /** A lock whose mtime is older than this is presumed abandoned by a crashed holder (default
    * 30s). A live holder slower than this loses exclusion, so callers keep the critical section
-   * short. */
+   * short. A lock whose holder is a dead process ON THIS HOST is abandoned at once, whatever its
+   * age (`holderIsDead`), so a SIGKILL never makes the next append wait out `staleMs`; the age
+   * rule remains for a holder on another host, whose liveness cannot be checked. */
   staleMs?: number;
   /** How long to wait for the lock before throwing `FileLockTimeoutError` (default 10s). */
   timeoutMs?: number;
@@ -63,6 +67,25 @@ function readToken(path: string): string | undefined {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw e;
+  }
+}
+
+/** A lock token: `<pid>.<random>@<host>`. */
+const lockToken = (): string => `${process.pid}.${randomBytes(12).toString('hex')}@${hostname()}`;
+
+/** True when a lock token names a process of this host that no longer exists. False for another
+ * host's token, an unparseable one, or a live pid (a reused pid reads as live, which only delays
+ * the steal to the age rule). */
+export function holderIsDead(token: string): boolean {
+  const m = /^(\d+)\.[0-9a-f]+@(.+)$/s.exec(token);
+  if (!m || m[2] !== hostname()) return false;
+  const pid = Number(m[1]);
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ESRCH';
   }
 }
 
@@ -81,14 +104,21 @@ function underGuard(lock: string, staleMs: number, now: () => number, fn: () => 
   const deadline = now() + Math.max(staleMs, 1_000);
   for (;;) {
     try {
-      closeSync(openSync(guard, 'wx'));
+      const fd = openSync(guard, 'wx');
+      try {
+        writeSync(fd, lockToken());
+      } finally {
+        closeSync(fd);
+      }
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      // The guard is held for microseconds; one this old belongs to a holder that crashed inside
-      // the guarded section.
+      // The guard is held for microseconds; one this old, or one whose holder is dead, belongs to
+      // a holder that crashed inside the guarded section.
       const m = mtimeOf(guard);
-      if (m !== undefined && now() - m > staleMs) rmSync(guard, { force: true });
+      const held = readToken(guard);
+      if (held !== undefined && held !== '' && holderIsDead(held)) rmSync(guard, { force: true });
+      else if (m !== undefined && now() - m > staleMs) rmSync(guard, { force: true });
       else if (now() > deadline) throw new FileLockTimeoutError(guard);
       else pause(2);
     }
@@ -114,7 +144,7 @@ export function withFileLock<T>(lock: string, fn: () => T, opts: FileLockOptions
   const staleMs = opts.staleMs ?? 30_000;
   const now = opts.now ?? Date.now;
   const deadline = now() + (opts.timeoutMs ?? 10_000);
-  const token = `${process.pid}.${randomBytes(12).toString('hex')}`;
+  const token = lockToken();
   mkdirSync(dirname(lock), { recursive: true });
   for (;;) {
     try {
@@ -130,10 +160,12 @@ export function withFileLock<T>(lock: string, fn: () => T, opts: FileLockOptions
       const seen = readToken(lock);
       const m = mtimeOf(lock);
       if (seen === undefined || m === undefined) continue; // released between open and read
-      if (now() - m > staleMs) {
+      // An empty token is a lock caught between its creation and its write: never judged dead.
+      const dead = seen !== '' && holderIsDead(seen);
+      if (dead || now() - m > staleMs) {
         underGuard(lock, staleMs, now, () => {
           const cur = mtimeOf(lock);
-          if (readToken(lock) === seen && cur !== undefined && now() - cur > staleMs) {
+          if (readToken(lock) === seen && cur !== undefined && (dead || now() - cur > staleMs)) {
             rmSync(lock, { force: true });
           }
         });
@@ -192,8 +224,12 @@ export function orderLedgerEvents(events: readonly LedgerEvent[]): LedgerEvent[]
  * Whole-ledger problems (LR-14, 06 §6.1): duplicate eventIds, and every proposal whose history
  * breaks the stage machine. Each problem is one human-readable line.
  */
-export function ledgerProblems(events: readonly LedgerEvent[]): string[] {
+export function ledgerProblems(
+  events: readonly LedgerEvent[],
+  gateInputOf?: (hash: string) => GateSkillSets | undefined,
+): string[] {
   const out: string[] = [];
+  if (gateInputOf) out.push(...acceptedSkillSetState(events, gateInputOf).problems);
   const seen = new Set<string>();
   for (const e of events) {
     if (seen.has(e.eventId)) out.push(`duplicate eventId ${e.eventId}`);
@@ -209,9 +245,12 @@ export function ledgerProblems(events: readonly LedgerEvent[]): string[] {
  * Appends one event to `<root>/ledger.jsonl`. Refuses — writing nothing — an event whose writer is
  * not the harness, which fails `LedgerEventSchema`, whose eventId is already in the ledger, or
  * which would make its proposal's history break the stage machine (06 §6.1): e.g. `merged` after
- * `candidate-rejected`. An unsealed event is sealed with `sealEvent`; a sealed one must carry the
- * right `eventId` (the schema re-derives it). Lines of the existing ledger that fail to parse are
- * left for LR-14 to report. Returns what was written.
+ * `candidate-rejected`, or a `merged` whose proposal was gated against a skill set that is no
+ * longer the accepted one. An unsealed event is sealed with `sealEvent`; a sealed one must carry
+ * the right `eventId` (the schema re-derives it). Complete lines of the existing ledger that fail
+ * to parse are left for LR-14 to report; a torn tail (a last line without its newline that does
+ * not parse: a crash mid-append) is cut under the lock first, as `appendEvents` does. Returns
+ * what was written.
  *
  * The read-check-append runs under `<ledger>.lock` (`withFileLock`): the ledger is re-read under
  * the lock, so two processes appending at once cannot both pass the duplicate and stage-machine
@@ -232,30 +271,74 @@ export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent 
   }
   const file = join(root, LEDGER_FILE);
   const data = result.data;
-  return withFileLock(`${file}.lock`, () => appendLocked(file, data));
+  return withFileLock(`${file}.lock`, () => appendLocked(root, file, data));
 }
 
-function appendLocked(file: string, next: LedgerEvent): LedgerEvent {
-  const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+/** Cuts a torn tail: a last line without its newline that does not parse as an event (a crash
+ * mid-append). A complete last line that only lacks its newline is kept. Call under the lock. */
+function repairTornTail(file: string, text: string): { text: string; repaired?: string } {
+  if (text === '' || text.endsWith('\n')) return { text };
+  const cut = text.lastIndexOf('\n') + 1;
+  const tail = text.slice(cut);
+  let whole = false;
+  try {
+    whole = LedgerEventSchema.safeParse(JSON.parse(tail)).success;
+  } catch {
+    whole = false;
+  }
+  if (whole) return { text };
+  truncateSync(file, Buffer.byteLength(text.slice(0, cut)));
+  return { text: text.slice(0, cut), repaired: tail };
+}
+
+function appendLocked(root: string, file: string, next: LedgerEvent): LedgerEvent {
+  const { text } = repairTornTail(file, existsSync(file) ? readFileSync(file, 'utf8') : '');
   const existing = parseLedger(text).events;
   if (existing.some((e) => e.eventId === next.eventId)) {
     throw new LedgerWriteError(`refused: eventId ${next.eventId} is already in the ledger`);
   }
-  checkAppend(existing, next);
+  checkAppend(existing, next, (h) => readGateSkillSets(root, h));
   // A file whose last line lacks its newline would otherwise fuse with the new line.
   const lead = text !== '' && !/(^|\n)$/.test(text) ? '\n' : '';
   appendFileSync(file, `${lead}${canonicalJson(next)}\n`);
   return next;
 }
 
-/** Refuses `next` when it would add a stage-machine problem to its proposal's history. */
-function checkAppend(existing: readonly LedgerEvent[], next: LedgerEvent): void {
+/** `after` minus `before` as multisets: a problem the history already had once and now has twice
+ * is a new problem (a repeat of an existing violation is still a violation). */
+function addedProblems(before: readonly string[], after: readonly string[]): string[] {
+  const left = new Map<string, number>();
+  for (const p of before) left.set(p, (left.get(p) ?? 0) + 1);
+  const out: string[] = [];
+  for (const p of after) {
+    const n = left.get(p) ?? 0;
+    if (n > 0) left.set(p, n - 1);
+    else out.push(p);
+  }
+  return out;
+}
+
+/** Refuses `next` when it would add a stage-machine problem to its proposal's history, or (for a
+ * `merged` or `withdrawn` event) a merge-order problem to the accepted skill set (06 §6.1). */
+function checkAppend(
+  existing: readonly LedgerEvent[],
+  next: LedgerEvent,
+  gateInputOf?: (hash: string) => GateSkillSets | undefined,
+): void {
   if (next.proposalId === undefined) return;
   const before = proposalHistory(existing, next.proposalId);
   const after = proposalHistory([...existing, next], next.proposalId);
-  const added = after.problems.filter((p) => !before.problems.includes(p));
+  const added = addedProblems(before.problems, after.problems);
   if (after.events.at(-1) !== next) {
     added.unshift(`ts ${next.ts} is earlier than the proposal's latest event`);
+  }
+  if (gateInputOf && (next.stage === 'merged' || next.stage === 'withdrawn')) {
+    added.push(
+      ...addedProblems(
+        acceptedSkillSetState(existing, gateInputOf).problems,
+        acceptedSkillSetState([...existing, next], gateInputOf).problems,
+      ),
+    );
   }
   if (added.length > 0) {
     throw new LedgerWriteError(`refused for proposal ${next.proposalId}: ${added.join('; ')}`);
@@ -292,23 +375,10 @@ export function appendEvents(
   return withFileLock(`${file}.lock`, () => {
     let text = existsSync(file) ? readFileSync(file, 'utf8') : '';
     let repaired: string | undefined;
-    if (opts.repairTornTail && text !== '' && !text.endsWith('\n')) {
-      // A last line without its newline that does not parse is a torn write (a crash mid-append):
-      // it is cut, under the lock, before anything is appended. A complete last line only lacks
-      // its newline and is kept.
-      const cut = text.lastIndexOf('\n') + 1;
-      const tail = text.slice(cut);
-      let whole = false;
-      try {
-        whole = LedgerEventSchema.safeParse(JSON.parse(tail)).success;
-      } catch {
-        whole = false;
-      }
-      if (!whole) {
-        truncateSync(file, Buffer.byteLength(text.slice(0, cut)));
-        text = text.slice(0, cut);
-        repaired = tail;
-      }
+    if (opts.repairTornTail) {
+      const r = repairTornTail(file, text);
+      text = r.text;
+      repaired = r.repaired;
     }
     const acc = [...parseLedger(text).events];
     const appended: LedgerEvent[] = [];
@@ -318,7 +388,7 @@ export function appendEvents(
         present.push(e);
         continue;
       }
-      checkAppend(acc, e);
+      checkAppend(acc, e, (h) => readGateSkillSets(root, h));
       acc.push(e);
       appended.push(e);
     }
@@ -328,6 +398,110 @@ export function appendEvents(
     }
     return { appended, present, ...(repaired !== undefined ? { repaired } : {}) };
   });
+}
+
+// ---- the accepted skill set (06 §1.5, §6.1) --------------------------------------------------
+
+/** The two skill-set hashes a gate input record names (08 §10.4). */
+export interface GateSkillSets {
+  acceptedSkillSetHash: string;
+  candidateSkillSetHash: string;
+}
+
+/** A gate input record's skill sets from `<wikiRoot>/evidence/eval/<hash>.json` (08 §10.4),
+ * validated (its own hash included); undefined when absent or invalid. */
+export function readGateSkillSets(wikiRoot: string, hash: string): GateSkillSets | undefined {
+  if (!/^[0-9a-f]{64}$/.test(hash)) return undefined;
+  const file = join(wikiRoot, 'evidence', 'eval', `${hash}.json`);
+  if (!existsSync(file)) return undefined;
+  try {
+    const r = GateInputRecordSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
+    if (!r.success || r.data.hash !== hash) return undefined;
+    return {
+      acceptedSkillSetHash: r.data.acceptedSkillSetHash,
+      candidateSkillSetHash: r.data.candidateSkillSetHash,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const gateInputOfEvent = (e: LedgerEvent | undefined): string | undefined =>
+  e?.evidence && (e.evidence.kind === 'bench' || e.evidence.kind === 'template')
+    ? e.evidence.gateInput
+    : undefined;
+
+export interface AcceptedSkillSetState {
+  /** The accepted skill set, or undefined when the ledger does not establish one (the caller
+   * falls back to the installed skill set). */
+  hash: string | undefined;
+  /** Merge-order violations (06 §6.1), one line each; empty for a well-formed ledger. */
+  problems: string[];
+}
+
+/**
+ * The accepted skill set, defined by MERGE ORDER alone (06 §6.1). Walking the ledger in time
+ * order, only two kinds of event move it, and control-arm proposals never do:
+ *
+ * - `merged`: the accepted set becomes the candidate skill set of the proposal's gate input. The
+ *   merge is valid only when that gate input's baseline IS the accepted set at that moment; a
+ *   proposal gated against an older set (another proposal merged since) must be gated again, so
+ *   such a merge is a problem and does not move the state. Two proposals accepted on one baseline
+ *   therefore cannot both merge: the result would be a tree no evaluation ever ran.
+ * - `withdrawn` of a merged proposal: a revert is a new accepted state, named by the event's
+ *   `skillSetHash`. Without it the state is unknown (undefined), never the pre-merge guess.
+ *
+ * Gate events (`candidate-*`) never move the state. Before any merge the ledger can still name
+ * the accepted set: the baseline of the newest gated proposal. After a merge that fallback is
+ * not used, so an older proposal rejected later (its baseline predates the merge) changes nothing.
+ */
+export function acceptedSkillSetState(
+  ledger: readonly LedgerEvent[],
+  gateInputOf: (hash: string) => GateSkillSets | undefined,
+): AcceptedSkillSetState {
+  const ordered = orderLedgerEvents(ledger);
+  const controls = new Set(
+    ordered.filter((e) => e.control === true && e.proposalId).map((e) => e.proposalId),
+  );
+  const problems: string[] = [];
+  const merged = new Set<string>();
+  let moved = false;
+  let hash: string | undefined;
+  let gated: string | undefined;
+  for (const e of ordered) {
+    const id = e.proposalId;
+    if (id === undefined || controls.has(id)) continue;
+    if (e.stage.startsWith('candidate-')) {
+      const gi = gateInputOfEvent(e);
+      const rec = gi === undefined ? undefined : gateInputOf(gi);
+      if (rec) gated = rec.acceptedSkillSetHash;
+    } else if (e.stage === 'merged') {
+      const accepted = ordered.find((x) => x.proposalId === id && x.stage === 'candidate-accepted');
+      const gi = gateInputOfEvent(accepted);
+      if (gi === undefined) continue; // a repro, artifact or field outlet: no skill-set change
+      const rec = gateInputOf(gi);
+      if (!rec) {
+        problems.push(
+          `proposal ${id}: merged, but its gate input ${gi} is not readable, so what it was gated against is unknown`,
+        );
+        continue;
+      }
+      if (moved && hash !== undefined && rec.acceptedSkillSetHash !== hash) {
+        problems.push(
+          `proposal ${id}: merged, but it was gated against skill set ${rec.acceptedSkillSetHash.slice(0, 12)} and the accepted set is now ${hash.slice(0, 12)}; gate it again on the accepted set first`,
+        );
+        continue;
+      }
+      hash = rec.candidateSkillSetHash;
+      moved = true;
+      merged.add(id);
+    } else if (e.stage === 'withdrawn' && merged.has(id)) {
+      merged.delete(id);
+      hash = e.skillSetHash;
+      moved = true;
+    }
+  }
+  return { hash: moved ? hash : gated, problems };
 }
 
 export interface ProposalHistory {

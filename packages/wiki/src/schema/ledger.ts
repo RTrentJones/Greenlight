@@ -48,6 +48,9 @@ export const GateResultSchema = z
         after: z.number().min(0).max(1),
         delta: z.number().min(-1).max(1),
         pValue: z.number().min(0).max(1).nullable(),
+        /** The smallest p any candidate outcome could have reached against this baseline (06
+         * §5.2); null when p is not computed. Absent on events written before the exact test. */
+        minP: z.number().min(0).max(1).nullable().optional(),
       })
       .strict(),
     decision: z.enum(['pass', 'fail']),
@@ -130,6 +133,10 @@ const LedgerEventObject = z
     versionFrom: z.string().min(1).optional(),
     versionTo: z.string().min(1).optional(),
     release: z.string().min(1).optional(),
+    /** The accepted skill set AFTER this event (06 §6.1). REQUIRED on the `withdrawn` event of a
+     * merged skill or template proposal, whose revert is a new accepted state; allowed only on
+     * `withdrawn`. */
+    skillSetHash: Sha256.optional(),
     spend: z
       .object({
         usd: z.number().min(0),
@@ -190,6 +197,12 @@ export const LedgerEventSchema = LedgerEventObject.superRefine((e, ctx) => {
   ) {
     issue('evidence', 'candidate bench evidence names its gate input record');
   }
+  if (e.stage === 'candidate-accepted' && e.evidence === undefined) {
+    issue('evidence', 'a candidate-accepted event carries the evidence it was accepted on');
+  }
+  if (e.skillSetHash !== undefined && e.stage !== 'withdrawn') {
+    issue('skillSetHash', 'only a withdrawn event names the resulting skill set');
+  }
   if (e.control && (e.stage === 'merged' || e.stage === 'released')) {
     issue('control', 'a control-arm proposal is never merged or released');
   }
@@ -235,15 +248,49 @@ function nextStages(at: string, outlet: string | undefined): readonly string[] {
   }
 }
 
+/** Stages at which a proposal's change is in the accepted tree. */
+const MERGED_STAGES: ReadonlySet<string> = new Set([
+  'merged',
+  'released',
+  'verified-in-production',
+]);
+
+/** True when the proposal was gated on bench or template evidence, so its merge moves the
+ * accepted skill set (06 §6.1). */
+export function movesSkillSet(events: readonly LedgerEvent[]): boolean {
+  return events.some(
+    (e) =>
+      e.stage === 'candidate-accepted' &&
+      (e.evidence?.kind === 'bench' || e.evidence?.kind === 'template'),
+  );
+}
+
 /** Checks that one proposal's events, in order, follow the stage machine (06 §6.1) and name at
- * most one outlet. Returns problems; empty for a well-formed history. */
+ * most one outlet. The control label is a property of the whole history: once any event carries
+ * `control`, the proposal can never be merged or released, whichever event carries the flag.
+ * Returns problems; empty for a well-formed history. */
 export function checkProposalHistory(events: readonly LedgerEvent[]): string[] {
   const out: string[] = [];
   const outlets = [...new Set(events.flatMap((e) => (e.outlet ? [e.outlet] : [])))];
   if (outlets.length > 1) out.push(`events name more than one outlet (${outlets.join(', ')})`);
   const outlet = outlets[0];
+  const control = events.some((e) => e.control === true);
+  const moves = movesSkillSet(events);
   let at = 'start';
   for (const e of events) {
+    if (control && (e.stage === 'merged' || e.stage === 'released')) {
+      out.push(`stage "${e.stage}": a control-arm proposal is never merged or released`);
+    }
+    if (e.stage === 'withdrawn') {
+      if (moves && MERGED_STAGES.has(at) && e.skillSetHash === undefined) {
+        out.push(
+          'a withdrawn event of a merged proposal names the resulting accepted skill set (skillSetHash)',
+        );
+      }
+      if (e.skillSetHash !== undefined && !(moves && MERGED_STAGES.has(at))) {
+        out.push('skillSetHash on a withdrawn event whose proposal never moved the skill set');
+      }
+    }
     if (ANNOTATION_STAGES.has(e.stage)) {
       // An annotation reviews what exists; it cannot open a proposal's history.
       if (at === 'start') out.push(`stage "${e.stage}" cannot open a proposal's history`);

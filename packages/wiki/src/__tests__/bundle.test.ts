@@ -303,7 +303,7 @@ describe('outcomes.md baseline: the ACCEPTED skill set', () => {
     expect(render()).toContain('No accepted skill set is known yet');
   });
 
-  it('derives the accepted set from the latest merged or gated ledger state', () => {
+  it('derives the accepted set from merge order alone (06 §6.1)', () => {
     const gate = (ch: string) => ({ kind: 'bench' as const, gateInput: ch.repeat(64) });
     const ev = (e: Omit<LedgerEvent, 'eventId' | 'writer'>) => sealEvent(e);
     const bench = (ch: string) => ({
@@ -335,14 +335,41 @@ describe('outcomes.md baseline: the ACCEPTED skill set', () => {
     });
     expect(acceptedSkillSet([acceptedEv], lookup)).toBe(accepted);
     expect(acceptedSkillSet([acceptedEv, merged, control], lookup)).toBe(candidate);
-    const withdrawn = ev({
-      ts: '2026-11-01T04:00:00.000Z',
-      proposalId: 'p1',
-      stage: 'withdrawn',
-      reason: 'rolled back',
-    });
-    expect(acceptedSkillSet([acceptedEv, merged, withdrawn], lookup)).toBeUndefined();
+    const withdraw = (skillSetHash?: string) =>
+      ev({
+        ts: '2026-11-01T05:00:00.000Z',
+        proposalId: 'p1',
+        stage: 'withdrawn',
+        reason: 'rolled back',
+        ...(skillSetHash ? { skillSetHash } : {}),
+      });
+    // A withdrawal of a merged proposal is a new accepted state: the set it names.
+    expect(acceptedSkillSet([acceptedEv, merged, withdraw(accepted)], lookup)).toBe(accepted);
+    // One that names nothing leaves it unknown (the caller falls back to the installed set).
+    expect(acceptedSkillSet([acceptedEv, merged, withdraw()], lookup)).toBeUndefined();
     expect(acceptedSkillSet([], lookup)).toBeUndefined();
+
+    // The interleavings the per-event reading got wrong:
+    sets['3'.repeat(64)] = {
+      acceptedSkillSetHash: candidate,
+      candidateSkillSetHash: 'f'.repeat(64),
+    };
+    const gatedEv = (id: string, ch: string, ts: string, stage: LedgerEvent['stage']) =>
+      ev({ ts, proposalId: id, stage, path: 'standard', outlet: 'skill', evidence: bench(ch) });
+    // (a) p1 merged (accepted → candidate), p3 gated on `candidate`, then p1 withdrawn: the
+    // withdrawal's set, not p3's baseline.
+    const onNew = gatedEv('p3', '3', '2026-11-01T04:00:00.000Z', 'candidate-rejected');
+    expect(acceptedSkillSet([acceptedEv, merged, onNew, withdraw(accepted)], lookup)).toBe(
+      accepted,
+    );
+    // (b) p1 merged, then p4 (gated on the OLD set) rejected with a later ts: still `candidate`.
+    const stale = gatedEv('p4', '2', '2026-11-01T04:00:00.000Z', 'candidate-rejected');
+    expect(acceptedSkillSet([acceptedEv, merged, stale], lookup)).toBe(candidate);
+    // (c) p1 and p4 both accepted on the old set, both merged: the second merge does not count
+    // (the stage machine refuses it; see ledger.test.ts), so the set is p1's, a tree that existed.
+    const second = gatedEv('p4', '2', '2026-11-01T01:30:00.000Z', 'candidate-accepted');
+    const mergedSecond = ev({ ts: '2026-11-01T03:00:00.000Z', proposalId: 'p4', stage: 'merged' });
+    expect(acceptedSkillSet([acceptedEv, second, merged, mergedSecond], lookup)).toBe(candidate);
   });
 
   it('hashes the installed skill set over SKILL.md and PURPOSE.md', () => {

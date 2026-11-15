@@ -922,6 +922,35 @@ Release notes list proposals reaching `released`. Patterns become `confirmed` on
 `verified-in-production`, or, for evidence that can only be shown in the bench, from `merged`
 (04 §4).
 
+**A control-arm proposal is never merged or released.** The label belongs to the proposal, not to
+one event: once any event of a proposal carries `control: true`, a `merged` or `released` event
+for it is refused, whether or not that event repeats the flag. A `candidate-accepted` event always
+carries the evidence it was accepted on; one without evidence is refused.
+
+**The accepted skill set is defined by merge order, and by nothing else.** Walking the ledger in
+time order (control-arm proposals never count):
+
+- a `merged` event of a proposal gated on bench or template evidence makes the **candidate**
+  skill set of its gate input the accepted set;
+- that merge is allowed only when the gate input's **baseline** is the accepted set at that
+  moment. A proposal gated against an older set, because another proposal merged in between, must
+  be gated again on the new accepted set first; its `merged` event is refused, and so is one whose
+  gate input cannot be read. Two proposals accepted on the same baseline therefore cannot both
+  merge: the result would be a tree that no evaluation ever ran;
+- a `withdrawn` event of a merged proposal is a new accepted state. It MUST name the resulting
+  skill set (`skillSetHash`): a revert does not necessarily restore the pre-merge set, and later
+  merges may sit on top of it. `bench review --decision reject` on a merged skill proposal
+  records the installed skill set, so the owner reverts first and reviews after. A withdrawal
+  that names nothing (an older ledger) leaves the accepted set unknown, and the harness falls back
+  to the installed skill set;
+- gate events (`candidate-accepted`, `candidate-rejected`) never move it. In particular a
+  proposal gated on the old set and rejected after a merge changes nothing, and a withdrawal of
+  one proposal never promotes the baseline of another.
+
+Before the first merge the ledger still names the accepted set: the baseline of the newest gated
+proposal. When the ledger establishes none, it is the installed skill set (§1.5), never the
+newest train record.
+
 ## 7. Field monitor (ADR-05)
 
 A scheduled workflow, `evo-monitor.yml` (weekly, in the wrapper or the framework repo), runs

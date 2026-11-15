@@ -468,15 +468,19 @@ type LedgerEvent = {
        | 'verified-in-production' | 'withdrawn' | 'release-check' | 'spend'
        | 'review';                       // an annotation: the owner's review (M2-04), below
   path?: 'standard' | 'safety-fix' | 'neutral';   // 06 §5.4; REQUIRED on candidate-* events
-  control?: boolean;                     // true for control-arm proposals (06 §10.2); never merged
+  control?: boolean;                     // true for control-arm proposals (06 §10.2). Once ANY event of a
+                                         // proposal carries it, the proposal is never merged or released
   pattern?: string[];
   skill?: string;
   outlet?: Remediation['outlet'];
   change?: { kind: 'create' | 'patch' | 'pr' | 'issue' | 'no_action'; diff?: string; ref?: string };
-  evidence?: Evidence;
-  reason?: string;                       // REQUIRED for no-action, withdrawn, neutral, and human overrides
+  evidence?: Evidence;                   // REQUIRED on candidate-accepted
+  reason?: string;                       // REQUIRED for no-action, withdrawn, neutral, and human overrides;
+                                         // on candidate-* it also states vacuous replay safety (06 §5.4)
   versionFrom?: string; versionTo?: string;   // on merged (skill/template)
   release?: string;                      // on released: the CLI version
+  skillSetHash?: string;                 // only on withdrawn; REQUIRED when it withdraws a MERGED bench- or
+                                         // template-gated proposal: the accepted skill set after the revert (06 §6.1)
   spend?: { usd: number; rollouts: number; requests: number; tokensIn: number; tokensOut: number; evaluationId?: string };  // requests: the free-tier binding constraint (ADR-20)
   review?: { decision: 'accept' | 'reject'; iteration?: string };  // REQUIRED on review; allowed on withdrawn
 };
@@ -564,6 +568,28 @@ outlet is treated as release-carried. A proposal's events name at most one outle
 `appendEvent` loads the ledger first and refuses, writing nothing, a duplicate `eventId`, a stage
 the machine does not allow, or a `ts` earlier than the proposal's latest event. LR-14 reports
 duplicate `eventId`s and every stage-machine violation in a committed ledger.
+
+Rules over a proposal's whole history, checked on every append (06 §6.1):
+
+- **Control.** Once any event of a proposal carries `control: true`, `merged` and `released` are
+  refused for it, whichever event carries the flag.
+- **Merge order.** A `merged` event of a bench- or template-gated proposal is refused unless the
+  baseline of its gate input (`acceptedSkillSetHash`, §10.4) is the accepted skill set at that
+  moment, and unless that gate input can be read from `evidence/eval/`. The accepted skill set
+  is the candidate set of the latest such merge, or the `skillSetHash` of a later `withdrawn` of
+  a merged proposal.
+- **Withdrawal.** A `withdrawn` event that follows `merged`, `released` or
+  `verified-in-production` of a bench- or template-gated proposal names `skillSetHash`; any other
+  event carrying `skillSetHash` is refused.
+- **Repeats.** An append is refused when it adds a violation, counted as a multiset: repeating a
+  violation the history already holds is a new violation, not a duplicate of the old one.
+
+**Writes.** Appends run under `<ledger>.lock`, which holds `<pid>.<random>@<host>`. A waiter
+takes over at once from a holder that is a dead process on the same host, so an append never has
+to wait out the 30 s staleness age after a SIGKILL; the age rule remains for a holder on another
+host. A torn tail (a last line without its newline that does not parse, left by a crash
+mid-append) is cut under the lock before anything is appended, by `appendEvent` and
+`appendEvents` alike; a complete last line that only lacks its newline is kept.
 
 `skill-impact.md` renders one row per proposal, newest first. The columns are date, proposal,
 skill or outlet, patterns, path, latest stage, and an evidence summary in which each model and mode
