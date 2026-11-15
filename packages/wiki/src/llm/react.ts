@@ -23,7 +23,7 @@ import { BudgetExhaustedError, RateLimitExhaustedError, RequestBudget } from './
 /** Part of the BaselineIdentity (`agent.vendor`/`agent.version`, 08 §10.3). Bump the version when
  * the prompt scaffolding or loop semantics change: that re-baselines, like a model change. */
 export const HARNESS_VENDOR = 'greenlight-harness';
-export const HARNESS_VERSION = '0.1.0';
+export const HARNESS_VERSION = '0.2.0';
 
 export const FINISH_TOOL = 'finish';
 
@@ -39,6 +39,10 @@ export interface ReactTool {
   parameters: JsonSchema;
   /** Optional zod check of the arguments before `run`; a failure is returned to the model. */
   argsSchema?: z.ZodType<unknown>;
+  /** Which end of an over-long result survives truncation. Default `tail` (a command's verdict
+   * and errors come last); a file or a listing wants `head`, since it is read from the top and
+   * the rest is reachable with the tool's own offset. */
+  keep?: 'head' | 'tail';
   run(args: Record<string, unknown>, ctx: ToolContext): unknown | Promise<unknown>;
 }
 
@@ -128,8 +132,12 @@ export interface ReactOptions<T> {
   maxFinishAttempts?: number;
   /** `ANY` (default) forces a tool call every turn, so `finish` is the only exit. */
   toolMode?: 'AUTO' | 'ANY';
-  /** Tool results longer than this are truncated head-first with a marker. Default 20,000. */
+  /** Tool results longer than this are truncated with a marker (`ReactTool.keep` says which end
+   * survives). Default 20,000. */
   maxToolResultChars?: number;
+  /** When at most this many steps remain, every turn's tool responses carry `steps_remaining`, so
+   * the model can stop exploring and call `finish`. Default 0: never announced. */
+  announceRemainingSteps?: number;
   seed?: number;
   signal?: AbortSignal;
   now?: () => Date;
@@ -164,10 +172,12 @@ export function buildSystemPrompt(skills: Skill[], rolePrompt: string): string {
   return out.join('\n\n');
 }
 
-function truncate(s: string, max: number): string {
+export function truncate(s: string, max: number, keep: 'head' | 'tail' = 'tail'): string {
   if (s.length <= max) return s;
   const cut = s.length - max;
-  return `…[truncated ${cut} chars]…${s.slice(cut)}`;
+  return keep === 'head'
+    ? `${s.slice(0, max)}…[truncated: ${cut} more chars follow]…`
+    : `…[truncated ${cut} chars]…${s.slice(cut)}`;
 }
 
 function issuesOf(e: z.ZodError): string[] {
@@ -313,7 +323,7 @@ export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
         }
       }
       const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
-      const clipped = truncate(text, maxChars);
+      const clipped = truncate(text, maxChars, tool?.keep ?? 'tail');
       log({
         kind: 'tool_result',
         step,
@@ -348,10 +358,30 @@ export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
       responses.push({
         functionResponse: {
           name: FINISH_TOOL,
-          response: { error: 'output rejected; fix these and call finish again', issues },
+          response: {
+            error: `output rejected; fix these and call finish again (${maxFinish - finishAttempts} attempt(s) left)`,
+            issues,
+          },
           ...(finishCall.id ? { id: finishCall.id } : {}),
         },
       });
+    }
+    // Few steps left: say so in the tool responses themselves (the model reads nothing else).
+    const left = o.maxSteps - step;
+    if (left <= (o.announceRemainingSteps ?? 0)) {
+      for (const part of responses) {
+        const fr = (part as { functionResponse?: { response: Record<string, unknown> } })
+          .functionResponse;
+        if (fr)
+          fr.response = {
+            ...fr.response,
+            steps_remaining: left,
+            note:
+              left === 0
+                ? 'no steps remain'
+                : `${left} step(s) remain: finish the work and call ${FINISH_TOOL} before they run out`,
+          };
+      }
     }
     contents.push({ role: 'user', parts: responses });
   }

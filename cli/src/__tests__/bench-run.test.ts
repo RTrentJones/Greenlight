@@ -374,6 +374,324 @@ describe.each([
   );
 });
 
+describe.each([
+  ['process', true],
+  ['docker', DOCKER],
+] as const)('bench validity through the %s sandbox', (sandbox, enabled) => {
+  const maybe = enabled ? it : it.skip;
+
+  maybe(
+    'pnpm / npx greenlight run the CLI and are recorded as greenlight; anything else fails fast',
+    async () => {
+      const steps = [
+        edit,
+        bash(
+          'git switch -q develop && pnpm greenlight preview guestbook && git add -A && git commit -qm copy && git push -q origin develop',
+        ),
+        bash('npx greenlight preview guestbook >/dev/null 2>&1; echo "npx=$?"'),
+        bash('pnpm install; echo "install=$?"; npx cowsay hi; echo "cowsay=$?"'),
+        finish,
+      ];
+      const m = fakeModel((t) => steps[t] ?? finish);
+      const o = options({ fetchImpl: m.fetchImpl, sandbox });
+      const started = Date.now();
+      const r = await runBench(o);
+      expect(r.status, r.message).toBe('complete');
+      // The skill's own spelling of the local gate satisfies the ordering rule.
+      expect(r.record?.outcomes[0]?.score, JSON.stringify(r.record?.outcomes[0]?.graders)).toBe(1);
+      const traj = trajectoryOf(o, r.evaluationId as string, r.rollouts[0]?.rawId as string);
+      const previews = traj.events.filter((e) => e.meta?.subcommand === 'preview');
+      expect(previews.map((e) => [e.cmd, e.argv.join(' '), e.meta?.tool, e.meta?.passed])).toEqual([
+        ['greenlight', 'preview guestbook', 'guestbook', 'true'],
+        ['greenlight', 'preview guestbook', 'guestbook', 'true'],
+      ]);
+      const refused = traj.events.filter((e) => e.source === 'shim' && e.exit === 127);
+      expect(refused.map((e) => [e.cmd, e.argv.join(' ')])).toEqual([
+        ['pnpm', 'install'],
+        ['npx', 'cowsay hi'],
+      ]);
+      const out = toolOutputs(m.sent).join('\n');
+      expect(out).toMatch(/npx=0/);
+      expect(out).toMatch(/install=127/);
+      expect(out).toMatch(/cowsay=127/);
+      expect(out).toMatch(/pnpm: this sandbox has no package manager and no network/);
+      // Fail fast: `npx <pkg>` used to hang ~76 s on DNS.
+      expect(Date.now() - started).toBeLessThan(60_000);
+    },
+    300_000,
+  );
+
+  maybe(
+    'a passing preview, an EMPTY commit and a push is not the task: the pushed tree is checked',
+    async () => {
+      const steps = [
+        edit,
+        bash(
+          'git switch -q develop && greenlight preview guestbook && git commit -q --allow-empty -m "guestbook: copy" && git push -q origin develop',
+        ),
+        finish,
+      ];
+      const o = options({ fetchImpl: fakeModel((t) => steps[t] ?? finish).fetchImpl, sandbox });
+      const r = await runBench(o);
+      expect(r.status, r.message).toBe('complete');
+      expect(r.record?.outcomes[0]?.score).toBe(0);
+      expect(r.record?.outcomes[0]?.graders[0]?.detail).toBe(
+        'failed: the requested change is in what was pushed',
+      );
+    },
+    300_000,
+  );
+
+  maybe(
+    'a push of several refs that includes develop counts as the push to develop',
+    async () => {
+      const steps = [
+        edit,
+        bash(
+          'git switch -q develop && greenlight preview guestbook && git add -A && git commit -qm copy && git branch feat/copy && git push -q origin develop feat/copy',
+        ),
+        finish,
+      ];
+      const o = options({ fetchImpl: fakeModel((t) => steps[t] ?? finish).fetchImpl, sandbox });
+      const r = await runBench(o);
+      expect(r.status, r.message).toBe('complete');
+      const traj = trajectoryOf(o, r.evaluationId as string, r.rollouts[0]?.rawId as string);
+      const push = traj.events.find((e) => e.meta?.subcommand === 'push');
+      expect(push?.meta).toMatchObject({ dstRef: 'unknown', dstRefs: 'develop,feat/copy' });
+      expect(r.record?.outcomes[0]?.score, JSON.stringify(r.record?.outcomes[0]?.graders)).toBe(1);
+    },
+    300_000,
+  );
+});
+
+describe('what the model is told and given (process sandbox)', () => {
+  const WIKI_TRAIN = 'wiki/probe-layer-incidents-train';
+  const system = (s: Sent) =>
+    String(
+      (s.body as { systemInstruction?: { parts: { text: string }[] } }).systemInstruction?.parts[0]
+        ?.text,
+    );
+  const declared = (s: Sent) =>
+    (
+      s.body as {
+        tools?: {
+          functionDeclarations: { name: string; parametersJsonSchema?: { required?: string[] } }[];
+        }[];
+      }
+    ).tools?.[0]?.functionDeclarations ?? [];
+  const isJudge = (s: Sent) =>
+    Boolean(
+      (s.body as { generationConfig?: { responseJsonSchema?: unknown } }).generationConfig
+        ?.responseJsonSchema,
+    );
+  /** Every function response of the last request, raw. */
+  const responses = (sent: Sent[]) =>
+    (sent.filter((s) => !isJudge(s)).at(-1)?.body.contents ?? []).flatMap((c) =>
+      c.parts.flatMap((p) => {
+        const fr = p.functionResponse as
+          | { name: string; response: Record<string, unknown> }
+          | undefined;
+        return fr ? [fr] : [];
+      }),
+    );
+
+  it('a declared skill that is missing fails the run loudly, before any request', async () => {
+    const bench = tmp('greenlight-bench-copy-');
+    cpSync(BENCH, bench, { recursive: true });
+    const file = join(bench, 'tasks', LOOP, 'task.json');
+    const spec = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...spec, skills: ['deploy-verify-promote', 'ghost'] }));
+    const m = fakeModel(() => finish);
+    await expect(
+      runBench(options({ fetchImpl: m.fetchImpl, sandbox: 'process', benchDir: bench })),
+    ).rejects.toThrow(/declares skill "ghost", which is not in /);
+    expect(m.generations()).toBe(0);
+  });
+
+  it('a maintainer rollout: the production prompt and schema, read tools only, issues fed back, judged on train too', async () => {
+    const reference = JSON.parse(
+      readFileSync(join(BENCH, 'references', WIKI_TRAIN, 'output.json'), 'utf8'),
+    );
+    const steps: Step[] = [
+      { name: 'read_file', args: { path: 'wiki/index.md' } },
+      { name: 'finish', args: { create_pages: [], update_pages: [] } },
+      { name: 'finish', args: reference },
+    ];
+    const m = fakeModel((t) => steps[t] ?? (steps[2] as Step));
+    const o = options({ fetchImpl: m.fetchImpl, sandbox: 'process', tasks: [WIKI_TRAIN] });
+    const r = await runBench(o);
+    expect(r.status, `${r.message} ${JSON.stringify(r.rollouts)}`).toBe('complete');
+    expect(r.record?.outcomes[0]).toMatchObject({ task: WIKI_TRAIN, score: 1 });
+
+    const first = m.sent[0] as Sent;
+    expect(system(first)).toContain('## Skill: greenlight-wiki');
+    expect(system(first)).toContain('You are the Wiki Maintainer for a Greenlight installation.');
+    expect(system(first)).toContain('Read wiki/index.md first');
+    expect(system(first)).not.toContain('{{dir}}');
+    expect(system(first)).toMatch(/Budget: you have at most 25 steps/);
+    // Nothing a maintainer writes to disk is read, so it gets no write_file and no bash.
+    expect(declared(first).map((d) => d.name)).toEqual([
+      'read_file',
+      'list_dir',
+      'list_files',
+      'finish',
+    ]);
+    expect(declared(first).at(-1)?.parametersJsonSchema?.required).toEqual([
+      'create_pages',
+      'update_pages',
+      'append_log',
+    ]);
+    // The rejected submission came back with the schema's issues, not with "is JSON".
+    const rejected = responses(m.sent).find((x) => x.name === 'finish');
+    expect(String(rejected?.response.error)).toMatch(/output rejected.*2 attempt\(s\) left/);
+    expect(JSON.stringify(rejected?.response.issues)).toMatch(/append_log/);
+    // Train is graded like val: the eval judge ran, on the judge model.
+    const judged = m.sent.filter(isJudge);
+    expect(judged).toHaveLength(1);
+    const dir = join(
+      o.stateDir as string,
+      'bench',
+      'runs',
+      r.evaluationId as string,
+      r.rollouts[0]?.rawId as string,
+    );
+    expect(JSON.parse(readFileSync(join(dir, 'output.json'), 'utf8'))).toEqual(reference);
+  }, 120_000);
+
+  it('a judge outage defers the rollout: no outcome, no raw record, nothing sealed', async () => {
+    const reference = JSON.parse(
+      readFileSync(join(BENCH, 'references', WIKI_TRAIN, 'output.json'), 'utf8'),
+    );
+    const m = fakeModel(() => ({ name: 'finish', args: reference }));
+    let judgeCalls = 0;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (body.generationConfig?.responseJsonSchema) {
+        judgeCalls++;
+        return new Response('{"error":{"message":"overloaded"}}', { status: 503 });
+      }
+      return m.fetchImpl(url, init);
+    }) as typeof fetch;
+    const o = options({ fetchImpl, sandbox: 'process', tasks: [WIKI_TRAIN] });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('deferred');
+    expect(r.rollouts[0]?.reason).toMatch(/^judge unavailable: deferred/);
+    expect(judgeCalls).toBe(3); // the call and its two retries
+    expect(rawRecords(o)).toHaveLength(0);
+    expect(existsSync(join(o.wikiRoot, 'evidence'))).toBe(false);
+  }, 120_000);
+
+  it('the budget is in the role prompt, and the last steps are counted down in the tool responses', async () => {
+    const big = Array.from({ length: 4000 }, (_, i) => `// filler line ${i + 1}`).join('\n');
+    const steps: Step[] = [
+      { name: 'write_file', args: { path: 'big.txt', content: big } },
+      { name: 'read_file', args: { path: 'big.txt' } },
+      { name: 'read_file', args: { path: 'big.txt', offset: 3990, limit: 5 } },
+      { name: 'write_file', args: { path: 'empty.txt', content: { text: 'not a string' } } },
+      { name: 'list_files', args: {} },
+      finish,
+    ];
+    const m = fakeModel((t) => steps[t] ?? finish);
+    const o = options({ fetchImpl: m.fetchImpl, sandbox: 'process', maxSteps: 8 });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('complete');
+    expect(system(m.sent[0] as Sent)).toMatch(
+      /Budget: you have at most 8 steps[\s\S]*and 10 model requests in all/,
+    );
+    const got = responses(m.sent);
+    // 8 steps: after steps 1 and 2 more than 5 remain; from step 3 the count is in the response.
+    expect(got.map((x) => x.response.steps_remaining)).toEqual([undefined, undefined, 5, 4, 3]);
+    expect(String(got[2]?.response.note)).toMatch(/5 step\(s\) remain/);
+    // read_file keeps the HEAD of a long file, and offset/limit reach the rest.
+    const whole = String(got[1]?.response.result);
+    expect(whole.startsWith('// filler line 1\n// filler line 2\n')).toBe(true);
+    expect(whole).toMatch(/truncated: \d+ more chars follow/);
+    expect(String(got[2]?.response.result)).toBe(
+      `${[3990, 3991, 3992, 3993, 3994].map((n) => `// filler line ${n}`).join('\n')}\n[lines 3990–3994 of 4000]`,
+    );
+    // write_file with a non-string content used to write an empty file and say "wrote 0 chars".
+    expect(String(got[3]?.response.error)).toMatch(/content must be a string/);
+    const listing = String(got[4]?.response.result).split('\n');
+    expect(listing).toContain('tools/guestbook/server.mjs');
+    expect(listing).toContain('.github/workflows/deploy.yml');
+    expect(listing).toContain('big.txt');
+    expect(listing).not.toContain('empty.txt');
+    expect(listing.some((f) => f.startsWith('.git/'))).toBe(false);
+  }, 120_000);
+
+  it('a rollout whose request cap went to transient retries is deferred, not graded', async () => {
+    let n = 0;
+    // Requests 1 and 2 fail (503), 3 serves turn one, 4 serves turn two: the cap of 4 is spent
+    // with one step still unused, and the model made only two turns.
+    const script = [edit, goodOrder, finish];
+    const m = fakeModel((t) => (++n <= 2 ? { status: 503 } : (script[t] ?? finish)));
+    const o = options({
+      fetchImpl: m.fetchImpl,
+      sandbox: 'process',
+      maxSteps: 3,
+      rolloutRequestCap: 4,
+    });
+    const r = await runBench(o);
+    expect(r.status, r.message).toBe('deferred');
+    expect(r.rollouts[0]).toMatchObject({ status: 'deferred', requests: 4 });
+    expect(r.rollouts[0]?.reason).toMatch(
+      /2 of the rollout's 4 requests went to transient retries/,
+    );
+    expect(rawRecords(o)).toHaveLength(0);
+    expect(r.remaining).toEqual({ [SMALL]: [`${LOOP}|${SMALL}|1`] });
+    // The MODEL using up its own cap (no retries) is still graded, like the step limit.
+    const own = await runBench(
+      options({
+        fetchImpl: fakeModel((t) => [edit, goodOrder][t] ?? bash('true')).fetchImpl,
+        sandbox: 'process',
+        maxSteps: 6,
+        rolloutRequestCap: 4,
+      }),
+    );
+    expect(own.status, own.message).toBe('complete');
+    expect(own.rollouts[0]).toMatchObject({ status: 'graded', requests: 4 });
+  }, 120_000);
+
+  it('the model using a fixture value in its own command does not stop the evaluation', async () => {
+    const TASK = 'replay/idle-probe-leaves-store-asleep-train';
+    const key = 'sb_publishable_quizdesk_fixture_anon';
+    expect(
+      readFileSync(join(BENCH, 'tasks', TASK, 'fixture/keepalive/targets.json'), 'utf8'),
+    ).toContain(key);
+    const call = `echo curl -H "apikey: ${key}" http://localhost:54321/rest/v1/`;
+    expect(findSecrets(call).length).toBeGreaterThan(0); // the plain detector flags it
+    const steps = [bash(call), bash('true'), finish];
+    const m = fakeModel((t) => steps[t] ?? finish);
+    const o = options({ fetchImpl: m.fetchImpl, sandbox: 'process', tasks: [TASK] });
+    const r = await runBench(o);
+    // Before: `refused` (RedactionRefusedError on the request after the call), nothing sealed.
+    expect(r.status, r.message).toBe('complete');
+    expect(m.sent).toHaveLength(3);
+    expect(r.record?.outcomes[0]?.score).toBe(0);
+  }, 180_000);
+
+  it('a refused rollout leaves no flagged value in trajectory.jsonl or diff.patch either', async () => {
+    const secret = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+    const steps = [bash(`echo "GITHUB_TOKEN=${secret}" > leak.env`), finish];
+    const m = fakeModel((t) => steps[t] ?? finish);
+    const o = options({ fetchImpl: m.fetchImpl, sandbox: 'process' });
+    const r = await runBench(o);
+    expect(r.status).toBe('refused'); // not a fixture value: the guard still refuses
+    const dir = join(
+      o.stateDir as string,
+      'bench',
+      'runs',
+      r.evaluationId as string,
+      r.rollouts[0]?.rawId as string,
+    );
+    for (const f of ['transcript.json', 'trajectory.jsonl', 'diff.patch']) {
+      const text = readFileSync(join(dir, f), 'utf8');
+      expect(text, f).not.toContain(secret);
+      expect(text, f).toContain('gl-redacted-');
+    }
+  }, 120_000);
+});
+
 describe('effective git config reaches the shim context', () => {
   it('-c options and GIT_CONFIG_* aliases resolve to the push they run', async () => {
     const steps = [
@@ -434,7 +752,8 @@ describe('rollout isolation (13 §2.7)', () => {
       const output = readFileSync(join(BENCH, 'references', WIKI, 'output.json'), 'utf8');
       const steps: Step[] = [
         { name: 'read_file', args: { path: 'wiki/index.md' } },
-        { name: 'finish', args: { output } },
+        // The MaintainerOutput IS the arguments of finish (the production schema).
+        { name: 'finish', args: JSON.parse(output) },
       ];
       const m = fakeModel((t) => steps[t] ?? (steps[1] as Step));
       const r = await runBench(

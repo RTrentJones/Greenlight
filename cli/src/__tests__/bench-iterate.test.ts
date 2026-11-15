@@ -224,7 +224,11 @@ function fakeModel(wiki: string): Fake {
       return new Response('{"error":{"message":"RESOURCE_EXHAUSTED"}}', { status: 429 });
     const sys = systemText(body);
     const turn = (body.contents ?? []).filter((c) => c.role === 'model').length;
-    if (sys.includes('Wiki Maintainer for a Greenlight installation')) {
+    // A bench rollout states its budget; the iteration's own maintainer and proposer do not. (A
+    // wiki rollout now carries the production maintainer prompt too, so the prompt alone no
+    // longer tells the two apart.)
+    const rollout = sys.includes('Budget: you have at most');
+    if (!rollout && sys.includes('Wiki Maintainer for a Greenlight installation')) {
       if (turn === 0)
         return reply(model, { name: 'read_file', args: { path: 'bundle/wiki/index.md' } });
       return reply(model, {
@@ -248,7 +252,7 @@ function fakeModel(wiki: string): Fake {
         },
       });
     }
-    if (sys.includes('Skill Proposer for a Greenlight installation')) {
+    if (!rollout && sys.includes('Skill Proposer for a Greenlight installation')) {
       if (turn === 0) return reply(model, { name: 'wiki_traces', args: { limit: 20 } });
       const ids = lastResult(body, 'wiki_traces')
         .split('\n')
@@ -268,7 +272,8 @@ function fakeModel(wiki: string): Fake {
       const which = sys.includes(CANDIDATE_MARKER)
         ? join(BENCH, 'references', task, 'output.json')
         : join(BENCH, 'mutants', task, 'invalid-output', 'output.json');
-      return reply(model, { name: 'finish', args: { output: readFileSync(which, 'utf8') } });
+      // The MaintainerOutput is the arguments of finish (the production schema).
+      return reply(model, { name: 'finish', args: JSON.parse(readFileSync(which, 'utf8')) });
     }
     const files = new Map(treeFiles(join(BENCH, 'references', task, 'tree')));
     if (task.startsWith('replay/idle-probe') && sys.includes(CONTROL_MARKER)) {
@@ -296,7 +301,7 @@ function setup(withControl = true) {
   cpSync(join(REPO, 'wiki'), wiki, { recursive: true });
   const skills = join(root, 'skills');
   cpSync(join(REPO, '.claude', 'skills'), skills, { recursive: true });
-  mkdirSync(join(skills, 'greenlight-wiki'));
+  mkdirSync(join(skills, 'greenlight-wiki'), { recursive: true });
   writeFileSync(
     join(skills, 'greenlight-wiki', 'SKILL.md'),
     '---\nname: greenlight-wiki\ndescription: Maintain the Greenlight wiki from execution evidence.\nversion: "1"\n---\n# greenlight-wiki\n\nCompile evidence into pages.\n',
