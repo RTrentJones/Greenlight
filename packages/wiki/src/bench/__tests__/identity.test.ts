@@ -9,6 +9,8 @@ import {
   computeIdentity,
   depsHash,
   hashTree,
+  modelsConfigHashOf,
+  processHostHash,
   sameIdentity,
   skillSetHashOf,
 } from '../identity';
@@ -48,6 +50,8 @@ function world() {
 }
 
 const LOOP = 'loop/fixture-preview-before-push-train';
+// biome-ignore lint/suspicious/noExplicitAny: bench/models.json, edited as plain JSON
+type ModelsJson = any;
 
 describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
   it('is deterministic and carries the sorted task summary', () => {
@@ -62,7 +66,10 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
       state: 'pending',
       modes: ['isolation', 'production'],
       graders: ['trajectory'],
+      skills: ['deploy-verify-promote'],
     });
+    expect(a.modelsConfigHash).toBe(modelsConfigHashOf(w.bench));
+    expect(a.harness).not.toHaveProperty('processHost'); // a docker image pins itself
     expect(a.wikiSnapshotHash).toBeNull();
     expect(a.harness.runnerVersion).toBe('0.2.1');
     expect(a.harness.limits).toEqual({ maxSteps: 15, requestsPerRollout: 17, timeoutMin: null });
@@ -137,6 +144,41 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
       ['agent'],
     ],
     ['the model list', () => ({ models: ['gemini-3.6-flash'] }), ['models']],
+    ...(
+      [
+        ['the temperature', (c) => ({ ...c, temperature: 0.7 })],
+        ['the judge role', (c) => ({ ...c, roles: { ...c.roles, judge: 'frontier' } })],
+        ['the provider', (c) => ({ ...c, provider: 'anthropic' })],
+        [
+          'a fallback setting',
+          (c) => ({
+            ...c,
+            roles: { ...c.roles, frontier: { ...c.roles.frontier, fallback: c.roles.small.id } },
+          }),
+        ],
+      ] as [string, (c: ModelsJson) => unknown][]
+    ).map(([name, edit]): [string, (w: ReturnType<typeof world>) => unknown, string[]] => [
+      `${name} in models.json`,
+      (w) => {
+        const f = join(w.bench, 'models.json');
+        writeFileSync(f, JSON.stringify(edit(JSON.parse(readFileSync(f, 'utf8')))));
+      },
+      ['modelsConfigHash'],
+    ]),
+    [
+      'which skills a task exercises (its slice, 06 §5.2)',
+      (w) => {
+        const f = join(w.bench, 'tasks', LOOP, 'task.json');
+        const spec = JSON.parse(readFileSync(f, 'utf8'));
+        writeFileSync(f, JSON.stringify({ ...spec, skills: ['provider-neon'] }));
+      },
+      ['taskSetHash', 'tasks'],
+    ],
+    [
+      'the machine, in the process sandbox',
+      () => ({ imageDigest: 'process', processHost: 'f'.repeat(64) }),
+      ['harness'],
+    ],
     ['the proxy policy', () => ({ proxyPolicyHash: 'c'.repeat(64) }), ['proxyPolicyHash']],
     [
       'a skill file',
@@ -167,6 +209,37 @@ describe('BaselineIdentity (06 §1.5, 08 §10.3)', () => {
       expect(findCachedTrain([cached], before, [])?.hash).toBe(cached.hash);
     },
   );
+
+  it('rate limits and prices in models.json are not part of the identity', () => {
+    const w = world();
+    const before = computeIdentity(w.input());
+    const f = join(w.bench, 'models.json');
+    const c = JSON.parse(readFileSync(f, 'utf8'));
+    c.roles.frontier.limits.rpd = 1;
+    c.roles.small.priceUsdPerMTok = { input: 1, output: 2 };
+    c.roles.proposer = 'small';
+    writeFileSync(f, JSON.stringify(c));
+    expect(identityDiff(before, computeIdentity(w.input()))).toEqual([]);
+  });
+
+  it('the process sandbox names its machine: `process` alone is equal everywhere', () => {
+    const w = world();
+    const here = computeIdentity(w.input({ imageDigest: 'process' }));
+    expect(here.harness.imageDigest).toBe('process');
+    expect(here.harness.processHost).toBe(processHostHash());
+    const there = computeIdentity(w.input({ imageDigest: 'process', processHost: 'e'.repeat(64) }));
+    expect(identityDiff(here, there)).toEqual(['harness']);
+    expect(sameIdentity(here, there)).toBe(false);
+  });
+
+  it('an identity written before a field existed never compares equal to one that has it', () => {
+    const w = world();
+    const now = computeIdentity(w.input());
+    const { modelsConfigHash: _m, ...old } = now;
+    expect(identityDiff(old, now)).toEqual(['modelsConfigHash']);
+    expect(identityDiff(now, old)).toEqual(['modelsConfigHash']);
+    expect(sameIdentity(old, now)).toBe(false);
+  });
 
   it('a file outside SKILL.md/PURPOSE.md is not part of the skill set', () => {
     const w = world();

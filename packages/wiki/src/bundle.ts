@@ -17,9 +17,11 @@ import { type RawRecord, RawRecordSchema } from '@rtrentjones/greenlight-shared'
 import { parse as parseYaml } from 'yaml';
 import { normalizeId, pathToId, resolveId } from './ids';
 import {
-  orderLedgerEvents,
+  type GateSkillSets,
+  acceptedSkillSetState,
   projectLedger,
   projectedLedgerText,
+  readGateSkillSets,
   renderProjectedSkillImpact,
   withFileLock,
 } from './ledger';
@@ -44,7 +46,6 @@ import {
   unattributed,
 } from './sample';
 import {
-  GateInputRecordSchema,
   type LedgerEvent,
   type ProposerOutput,
   ProposerOutputSchema,
@@ -542,66 +543,26 @@ export function skillSetHash(skillsDir: string): string | undefined {
   return createHash('sha256').update(canonicalJson(entries)).digest('hex');
 }
 
-/** The two skill-set hashes a gate input record names (08 §10.4). */
-export interface GateSkillSets {
-  acceptedSkillSetHash: string;
-  candidateSkillSetHash: string;
-}
-
-const gateInputOfEvent = (e: LedgerEvent | undefined): string | undefined =>
-  e?.evidence && (e.evidence.kind === 'bench' || e.evidence.kind === 'template')
-    ? e.evidence.gateInput
-    : undefined;
-
 /**
- * The accepted skill set from the latest ledger state (06 §1.5), newest event first, ignoring
- * control-arm proposals and proposals since withdrawn: a `merged` proposal makes its accepted
- * candidate's skill set the accepted one; any other gated event ran its baseline under the
- * accepted set of its day. Undefined when the ledger names no resolvable gate input. The caller
- * falls back to the installed skill set (`skillSetHash`), never to the newest train record.
+ * The accepted skill set (06 §1.5), defined by merge order alone (06 §6.1,
+ * `acceptedSkillSetState` in ledger.ts): the candidate skill set of the latest valid `merged`
+ * proposal, or the `skillSetHash` a later `withdrawn` of a merged proposal names; control-arm
+ * proposals never count, and gate events never move it. Before any merge it is the baseline of
+ * the newest gated proposal. Undefined when the ledger establishes none (no resolvable gate
+ * input, or a withdrawal that names no resulting set). The caller falls back to the installed
+ * skill set (`skillSetHash`), never to the newest train record.
  */
 export function acceptedSkillSet(
   ledger: readonly LedgerEvent[],
   gateInputOf: (hash: string) => GateSkillSets | undefined,
 ): string | undefined {
-  const ordered = orderLedgerEvents(ledger);
-  const withdrawn = new Set(
-    ordered.filter((e) => e.stage === 'withdrawn' && e.proposalId).map((e) => e.proposalId),
-  );
-  for (const e of [...ordered].reverse()) {
-    if (e.control === true || (e.proposalId && withdrawn.has(e.proposalId))) continue;
-    if (e.stage === 'merged') {
-      const accepted = ordered.find(
-        (x) => x.proposalId === e.proposalId && x.stage === 'candidate-accepted',
-      );
-      const gi = gateInputOfEvent(accepted);
-      const rec = gi === undefined ? undefined : gateInputOf(gi);
-      if (rec) return rec.candidateSkillSetHash;
-    } else if (e.stage.startsWith('candidate-')) {
-      const gi = gateInputOfEvent(e);
-      const rec = gi === undefined ? undefined : gateInputOf(gi);
-      if (rec) return rec.acceptedSkillSetHash;
-    }
-  }
-  return undefined;
+  return acceptedSkillSetState(ledger, gateInputOf).hash;
 }
 
 /** A gate input record from `<wikiRoot>/evidence/eval/<hash>.json` (08 §10.4), validated (its own
  * hash included); undefined when absent or invalid. */
 export function readGateInput(wikiRoot: string, hash: string): GateSkillSets | undefined {
-  if (!/^[0-9a-f]{64}$/.test(hash)) return undefined;
-  const file = join(wikiRoot, 'evidence', 'eval', `${hash}.json`);
-  if (!existsSync(file)) return undefined;
-  try {
-    const r = GateInputRecordSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
-    if (!r.success || r.data.hash !== hash) return undefined;
-    return {
-      acceptedSkillSetHash: r.data.acceptedSkillSetHash,
-      candidateSkillSetHash: r.data.candidateSkillSetHash,
-    };
-  } catch {
-    return undefined;
-  }
+  return readGateSkillSets(wikiRoot, hash);
 }
 
 const rate = (passed: number, total: number): string =>

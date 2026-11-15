@@ -228,16 +228,70 @@ describe('ledger (M0-04)', () => {
     );
   });
 
-  it('a control-arm proposal is never merged', () => {
+  it('a control-arm proposal is never merged or released, whichever event carries the flag', () => {
+    for (const stage of ['merged', 'released'] as const) {
+      bad(
+        LedgerEventSchema,
+        sealEvent({
+          ts: '2026-11-01T00:00:00.000Z',
+          proposalId: 'p',
+          stage,
+          control: true,
+          ...(stage === 'released' ? { release: '2.0.1' } : {}),
+        }),
+        /control/,
+      );
+    }
+    // The real case: the flag sits on the gate's event, and the merge that follows carries none.
+    // Each event passes the schema alone; the HISTORY is what is refused.
+    const e = (stage: string, control?: boolean) => ({ stage, control }) as never;
+    expect(checkProposalHistory([e('candidate-accepted', true), e('merged')])).toEqual([
+      'stage "merged": a control-arm proposal is never merged or released',
+    ]);
+    expect(
+      checkProposalHistory([e('candidate-accepted', true), e('merged'), e('released')]),
+    ).toEqual([
+      'stage "merged": a control-arm proposal is never merged or released',
+      'stage "released": a control-arm proposal is never merged or released',
+    ]);
+    // A control may still be withdrawn or reviewed.
+    expect(checkProposalHistory([e('candidate-accepted', true), e('withdrawn')])).toEqual([]);
+    expect(checkProposalHistory([e('candidate-rejected', true), e('review')])).toEqual([]);
+  });
+
+  it('a candidate-accepted event carries evidence; a rejection need not', () => {
+    const at = { ts: '2026-11-01T00:00:00.000Z', proposalId: 'p', path: 'standard' as const };
     bad(
       LedgerEventSchema,
+      sealEvent({ ...at, stage: 'candidate-accepted' }),
+      /carries the evidence/,
+    );
+    ok(
+      LedgerEventSchema,
       sealEvent({
-        ts: '2026-11-01T00:00:00.000Z',
-        proposalId: 'p',
-        stage: 'merged',
-        control: true,
+        ...at,
+        stage: 'candidate-accepted',
+        evidence: {
+          kind: 'repro',
+          base: 'commit:owner/repo@abcdef1',
+          candidate: 'commit:owner/repo@abcdef2',
+          reproTask: 'mechanism/x',
+        },
       }),
-      /control/,
+    );
+    ok(LedgerEventSchema, sealEvent({ ...at, stage: 'candidate-rejected' }));
+  });
+
+  it('only a withdrawn event names a resulting skill set', () => {
+    const at = { ts: '2026-11-01T00:00:00.000Z', proposalId: 'p' };
+    ok(
+      LedgerEventSchema,
+      sealEvent({ ...at, stage: 'withdrawn', reason: 'reverted', skillSetHash: H('7') }),
+    );
+    bad(
+      LedgerEventSchema,
+      sealEvent({ ...at, stage: 'merged', skillSetHash: H('7') }),
+      /only a withdrawn event/,
     );
   });
 
@@ -540,6 +594,7 @@ describe('bench (M0-03)', () => {
           state: 'active',
           modes: ['production', 'isolation'],
           graders: ['trajectory', 'app'],
+          skills: ['b-skill', 'a-skill', 'b-skill'],
         },
         {
           id: 'cap/a',
@@ -550,15 +605,28 @@ describe('bench (M0-03)', () => {
         },
       ]),
     ).toEqual([
-      { id: 'cap/a', kind: 'capability', state: 'pending', modes: ['isolation'], graders: ['app'] },
+      {
+        id: 'cap/a',
+        kind: 'capability',
+        state: 'pending',
+        modes: ['isolation'],
+        graders: ['app'],
+        skills: [],
+      },
       {
         id: 'loop/x',
         kind: 'loop',
         state: 'active',
         modes: ['isolation', 'production'],
         graders: ['app', 'trajectory'],
+        skills: ['a-skill', 'b-skill'],
       },
     ]);
+    bad(
+      BaselineIdentitySchema,
+      { ...identity, tasks: [{ ...identityTask, skills: ['b-skill', 'a-skill'] }] },
+      /skills are sorted, unique/,
+    );
   });
 
   const outcome: EvaluationRecord['outcomes'][number] = {
@@ -637,17 +705,18 @@ describe('bench (M0-03)', () => {
     const input = sealGateInput({
       kind: 'gate-input',
       proposalId: 'prop-1',
+      algorithm: 2,
       ts: TS,
       outlet: 'skill',
       radius: 'medium',
       path: 'standard',
-      seed: 'gate:prop-1',
+      skill: 'a-skill',
       config: {
         alpha: 0.05,
         runs: 3,
-        resamples: 1000,
         acceptShorterOnTie: false,
         maxBaselineAgeDays: 30,
+        nonRegressionFraction: 0.1,
       },
       models: { frontier: 'gemini-3.8-flash', small: 'gemini-3.6-flash' },
       modes: ['isolation'],
@@ -655,15 +724,21 @@ describe('bench (M0-03)', () => {
       acceptedSkillSetHash: H('5'),
       candidateSkillSetHash: H('6'),
       tasks: [
-        { id: 'loop/x', kind: 'loop', state: 'active', modes: ['isolation', 'production'] },
-        { id: 'replay/y', kind: 'replay', state: 'pending', modes: ['isolation'] },
+        {
+          id: 'loop/x',
+          kind: 'loop',
+          state: 'active',
+          modes: ['isolation', 'production'],
+          skills: ['a-skill'],
+        },
+        { id: 'replay/y', kind: 'replay', state: 'pending', modes: ['isolation'], skills: [] },
       ],
       baselineRecords: [H('a')],
       candidateRecords: [H('b')],
     });
     ok(GateInputRecordSchema, input);
     expect(evalEvidencePath(input.hash)).toBe(`evidence/eval/${input.hash}.json`);
-    bad(GateInputRecordSchema, { ...input, seed: 'other' }, /hash/);
+    bad(GateInputRecordSchema, { ...input, radius: 'low' }, /hash/);
     const reseal = (over: Record<string, unknown>) => {
       const { hash: _h, ...rest } = input;
       return sealGateInput({ ...rest, ...over } as never);
@@ -677,6 +752,37 @@ describe('bench (M0-03)', () => {
     bad(GateInputRecordSchema, reseal({ candidateRecords: [H('b'), H('c')] }), /one baseline/);
     bad(GateInputRecordSchema, reseal({ candidateSkillSetHash: H('5') }), /equals the accepted/);
     bad(GateInputRecordSchema, reseal({ outlet: 'template' }), /template results/);
+    // Algorithm 2 (the exact test): no seed, no resamples, a named skill, tasks with skills.
+    bad(GateInputRecordSchema, reseal({ seed: 'gate:prop-1' }), /no seed/);
+    bad(GateInputRecordSchema, reseal({ skill: undefined }), /names the patched skill/);
+    bad(
+      GateInputRecordSchema,
+      reseal({ config: { ...input.config, nonRegressionFraction: undefined } }),
+      /non-regression fraction/,
+    );
+    bad(
+      GateInputRecordSchema,
+      reseal({ tasks: input.tasks.map(({ skills: _s, ...t }) => t) }),
+      /lists its skills/,
+    );
+    // An algorithm-1 record (no version field) still parses, so it can be read and reported as
+    // made with the older algorithm; it must carry what that algorithm recorded.
+    const v1 = reseal({
+      algorithm: undefined,
+      skill: undefined,
+      seed: 'gate:prop-1',
+      config: {
+        alpha: 0.05,
+        runs: 3,
+        resamples: 1000,
+        acceptShorterOnTie: false,
+        maxBaselineAgeDays: 30,
+      },
+      tasks: input.tasks.map(({ skills: _s, ...t }) => t),
+      skillLines: { before: 10, after: 8 },
+    });
+    ok(GateInputRecordSchema, v1);
+    bad(GateInputRecordSchema, reseal({ algorithm: undefined }), /bootstrap seed/);
   });
 
   it('the models config needs two distinct gate models', () => {

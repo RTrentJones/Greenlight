@@ -13,6 +13,7 @@ import { canonicalJson } from '../schema/common';
 import { type GateResult, type LedgerEvent, LedgerEventSchema, sealEvent } from '../schema/ledger';
 import {
   type BlastRadius,
+  DEFAULT_NON_REGRESSION_FRACTION,
   GATE_MODES,
   type GatePath,
   type PolicyDecision,
@@ -23,7 +24,7 @@ import {
   earlyStop,
   releasePolicy,
 } from './policy';
-import { DEFAULT_RESAMPLES, type GateMode } from './stats';
+import { GATE_ALGORITHM, type GateMode } from './stats';
 
 /**
  * The gate (vision 06 §5.1–§5.8, roadmap M1-08): checks the identity of every record, applies the
@@ -34,12 +35,14 @@ import { DEFAULT_RESAMPLES, type GateMode } from './stats';
  * Pure: no clock, no network — the caller passes `ts`.
  */
 
-/** `bench/gate.json` (07 §3.10). Unknown keys (e.g. the monitor threshold) are ignored here. */
+/** `bench/gate.json` (07 §3.10). Unknown keys (e.g. the monitor threshold, or the `resamples` of
+ * the retired bootstrap) are ignored here. */
 export const GateConfigSchema = z.object({
   alpha: z.number().gt(0).lt(1).default(0.05),
   runs: z.number().int().min(1).default(3),
-  resamples: z.number().int().min(1).default(DEFAULT_RESAMPLES),
   acceptShorterOnTie: z.boolean().default(false),
+  /** 06 §5.4: a model may lose at most max(1, ⌊fraction × objective rollouts⌋) passes. */
+  nonRegressionFraction: z.number().gt(0).lt(1).default(DEFAULT_NON_REGRESSION_FRACTION),
   /** 06 §1.5 / §5.1: a baseline older than this at the gate's ts is re-run, never compared. */
   maxBaselineAgeDays: z.number().int().min(1).default(30),
 });
@@ -60,15 +63,29 @@ export class GateHarnessError extends Error {
   }
 }
 
+/** `recompute` was given a gate input made with another decision algorithm (06 §5.2, §5.8). */
+export class GateAlgorithmError extends GateHarnessError {
+  constructor(
+    readonly gateInput: string,
+    readonly algorithm: number,
+  ) {
+    super(
+      `gate input ${gateInput} was made with ${algorithm < GATE_ALGORITHM ? 'an older' : 'a newer'} decision algorithm (${algorithm}; this build implements ${GATE_ALGORITHM}): its decision stands as recorded and is not re-derived here`,
+      ['algorithm'],
+    );
+    this.name = 'GateAlgorithmError';
+  }
+}
+
 export interface GateContext {
   /** Event timestamp (ISO). Recorded in the GateInputRecord, so recompute reproduces the eventId. */
   ts: string;
   radius: BlastRadius;
   path: GatePath;
   models: { frontier: string; small: string };
-  /** The val tasks with kind, state and modes (pending and quarantined are excluded, 06 §4.1).
-   * Must equal every record's `identity.tasks` (id, kind, state, modes), or the gate throws: a
-   * task's state changes only with a re-baseline. */
+  /** The val tasks with kind, state, modes and skills (pending and quarantined are excluded, 06
+   * §4.1). Must equal every record's `identity.tasks` (id, kind, state, modes, skills), or the
+   * gate throws: a task's state, or the slice it belongs to, changes only with a re-baseline. */
   tasks: readonly PolicyTask[];
   /** The currently accepted skill set's hash (06 §5.1 step 1). Every baseline record must carry
    * it; every candidate record must carry one other skill-set hash. */
@@ -80,13 +97,14 @@ export interface GateContext {
    */
   modes?: readonly GateMode[];
   config?: Partial<GateConfig>;
-  /** Bootstrap seed. Defaults to `gate:<proposalId>`; whatever is used is recorded (06 §5.2). */
-  seed?: string;
   safetyFixTargets?: readonly string[];
   neutralReason?: string;
   neutralPendingForSkill?: boolean;
-  /** Target SKILL.md line counts, for the §5.5 tie-break. */
-  skillLines?: { before: number; after: number };
+  /** The target SKILL.md in the accepted and in the candidate tree, for the §5.5 tie-break. The
+   * gate derives the line counts and the deletions-only claim itself; read (and recorded) only
+   * when `acceptShorterOnTie` is on. */
+  skillText?: { before: string; after: string };
+  /** The patched skill. REQUIRED for the skill outlet: its slice is the efficacy set (06 §5.2). */
   skill?: string;
   pattern?: string[];
   outlet?: 'skill' | 'template';
@@ -103,14 +121,17 @@ export interface GateDecision {
   /** Every reason with its stable code (policy.ts REASON_CODES); see `rejectedForReplayRegression`. */
   reasons: PolicyReason[];
   tieBreak: boolean;
-  seed: string;
+  /** The decision algorithm (`GATE_ALGORITHM`, 06 §5.2). */
+  algorithm: number;
   /** Record hashes per evaluated mode, in mode order. */
   candidateRecords: string[];
   baselineRecords: string[];
-  /** The sealed GateInputRecord; store it at `evidence/eval/<hash>.json`. Null when invalid. */
+  /** The sealed GateInputRecord; store it at `evidence/eval/<hash>.json`. Null unless the
+   * decision is `accept` or `reject`. */
   gateInput: GateInputRecord | null;
-  /** `candidate-accepted` / `candidate-rejected`; null when invalid (the gate re-runs or aborts,
-   * 06 §4.8 — an invalid evaluation never reaches the ledger as a result). */
+  /** `candidate-accepted` / `candidate-rejected`; null for `invalid` (the gate re-runs or aborts,
+   * 06 §4.8), `blocked` (the baseline holds a flaky replay task) and `underpowered` (the efficacy
+   * test cannot reach alpha): none of them is a result, so none reaches the ledger. */
   ledgerEvent: LedgerEvent | null;
 }
 
@@ -244,6 +265,12 @@ function checkRecordSet(
       );
     }
   }
+  if (opts.models.frontier === opts.models.small) {
+    throw new GateHarnessError(
+      `the gate pair must be two different models (06 §5.3); both are ${opts.models.frontier}`,
+      ['models'],
+    );
+  }
   const modes = GATE_MODES.filter((m) => base.has(m) && cand.has(m));
   for (const m of modes) {
     assertComparable(
@@ -291,7 +318,7 @@ function checked(e: LedgerEvent): LedgerEvent {
 }
 
 function summarize(reasons: PolicyReason[]): string {
-  const fails = reasons.filter((r) => r.severity === 'fail');
+  const fails = reasons.filter((r) => r.severity === 'fail' || r.severity === 'blocked');
   return fails
     .map((r) => {
       const where = [r.model, r.mode, r.task].filter(Boolean).join('/');
@@ -314,11 +341,19 @@ function assertTasksMatchIdentity(
   records: readonly EvaluationRecord[],
 ): void {
   for (const r of records) {
+    const old = r.identity.tasks.find((t) => t.skills === undefined);
+    if (old) {
+      throw new GateHarnessError(
+        `record ${r.hash} predates the slice rule: its identity does not list the skills of ${old.id} (06 §5.2); run the evaluation again`,
+        ['tasks'],
+      );
+    }
     const bound = r.identity.tasks.map((t) => ({
       id: t.id,
       kind: t.kind,
       state: t.state,
       modes: [...t.modes],
+      skills: [...(t.skills ?? [])],
     }));
     if (canonicalJson(bound) === canonicalJson(tasks)) continue;
     const key = (t: (typeof tasks)[number]) => canonicalJson(t);
@@ -328,13 +363,14 @@ function assertTasksMatchIdentity(
       .filter((id) => ours.get(id) !== theirs.get(id))
       .sort();
     throw new GateHarnessError(
-      `the gate's task list differs from record ${r.hash}'s identity in ${ids.join(', ')}; a task's state, kind or modes change only with a re-baseline (06 §4.1)`,
+      `the gate's task list differs from record ${r.hash}'s identity in ${ids.join(', ')}; a task's state, kind, modes or skills change only with a re-baseline (06 §4.1)`,
       ['tasks', ...ids.map((id) => `tasks.${id}`)],
     );
   }
 }
 
-/** The task list as the GateInputRecord holds it: sorted by id, modes resolved (default both). */
+/** The task list as the GateInputRecord holds it: sorted by id, modes resolved (default both),
+ * skills sorted and unique. */
 function recordedTasks(tasks: readonly PolicyTask[]): GateInputRecord['tasks'] {
   return [...tasks]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -343,6 +379,7 @@ function recordedTasks(tasks: readonly PolicyTask[]): GateInputRecord['tasks'] {
       kind: t.kind,
       state: t.state,
       modes: GATE_MODES.filter((m) => (t.modes ?? GATE_MODES).includes(m)),
+      skills: [...new Set(t.skills ?? [])].sort(),
     }));
 }
 
@@ -375,8 +412,17 @@ export function decide(
     distinctSkillSets: true,
   });
   checkBaselineAge(baselines, ctx.ts, config.maxBaselineAgeDays);
-  const seed = ctx.seed ?? `gate:${proposalId}`;
   const outlet = ctx.outlet ?? 'skill';
+  if (outlet === 'skill' && !ctx.skill) {
+    throw new GateHarnessError(
+      'a skill gate names the patched skill: efficacy is tested on its slice (06 §5.2)',
+      ['skill'],
+    );
+  }
+  const skillText =
+    config.acceptShorterOnTie && ctx.skillText
+      ? { before: ctx.skillText.before, after: ctx.skillText.after }
+      : undefined;
   const tasks = recordedTasks(ctx.tasks);
   assertTasksMatchIdentity(tasks, [...baselines, ...candidates]);
   const safetyFixTargets =
@@ -396,32 +442,26 @@ export function decide(
     candidate: [...candidates.flatMap((r) => r.outcomes)],
     runs: config.runs,
     alpha: config.alpha,
-    resamples: config.resamples,
-    seed,
+    skill: ctx.skill,
+    nonRegressionFraction: config.nonRegressionFraction,
     safetyFixTargets,
     neutralReason: ctx.neutralReason,
     neutralPendingForSkill: ctx.neutralPendingForSkill,
-    tieBreak: ctx.skillLines
-      ? {
-          enabled: config.acceptShorterOnTie,
-          linesBefore: ctx.skillLines.before,
-          linesAfter: ctx.skillLines.after,
-        }
-      : undefined,
+    tieBreak: skillText ? { enabled: true, ...skillText } : undefined,
   });
   const candidateRecords = set.modes.map((m) => (set.candidate.get(m) as EvaluationRecord).hash);
   const baselineRecords = set.modes.map((m) => (set.baseline.get(m) as EvaluationRecord).hash);
   let gateInput: GateInputRecord | null = null;
   let ledgerEvent: LedgerEvent | null = null;
-  if (policy.decision !== 'invalid') {
+  if (policy.decision === 'accept' || policy.decision === 'reject') {
     gateInput = sealGateInput({
       kind: 'gate-input',
       proposalId,
+      algorithm: GATE_ALGORITHM,
       ts: ctx.ts,
       outlet,
       radius: ctx.radius,
       path: ctx.path,
-      seed,
       config,
       models: { frontier: ctx.models.frontier, small: ctx.models.small },
       modes: set.modes,
@@ -434,7 +474,7 @@ export function decide(
       safetyFixTargets,
       neutralReason: ctx.neutralReason ? ctx.neutralReason : undefined,
       neutralPendingForSkill: ctx.neutralPendingForSkill,
-      skillLines: ctx.skillLines ? { ...ctx.skillLines } : undefined,
+      skillText,
       skill: ctx.skill,
       pattern: ctx.pattern ? [...ctx.pattern] : undefined,
       control: ctx.control,
@@ -454,6 +494,14 @@ export function decide(
       const s = summarize(policy.reasons);
       reason = reason ? `${reason}; rejected: ${s}` : `rejected: ${s}`;
     } else if (policy.tieBreak) reason = 'accepted on tie: shorter skill (06 §5.5)';
+    // Vacuous replay safety is part of the row (06 §5.4): "no regression" then proves nothing.
+    const vacuous = policy.reasons
+      .filter((r) => r.code === 'safety-vacuous')
+      .map((r) => `${r.model}/${r.mode}`);
+    if (vacuous.length > 0) {
+      const note = `replay safety vacuous (no baseline-passing replay task) on ${vacuous.join(', ')}`;
+      reason = reason ? `${reason}; ${note}` : note;
+    }
     const evaluationRecords = sortedUnique([...baselineRecords, ...candidateRecords]);
     const evidence: LedgerEvent['evidence'] =
       outlet === 'template' && ctx.template
@@ -489,7 +537,7 @@ export function decide(
     results: policy.results,
     reasons: policy.reasons,
     tieBreak: policy.tieBreak,
-    seed,
+    algorithm: GATE_ALGORITHM,
     candidateRecords,
     baselineRecords,
     gateInput,
@@ -508,11 +556,10 @@ export function contextFromGateInput(g: GateInputRecord): GateContext {
     acceptedSkillSetHash: g.acceptedSkillSetHash,
     modes: g.modesDeclared ? g.modes : undefined,
     config: g.config,
-    seed: g.seed,
     safetyFixTargets: g.safetyFixTargets,
     neutralReason: g.neutralReason,
     neutralPendingForSkill: g.neutralPendingForSkill,
-    skillLines: g.skillLines,
+    skillText: g.skillText,
     skill: g.skill,
     pattern: g.pattern,
     outlet: g.outlet,
@@ -527,6 +574,11 @@ export function contextFromGateInput(g: GateInputRecord): GateContext {
  * hold any number of other records (other proposals, other accepted skill sets): only the hashes
  * the input lists are read. Throws when the input record is invalid or tampered, when a listed
  * record is missing or tampered, or when the rebuilt input does not hash to the given one.
+ *
+ * A record is re-derived only with the algorithm it was made with (`algorithm`, 06 §5.2). This
+ * build implements `GATE_ALGORITHM` alone: a record of another version is refused with
+ * `GateAlgorithmError`, which names the version, and is never silently re-decided under different
+ * statistics. Recompute it with a build that implements its algorithm.
  */
 export function recompute(
   gateInput: GateInputRecord,
@@ -540,6 +592,10 @@ export function recompute(
     );
   }
   const g = parsed.data;
+  const made = g.algorithm ?? 1;
+  if (made !== GATE_ALGORITHM) {
+    throw new GateAlgorithmError(g.hash, made);
+  }
   const find = (hash: string): EvaluationRecord => {
     const r = records.find((x) => x.hash === hash);
     if (!r) throw new GateHarnessError(`evaluation record ${hash} is not available`, ['records']);
@@ -563,6 +619,31 @@ export function recompute(
     );
   }
   return d;
+}
+
+/** What a control arm whose expected rejection is a replay regression shows (06 §10.3). */
+export type ControlOutcome = 'met' | 'not-met' | 'inconclusive';
+
+/**
+ * Whether the gate refused a control for the replay regression it encodes (06 §10.3):
+ * - `met`: rejected, with `replay-regression` on `taskId`;
+ * - `inconclusive`: the gate could not have refused it for that reason, so the control says
+ *   nothing about the gate — the evaluation was `invalid` or `blocked` (no safety verdict), or
+ *   `taskId` is baseline-passing in no model × mode cell (it fails in the baseline, so it cannot
+ *   regress; this covers a baseline with no baseline-passing replay task at all);
+ * - `not-met`: the task could have regressed, and the gate did not reject for it.
+ */
+export function controlOutcome(
+  result: Pick<GateDecision, 'decision' | 'reasons' | 'results'>,
+  taskId: string,
+): ControlOutcome {
+  if (rejectedForReplayRegression(result, taskId)) return 'met';
+  if (result.decision === 'invalid' || result.decision === 'blocked') return 'inconclusive';
+  const failing = result.reasons.filter(
+    (r) => r.code === 'replay-baseline-failing' && r.task === taskId,
+  ).length;
+  if (result.results.length > 0 && failing >= result.results.length) return 'inconclusive';
+  return 'not-met';
 }
 
 /** True when a recomputed decision matches the recorded ledger event in stage, path and evidence,

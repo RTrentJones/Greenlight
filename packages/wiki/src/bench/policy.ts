@@ -2,10 +2,10 @@ import type { TaskSpec } from '../schema/bench';
 import type { GateResult } from '../schema/ledger';
 import {
   type BenchOutcome,
-  DEFAULT_RESAMPLES,
   type GateMode,
-  pairedBootstrap,
+  type Stratum,
   perTaskMeans,
+  stratifiedExactTest,
 } from './stats';
 
 /**
@@ -14,23 +14,37 @@ import {
  * the two gate models (§5.3) in each evaluated mode (§4.7); the output is one GateResult per
  * model × mode (08 §8) plus an overall decision with machine-readable reasons.
  *
- * All threshold comparisons are done in integer pass counts, never floats: with R runs per task,
- * "one task-mean" is R passes summed over the objective tasks (a mean move of 1/N, N tasks), and a
+ * All threshold comparisons are done in integer pass counts, never floats: the non-regression
+ * bound is a number of passes (`lossBound`), a tie is a number of passes (`tieTolerance`), and a
  * replay task "passes k of R" is a count. The boundary vectors (13 §2.8) sit exactly on these
  * integer edges, so there is no rounding to argue about.
+ *
+ * Efficacy (§5.2) is an exact stratified permutation test over the ROLLOUTS of the patched skill's
+ * slice (the objective tasks whose `skills` name it). When the smallest p any candidate could
+ * reach against the baseline is not below alpha, the outcome is `underpowered`: no decision.
  *
  * Spec readings (the stricter one wherever the text is ambiguous) are marked "Reading:" below.
  */
 
 export type BlastRadius = 'high' | 'medium' | 'low';
 export type GatePath = 'standard' | 'safety-fix' | 'neutral';
-export type PolicyDecision = 'accept' | 'reject' | 'invalid';
+/**
+ * - `accept` / `reject`: a decision, written to the ledger.
+ * - `invalid`: the evaluation cannot be gated (re-run it).
+ * - `blocked`: the BASELINE cannot be gated against (a flaky replay task at high radius). It says
+ *   nothing about the candidate; the owner fixes or quarantines the task and re-baselines.
+ * - `underpowered`: every safety rule held, but the efficacy test cannot reach alpha at this
+ *   shape, so neither an accept nor a rejection would mean anything. No ledger event.
+ */
+export type PolicyDecision = 'accept' | 'reject' | 'invalid' | 'blocked' | 'underpowered';
 
 export const GATE_MODES: readonly GateMode[] = ['isolation', 'production'];
 
-/** A task as the policy sees it. `modes` defaults to both (08 §10.1). */
+/** A task as the policy sees it. `modes` defaults to both (08 §10.1). `skills` are the skills the
+ * task exercises (TaskSpec.skills): they decide which objective tasks are a skill's slice. */
 export type PolicyTask = Pick<TaskSpec, 'id' | 'kind' | 'state'> & {
   modes?: readonly GateMode[];
+  skills?: readonly string[];
 };
 
 export const REASON_CODES = [
@@ -47,9 +61,13 @@ export const REASON_CODES = [
   'template-evidence-missing',
   'template-no-lanes',
   'template-no-mutants',
+  'models-not-distinct',
+  // blocked: no decision can be made; nothing is said about the candidate
+  'flaky-baseline',
+  'underpowered',
+  'no-slice',
   // fail: a policy rule did not hold
   'replay-regression',
-  'flaky-baseline',
   'no-strict-improvement',
   'not-significant',
   'capability-regression',
@@ -67,12 +85,15 @@ export const REASON_CODES = [
   'no-objective-tasks',
   'tie-break-shorter',
   'modes-partial',
+  'efficacy-slice',
+  'safety-vacuous',
+  'replay-baseline-failing',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
 export interface PolicyReason {
   code: ReasonCode;
-  severity: 'invalid' | 'fail' | 'info';
+  severity: 'invalid' | 'blocked' | 'fail' | 'info';
   model?: string;
   mode?: GateMode;
   task?: string;
@@ -82,10 +103,8 @@ export interface PolicyReason {
 export interface PValueArgs {
   model: string;
   mode: GateMode;
-  baseline: readonly number[];
-  candidate: readonly number[];
-  seed: string;
-  resamples: number;
+  /** The slice's tasks, in id order: passes per arm out of `runs`. */
+  strata: readonly Stratum[];
 }
 
 /** Template outlet evidence (06 §5.6): generated-app tests per lane using the template, and per
@@ -122,18 +141,24 @@ export interface PolicyInput {
   runs?: number;
   /** Significance level (06 §5.1: 0.05); the test is p < alpha. */
   alpha?: number;
-  resamples?: number;
-  /** Base seed for the bootstrap; each model × mode derives `${seed}|${model}|${mode}`. */
-  seed: string;
+  /** The patched skill (06 §5.6). Efficacy is tested on its slice: the objective tasks whose
+   * `skills` name it. Absent (a template candidate, which has no efficacy rule): every objective
+   * task. A skill no objective task names has an empty slice, so the outcome is `underpowered`. */
+  skill?: string;
+  /** The non-regression bound as a fraction of the objective rollouts per arm (06 §5.4): a model
+   * may lose at most max(1, ⌊fraction × tasks × runs⌋) passes. Default 0.1. */
+  nonRegressionFraction?: number;
   /** safety-fix path: the replay tasks that motivated the proposal (06 §5.4). */
   safetyFixTargets?: readonly string[];
   /** neutral path: the human's recorded approval reason (06 §5.4). */
   neutralReason?: string;
   /** neutral path: another neutral change is already pending for this skill (06 §5.4). */
   neutralPendingForSkill?: boolean;
-  /** Tie-break (06 §5.5): enabled from bench/gate.json, with the target SKILL.md line counts. */
-  tieBreak?: { enabled: boolean; linesBefore: number; linesAfter: number };
-  /** Override the p-value computation (boundary vectors pin p exactly). Defaults to the bootstrap. */
+  /** Tie-break (06 §5.5): enabled from bench/gate.json, with the target SKILL.md text before and
+   * after. The policy derives the line counts and the deletions-only claim from the texts. */
+  tieBreak?: { enabled: boolean; before: string; after: string };
+  /** Override the p-value computation (boundary vectors pin p exactly). Defaults to the exact
+   * test. Never set by the gate. */
   pValue?: (args: PValueArgs) => number | null;
 }
 
@@ -162,6 +187,42 @@ const OBJECTIVE_KINDS: ReadonlySet<TaskSpec['kind']> = new Set([
 
 const DEFAULT_RUNS = 3;
 const DEFAULT_ALPHA = 0.05;
+export const DEFAULT_NON_REGRESSION_FRACTION = 0.1;
+/** A tie (06 §5.5): pass counts differ by at most ⌊rollouts / 20⌋, so exactly equal below 20. */
+const TIE_TOLERANCE_DIVISOR = 20;
+
+/**
+ * The non-regression bound in passes (06 §5.4): over `rollouts` objective rollouts per arm (tasks ×
+ * runs), a model may lose at most max(1, ⌊fraction × rollouts⌋) passes. One pass is always
+ * tolerated (a single rollout is noise at any size); beyond that the bound scales with the bench.
+ */
+export function lossBound(rollouts: number, fraction = DEFAULT_NON_REGRESSION_FRACTION): number {
+  return Math.max(1, Math.floor(rollouts * fraction + 1e-9));
+}
+
+/** The largest pass-count difference that still counts as a tie (06 §5.5). */
+export function tieTolerance(rollouts: number): number {
+  return Math.floor(rollouts / TIE_TOLERANCE_DIVISOR);
+}
+
+/** SKILL.md line counts and whether `after` only deletes lines of `before` (06 §5.5): every line
+ * of `after` appears in `before`, in order. */
+export function shorterByDeletion(
+  before: string,
+  after: string,
+): { linesBefore: number; linesAfter: number; deletionsOnly: boolean; shorter: boolean } {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let i = 0;
+  for (const line of a) if (i < b.length && b[i] === line) i++;
+  const deletionsOnly = i === b.length && b.length < a.length;
+  return {
+    linesBefore: a.length,
+    linesAfter: b.length,
+    deletionsOnly,
+    shorter: a.length > 0 && b.length * 10 <= a.length * 9,
+  };
+}
 
 /** ≥ 2 of 3, generalised to R runs as ⌈2R/3⌉ (06 §5.4 "Definitions"). */
 export function twoThirds(runs: number): number {
@@ -187,28 +248,39 @@ export interface CellStats {
   mode: GateMode;
   runs: number;
   replay: { task: string; basePasses: number; candPasses: number }[];
+  /** Every gated objective task: the non-regression set. */
   objective: { task: string; basePasses: number; candPasses: number }[];
-  /** Σ candidate passes − Σ baseline passes over objective tasks; one task-mean = `runs`. */
+  /** The patched skill's slice of `objective`: the efficacy set (06 §5.2, §5.6). */
+  slice: { task: string; basePasses: number; candPasses: number }[];
+  /** Σ candidate passes − Σ baseline passes over every objective task. */
   diffUnits: number;
+  /** The same over the slice. */
+  sliceDiff: number;
+  /** Mean capability over the slice, before and after. */
   before: number;
   after: number;
   pValue: number | null;
+  /** The smallest p any candidate could reach against this baseline; null when p is not computed
+   * or the slice is empty. */
+  minP: number | null;
 }
 
 interface Gated {
   replay: PolicyTask[];
   objective: PolicyTask[];
+  /** Ids of the objective tasks in the patched skill's slice. */
+  slice: ReadonlySet<string>;
   reasons: PolicyReason[];
 }
 
 /** Splits the task list into the gated replay and objective sets. Pending and quarantined tasks are
  * excluded from both safety and efficacy (06 §4.1). */
-function gatedTasks(tasks: readonly PolicyTask[]): Gated {
+function gatedTasks(tasks: readonly PolicyTask[], skill?: string): Gated {
   const replay: PolicyTask[] = [];
   const objective: PolicyTask[] = [];
   const reasons: PolicyReason[] = [];
-  // Sorted by id so the bootstrap's resampling (by position) and every list derived from the tasks
-  // do not depend on the order the caller passed them in (06 §5.8 recompute).
+  // Sorted by id so every list derived from the tasks does not depend on the order the caller
+  // passed them in (06 §5.8 recompute).
   const sorted = [...tasks].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const t of sorted) {
     if (t.state !== 'active') {
@@ -217,7 +289,10 @@ function gatedTasks(tasks: readonly PolicyTask[]): Gated {
     else if (OBJECTIVE_KINDS.has(t.kind)) objective.push(t);
     else reasons.push({ code: 'excluded-task', severity: 'info', task: t.id, detail: t.kind });
   }
-  return { replay, objective, reasons };
+  const slice = new Set(
+    objective.filter((t) => skill === undefined || t.skills?.includes(skill)).map((t) => t.id),
+  );
+  return { replay, objective, slice, reasons };
 }
 
 /** Every mode some gated (active replay or objective) task declares, in mode order. */
@@ -384,9 +459,8 @@ function cellStats(
   model: string,
   mode: GateMode,
   gated: Gated,
-  input: Pick<PolicyInput, 'baseline' | 'candidate' | 'seed' | 'pValue'> & {
+  input: Pick<PolicyInput, 'baseline' | 'candidate' | 'pValue'> & {
     runs: number;
-    resamples: number;
     computeP: boolean;
   },
 ): CellStats {
@@ -402,25 +476,20 @@ function cellStats(
       }));
   const replay = pick(gated.replay);
   const objective = pick(gated.objective);
+  const slice = objective.filter((o) => gated.slice.has(o.task));
   const r = input.runs;
-  const baseMeans = objective.map((o) => o.basePasses / r);
-  const candMeans = objective.map((o) => o.candPasses / r);
-  const n = objective.length;
-  const sumBase = objective.reduce((s, o) => s + o.basePasses, 0);
-  const sumCand = objective.reduce((s, o) => s + o.candPasses, 0);
-  const seed = `${input.seed}|${model}|${mode}`;
+  const n = slice.length;
+  const sum = (xs: typeof objective, k: 'basePasses' | 'candPasses') =>
+    xs.reduce((s, o) => s + o[k], 0);
+  const sliceBase = sum(slice, 'basePasses');
+  const sliceCand = sum(slice, 'candPasses');
   let pValue: number | null = null;
+  let minP: number | null = null;
   if (input.computeP && n > 0) {
-    pValue = input.pValue
-      ? input.pValue({
-          model,
-          mode,
-          baseline: baseMeans,
-          candidate: candMeans,
-          seed,
-          resamples: input.resamples,
-        })
-      : pairedBootstrap(baseMeans, candMeans, { seed, resamples: input.resamples }).pValue;
+    const strata = slice.map((o) => ({ baseline: o.basePasses, candidate: o.candPasses, runs: r }));
+    const exact = stratifiedExactTest(strata);
+    minP = exact.minP;
+    pValue = input.pValue ? input.pValue({ model, mode, strata }) : exact.pValue;
   }
   return {
     model,
@@ -428,21 +497,38 @@ function cellStats(
     runs: r,
     replay,
     objective,
-    diffUnits: sumCand - sumBase,
-    before: n === 0 ? 0 : sumBase / (n * r),
-    after: n === 0 ? 0 : sumCand / (n * r),
+    slice,
+    diffUnits: sum(objective, 'candPasses') - sum(objective, 'basePasses'),
+    sliceDiff: sliceCand - sliceBase,
+    before: n === 0 ? 0 : sliceBase / (n * r),
+    after: n === 0 ? 0 : sliceCand / (n * r),
     pValue,
+    minP,
   };
 }
 
-/** Replay safety for one cell (06 §5.4 "safety" column, §5.1 step 3). Applies to every model and
- * both modes at every radius. Returns fail reasons and the regression list for GateResult. */
+/**
+ * Replay safety for one cell (06 §5.4 "safety" column, §5.1 step 3). Applies to every model and
+ * both modes at every radius. Returns the fail reasons (regressions), the `blocked` reasons (a
+ * flaky baseline task at high radius: a property of the baseline, never of the candidate), the
+ * info reasons (tasks that cannot regress because they fail in the baseline; a cell where none can
+ * regress, whose safety is vacuous) and the regression list for GateResult.
+ */
 function replaySafety(
   c: CellStats,
   radius: BlastRadius,
   exempt: ReadonlySet<string>,
-): { reasons: PolicyReason[]; regressions: string[]; baselinePassing: number; passing: number } {
+): {
+  reasons: PolicyReason[];
+  blocked: PolicyReason[];
+  info: PolicyReason[];
+  regressions: string[];
+  baselinePassing: number;
+  passing: number;
+} {
   const reasons: PolicyReason[] = [];
+  const blocked: PolicyReason[] = [];
+  const info: PolicyReason[] = [];
   const regressions: string[] = [];
   const need = replayThreshold(radius, c.runs);
   let baselinePassing = 0;
@@ -452,17 +538,25 @@ function replaySafety(
     if (isBaselinePassing) baselinePassing++;
     if (t.candPasses >= need) passing++;
     const at = { model: c.model, mode: c.mode, task: t.task };
+    if (!isBaselinePassing) {
+      info.push({
+        code: 'replay-baseline-failing',
+        severity: 'info',
+        ...at,
+        detail: `baseline ${t.basePasses}/${c.runs}: not baseline-passing, so it cannot regress`,
+      });
+    }
     // Reading (06 §5.4, high radius): "no flaky replay task may exist in the baseline" covers every
     // gated replay task EXCEPT a safety-fix target. The safety-fix path exists for replay tasks
     // that fail in the baseline, and a target at 1/3 is exactly such a task; holding it to the
     // flaky rule would make it unfixable. The target is held to 3 of 3 on the candidate instead.
     if (exempt.has(t.task)) continue;
     if (radius === 'high' && t.basePasses > 0 && t.basePasses < c.runs) {
-      reasons.push({
+      blocked.push({
         code: 'flaky-baseline',
-        severity: 'fail',
+        severity: 'blocked',
         ...at,
-        detail: `baseline ${t.basePasses}/${c.runs}`,
+        detail: `baseline ${t.basePasses}/${c.runs}: fix or quarantine ${t.task}, then re-baseline; this says nothing about the candidate`,
       });
     }
     if (isBaselinePassing && t.candPasses < need) {
@@ -475,54 +569,115 @@ function replaySafety(
       });
     }
   }
-  return { reasons, regressions, baselinePassing, passing };
+  if (baselinePassing === 0) {
+    info.push({
+      code: 'safety-vacuous',
+      severity: 'info',
+      model: c.model,
+      mode: c.mode,
+      detail: `0 of ${c.replay.length} replay task(s) baseline-passing: the replay constraint cannot fail here`,
+    });
+  }
+  return { reasons, blocked, info, regressions, baselinePassing, passing };
 }
 
-/** Capability falls by no more than one task-mean: Δ passes ≥ −R. Exactly one task-mean passes. */
-function noWorseThanOneTaskMean(c: CellStats): boolean {
-  return c.diffUnits >= -c.runs;
+/** Non-regression (06 §5.4): over every objective task, the cell loses at most `lossBound` passes. */
+function noWorse(c: CellStats, fraction: number): boolean {
+  return c.diffUnits >= -lossBound(c.objective.length * c.runs, fraction);
 }
+
+const lossDetail = (c: CellStats, fraction: number): string =>
+  `Δ ${c.diffUnits} passes over ${c.objective.length} tasks × ${c.runs} runs; at most ${lossBound(c.objective.length * c.runs, fraction)} may be lost`;
 
 function capabilityLabel(mode: GateMode): ReasonCode {
   return mode === 'isolation' ? 'capability-regression' : 'production-regression';
 }
 
-/** Standard-path capability rules for one cell (06 §5.4 efficacy and production columns). */
+/** True for the cells whose efficacy is the strict test (06 §5.4): isolation mode, on both models
+ * at high radius and on `frontier` otherwise. */
+function strictCell(c: CellStats, role: 'frontier' | 'small', radius: BlastRadius): boolean {
+  return c.mode === 'isolation' && (radius === 'high' || role === 'frontier');
+}
+
+/** Why a strict cell cannot be tested at all (06 §5.2), or null. */
+function powerProblem(c: CellStats, alpha: number, skill: string | undefined): PolicyReason | null {
+  const at = { model: c.model, mode: c.mode };
+  if (c.slice.length === 0) {
+    return {
+      code: 'no-slice',
+      severity: 'blocked',
+      ...at,
+      detail:
+        skill === undefined
+          ? 'no objective task is gated'
+          : `no gated objective task exercises ${skill}: its slice is empty`,
+    };
+  }
+  if (c.minP !== null && !(c.minP < alpha)) {
+    return {
+      code: 'underpowered',
+      severity: 'blocked',
+      ...at,
+      detail: `attainable minimum p ${c.minP} ≥ ${alpha}: ${c.slice.length} slice task(s) × ${c.runs} runs, baseline ${c.slice.map((o) => `${o.basePasses}/${c.runs}`).join(', ')}; no candidate outcome could be significant`,
+    };
+  }
+  return null;
+}
+
+/** Standard-path capability rules for one cell (06 §5.4 efficacy and production columns). An
+ * underpowered strict cell gets no efficacy verdict here (`powerProblem` reports it). */
 function standardCapability(
   c: CellStats,
   role: 'frontier' | 'small',
   radius: BlastRadius,
   alpha: number,
+  fraction: number,
+  powered: boolean,
 ): PolicyReason[] {
   const at = { model: c.model, mode: c.mode };
-  const detail = `Δ ${c.diffUnits} passes over ${c.objective.length} tasks × ${c.runs} runs`;
+  const out: PolicyReason[] = [];
   if (c.mode === 'isolation') {
-    const strict = radius === 'high' || role === 'frontier';
-    if (strict) {
-      const out: PolicyReason[] = [];
-      // §5.1 step 4: "strictly greater", then p < alpha.
-      if (c.diffUnits <= 0)
-        out.push({ code: 'no-strict-improvement', severity: 'fail', ...at, detail });
-      if (c.pValue === null || !(c.pValue < alpha)) {
+    if (strictCell(c, role, radius)) {
+      if (powered) {
+        const detail = `Δ ${c.sliceDiff} passes over ${c.slice.length} slice task(s) × ${c.runs} runs`;
+        // §5.1 step 4: "strictly greater", then p < alpha.
+        if (c.sliceDiff <= 0)
+          out.push({ code: 'no-strict-improvement', severity: 'fail', ...at, detail });
+        if (c.pValue === null || !(c.pValue < alpha)) {
+          out.push({
+            code: 'not-significant',
+            severity: 'fail',
+            ...at,
+            detail: `p ${c.pValue === null ? 'not computed' : c.pValue} ≥ ${alpha}`,
+          });
+        }
+      }
+      // The slice may improve while the rest of the bench falls: the whole objective set is
+      // held to the non-regression bound as well.
+      if (!noWorse(c, fraction)) {
         out.push({
-          code: 'not-significant',
+          code: 'capability-regression',
           severity: 'fail',
           ...at,
-          detail: `p ${c.pValue === null ? 'not computed' : c.pValue} ≥ ${alpha}`,
+          detail: lossDetail(c, fraction),
         });
       }
       return out;
     }
-    // medium: small no worse than one task-mean; low: no efficacy rule on small.
-    if (radius === 'medium' && !noWorseThanOneTaskMean(c)) {
-      return [{ code: 'capability-regression', severity: 'fail', ...at, detail }];
+    // medium: small no worse than the bound; low: no efficacy rule on small.
+    if (radius === 'medium' && !noWorse(c, fraction)) {
+      return [
+        { code: 'capability-regression', severity: 'fail', ...at, detail: lossDetail(c, fraction) },
+      ];
     }
     return [];
   }
   // production: both models at high and medium, frontier only at low.
   const checked = radius !== 'low' || role === 'frontier';
-  if (checked && !noWorseThanOneTaskMean(c)) {
-    return [{ code: 'production-regression', severity: 'fail', ...at, detail }];
+  if (checked && !noWorse(c, fraction)) {
+    return [
+      { code: 'production-regression', severity: 'fail', ...at, detail: lossDetail(c, fraction) },
+    ];
   }
   return [];
 }
@@ -533,14 +688,15 @@ function standardCapability(
 export function applyPolicy(input: PolicyInput): PolicyOutput {
   const runs = input.runs ?? DEFAULT_RUNS;
   const alpha = input.alpha ?? DEFAULT_ALPHA;
-  const resamples = input.resamples ?? DEFAULT_RESAMPLES;
+  const fraction = input.nonRegressionFraction ?? DEFAULT_NON_REGRESSION_FRACTION;
   const modes = sortModes(input.modes);
   const roles = [
     ['frontier', input.models.frontier],
     ['small', input.models.small],
   ] as const;
   const modelIds = roles.map(([, id]) => id);
-  const gated = gatedTasks(input.tasks);
+  const outlet = input.outlet ?? 'skill';
+  const gated = gatedTasks(input.tasks, outlet === 'skill' ? input.skill : undefined);
   const reasons: PolicyReason[] = [...gated.reasons];
 
   const invalid = validity({
@@ -552,7 +708,14 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
     candidate: input.candidate,
     runs,
   });
-  const outlet = input.outlet ?? 'skill';
+  if (input.models.frontier === input.models.small) {
+    invalid.push({
+      code: 'models-not-distinct',
+      severity: 'invalid',
+      model: input.models.frontier,
+      detail: 'the gate pair must be two different models (06 §5.3)',
+    });
+  }
   const modeProblems = modeReasons(modes, input.declaredModes, gated);
   invalid.push(...modeProblems.filter((r) => r.severity === 'invalid'));
   reasons.push(...modeProblems.filter((r) => r.severity === 'info'));
@@ -594,6 +757,14 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
   }
   if (gated.objective.length === 0) {
     reasons.push({ code: 'no-objective-tasks', severity: 'info' });
+  }
+  const standardSkill = input.path === 'standard' && outlet === 'skill';
+  if (standardSkill && input.skill !== undefined) {
+    reasons.push({
+      code: 'efficacy-slice',
+      severity: 'info',
+      detail: `${input.skill}: ${[...gated.slice].join(', ') || 'no objective task'}`,
+    });
   }
 
   const targets = new Set(input.path === 'safety-fix' ? (input.safetyFixTargets ?? []) : []);
@@ -640,6 +811,8 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
     safety: ReturnType<typeof replaySafety>;
     capability: PolicyReason[];
     target: PolicyReason[];
+    /** Set when this strict cell's efficacy test cannot reach alpha (06 §5.2). */
+    power: PolicyReason | null;
   };
   const cells: Cell[] = [];
   const targetFailsSomewhere = new Set<string>();
@@ -648,34 +821,35 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
       const stats = cellStats(model, mode, gated, {
         baseline: input.baseline,
         candidate: input.candidate,
-        seed: input.seed,
         pValue: input.pValue,
         runs,
-        resamples,
         // Reading (08 §8 "null when not computed"): p is computed for isolation mode, where the
         // efficacy objective lives (§4.7); production mode is a non-regression check only.
         computeP: mode === 'isolation',
       });
       const safety = replaySafety(stats, input.radius, targets);
+      const power =
+        standardSkill && strictCell(stats, role, input.radius)
+          ? powerProblem(stats, alpha, input.skill)
+          : null;
       // Reading (06 §5.6 template): "capability rollouts on cells using the template do not
-      // regress in either mode" is the one-task-mean non-regression of §5.4, on every model.
-      const capability =
-        input.path === 'standard' && outlet === 'skill'
-          ? standardCapability(stats, role, input.radius, alpha)
-          : // Reading (06 §5.4, alternative paths): "capability does not fall by more than one
-            // task-mean" / "non-regression must hold" applies to every model in both modes, which
-            // is stricter than the standard path's per-radius production column.
-            noWorseThanOneTaskMean(stats)
-            ? []
-            : [
-                {
-                  code: capabilityLabel(mode),
-                  severity: 'fail' as const,
-                  model,
-                  mode,
-                  detail: `Δ ${stats.diffUnits} passes over ${stats.objective.length} tasks × ${runs} runs`,
-                },
-              ];
+      // regress in either mode" is the non-regression bound of §5.4, on every model.
+      const capability = standardSkill
+        ? standardCapability(stats, role, input.radius, alpha, fraction, power === null)
+        : // Reading (06 §5.4, alternative paths): "capability does not fall by more than the
+          // bound" / "non-regression must hold" applies to every model in both modes, which is
+          // stricter than the standard path's per-radius production column.
+          noWorse(stats, fraction)
+          ? []
+          : [
+              {
+                code: capabilityLabel(mode),
+                severity: 'fail' as const,
+                model,
+                mode,
+                detail: lossDetail(stats, fraction),
+              },
+            ];
       const target: PolicyReason[] = [];
       for (const t of stats.replay) {
         if (!targets.has(t.task)) continue;
@@ -694,7 +868,7 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
           });
         }
       }
-      cells.push({ stats, role, safety, capability, target });
+      cells.push({ stats, role, safety, capability, target, power });
     }
   }
   if (input.path === 'safety-fix') {
@@ -711,31 +885,32 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
   }
 
   const cellPasses = (c: Cell) =>
-    c.safety.reasons.length === 0 && c.capability.length === 0 && c.target.length === 0;
+    c.safety.reasons.length === 0 &&
+    c.capability.length === 0 &&
+    c.target.length === 0 &&
+    c.power === null;
+  const underpowered = cells.some((c) => c.power !== null);
   let tieBreak = false;
   const standardAccepts = cells.every(cellPasses) && pathReasons.length === 0;
-  if (
-    outlet === 'skill' &&
-    input.path === 'standard' &&
-    !standardAccepts &&
-    input.tieBreak?.enabled
-  ) {
-    // 06 §5.5: replay constraint holds; |Δ| < 1 task-mean on both models (Reading: in every
-    // evaluated mode) with p ≥ alpha where computed; SKILL.md shrinks by ≥ 10%.
-    const { linesBefore, linesAfter } = input.tieBreak;
-    const shorter = linesBefore > 0 && linesAfter * 10 <= linesBefore * 9;
+  // Reading (06 §5.5): the tie-break is an equivalence claim, so it is not offered when the
+  // efficacy test is underpowered: a slice too small to show a gain cannot show "no change".
+  if (standardSkill && !standardAccepts && !underpowered && input.tieBreak?.enabled) {
+    // 06 §5.5: replay constraint holds; a tie on both models (Reading: in every evaluated mode)
+    // with p ≥ alpha where computed; SKILL.md shrinks by ≥ 10%, by deletions only. The line
+    // counts and the deletions-only claim are derived here from the two texts.
+    const text = shorterByDeletion(input.tieBreak.before, input.tieBreak.after);
     const flat = cells.every(
       (c) =>
         c.safety.reasons.length === 0 &&
-        Math.abs(c.stats.diffUnits) < c.stats.runs &&
+        Math.abs(c.stats.diffUnits) <= tieTolerance(c.stats.objective.length * c.stats.runs) &&
         (c.stats.pValue === null || c.stats.pValue >= alpha),
     );
-    if (shorter && flat) {
+    if (text.shorter && text.deletionsOnly && flat) {
       tieBreak = true;
       reasons.push({
         code: 'tie-break-shorter',
         severity: 'info',
-        detail: `SKILL.md ${linesBefore} → ${linesAfter} lines`,
+        detail: `SKILL.md ${text.linesBefore} → ${text.linesAfter} lines, deletions only`,
       });
     }
   }
@@ -756,17 +931,41 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
       after: c.stats.after,
       delta: c.stats.after - c.stats.before,
       pValue: c.stats.pValue,
+      minP: c.stats.minP,
     },
     decision: cellPasses(c) || (tieBreak && c.safety.reasons.length === 0) ? 'pass' : 'fail',
   }));
+  for (const c of cells) reasons.push(...c.safety.info);
+  const blocked = cells.flatMap((c) => c.safety.blocked);
+  if (blocked.length > 0) {
+    // A flaky baseline task (high radius) is a property of the baseline: no decision is made, and
+    // nothing is recorded against the candidate. Every other finding is withheld with it.
+    return {
+      decision: 'blocked',
+      path: input.path,
+      results,
+      reasons: [...reasons, ...blocked],
+      tieBreak: false,
+    };
+  }
   if (!tieBreak) {
     for (const c of cells) reasons.push(...c.safety.reasons, ...c.capability, ...c.target);
   } else {
     for (const c of cells) reasons.push(...c.safety.reasons, ...c.target);
   }
   reasons.push(...pathReasons);
-  const accept = results.every((r) => r.decision === 'pass') && pathReasons.length === 0;
-  return { decision: accept ? 'accept' : 'reject', path: input.path, results, reasons, tieBreak };
+  const failed = reasons.some((r) => r.severity === 'fail');
+  if (failed) {
+    // A rule that needs no statistical power failed (replay, non-regression, a path rule, or a
+    // powered cell's efficacy): a rejection, whatever the power of the remaining cells.
+    for (const c of cells) if (c.power) reasons.push({ ...c.power, severity: 'info' });
+    return { decision: 'reject', path: input.path, results, reasons, tieBreak };
+  }
+  if (underpowered) {
+    for (const c of cells) if (c.power) reasons.push(c.power);
+    return { decision: 'underpowered', path: input.path, results, reasons, tieBreak: false };
+  }
+  return { decision: 'accept', path: input.path, results, reasons, tieBreak };
 }
 
 export interface EarlyStopInput {
@@ -827,11 +1026,13 @@ export interface ReleasePolicyInput {
   /** Reading (06 §5.7): at high radius a test replay "regression" uses the 3-of-3 threshold of
    * §5.4, stricter than the general 2-of-3. Defaults to medium (2 of 3). */
   radius?: BlastRadius;
+  /** As PolicyInput.nonRegressionFraction. */
+  nonRegressionFraction?: number;
 }
 
 /**
  * The release check (06 §5.7): blocked when any test replay task regresses, or test capability
- * falls by more than one task-mean on either model, in either mode.
+ * falls by more than the non-regression bound (`lossBound`) on either model, in either mode.
  */
 export function releasePolicy(input: ReleasePolicyInput): {
   decision: 'pass' | 'blocked' | 'invalid';
@@ -840,6 +1041,7 @@ export function releasePolicy(input: ReleasePolicyInput): {
 } {
   const runs = input.runs ?? DEFAULT_RUNS;
   const radius = input.radius ?? 'medium';
+  const fraction = input.nonRegressionFraction ?? DEFAULT_NON_REGRESSION_FRACTION;
   const modes = sortModes(input.modes);
   const gated = gatedTasks(input.tasks);
   const ids = [input.models.frontier, input.models.small];
@@ -866,21 +1068,19 @@ export function releasePolicy(input: ReleasePolicyInput): {
       const c = cellStats(model, mode, gated, {
         baseline: input.previous,
         candidate: input.candidate,
-        seed: 'release-check',
         runs,
-        resamples: DEFAULT_RESAMPLES,
         computeP: false,
       });
       // §5.7 has no flaky-baseline rule; only regressions block.
       const safety = replaySafety(c, radius, new Set());
       const fails = safety.reasons.filter((r) => r.code === 'replay-regression');
-      if (!noWorseThanOneTaskMean(c)) {
+      if (!noWorse(c, fraction)) {
         fails.push({
           code: capabilityLabel(mode),
           severity: 'fail',
           model,
           mode,
-          detail: `Δ ${c.diffUnits} passes over ${c.objective.length} tasks × ${runs} runs`,
+          detail: lossDetail(c, fraction),
         });
       }
       reasons.push(...fails);
@@ -895,7 +1095,13 @@ export function releasePolicy(input: ReleasePolicyInput): {
           candidatePassing: safety.passing,
           regressions: safety.regressions,
         },
-        capability: { before: c.before, after: c.after, delta: c.after - c.before, pValue: null },
+        capability: {
+          before: c.before,
+          after: c.after,
+          delta: c.after - c.before,
+          pValue: null,
+          minP: null,
+        },
         decision: fails.length === 0 ? 'pass' : 'fail',
       });
     }

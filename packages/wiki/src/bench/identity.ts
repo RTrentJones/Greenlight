@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { skillSetHash } from '../bundle';
 import {
   type BaselineIdentity,
   BaselineIdentitySchema,
   type IdentityTask,
+  type ModelsConfig,
+  ModelsConfigSchema,
   type TaskSpec,
   identityTasks,
 } from '../schema/bench';
@@ -120,11 +123,62 @@ export function skillSetHashOf(skillsDir: string): string {
   return skillSetHash(skillsDir) ?? sha256(canonicalJson([]));
 }
 
+/**
+ * The settings of `bench/models.json` that change what a rollout or a grader returns (06 §1.5):
+ * the provider, the sampling temperature, the eval judge's model (06 §4.6: it decides maintainer
+ * verdicts), and each gate role's id and fallback. Rate limits, prices, the key's env name and the
+ * maintainer and proposer roles are left out: they change when and at what cost a rollout runs,
+ * not its outcome. Hashed as `modelsConfigHash`, so a stored baseline is never reused, and never
+ * compared, across a change in any of them.
+ */
+export function modelsConfigIdentity(config: ModelsConfig): string {
+  const entry = (e: ModelsConfig['roles']['frontier']) => ({
+    id: e.id,
+    fallback: e.fallback ?? null,
+  });
+  return sha256(
+    canonicalJson({
+      provider: config.provider,
+      temperature: config.temperature,
+      judge: config.roles[config.roles.judge].id,
+      frontier: entry(config.roles.frontier),
+      small: entry(config.roles.small),
+    }),
+  );
+}
+
+/** `modelsConfigIdentity` of `<benchDir>/models.json`; the hash of `absent` when there is none or
+ * it does not parse (such a bench cannot run a rollout anyway). */
+export function modelsConfigHashOf(benchDir: string): string {
+  const file = join(benchDir, 'models.json');
+  if (!existsSync(file)) return sha256('absent');
+  try {
+    return modelsConfigIdentity(ModelsConfigSchema.parse(JSON.parse(readFileSync(file, 'utf8'))));
+  } catch {
+    return sha256('absent');
+  }
+}
+
+/** What stands in for an image digest in the process sandbox: this host's name, platform,
+ * architecture and Node version. `imageDigest: "process"` alone is equal on every machine. */
+export function processHostHash(): string {
+  return sha256(
+    canonicalJson({
+      host: hostname(),
+      platform: process.platform,
+      arch: process.arch,
+      node: process.version,
+    }),
+  );
+}
+
 export interface IdentityInput {
   benchDir: string;
   /** Every task of the evaluated split (all states), not just the selected ones: a change to any
    * of them re-baselines (06 §1.5). */
-  tasks: readonly Pick<TaskSpec, 'id' | 'kind' | 'state' | 'modes' | 'graders'>[];
+  tasks: readonly (Pick<TaskSpec, 'id' | 'kind' | 'state' | 'modes' | 'graders'> & {
+    skills?: readonly string[];
+  })[];
   skillsDir: string;
   lockfile: string;
   greenlightVersion: string;
@@ -134,6 +188,11 @@ export interface IdentityInput {
   agent: { vendor: string; version: string };
   /** The evaluated model ids, in `bench/models.json` order. */
   models: readonly string[];
+  /** `modelsConfigIdentity` of the config the rollouts run under. Default: read from
+   * `<benchDir>/models.json`. */
+  modelsConfigHash?: string;
+  /** Process sandbox only. Default: `processHostHash()` of this machine. */
+  processHost?: string;
   mode: 'isolation' | 'production';
   /** REQUIRED in production mode (M3); null in isolation. */
   wikiSnapshotHash?: string | null;
@@ -156,10 +215,12 @@ export function computeIdentity(i: IdentityInput): BaselineIdentity {
     harness: {
       runnerVersion: i.runnerVersion ?? RUNNER_VERSION,
       imageDigest: i.imageDigest,
+      ...(i.imageDigest === 'process' ? { processHost: i.processHost ?? processHostHash() } : {}),
       limits: { ...i.limits },
     },
     agent: { vendor: i.agent.vendor, version: i.agent.version },
     models: [...i.models],
+    modelsConfigHash: i.modelsConfigHash ?? modelsConfigHashOf(i.benchDir),
     skillSetHash: skillSetHashOf(i.skillsDir),
     mode: i.mode,
     wikiSnapshotHash: i.mode === 'isolation' ? null : (i.wikiSnapshotHash ?? null),

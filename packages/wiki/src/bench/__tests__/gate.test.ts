@@ -18,9 +18,11 @@ import {
 } from '../../schema/bench';
 import { LedgerEventSchema } from '../../schema/ledger';
 import {
+  GateAlgorithmError,
   GateConfigSchema,
   type GateContext,
   GateHarnessError,
+  controlOutcome,
   decide,
   earlyStopEvent,
   loadGateConfig,
@@ -117,7 +119,9 @@ describe('decide', () => {
   it('accepts and builds a sealed candidate-accepted event with one result per model × mode', () => {
     const d = decide([baseIso, baseProd], [candIso, candProd], ctx);
     expect(d.decision).toBe('accept');
-    expect(d.seed).toBe('gate:prop-1');
+    expect(d.algorithm).toBe(2);
+    expect(d.gateInput).toMatchObject({ algorithm: 2, skill: 'deploy-verify-promote' });
+    expect(d.gateInput).not.toHaveProperty('seed');
     const e = d.ledgerEvent;
     if (!e || !d.gateInput) throw new Error('no event');
     LedgerEventSchema.parse(e);
@@ -463,7 +467,6 @@ describe('recompute (06 §5.8, 13 §2.7)', () => {
   it('reproduces the recorded decision byte for byte from the gate input and records alone', () => {
     const original = decide([baseIso, baseProd], [candIso, candProd], {
       ...ctx,
-      seed: 'override-seed',
       radius: 'high',
     });
     if (!original.gateInput || !original.ledgerEvent) throw new Error('no event');
@@ -472,7 +475,29 @@ describe('recompute (06 §5.8, 13 §2.7)', () => {
     expect(JSON.stringify(again)).toBe(JSON.stringify(original));
     expect(again.ledgerEvent?.eventId).toBe(original.ledgerEvent.eventId);
     expect(sameDecision(original.ledgerEvent, again)).toBe(true);
-    expect(again.gateInput).toMatchObject({ seed: 'override-seed', radius: 'high' });
+    expect(again.gateInput).toMatchObject({ algorithm: 2, radius: 'high' });
+  });
+
+  it('refuses a gate input made with an older algorithm, naming it (06 §5.8)', () => {
+    const original = decide(baseIso, candIso, isoCtx);
+    if (!original.gateInput) throw new Error('no input');
+    // What an algorithm-1 (paired bootstrap) record looked like: no version field, a seed, the
+    // resample count, and task lists without skills.
+    const { hash: _h, algorithm: _a, ...rest } = original.gateInput;
+    const { nonRegressionFraction: _f, ...config } = rest.config;
+    const old = sealGateInput({
+      ...rest,
+      seed: 'gate:prop-1',
+      config: { ...config, resamples: 1000 },
+      tasks: rest.tasks.map(({ skills: _s, ...t }) => t),
+    });
+    GateInputRecordSchema.parse(old);
+    const err = harnessError(() => recompute(old, pool));
+    expect(err).toBeInstanceOf(GateAlgorithmError);
+    expect(err.message).toMatch(
+      /made with an older decision algorithm \(1; this build implements 2\)/,
+    );
+    expect(err.message).toMatch(/stands as recorded/);
   });
 
   it('reproduces an isolation-only declared decision', () => {
@@ -545,7 +570,13 @@ describe('the control arm is rejected for the right reason (06 §10.2–§10.3)'
     const spec = JSON.parse(
       readFileSync(new URL(`../../../../../bench/tasks/${id}/task.json`, import.meta.url), 'utf8'),
     );
-    return { id: spec.id, kind: spec.kind, state: 'active', modes: spec.modes };
+    return {
+      id: spec.id,
+      kind: spec.kind,
+      state: 'active',
+      modes: spec.modes,
+      skills: spec.skills,
+    };
   });
   const world = (idleProbe: number) => ({
     'replay/keepalive-probe-reaches-store-val': 3,
@@ -588,10 +619,14 @@ describe('the control arm is rejected for the right reason (06 §10.2–§10.3)'
     }
   });
 
-  it('a control that regresses no replay is rejected, but not for the reason the exit needs', () => {
+  it('a control that regresses no replay is not rejected for the reason the exit needs', () => {
     const d = decide(rec('base', 3), rec('cand', 3), { ...isoCtx, radius: 'high', tasks });
-    expect(d.decision).toBe('reject'); // no strict improvement on the wiki+loop objective
+    // The slice of deploy-verify-promote is one task × 3 runs (minimum p 1/20): no decision.
+    expect(d.decision).toBe('underpowered');
+    expect(d.ledgerEvent).toBeNull();
     expect(rejectedForReplayRegression(d, 'replay/idle-probe-leaves-store-asleep-val')).toBe(false);
+    // The replay could have regressed and did not: the control is not met, not inconclusive.
+    expect(controlOutcome(d, 'replay/idle-probe-leaves-store-asleep-val')).toBe('not-met');
   });
 });
 
@@ -740,8 +775,8 @@ describe('gate config', () => {
     expect(loadGateConfig(json)).toEqual({
       alpha: 0.05,
       runs: 3,
-      resamples: 1000,
       acceptShorterOnTie: false,
+      nonRegressionFraction: 0.1,
       maxBaselineAgeDays: 30,
     });
   });
@@ -749,10 +784,36 @@ describe('gate config', () => {
     const flat = record('cand', 'isolation', (w) => {
       Object.assign(w, cleanCell('isolation').base);
     });
-    const tie = { ...isoCtx, skillLines: { before: 100, after: 80 } };
-    expect(decide(baseIso, flat, tie).decision).toBe('reject');
+    const before = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n');
+    const after = before.split('\n').slice(0, 80).join('\n');
+    const tie = { ...isoCtx, skillText: { before, after } };
+    const off = decide(baseIso, flat, tie);
+    expect(off.decision).toBe('reject');
+    // With the tie-break off the texts are neither read nor recorded.
+    expect(off.gateInput?.skillText).toBeUndefined();
     const d = decide(baseIso, flat, { ...tie, config: { acceptShorterOnTie: true } });
     expect(d.decision).toBe('accept');
     expect(d.ledgerEvent?.reason).toMatch(/tie/);
+    // The texts are in the gate input, so recompute re-derives the "shorter" claim from them.
+    expect(d.gateInput?.skillText).toEqual({ before, after });
+    if (!d.gateInput) throw new Error('no input');
+    expect(recompute(d.gateInput, [baseIso, flat]).decision).toBe('accept');
+    // A caller cannot claim a deletion: same line saving, but rewritten text.
+    const rewritten = `${after.split('\n').slice(0, 79).join('\n')}\nsomething new`;
+    expect(
+      decide(baseIso, flat, {
+        ...tie,
+        skillText: { before, after: rewritten },
+        config: { acceptShorterOnTie: true },
+      }).decision,
+    ).toBe('reject');
+  });
+  it('refuses a gate pair that is one model twice, and a skill gate that names no skill', () => {
+    expect(
+      harnessError(() => decide(baseIso, candIso, { ...isoCtx, models: { frontier: F, small: F } }))
+        .message,
+    ).toMatch(/two different models/);
+    const { skill: _s, ...noSkill } = isoCtx;
+    expect(harnessError(() => decide(baseIso, candIso, noSkill)).fields).toEqual(['skill']);
   });
 });

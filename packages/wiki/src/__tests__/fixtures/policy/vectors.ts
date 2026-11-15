@@ -9,12 +9,18 @@ import { type IdentityTask, identityTasks } from '../../../schema/bench';
  *
  *   expect[radius] = four letters, one per target cell, in the order
  *                    frontier/isolation, frontier/production, small/isolation, small/production
- *   A = accept, R = reject, I = invalid, N = no-action (early stop)
+ *   A = accept, R = reject, I = invalid, N = no-action (early stop),
+ *   B = blocked (a flaky baseline replay task at high radius: no decision, 06 §5.4)
  *
  * The clean world: 2 replay tasks at 3/3; 10 capability tasks, baseline c1–c5 at 3/3 and c6–c10 at
- * 0/3 (one task-mean = 3 passes = 0.1); isolation candidate lifts c6–c9 to 3/3 (+4 task-means,
- * bootstrap p ≈ 0.006); production candidate equals the baseline. Every vector also carries a
- * pending and a quarantined replay task whose candidate would regress (0/3) — they must be excluded.
+ * 0/3 (30 objective rollouts per arm, so the non-regression bound is max(1, ⌊0.1 × 30⌋) = 3
+ * passes, the "one task-mean" these vectors were written for); isolation candidate lifts c6–c9 to
+ * 3/3 (+12 passes, exact p = 20⁻⁴); production candidate equals the baseline. Every task
+ * exercises the patched skill, so the slice is every objective task. Every vector also carries a pending and a
+ * quarantined replay task whose candidate would regress (0/3) — they must be excluded.
+ *
+ * The shipped bench shape (2 objective tasks, 2 replay, 3 runs) has its own tests in
+ * `bench/__tests__/shipped-shape.test.ts`: these vectors pin the threshold edges, not the power.
  *
  * Changing the policy so that a vector's outcome changes fails CI until this table and 06 §5.4 are
  * updated together.
@@ -33,13 +39,17 @@ export const CELLS: readonly { model: string; mode: GateMode }[] = [
 
 const CAP = Array.from({ length: 10 }, (_, i) => `cap/c${i + 1}`);
 
+/** The skill every fixture task exercises, and the one the gate tests patch. */
+export const SKILL = 'deploy-verify-promote';
+const skills = [SKILL];
+
 export const TASKS: PolicyTask[] = [
-  { id: 'replay/a', kind: 'replay', state: 'active' },
-  { id: 'replay/b', kind: 'replay', state: 'active' },
-  { id: 'replay/t', kind: 'replay', state: 'active' },
-  { id: 'replay/p', kind: 'replay', state: 'pending' },
-  { id: 'replay/q', kind: 'replay', state: 'quarantined' },
-  ...CAP.map((id) => ({ id, kind: 'capability' as const, state: 'active' as const })),
+  { id: 'replay/a', kind: 'replay', state: 'active', skills },
+  { id: 'replay/b', kind: 'replay', state: 'active', skills },
+  { id: 'replay/t', kind: 'replay', state: 'active', skills },
+  { id: 'replay/p', kind: 'replay', state: 'pending', skills },
+  { id: 'replay/q', kind: 'replay', state: 'quarantined', skills },
+  ...CAP.map((id) => ({ id, kind: 'capability' as const, state: 'active' as const, skills })),
 ];
 
 /** passes[side][task] for one cell; runs 1..passes pass, the rest fail. */
@@ -117,8 +127,9 @@ export const VECTORS: Vector[] = [
     target: (w) => {
       w.base['replay/b'] = 2;
     },
-    expect: { high: 'RRRR', medium: 'AAAA', low: 'AAAA' },
-    rejectCode: 'flaky-baseline',
+    // A flaky baseline task is a property of the baseline, not of the candidate: blocked (no
+    // decision), where it used to be a final rejection.
+    expect: { high: 'BBBB', medium: 'AAAA', low: 'AAAA' },
   },
   {
     id: 'flaky-baseline-1of3',
@@ -126,8 +137,7 @@ export const VECTORS: Vector[] = [
     target: (w) => {
       w.base['replay/b'] = 1;
     },
-    expect: { high: 'RRRR', medium: 'AAAA', low: 'AAAA' },
-    rejectCode: 'flaky-baseline',
+    expect: { high: 'BBBB', medium: 'AAAA', low: 'AAAA' },
   },
   {
     id: 'p-0.049',
@@ -150,7 +160,7 @@ export const VECTORS: Vector[] = [
     rejectCode: 'not-significant',
   },
   {
-    // Δ = −1 task-mean exactly: "no worse than / no regression beyond one task-mean" holds;
+    // Δ = −3 passes, exactly the non-regression bound at 30 rollouts: non-regression holds;
     // strict improvement does not.
     id: 'capability-drop-exactly-one-task-mean',
     path: 'standard',
@@ -162,7 +172,7 @@ export const VECTORS: Vector[] = [
     rejectCode: 'no-strict-improvement',
   },
   {
-    // Δ = −4 passes: one run beyond one task-mean.
+    // Δ = −4 passes: one pass beyond the bound.
     id: 'capability-drop-beyond-one-task-mean',
     path: 'standard',
     target: (w) => {
@@ -362,7 +372,7 @@ export function buildVector(
     tasks: TASKS,
     baseline,
     candidate,
-    seed: `vector:${v.id}`,
+    skill: SKILL,
     ...v.extra,
   };
   if (v.pTarget !== undefined) {
@@ -386,6 +396,7 @@ export function identityTasksFor(tasks: readonly PolicyTask[] = TASKS): Identity
       state: t.state,
       modes: [...(t.modes ?? ['isolation', 'production'])],
       graders: ['app' as const],
+      skills: [...(t.skills ?? [])],
     })),
   );
 }
