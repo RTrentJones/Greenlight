@@ -229,14 +229,18 @@ Rules for pages:
   framework pages. Describe tools by cell (e.g. "a next/vercel/supabase app"), not by name.
 - Incident pages record a timeline and evidence; the analysis belongs in patterns.
 
-Output exactly one JSON object and nothing else:
+Your output is exactly one MaintainerOutput JSON object. When you have a `finish` tool, submit the
+object as its arguments (not as a string, and with no text around it); otherwise write the object
+and nothing else to a file for `greenlight wiki ingest --apply`:
 {
   "create_pages": [{"id": "...", "content": "<full file with frontmatter>"}],
   "update_pages": [{"id": "...", "ops": [{"op": "append"|"replace"|"insert_after", "target"?: "...", "text": "..."}]}],
-  "update_index": "<the complete index.md>",
-  "append_log": "<2–6 lines: what changed and why; page ids>"
+  "append_log": "<2–6 lines: what changed and why; page ids>",
+  "update_index"?: "<the complete index.md>"
 }
-"update_index" and "append_log" are REQUIRED. Always provide them, even if nothing else changed.
+"append_log" is REQUIRED. Always provide it, even if nothing else changed. "update_index" is
+OPTIONAL: the index is regenerated from the pages, so omit it unless you want to word the summary
+lines yourself.
 `target` must be an exact substring that occurs exactly once in the current page.
 There is no limit on how many pages you create or update, but each must be justified by evidence
 in this bundle.
@@ -244,8 +248,11 @@ in this bundle.
 
 ### 2.3 Index handling
 
-The maintainer MUST submit the complete `update_index`, as the paper requires. Greenlight does not
-trust it blindly:
+The paper requires the maintainer to submit the complete `update_index`. Greenlight generates the
+index from the pages (03 §3), so here `update_index` is OPTIONAL: an output without it gets the
+generated index, with no corrections to log. Requiring a field the harness then overwrites only
+added a way to fail (a rollout rejected for a missing index it could not have got wrong). When a
+maintainer does submit one, Greenlight does not trust it blindly:
 
 1. `ingest --apply` applies `create_pages` and `update_pages` to a scratch copy.
 2. It runs `generateIndex` (03 §3) on the scratch copy.
@@ -476,6 +483,15 @@ does not leak into proposer-visible evidence over time.
    - the task `fixture/`, if present;
    - the skill set under test, copied into `.claude/skills/`.
 
+   Every skill a task declares (`TaskSpec.skills`) MUST exist. A missing one fails the run before
+   any request: a rollout without the skill under test would be graded as if it had been there.
+
+   The rollout image pins its base image by digest and installs its packages unpinned; the
+   package list actually installed is read out of the built image and is part of
+   `harness.imageDigest` (§1.5, §4.8). An exact package pin breaks every from-scratch build the
+   day the distribution's mirror moves on, so a package update is made an identity change (a
+   re-baseline) rather than a build failure.
+
    In **isolation** mode `GREENLIGHT_WIKI=off` is set and `.greenlight/wiki/` is absent. In
    **production** mode the hooks run against a wiki snapshot whose hash is part of the baseline
    identity (§4.7). Command shims on `PATH` record the trajectory (§4.6).
@@ -484,7 +500,10 @@ does not leak into proposer-visible evidence over time.
    under test injected in full into the system prompt, which is the paper's own setting.
    `--agent claude` substitutes `claude -p "<brief.md contents>" --output-format json` for owners
    who choose to pay for it. Either agent runs with a per-task timeout (`timeoutMin`) and a tool
-   allow-list of file edit, bash and the `greenlight` CLI. Network is restricted to package registries and localhost. There are no real
+   allow-list of file edit, bash and the `greenlight` CLI. Where a skill spells the CLI as
+   `pnpm greenlight …` or `npx greenlight …`, that spelling works in the sandbox and is recorded
+   as the same `greenlight` command; no other package-manager command does (the sandbox has no
+   registry), and it fails at once instead of hanging. Network is restricted to package registries and localhost. There are no real
    provider credentials; the M5 proxy points provider hosts at fakes where a task needs them.
    Codex runs (M7) use the same sandbox with `codex exec`.
 3. After the agent stops, the runner runs the task's grader from `bench/graders/<taskId>/`, which
@@ -516,14 +535,28 @@ does not leak into proposer-visible evidence over time.
    - The rollout limits (`maxSteps`, default 25, raised from 15 on 2026-11-12 after the activation baseline showed 6 of 8 rollouts stopped by the cap; the per-rollout request cap, default
      `maxSteps + 2`; any timeout override) are part of the baseline identity (`harness.limits`,
      §1.5): runs under different limits are never compared, cached or resumed into one another.
+     The agent is TOLD both caps in its role prompt, and from 5 steps left every tool response
+     says how many remain: a budget the agent cannot see is one it cannot plan for (§4.8).
+   - The request cap ends a rollout like the step limit only when the agent used it up, one
+     request per turn. A cap consumed by transient retries (429/5xx) is the provider's doing: the
+     rollout is deferred and re-run, never graded.
+   - For a task whose change must reach a branch (the loop task: `develop`), the runner also
+     exports the tree of that branch of the bare origin, after every process is killed. The
+     grader checks the requested change there, so "previewed, then pushed an empty commit" is not
+     a pass.
 4. The score is 1 if every grader check passes and 0 otherwise. Partial credit is stored
    (passed/total checks), but gating uses the binary score, following the paper's task success.
    A rollout whose trajectory is incomplete or truncated (§4.6) carries a `graderError` instead:
-   it is invalid at the gate, never a pass and never a plain 0.
+   it is invalid at the gate, never a pass and never a plain 0. So does one the grader could not
+   grade: a grader crash, a simulated-clock participant that never joined, an eval judge that
+   returned no usable verdict. A rollout whose judge was merely unavailable is deferred and
+   re-run.
 5. Each rollout that ran to an end writes a raw record of kind `bench`. Its refs point to the
    transcript, the sandbox's diff and the grader report, stored as CI artifacts. A rollout without
    a trustworthy verdict (a harness or model error, a grader error, an incomplete trajectory)
-   records `retained.verdict: unknown`; a deferred rollout writes no raw record.
+   records `retained.verdict: unknown`; a deferred rollout writes no raw record. The stored
+   transcript, trajectory, diff and maintainer output are redacted (08 §5.2) once grading has
+   read the originals.
 
 ### 4.3 Mutants
 
@@ -576,13 +609,16 @@ grader kinds that observe the evidence its skill is responsible for (`TaskSpec.g
 | grader kind | used for | observes | passes when |
 |---|---|---|---|
 | `app` | build, kickoff, provider skills | the finished app through `preview` with the hidden verify spec | every hidden check passes |
-| `trajectory` | the loop, portfolio, any skill whose rules are about **order** | `trajectory.jsonl`: every shimmed command with argv, cwd, exit code and timestamp, plus the agent's tool calls from its JSON transcript, merged in time order (08 §10.2) | every rule in the task's `trajectory.rules` holds, for example `before(preview passed for <tool>, git push origin develop)`, `never(promote without approval)`, `after(verify failed, wiki lookup --check)` (production mode only) |
-| `maintainer` | the `greenlight-wiki` maintainer procedure | the `MaintainerOutput` and the resulting wiki | the output validates; every new or changed claim cites an `EvidenceRef` present in the bundle; no existing evidence ref is removed; status changes follow 04 §4; the task's required distinctions are present (checked structurally where possible, otherwise by an `eval` judge with a rubric and a mutant set of known-bad outputs) |
+| `trajectory` | the loop, portfolio, any skill whose rules are about **order** | `trajectory.jsonl`: every shimmed command with argv, cwd, exit code and timestamp, plus the agent's tool calls from its JSON transcript, merged in time order (08 §10.2) | every rule in the task's `trajectory.rules` holds, for example `before(preview passed for <tool>, git push origin develop)`, `never(promote without approval)`, `after(verify failed, wiki lookup --check)` (production mode only); and, where the task asks for a change, that change is in the tree that was pushed (an order of commands over an unchanged tree is not the task) |
+| `maintainer` | the `greenlight-wiki` maintainer procedure | the `MaintainerOutput` and the resulting wiki | the output validates; every new or changed claim cites an `EvidenceRef` present in the bundle; no existing evidence ref is removed; status changes follow 04 §4; the task's required distinctions are present (checked structurally where possible, otherwise by an `eval` judge with a rubric and a mutant set of known-bad outputs). The judge runs in every rollout, train and gate alike, so a train score means what a gate score means; a judge that cannot be asked is never a failing score (the rollout is deferred, or carries a `graderError`) |
 | `routing` | skill descriptions | which skills the agent loaded for a one-line request, from transcript tool calls or the `SKILL.md` files it read | the expected skill was loaded, and no excluded skill was |
 | `repro` | mechanism and doctor outlets | a trusted reproduction, a fixture plus a script reviewed by a human, run against the base and candidate commits | it fails on the base commit and passes on the candidate |
 
 The trajectory shims wrap `git`, `greenlight`, `wrangler`, `vercel`, `gh`, `terraform`, `docker`
-and `curl`, then exec the real binary. They are a recording device and enforce nothing. Every
+and `curl`, then exec the real binary. `pnpm` and `npx` are shims as well: they pass a
+`greenlight` invocation through to the CLI (recorded as that `greenlight` command) and refuse
+anything else. They are a recording device and enforce nothing. A rule that names one
+destination ref also matches a push that updated several refs when that ref is among them. Every
 grader kind ships with mutants under §4.3. For a trajectory grader, each mutant is a recorded
 trajectory that breaks one rule, for example a push recorded before any preview. The grader must
 fail on every one of those mutants.
@@ -1133,14 +1169,33 @@ brief", as in the paper, and the same code runs locally and in CI.
 
 | role | tools | system prompt |
 |---|---|---|
-| inference agent | `read_file`, `write_file`, `list_dir`, `bash` (inside the sandbox, through the shims), `finish` | the skills under test, in full, then the task brief |
-| maintainer | `read_file` over the bundle, `finish(MaintainerOutput)` | §2.2 |
+| inference agent | `read_file` (with a line offset and limit), `write_file`, `list_dir`, `list_files` (a whole tree in one call), `bash` (inside the sandbox, through the shims), `finish` | the skills under test, in full, then the role prompt and the rollout's step and request budget; the task brief is the first user turn |
+| maintainer | `read_file`, `list_dir` (and, in a bench rollout, `list_files`) over the bundle; no write tool and no shell, since nothing a maintainer writes to disk is read; `finish(MaintainerOutput)`, whose parameters are the `MaintainerOutput` JSON schema | §2.2. A bench maintainer rollout uses the same prompt and schema as `bench iterate`, with the task's declared skills in front and the fixture as the bundle; a rejected `finish` is fed back with its issues (§2.4) |
 | proposer | `read_file` and `wiki read`/`wiki traces` (split-filtered, §1.4), `finish(ProposerOutput)` | §3.3 |
 | eval judge | none; one structured-output call | the maintainer task's rubric |
 
 The harness's own version is part of the `BaselineIdentity` (`agent.vendor: "greenlight-harness"`,
 `agent.version`, 08 §10.3). Changing its system-prompt scaffolding re-baselines, exactly like a
 model change.
+
+**The budget is visible.** The role prompt ends with the rollout's step cap and request cap, and
+from 5 steps left every tool response carries `steps_remaining`. A tool result that is too long
+is cut with a marker: a file or a listing keeps its head (the rest is reachable with
+`read_file`'s offset), a command's output keeps its tail.
+
+**What the first sealed baseline taught (2026-11-15).** A sealed val baseline passed 1 of 24
+rollouts. Reading all 24 transcripts showed that most of the failures were the harness's, not
+the models': a declared skill that did not exist and was dropped silently; a maintainer rollout
+given neither the production prompt nor its schema, and a `finish` that checked only "is JSON";
+a loop task whose success condition (beta = push to `develop`) was nowhere in the repository; a
+skill that says `pnpm greenlight …` in an image with no pnpm; a step budget the agent could not
+see; graders that rejected correct solutions for their spelling and accepted an empty push; a
+send guard that stopped the evaluation over a fixture's own publishable key. Each is fixed in the
+harness, the fixtures or the graders, and each fix has a test. The rule that follows: **before a
+score is read as a statement about a model or a skill, read the transcripts**, and treat a
+success condition that cannot be derived from what the agent is shown as a defect of the task.
+These fixes change the task set, the graders and the harness, so every evaluation sealed before
+them is incomparable with every one after (§1.5).
 
 **Free-tier rate limits are the budget.** At $0 the binding constraint is requests per minute and
 per day, not dollars.
@@ -1153,11 +1208,12 @@ per day, not dollars.
   unless the budget allows splitting it across days.
 - **Quota is scheduled per model, per rollout.** Before each rollout the runner requires the
   model's remaining daily quota to cover the rollout's whole request cap (`maxSteps + 2` by
-  default, plus one call on the judge model for a maintainer gate rollout), so no rollout is
+  default, plus one call on the judge model for a maintainer rollout), so no rollout is
   started that the day could cut off and throw away. A model below it is skipped for the day while
   the other keeps running; the model with the most quota left runs next, so the two interleave.
-  A rollout deferred anyway (the model stayed unavailable, another process spent the quota) defers
-  only its own model. The run returns `deferred` with the rollouts left per model, and
+  A rollout deferred anyway (the model stayed unavailable, another process spent the quota, its
+  request cap went to transient retries, the eval judge was unavailable) defers only its own
+  model. The run returns `deferred` with the rollouts left per model, and
   `--resume` continues on a later day. Judge calls are charged to the judge model's own `spend`
   event, not to the rollout's model.
 - `bench/README-models.md` holds the budget arithmetic for the first M2 gate. That gate runs
@@ -1167,7 +1223,13 @@ per day, not dollars.
   count alone suggests.
 
 A gate that cannot finish within one day's quota is split across days. This is safe because the
-baseline identity pins every input, and rollouts are independent. `spend` ledger events record
+baseline identity pins every input, and rollouts are independent. The rollout image is one of
+those inputs: `harness.imageDigest` hashes the runner directory, the shim uid and the package
+list read out of the built image (name and version of every installed package). The image's
+packages are not pinned by version, so a rebuild on a later day may install a newer one; the
+digest then differs and the resume is refused, which is the correct outcome (the remaining
+rollouts would run on different software). Keep the built image for as long as an evaluation is
+unsealed. `spend` ledger events record
 requests and tokens, with `usd: 0`. The dollar fields of `Budget` (08 §10.5) remain for owners who
 choose paid models.
 
@@ -1190,6 +1252,13 @@ Everything the harness sends must therefore be publishable:
   only check that such inputs are in fact free of credentials. The detector skips code
   expressions (11 §6), so vendored fixture source such as the keepalive worker's
   `apikey: t.anonKey` does not trip it, and a test keeps every bench fixture scanning clean.
+- **A value the task's own fixture shows in the clear is not a leak.** The detector reads
+  context: a fixture's publishable key is clean as `"anonKey": "…"` in a JSON file and flagged
+  in the agent's own `curl -H "apikey: …"`. In a rollout, a flagged value that occurs verbatim
+  in the task's fixture or brief, and that the detector does not flag there, is let through.
+  Refusing it stopped a whole evaluation over a value the harness had itself handed the agent.
+  A value the detector flags in the fixture itself, or one that is not in the fixture, is still
+  refused.
 - The guard scans every string leaf of every outgoing part. That includes fields the harness does
   not model but preserves and replays, such as `inlineData`, `fileData` and thought signatures, as
   well as the system instruction and the tool declarations.
