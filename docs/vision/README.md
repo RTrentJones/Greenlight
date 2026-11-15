@@ -6,8 +6,20 @@ the skill system, the knowledge (wiki) system, security, testing and the roadmap
 this folder and the Greenlight repository should be able to implement every item without having
 to ask what was meant.
 
-Status: **SPECIFICATION, not built.** It supersedes `docs/plan-wiki-skill.md` and
-`docs/wiki-skill-design.md`, which remain as the working drafts it grew from.
+Status: **partly built on the `2.0` branch; nothing released.** It supersedes
+`docs/plan-wiki-skill.md` and `docs/wiki-skill-design.md`, which remain as the working drafts it
+grew from.
+
+| Milestone | State (2026-11-15) |
+|---|---|
+| M0 | Code done: check ids, evidence identity, schemas, roadmap check. Not released; the blocking issues #30–#37 are open and not yet linked from the M3–M6 items. |
+| M1 | Code done: wiki engine, bench runner and sandbox, graders, gate, budget. **Exit criteria not met:** a full review on 2026-11-14 found the bench cannot yet measure skill quality and the gate's statistics do not hold at this bench size (`wiki/drills/m1-2026-11-15.md`). `wiki capture --manual` is not built. |
+| M2 | `bench iterate`, outlet evaluation, the control arm and the review hand-off are built and have never run end to end. The iteration (M2-05) has not been run. The ledger holds spend events only. |
+| M3–M7 | Not started. |
+
+No release has been cut for any milestone, CI first ran on this branch on 2026-11-15 (draft pull
+request #38), and `evo.yml` has never run. Treat every "complete" in the pack as "written", not
+"proven", until its drill record exists under `wiki/drills/`.
 
 **Revision 2 (after the owner's review of `b44c8ae`).** The WikiSkill cycle is now the method that
 drives every improvement from the first working milestone. It is no longer a late phase

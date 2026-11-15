@@ -51,6 +51,16 @@ jobs:
       - name: Boundary check (consumer -> framework only)
         run: pnpm check-boundaries
 
+      - name: Plugin mirror check (plugin/skills == .claude/skills)
+        run: pnpm check-plugin-sync
+
+      - name: Roadmap prerequisite check (no drill needs a later milestone)
+        run: pnpm check-roadmap
+
+      # Every bench grader must pass its reference and fail every mutant (vision 07 §3.10).
+      - name: Bench graders
+        run: pnpm bench:check-graders
+
   infra:
     runs-on: ubuntu-latest
     steps:

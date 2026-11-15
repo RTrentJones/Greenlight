@@ -203,9 +203,9 @@ jobs:
           set +e
           out="$RUNNER_TEMP/iterate.json"
           if [ -n "$ITERATION_ID" ]; then
-            pnpm greenlight bench iterate --resume "$ITERATION_ID" --sandbox docker --json > "$out"
+            pnpm --silent greenlight bench iterate --resume "$ITERATION_ID" --sandbox docker --json > "$out"
           else
-            pnpm greenlight bench iterate --scope "$SCOPE" --sandbox docker --json > "$out"
+            pnpm --silent greenlight bench iterate --scope "$SCOPE" --sandbox docker --json > "$out"
           fi
           code=$?
           set -e
