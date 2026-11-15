@@ -99,3 +99,7 @@ jobs:
         with:
           working_directory: infra
           soft_fail: true
+          # The action looks up the latest tfsec release through the GitHub API. Unauthenticated,
+          # that call is rate-limited per runner IP and a 403 fails the job even though the scan
+          # itself is advisory.
+          github_token: ${{ github.token }}
