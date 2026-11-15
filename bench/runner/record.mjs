@@ -29,19 +29,79 @@
 //
 // A recording device: it never blocks or changes a command. Exit code is the command's own.
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { createConnection } from 'node:net';
+import { pathToFileURL } from 'node:url';
 
 const DOCKER_REAL = {
   git: ['/usr/bin/git'],
   greenlight: ['/usr/local/bin/node', '/opt/real/greenlight/greenlight.mjs'],
   curl: ['/usr/bin/curl'],
+  // Package runners: no real binary. `unwrapRunner` decides what (if anything) they run.
+  pnpm: null,
+  npx: null,
   wrangler: null,
   vercel: null,
   gh: null,
   terraform: null,
   docker: null,
 };
+
+/**
+ * The package runners the skills name (`pnpm greenlight …`, `npx greenlight …`). The sandbox has
+ * no package manager and no network, so the only thing a runner can do here is launch the
+ * greenlight CLI that is already installed: `pnpm [options] [exec|dlx|run|run-script] greenlight
+ * …` and `npx [options] [--package @rtrentjones/greenlight] greenlight …` (the bin may also be
+ * spelled `@rtrentjones/greenlight[@version]`). Returns the greenlight argv, or null for anything
+ * else (which fails at once instead of hanging on a registry lookup). A subset of
+ * `unwrapRunner` in packages/wiki/src/bench/trajectory.ts: whatever passes here is reported as
+ * the `greenlight` command it ran, so the trajectory names what really executed.
+ */
+const RUNNERS = {
+  npx: { prefixes: [[]], value: ['-p', '--package', '-w', '--workspace'] },
+  pnpm: {
+    prefixes: [[], ['exec'], ['dlx'], ['run'], ['run-script']],
+    value: [
+      '-F',
+      '--filter',
+      '--filter-prod',
+      '-C',
+      '--dir',
+      '--workspace-dir',
+      '--reporter',
+      '--loglevel',
+      '--package',
+    ],
+  },
+};
+const GREENLIGHT_BIN = /^(?:@rtrentjones\/)?greenlight(?:@[^/\s]+)?$/;
+
+export function unwrapRunner(cmd, argv) {
+  const runner = RUNNERS[cmd];
+  if (!runner) return null;
+  const skip = (i) => {
+    let j = i;
+    while (j < argv.length) {
+      const a = argv[j];
+      if (a === '--') return j + 1;
+      if (!a.startsWith('-')) return j;
+      if (a === '-c' || a === '--call' || a.startsWith('--call=')) return -1;
+      j += runner.value.includes(a) ? 2 : 1;
+    }
+    return j;
+  };
+  const start = skip(0);
+  if (start < 0) return null;
+  for (const prefix of runner.prefixes) {
+    if (!prefix.every((p, k) => argv[start + k] === p)) continue;
+    const i = skip(start + prefix.length);
+    if (i >= 0 && i < argv.length && GREENLIGHT_BIN.test(argv[i])) {
+      const rest = argv.slice(i + 1);
+      return rest[0] === '--' ? rest.slice(1) : rest;
+    }
+  }
+  return null;
+}
 
 const ENV_ENTRY = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
@@ -118,6 +178,7 @@ function parseArgs(argv) {
       socket: '/run/greenlight-shim/shim.sock',
       origin: '/srv/origin.git',
       real: DOCKER_REAL[cmd] ?? null,
+      greenlight: DOCKER_REAL.greenlight,
       gitCtx: '/opt/runner/git-ctx.sh',
       gitBin: '/usr/bin/git',
       asAgent: as(env),
@@ -140,6 +201,7 @@ function parseArgs(argv) {
       socket: config.socket,
       origin: config.origin,
       real: config.real?.[cmd] ?? null,
+      greenlight: config.real?.greenlight ?? null,
       gitCtx: config.gitCtx,
       gitBin: config.real?.git?.[0] ?? 'git',
       asAgent: (argvReal) => argvReal,
@@ -210,6 +272,23 @@ async function main() {
   const git = isGit ? gitState(o) : undefined;
   const before = isGit ? originRefs(o) : undefined;
   let exit;
+  // A package runner either launches the installed greenlight CLI (and is then recorded as that
+  // greenlight command) or fails at once: there is no registry to resolve anything else from.
+  if (Object.hasOwn(RUNNERS, o.cmd)) {
+    const rest = unwrapRunner(o.cmd, o.args);
+    if (rest && o.greenlight) {
+      o.cmd = 'greenlight';
+      o.args = rest;
+      o.real = o.greenlight;
+    } else {
+      process.stderr.write(
+        `${o.cmd}: this sandbox has no package manager and no network. Only \`${o.cmd} greenlight …\` is passed through to the greenlight CLI; run \`greenlight …\` directly (it is on PATH).\n`,
+      );
+      const event = { v: 1, cmd: o.cmd, argv: o.args, cwd: o.cwd, exit: 127 };
+      await send(o.socket, JSON.stringify(event));
+      process.exit(127);
+    }
+  }
   if (!o.real) {
     process.stderr.write(`${o.cmd}: command not found\n`);
     exit = 127;
@@ -231,7 +310,17 @@ async function main() {
   process.exit(exit);
 }
 
-main().catch((e) => {
-  process.stderr.write(`greenlight shim: ${e?.message ?? e}\n`);
-  process.exit(126);
-});
+// Importable for tests (`unwrapRunner`); runs only as a script.
+const invoked = () => {
+  try {
+    return pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url;
+  } catch {
+    return false;
+  }
+};
+if (invoked()) {
+  main().catch((e) => {
+    process.stderr.write(`greenlight shim: ${e?.message ?? e}\n`);
+    process.exit(126);
+  });
+}
