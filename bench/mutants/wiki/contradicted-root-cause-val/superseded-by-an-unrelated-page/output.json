@@ -1,0 +1,16 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/nightly-job-fails-while-store-wakes",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/preview-missing-env-file\n"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/job-secret-stale-after-branch-reset (hypothesis) from incident/2026-10-inkwell-digest-job-failed-with-long-timeout and the two records in raw/: the connection was refused in 212 ms on an authentication failure while the store was awake. Set pattern/nightly-job-fails-while-store-wakes to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run exists."
+}

@@ -1,0 +1,29 @@
+// Greenlight manifest for this wrapper (fixture form: a plain object, no package import).
+export default {
+  domain: 'example.test',
+  alerts: { sink: 'github-issue' },
+  tools: [
+    {
+      name: 'changelog',
+      lane: 'mcp',
+      target: 'docker',
+      data: 'none',
+      auth: 'none',
+      access: 'public',
+      envs: ['beta', 'prod'],
+      port: 4330,
+      preview: { command: 'node server.mjs', port: 4330, path: '/' },
+    },
+    {
+      name: 'shortlinks',
+      lane: 'mcp',
+      target: 'docker',
+      data: 'none',
+      auth: 'none',
+      access: 'public',
+      envs: ['beta', 'prod'],
+      port: 4331,
+      preview: { command: 'node server.mjs', port: 4331, path: '/' },
+    },
+  ],
+};

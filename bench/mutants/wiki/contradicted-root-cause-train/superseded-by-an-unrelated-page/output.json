@@ -1,0 +1,16 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/verify-fails-on-cold-start",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/preview-port-in-use\n"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/verify-runs-before-deploy-is-live (hypothesis) from incident/2026-10-menuboard-verify-red-with-long-timeout and the two verify runs in raw/: the failing requests were fast and served the previous version. Set pattern/verify-fails-on-cold-start to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run of the identity gate exists."
+}

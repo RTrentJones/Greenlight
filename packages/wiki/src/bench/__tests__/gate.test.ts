@@ -772,6 +772,10 @@ describe('gate config', () => {
       readFileSync(new URL('../../../../../bench/gate.json', import.meta.url), 'utf8'),
     );
     expect(loadGateConfig(json)).toEqual(GateConfigSchema.parse({}));
+    // No key the exact test ignores: `resamples` went with the bootstrap (06 §5.2).
+    expect(Object.keys(json).sort()).toEqual(['acceptShorterOnTie', 'alpha', 'runs']);
+    // ... and a file that still carries it loads all the same.
+    expect(loadGateConfig({ ...json, resamples: 1000 })).toEqual(loadGateConfig(json));
     expect(loadGateConfig(json)).toEqual({
       alpha: 0.05,
       runs: 3,

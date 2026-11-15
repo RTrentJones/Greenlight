@@ -3,14 +3,27 @@ import { describe, expect, it } from 'vitest';
 import { expand, identityTasksFor } from '../../__tests__/fixtures/policy/vectors';
 import { type EvaluationRecord, sealRecord } from '../../schema/bench';
 import { LedgerEventSchema } from '../../schema/ledger';
-import { type GateContext, controlOutcome, decide, rejectedForReplayRegression } from '../gate';
+import {
+  type GateContext,
+  controlOutcome,
+  decide,
+  loadGateConfig,
+  rejectedForReplayRegression,
+} from '../gate';
 import { type BlastRadius, type PolicyTask, applyPolicy, lossBound } from '../policy';
 import { choose } from '../stats';
 
 /**
- * The gate on the bench AS SHIPPED (06 §5.2): `bench/splits.json` holds four val tasks, two of
- * them replay (the safety constraint) and two objective, with 3 runs on 2 models. The boundary
- * vectors (10 capability tasks, injected p-values) never exercised this shape.
+ * The gate on the bench AS SHIPPED (06 §5.2), with 3 runs on 2 models. The boundary vectors (10
+ * capability tasks, injected p-values) never exercised these shapes. Two of them are tested:
+ *
+ * - FIRST: the four val tasks of the first sealed baseline, two replay (the safety constraint)
+ *   and two objective, ONE per skill. Every slice has one task, so every proposal is
+ *   `underpowered`. This is also the shape of the gate while the two later families are still
+ *   `pending` (a pending task is in no slice, 06 §4.1).
+ * - ALL: every val task in `bench/splits.json`, active: the same four plus a second objective
+ *   family per skill (`loop/new-route-joins-verify`, `wiki/contradicted-root-cause`). Every
+ *   slice has two tasks and an attainable minimum p of 1/400.
  */
 
 const F = 'model-frontier';
@@ -26,16 +39,24 @@ const splits = JSON.parse(
 ) as Record<string, string>;
 const VAL = Object.keys(splits).filter((id) => splits[id] === 'val');
 
-/** The committed val task specs, active (as the sealed baseline ran them). */
-const SHIPPED: PolicyTask[] = VAL.map((id) => {
+const LOOP_ROUTE = 'loop/new-route-joins-verify-val';
+const WIKI_SUPERSEDE = 'wiki/contradicted-root-cause-val';
+
+/** Every committed val task spec, active (as a sealed baseline that covers it runs it). */
+const ALL: PolicyTask[] = VAL.map((id) => {
   const spec = JSON.parse(
     readFileSync(new URL(`../../../../../bench/tasks/${id}/task.json`, import.meta.url), 'utf8'),
   );
   return { id: spec.id, kind: spec.kind, state: 'active', modes: spec.modes, skills: spec.skills };
 });
+/** The four tasks of the first sealed baseline: one objective task per skill. */
+const FIRST: PolicyTask[] = ALL.filter((t) => [KEEPALIVE, IDLE, WIKI, LOOP].includes(t.id));
+const gateConfig = loadGateConfig(
+  JSON.parse(readFileSync(new URL('../../../../../bench/gate.json', import.meta.url), 'utf8')),
+);
 /** The same shape with one skill that both objective tasks exercise: a two-task slice. */
 const SHARED = 'shared-skill';
-const TWO_TASK_SLICE: PolicyTask[] = SHIPPED.map((t) =>
+const TWO_TASK_SLICE: PolicyTask[] = FIRST.map((t) =>
   t.kind === 'replay' ? t : { ...t, skills: [...(t.skills ?? []), SHARED] },
 );
 
@@ -90,7 +111,7 @@ function gate(
   cand: Worlds,
   over: Partial<GateContext> & { tasks?: readonly PolicyTask[] } = {},
 ) {
-  const tasks = over.tasks ?? SHIPPED;
+  const tasks = over.tasks ?? FIRST;
   const ctx: GateContext = {
     ts: '2026-11-01T12:00:00.000Z',
     radius: 'medium',
@@ -107,13 +128,97 @@ function gate(
 
 const codes = (d: { reasons: { code: string }[] }) => d.reasons.map((r) => r.code);
 
-describe('the shipped val split', () => {
+describe('the first sealed baseline: four val tasks', () => {
   it('is 2 objective tasks and 2 replay tasks, and no skill has more than one objective task', () => {
-    expect(SHIPPED.map((t) => t.kind).sort()).toEqual(['loop', 'replay', 'replay', 'wiki']);
-    const objective = SHIPPED.filter((t) => t.kind !== 'replay');
-    const skills = [...new Set(SHIPPED.flatMap((t) => [...(t.skills ?? [])]))];
+    expect(FIRST.map((t) => t.kind).sort()).toEqual(['loop', 'replay', 'replay', 'wiki']);
+    const objective = FIRST.filter((t) => t.kind !== 'replay');
+    const skills = [...new Set(FIRST.flatMap((t) => [...(t.skills ?? [])]))];
     for (const skill of skills) {
       expect(objective.filter((t) => t.skills?.includes(skill)).length).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe('the shipped val split, once every task is active', () => {
+  const objective = ALL.filter((t) => t.kind !== 'replay');
+  /** Skills that have an objective task: the ones a gate can test at all. */
+  const skills = [...new Set(objective.flatMap((t) => [...(t.skills ?? [])]))].sort();
+  /** Replay tasks pass `replay` of 3, objective tasks `obj(task)` of 3. */
+  const six = (replay: number, obj: (id: string) => number): World =>
+    Object.fromEntries(ALL.map((t) => [t.id, t.kind === 'replay' ? replay : obj(t.id)]));
+  const zero = both(six(3, () => 0));
+
+  it('is 4 objective tasks and 2 replay tasks, and each gateable skill has exactly two', () => {
+    expect(ALL.map((t) => t.kind).sort()).toEqual([
+      'loop',
+      'loop',
+      'replay',
+      'replay',
+      'wiki',
+      'wiki',
+    ]);
+    expect(skills).toEqual(['deploy-verify-promote', 'greenlight-wiki']);
+    expect(
+      objective.filter((t) => t.skills?.includes('deploy-verify-promote')).map((t) => t.id),
+    ).toEqual([LOOP, LOOP_ROUTE]);
+    expect(objective.filter((t) => t.skills?.includes('greenlight-wiki')).map((t) => t.id)).toEqual(
+      [WIKI_SUPERSEDE, WIKI],
+    );
+    // 4 objective tasks × 3 runs: a model may still lose one pass, no more (06 §5.4)
+    expect(lossBound(objective.length * gateConfig.runs)).toBe(1);
+  });
+
+  it("every skill's slice has an attainable minimum p below alpha (1/400 at 3 runs)", () => {
+    expect(gateConfig.runs).toBe(3);
+    for (const skill of skills) {
+      const slice = objective.filter((t) => t.skills?.includes(skill));
+      const inSlice = (id: string) => slice.some((t) => t.id === id);
+      // 0/3 → 3/3 on the slice, nothing else moves; high radius so both models are tested.
+      const d = gate(zero, both(six(3, (id) => (inSlice(id) ? 3 : 0))), {
+        tasks: ALL,
+        skill,
+        radius: 'high',
+        config: gateConfig,
+      });
+      expect(d.reasons.find((r) => r.code === 'efficacy-slice')?.detail, skill).toBe(
+        `${skill}: ${slice.map((t) => t.id).join(', ')}`,
+      );
+      expect(d.results, skill).toHaveLength(2);
+      for (const r of d.results) {
+        expect(r.capability.minP, skill).toBe(1 / 400);
+        expect(r.capability.minP as number).toBeLessThan(gateConfig.alpha);
+        expect(r.capability.pValue, skill).toBe(1 / 400);
+      }
+      expect(codes(d)).not.toContain('underpowered');
+      expect(d.decision, skill).toBe('accept');
+    }
+  });
+
+  it('a slice gain of 2/3 on both tasks is accepted; one task alone is not', () => {
+    for (const skill of skills) {
+      const slice = objective.filter((t) => t.skills?.includes(skill)).map((t) => t.id);
+      const gain = (passes: number[]) =>
+        gate(zero, both(six(3, (id) => passes[slice.indexOf(id)] ?? 0)), {
+          tasks: ALL,
+          skill,
+          config: gateConfig,
+        });
+      expect(gain([2, 2]).decision, skill).toBe('accept'); // p = 0.04
+      const one = gain([3, 0]); // p = 0.05: not below alpha
+      expect(one.decision, skill).toBe('reject');
+      expect(codes(one)).toContain('not-significant');
+    }
+  });
+
+  it('with the second family still pending, the slice is one task and underpowered', () => {
+    // A pending task is not in the gate's task list (06 §4.1): the FIRST shape.
+    for (const skill of skills) {
+      const d = gate(both(world(3, 3, 0, 0)), both(world(3, 3, 3, 3)), {
+        skill,
+        config: gateConfig,
+      });
+      expect(d.decision, skill).toBe('underpowered');
+      expect(d.results[0]?.capability.minP).toBe(1 / 20);
     }
   });
 });
@@ -356,7 +461,8 @@ describe('the sealed baseline pattern: objective 0/3 everywhere, one replay 1/3 
 
 describe('non-regression in passes (06 §5.4)', () => {
   it('the bound is max(1 pass, 10% of the objective rollouts)', () => {
-    expect(lossBound(6)).toBe(1); // the shipped shape: 2 tasks × 3 runs
+    expect(lossBound(6)).toBe(1); // the first baseline: 2 objective tasks × 3 runs
+    expect(lossBound(12)).toBe(1); // the shipped split, all active: 4 objective tasks × 3 runs
     expect(lossBound(9)).toBe(1);
     expect(lossBound(20)).toBe(2);
     expect(lossBound(30)).toBe(3); // 10 tasks × 3 runs: the old "one task-mean"
@@ -387,9 +493,7 @@ describe('non-regression in passes (06 §5.4)', () => {
   it('a gain on the slice does not excuse a loss on the rest of the bench', () => {
     // The slice is the loop task alone; the off-slice wiki task collapses (3/3 → 0/3) while the
     // loop task gains one pass: −2 passes over the objective set, beyond the bound of 1.
-    const split: PolicyTask[] = SHIPPED.map((t) =>
-      t.id === LOOP ? { ...t, skills: [SHARED] } : t,
-    );
+    const split: PolicyTask[] = FIRST.map((t) => (t.id === LOOP ? { ...t, skills: [SHARED] } : t));
     const d = gate(both(world(3, 3, 3, 2)), both(world(3, 3, 0, 3)), { tasks: split });
     expect(d.decision).toBe('reject');
     expect(codes(d)).toContain('capability-regression');

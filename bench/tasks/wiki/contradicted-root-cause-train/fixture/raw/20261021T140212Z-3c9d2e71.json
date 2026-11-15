@@ -1,0 +1,31 @@
+{
+  "tool": "menuboard",
+  "env": "beta",
+  "sourceRepo": "fixture-org/menuboard",
+  "gitSha": "5d0c3a9e41b7f2086c9d1a3e5f7b2c4d6e8f0a1b",
+  "dirty": false,
+  "wrapperRev": {
+    "sha": null,
+    "verifyConfigHash": null
+  },
+  "runId": "7861204418",
+  "attempt": 1,
+  "skills": {
+    "installed": {},
+    "used": "unknown"
+  },
+  "rawId": "20261021T140212Z-3c9d2e71",
+  "kind": "verify",
+  "passed": false,
+  "startedAt": "2026-10-21T14:02:12Z",
+  "durationMs": 1310,
+  "refs": ["run:fixture-org/menuboard/7861204418"],
+  "retained": {
+    "verdict": "failed",
+    "excerpt": "verify menuboard --env beta (shipping 5d0c3a9): FAIL (1/3 checks)\n  ok   live          GET /health/live → 200 (31 ms)\n  FAIL menu-current  GET / → 200 (38 ms): body missing \"October menu\"   attempt 1/3\n  FAIL menu-current  GET / → 200 (35 ms): body missing \"October menu\"   attempt 2/3\n  FAIL menu-current  GET / → 200 (41 ms): body missing \"October menu\"   attempt 3/3\n  FAIL home-renders  GET / → 200 (36 ms): title is \"Menuboard · September menu\"\n  info GET /__version → {\"sha\":\"9b1f7e2\"} (33 ms)\nrequest timeout 30000 ms, retries 2; slowest request 41 ms; nothing timed out\ndeploy step finished 14:02:11Z; verify started 14:02:12Z",
+    "hashes": {
+      "excerpt": "6704a81670eaed03ac8f2437e4ba9e34a0b699ad379ea75602370d775c2380ad"
+    },
+    "fetchedAt": "2026-10-21T14:02:12Z"
+  }
+}

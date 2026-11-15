@@ -1,0 +1,31 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/verify-fails-on-cold-start",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "title: Post-deploy verify fails while the new Worker is still cold",
+          "text": "title: Post-deploy verify checks the previous version because the new one is not serving yet"
+        },
+        {
+          "op": "replace",
+          "target": "The freshly deployed Worker is cold. Its first request has to load and start the new bundle, takes\nlonger than the 5 s verify request timeout, and the content check fails. By the next attempt the\nWorker is warm. The duration of the failing request was not recorded.",
+          "text": "Verify started one second after the deploy command returned, while the route still served the previous version: every attempt answered 200 in about 40 ms and `/__version` reported the commit deployed two days earlier (raw:20261021T140212Z-3c9d2e71, issue:fixture-org/menuboard#41)."
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-menuboard-verify-red-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/verify-fails-on-cold-start"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/verify-runs-before-deploy-is-live (hypothesis) from incident/2026-10-menuboard-verify-red-with-long-timeout and the two verify runs in raw/: the failing requests were fast and served the previous version. Set pattern/verify-fails-on-cold-start to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run of the identity gate exists."
+}

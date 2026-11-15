@@ -159,23 +159,44 @@ describe('bench config files', () => {
     expect(b.monthlyUsd).toBe(0);
     expect(b.perGateMaxUsd).toBe(0);
     expect(b.splitAcrossDays).toBe(true);
-    // 4 val tasks × 3 runs × 2 models × 1 mode (isolation) × 2 (baseline re-run).
-    const estimate = estimateGateCost({
-      tasks: 4,
+    // The val split as shipped: 4 objective tasks (two per skill) and 2 replay tasks.
+    const splits = JSON.parse(
+      readFileSync(new URL('../../../../../bench/splits.json', import.meta.url), 'utf8'),
+    ) as Record<string, string>;
+    const val = Object.keys(splits).filter((id) => splits[id] === 'val');
+    expect(val).toHaveLength(6);
+    const wiki = val.filter((id) => id.startsWith('wiki/')).length;
+    // 6 val tasks × 3 runs × 2 models × 1 mode (isolation) × 2 (baseline re-run), at the observed
+    // 22 requests per rollout, plus one judge call per wiki rollout.
+    const rollouts = estimateGateCost({
+      tasks: val.length,
       runs: 3,
       models: 2,
       modes: 1,
       baselineRerun: true,
-      requestsPerRollout: 20.25,
+      requestsPerRollout: 22,
     });
-    expect(estimate).toEqual({ rollouts: 48, requests: 972, usd: 0 });
+    expect(rollouts).toEqual({ rollouts: 72, requests: 1584, usd: 0 });
+    const judgeCalls = wiki * 3 * 2 * 2;
+    expect(judgeCalls).toBe(24);
+    const estimate = { ...rollouts, requests: rollouts.requests + judgeCalls };
+    expect(estimate.requests).toBe(1608);
+    expect(b.perGateMaxRollouts).toBe(72);
+    expect(b.perGateMaxRequests).toBe(1650);
     const check = checkBudget(b, estimate, [], '2026-11-01T00:00:00Z', {
       dailyRequestsRemaining: 20,
     });
     expect(check.refusals).toEqual([]);
+    // One more val task does not fit: the caps are sized for this split, not above it.
+    const seven = estimateGateCost({
+      ...{ tasks: 7, runs: 3, models: 2, modes: 1 },
+      baselineRerun: true,
+      requestsPerRollout: 22,
+    });
+    expect(checkBudget(b, seven, [], '2026-11-01T00:00:00Z').ok).toBe(false);
     // Production mode (M3) doubles the rollouts and must raise the caps first.
     const m3 = estimateGateCost({
-      ...{ tasks: 4, runs: 3, models: 2 },
+      ...{ tasks: 6, runs: 3, models: 2 },
       modes: 2,
       baselineRerun: true,
       requestsPerRollout: 12.25,

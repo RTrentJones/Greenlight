@@ -1,0 +1,31 @@
+{
+  "tool": "inkwell",
+  "env": "prod",
+  "sourceRepo": "fixture-org/inkwell",
+  "gitSha": "c41e7a02b95d3f186e0a7c2d4b6f8091a3e5d7c9",
+  "dirty": false,
+  "wrapperRev": {
+    "sha": null,
+    "verifyConfigHash": null
+  },
+  "runId": "6790561877",
+  "attempt": 1,
+  "skills": {
+    "installed": {},
+    "used": "unknown"
+  },
+  "rawId": "20261012T084612Z-d0431f6a",
+  "kind": "alert",
+  "passed": true,
+  "startedAt": "2026-10-12T08:46:12Z",
+  "durationMs": 5180,
+  "refs": ["run:fixture-org/inkwell/6790561877"],
+  "retained": {
+    "verdict": "passed",
+    "excerpt": "alert inkwell prod: scheduled job \"digest\" resolved; manual run at 08:46:12Z succeeded\n  step connect   ok after 187 ms\n  step query     ok (41 issues)\n  step send      ok\njob client: connect timeout 30000 ms, 1 attempt\njob secret:     synced 2026-10-12T08:40Z; no code change and no deploy since 2026-10-09",
+    "hashes": {
+      "excerpt": "8d7fa5f9e90f91249f07de4b3c73050634df00845bbd6327507aa12194af6bd4"
+    },
+    "fetchedAt": "2026-10-12T08:46:12Z"
+  }
+}

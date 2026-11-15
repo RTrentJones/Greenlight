@@ -379,7 +379,7 @@ describe('the first-iteration bench (13 §3 M1, criterion 1)', () => {
     expect(snapshot()).toEqual(before);
     expect(r.problems).toEqual([]);
     expect(r.ok).toBe(true);
-    expect(r.tasks).toHaveLength(8);
+    expect(r.tasks).toHaveLength(12);
     for (const t of r.tasks) {
       expect(t.reference?.verdict).toBe('pass');
       expect(t.fixture?.verdict, `${t.task} untouched fixture`).toBe('fail');
@@ -484,5 +484,77 @@ describe('the maintainer eval judge (re-review 6): real gate grading only', () =
     });
     expect(malformed.verdict).toBe('error');
     expect(malformed.error).toMatch(/judge/);
+  }, 120_000);
+});
+
+describe('the supersede rubric has its own judge, under the same rules', () => {
+  const TASK = 'wiki/contradicted-root-cause-val';
+  const job = (layers: string[], useJudge: boolean) => {
+    const { tasks } = loadTasks(BENCH);
+    const task = tasks.find((t) => t.id === TASK);
+    if (!task) throw new Error(`no ${TASK}`);
+    const work = mkdtempSync(join(tmpdir(), 'judge-test-'));
+    tmp.push(work);
+    return {
+      taskId: TASK,
+      benchDir: BENCH,
+      graderPath: join(BENCH, 'graders', TASK, 'grade.mjs'),
+      ...materialize(
+        BENCH,
+        task,
+        layers.map((l) => join(BENCH, l)),
+        work,
+      ),
+      useJudge,
+    };
+  };
+  const REF = `references/${TASK}`;
+  const judgeCheck = (r: { checks: { name: string; passed: boolean; detail?: string }[] }) =>
+    r.checks.filter((c) => c.name.startsWith('eval judge'));
+
+  it('asks once, with the two root causes of this bundle and the new claims as data', async () => {
+    const prompts: string[] = [];
+    const r = await runInChild(job([REF], true), 60_000, {
+      judge: async (prompt: string) => {
+        prompts.push(prompt);
+        return { passed: false, rationale: 'the new pattern still blames the store resume' };
+      },
+    });
+    expect(r.verdict).toBe('fail');
+    expect(judgeCheck(r)).toHaveLength(1);
+    expect(judgeCheck(r)[0]).toMatchObject({ passed: false });
+    expect(prompts).toHaveLength(1);
+    // the supersede rubric, not the probe-layer one
+    expect(prompts[0]).toMatch(/marks the old pattern superseded by it/);
+    expect(prompts[0]).not.toMatch(/liveness model/);
+    expect(prompts[0]).toMatch(/existing pattern's root cause: the nightly job failed because/);
+    expect(prompts[0]).toMatch(/new evidence shows: the connection was refused in 212 ms/);
+    expect(prompts[0]).toMatch(/<output>[\s\S]*authentication failure[\s\S]*<\/output>/);
+    const ok = await runInChild(job([REF], true), 60_000, {
+      judge: async () => ({ passed: true, rationale: 'states the stale secret' }),
+    });
+    expect(ok.verdict).toBe('pass');
+  }, 120_000);
+
+  it('is not asked without useJudge, nor when a deterministic check fails', async () => {
+    let calls = 0;
+    const judge = async () => {
+      calls++;
+      return { passed: true, rationale: 'x' };
+    };
+    const plain = await runInChild(job([REF], false), 60_000, { judge });
+    expect(plain.verdict).toBe('pass');
+    expect(judgeCheck(plain)).toEqual([]);
+    const inPlace = await runInChild(
+      job([REF, `mutants/${TASK}/edits-the-old-pattern-in-place`], true),
+      60_000,
+      { judge },
+    );
+    expect(inPlace.verdict).toBe('fail');
+    expect(judgeCheck(inPlace)[0]?.detail).toMatch(/prefilter/);
+    expect(calls).toBe(0);
+    const none = await runInChild(job([REF], true), 60_000);
+    expect(none.verdict).toBe('error');
+    expect(none.error).toMatch(/judge/);
   }, 120_000);
 });

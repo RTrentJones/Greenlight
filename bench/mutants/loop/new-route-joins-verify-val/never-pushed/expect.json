@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"]
+}

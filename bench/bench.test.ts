@@ -3,12 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RawRecordSchema } from '../packages/shared/src/evidence';
+import { findSecrets } from '../packages/shared/src/redact';
 import { loadTasks, materialize } from '../packages/wiki/src/bench/check-graders';
 import { runGraderJob } from '../packages/wiki/src/bench/grader-api';
 import { checkFixtures } from './fixtures/sync.mjs';
 import { applyOps, blocks, overgeneral, refsIn } from './graders/_lib/maintainer.mjs';
 import { parseCmd, parseHealthcheck } from './graders/_lib/neon-idle.mjs';
-import { CHANGE_CHECK } from './graders/_lib/trajectory-grader.mjs';
+import {
+  CHANGE_CHECK,
+  GREEN_CHECK,
+  ROUTE_CHECK,
+  VERIFY_CHECK,
+} from './graders/_lib/trajectory-grader.mjs';
 import { unwrapRunner } from './runner/record.mjs';
 
 // Bench layout invariants (vision 08 §10.1, 06 §1.4, bench/README.md).
@@ -22,10 +28,14 @@ describe('bench tasks', () => {
     expect(tasks.map((t) => t.id).sort()).toEqual([
       'loop/fixture-preview-before-push-train',
       'loop/fixture-preview-before-push-val',
+      'loop/new-route-joins-verify-train',
+      'loop/new-route-joins-verify-val',
       'replay/idle-probe-leaves-store-asleep-train',
       'replay/idle-probe-leaves-store-asleep-val',
       'replay/keepalive-probe-reaches-store-train',
       'replay/keepalive-probe-reaches-store-val',
+      'wiki/contradicted-root-cause-train',
+      'wiki/contradicted-root-cause-val',
       'wiki/probe-layer-incidents-train',
       'wiki/probe-layer-incidents-val',
     ]);
@@ -73,14 +83,111 @@ describe('bench tasks', () => {
     expect(checkFixtures()).toEqual([]);
   });
 
-  it('the maintainer bundles carry valid train raw records', () => {
+  it('the maintainer bundles carry valid raw records, and no bench record from val or test', () => {
+    const wiki = tasks.filter((t) => t.spec.kind === 'wiki');
+    expect(wiki).toHaveLength(4);
+    for (const t of wiki) {
+      const dir = join(t.dir, 'fixture/raw');
+      const files = readdirSync(dir);
+      expect(files.length, t.id).toBeGreaterThan(0);
+      for (const f of files) {
+        const rec = RawRecordSchema.parse(JSON.parse(readFileSync(join(dir, f), 'utf8')));
+        // A bench trace in a bundle is a training trace (06 §1.4); field records carry none.
+        if (rec.kind === 'bench') expect(rec.bench?.split, `${t.id} ${f}`).toBe('train');
+        expect(f).toBe(`${rec.rawId}.json`);
+      }
+    }
     for (const split of ['train', 'val']) {
       const dir = join(BENCH, `tasks/wiki/probe-layer-incidents-${split}/fixture/raw`);
       for (const f of readdirSync(dir)) {
-        const rec = RawRecordSchema.parse(JSON.parse(readFileSync(join(dir, f), 'utf8')));
-        expect(rec.bench?.split).toBe('train');
-        expect(f).toBe(`${rec.rawId}.json`);
+        expect(JSON.parse(readFileSync(join(dir, f), 'utf8')).bench?.split).toBe('train');
       }
+    }
+  });
+
+  it('nothing a rollout is given reads as a secret to the send guard (06 §4.8)', () => {
+    // A value the detector flags in a fixture is refused on every request that quotes it, so the
+    // rollout could never run. The older fixtures carry publishable keys on purpose (the guard's
+    // fixture allowance covers them); the families added later carry none.
+    const walk = (d: string): string[] =>
+      readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)],
+      );
+    const later = tasks.filter((t) => /new-route-joins-verify|contradicted-root-cause/.test(t.id));
+    expect(later).toHaveLength(4);
+    for (const t of later) {
+      for (const f of [...walk(join(t.dir, 'fixture')), join(t.dir, 'brief.md')]) {
+        expect(findSecrets(readFileSync(f, 'utf8')), f).toEqual([]);
+      }
+    }
+  });
+});
+
+describe('the two families of a skill measure different behaviour', () => {
+  const byFamily = (family: string) => tasks.filter((t) => t.id.startsWith(`${family}-`));
+
+  it('every skill with an objective task has two objective families per split', () => {
+    for (const split of ['train', 'val']) {
+      const objective = tasks.filter((t) => t.spec.split === split && t.spec.kind !== 'replay');
+      const skills = [...new Set(objective.flatMap((t) => t.spec.skills))];
+      expect(skills.sort()).toEqual(['deploy-verify-promote', 'greenlight-wiki']);
+      for (const s of skills) {
+        expect(
+          objective.filter((t) => t.spec.skills.includes(s)).map((t) => t.id),
+          `${s} ${split}`,
+        ).toHaveLength(2);
+      }
+    }
+  });
+
+  it('the two loop families use different fixtures, tools and ports', () => {
+    const tools = (id: string) =>
+      readdirSync(join(BENCH, 'tasks', id, 'fixture/tools'))
+        .sort()
+        .join(',');
+    const all = [
+      ...byFamily('loop/fixture-preview-before-push'),
+      ...byFamily('loop/new-route-joins-verify'),
+    ];
+    expect(all).toHaveLength(4);
+    expect(new Set(all.map((t) => tools(t.id))).size).toBe(4);
+    const ports = all.flatMap((t) =>
+      [
+        ...readFileSync(join(t.dir, 'fixture/greenlight.config.mjs'), 'utf8').matchAll(
+          /port: (\d+), path/g,
+        ),
+      ].map((m) => `${t.spec.split}:${m[1]}`),
+    );
+    // within a split, no two tools share a preview port (a run may preview both families' tools)
+    expect(new Set(ports).size).toBe(ports.length);
+  });
+
+  it('only the route family asks for a verify check, and its brief does not say so', () => {
+    for (const t of byFamily('loop/new-route-joins-verify')) {
+      const brief = readFileSync(join(t.dir, 'brief.md'), 'utf8');
+      expect(brief, t.id).not.toMatch(/verify|preview|check|gate|push/i);
+      // ... the repository does, the way a wrapper's README does
+      expect(readFileSync(join(t.dir, 'fixture/README.md'), 'utf8'), t.id).toMatch(
+        /verify\.config\.mjs` is the tool's verify spec/,
+      );
+    }
+  });
+
+  it('the supersede bundles hold exactly one pattern the new incident contradicts', () => {
+    for (const t of byFamily('wiki/contradicted-root-cause')) {
+      const rubric = JSON.parse(
+        readFileSync(join(BENCH, 'graders', t.id, 'rubric.json'), 'utf8'),
+      ).supersede;
+      const page = (id: string) =>
+        readFileSync(join(t.dir, 'fixture/wiki', `${id.replace('/', 's/')}.md`), 'utf8');
+      expect(page(rubric.old), t.id).toMatch(/^status: hypothesis$/m);
+      for (const id of rubric.contradictedBy) {
+        // captured, not yet compiled: the new incident names no pattern
+        expect(page(id), t.id).toMatch(/^patterns: \[\]$/m);
+      }
+      // the brief does not name the old pattern, the rule or the answer
+      const brief = readFileSync(join(t.dir, 'brief.md'), 'utf8');
+      expect(brief, t.id).not.toMatch(/supersed|root cause|contradict|pattern/i);
     }
   });
 });
@@ -242,6 +349,62 @@ describe('the loop grader checks what was pushed, not only the order', () => {
       detail: 'nothing was pushed to the target branch',
     });
     expect((await grade({ tree: 'changed', pushed: 'changed' })).passed).toBe(true);
+  });
+});
+
+describe('the route grader reads the route and its verify check from what was pushed', () => {
+  const TASK = 'loop/new-route-joins-verify-val';
+  const task = tasks.find((t) => t.id === TASK);
+  if (!task) throw new Error(`no task ${TASK}`);
+  const REF = join(BENCH, 'references', TASK);
+  const NO_CHECK = join(BENCH, 'mutants', TASK, 'route-without-verify-check');
+  const grade = async (pushed: 'reference' | 'fixture' | 'route-only' | 'none' | undefined) => {
+    const work = mkdtempSync(join(tmpdir(), 'route-tree-check-'));
+    try {
+      // The working tree always holds the full solution; only what reached the branch varies.
+      const tree = materialize(BENCH, task, [REF], join(work, 'w')).tree;
+      const layers = { reference: [REF], fixture: [], 'route-only': [REF, NO_CHECK] };
+      const pushedTree =
+        pushed && pushed !== 'none'
+          ? materialize(BENCH, task, layers[pushed], join(work, 'p')).tree
+          : undefined;
+      const r = await runGraderJob({
+        taskId: TASK,
+        benchDir: BENCH,
+        graderPath: join(BENCH, 'graders', TASK, 'grade.mjs'),
+        tree,
+        trajectoryPath: join(REF, 'trajectory.jsonl'),
+        ...(pushed ? { pushedKnown: true } : {}),
+        ...(pushedTree ? { pushedTree } : {}),
+      });
+      const failed = r.checks.filter((c) => !c.passed).map((c) => c.name);
+      return { passed: r.passed, failed, checks: r.checks };
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  };
+
+  it('passes when the route and its check are on the branch', async () => {
+    expect((await grade('reference')).failed).toEqual([]);
+    expect((await grade(undefined)).passed).toBe(true); // synthetic: the tree stands in
+  });
+
+  it('a route pushed without its check fails on the check alone, whatever the working tree holds', async () => {
+    const r = await grade('route-only');
+    expect(r.failed).toEqual([VERIFY_CHECK, GREEN_CHECK]);
+    expect(r.checks.find((c) => c.name === VERIFY_CHECK)?.detail).toMatch(
+      /no check on \/trails\.json; the config checks \/, \/health\/live/,
+    );
+    expect(r.checks.find((c) => c.name === ROUTE_CHECK)?.detail).toMatch(
+      /GET \/trails\.json in the pushed branch → 200 with 4 entries/,
+    );
+  });
+
+  it('nothing pushed, or the untouched fixture pushed, fails all three', async () => {
+    expect((await grade('fixture')).failed).toEqual([ROUTE_CHECK, VERIFY_CHECK, GREEN_CHECK]);
+    const none = await grade('none');
+    expect(none.failed).toEqual([ROUTE_CHECK, VERIFY_CHECK, GREEN_CHECK]);
+    expect(none.checks.at(-1)?.detail).toBe('nothing was pushed to the target branch');
   });
 });
 

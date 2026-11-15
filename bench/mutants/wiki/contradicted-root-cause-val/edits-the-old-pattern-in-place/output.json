@@ -1,0 +1,31 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/nightly-job-fails-while-store-wakes",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "title: A scheduled job fails because the scale-to-zero store is still waking",
+          "text": "title: A scheduled job fails because its database secret is stale after the store branch reset"
+        },
+        {
+          "op": "replace",
+          "target": "The store suspends when idle, and the job is the first client of the night. Resuming the compute\ntakes longer than the client's 5 s connect timeout, so the first connection fails. By the morning\nthe store is awake. The error text of the failed connection was not kept.",
+          "text": "The weekly reset of the store branch issued a new login for the job's role, and the job still held the secret synced a week earlier: its connection was refused in 212 ms with an authentication failure while the compute was awake (raw:20261012T020004Z-7be2c905, issue:fixture-org/inkwell#27)."
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-inkwell-digest-job-failed-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/nightly-job-fails-while-store-wakes"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/job-secret-stale-after-branch-reset (hypothesis) from incident/2026-10-inkwell-digest-job-failed-with-long-timeout and the two records in raw/: the connection was refused in 212 ms on an authentication failure while the store was awake. Set pattern/nightly-job-fails-while-store-wakes to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run exists."
+}
