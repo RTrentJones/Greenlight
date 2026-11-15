@@ -836,8 +836,8 @@ An algorithm-1 record differs: it has no `algorithm`, carries `seed` (the bootst
 `skillLines: { before, after }` (caller-supplied line counts) instead of `skillText`. The schema
 still reads it, so `--recompute` can report it as made with the older algorithm (06 §5.8); it is
 never re-decided. A version-2 record carrying `seed`, `resamples` or `skillLines`, or lacking
-`skill` (skill outlet), the fraction or any task's `skills`, is invalid. `bench/gate.json` may
-still hold `resamples`; it is ignored.
+`skill` (skill outlet), the fraction or any task's `skills`, is invalid. `bench/gate.json` no
+longer carries `resamples`; a file that still does is read, and the key is ignored.
 
 A gate input record is written for a decision only. `blocked` and `underpowered` outcomes (06
 §5.1) have none.

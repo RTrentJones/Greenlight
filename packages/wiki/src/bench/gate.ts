@@ -35,8 +35,8 @@ import { GATE_ALGORITHM, type GateMode } from './stats';
  * Pure: no clock, no network — the caller passes `ts`.
  */
 
-/** `bench/gate.json` (07 §3.10). Unknown keys (e.g. the monitor threshold, or the `resamples` of
- * the retired bootstrap) are ignored here. */
+/** `bench/gate.json` (07 §3.10). Unknown keys (e.g. the monitor threshold, or the `resamples` an
+ * older file kept from the retired bootstrap) are ignored here; the shipped file carries none. */
 export const GateConfigSchema = z.object({
   alpha: z.number().gt(0).lt(1).default(0.05),
   runs: z.number().int().min(1).default(3),

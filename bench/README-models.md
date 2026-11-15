@@ -61,9 +61,9 @@ Recorded values, **measured on 2026-11-12** (fact page `wiki/facts/gemini-free.m
 `gemini-3.5-flash-lite` at **10 RPM and 190 RPD** and `gemini-3.1-flash-lite` at **10 RPM and 250
 RPD**, lower bounds from runs of 190 and 250 requests that never hit a 429. TPM stays at 250,000
 (not probed). The former frontier, `gemini-3.6-flash`, measured 5 RPM and 20 RPD, both named by the
-quota ids in Google's 429 responses. With the new values and the 27-request rollout cap the frontier fits
-seven rollouts a day and the small model nine, so a 48-rollout gate takes about four days instead
-of about 24.
+quota ids in Google's 429 responses. With the new values and the 27-request rollout cap the
+frontier fits seven rollouts a day and the small model nine, so the 72-rollout gate of the current
+val split takes about six days (the arithmetic is under "Budget" below).
 
 The history below records how the earlier, unverified 5 RPM / 20 RPD default for both models was
 chosen.
@@ -109,25 +109,31 @@ production mode lands in M3 (14, M1-05: "isolation mode only"). The baseline is 
 ```
 monthlyUsd 0, perGateMaxUsd 0   free tier: the dollar caps stay at 0 (ADR-20)
 
-perGateMaxRollouts 48
-  = 4 val tasks          (loop 1, replay 2, wiki 1: bench/splits.json)
+perGateMaxRollouts 72
+  = 6 val tasks          (loop 2, wiki 2: the 4 objective tasks, two per skill;
+                          replay 2: constraints only. bench/splits.json)
   × 3 runs per task
   × 2 models             (the frontier and small gate pair)
   × 1 mode               (isolation only in M2)
   × 2                    (candidate + baseline re-run)
-  = 48                   an estimate exactly at the cap runs (checkBudget is strict ">")
+  = 72                   an estimate exactly at the cap runs (checkBudget is strict ">")
 
-perGateMaxRequests 1000
-  requests per rollout, estimated at 20:
-    ~17 model turns      the 2026-11-12 activation baseline: most rollouts read 8–12 files
-                         before acting, and 6 of 8 used all 15 steps
-    +3 retry headroom    RequestBudget counts every HTTP attempt, retries included
-  + the wiki task's eval judge: 1 call per wiki rollout
-    = 12 wiki rollouts (1 task × 3 runs × 2 models × 2) → 12 requests
-  = 48 × 20 + 12 = 972 → cap 1000  (estimateGateCost with requestsPerRollout 20.25 = 972)
+perGateMaxRequests 1650
+  requests per rollout, observed at about 22 under the 25-step cap (HTTP attempts, retries
+  included: RequestBudget counts every one)
+  + the wiki tasks' eval judge: 1 call per wiki rollout
+    = 24 wiki rollouts (2 tasks × 3 runs × 2 models × 2) → 24 requests
+  = 72 × 22 + 24 = 1608 → cap 1650
+    (estimateGateCost with requestsPerRollout 22 = 1584, plus the 24 judge calls)
 
 splitAcrossDays true            the gate cannot fit in one day's rpd (below)
 ```
+
+Until 2026-11-15 the val split held 4 tasks (one objective task per skill) and the caps were 48
+rollouts and 1,000 requests (48 × 20 + 12 = 972). With one task in each skill's slice the gate's
+exact test could not reach p < 0.05 (06 §5.2), so a second objective family was added per skill;
+the caps follow the split. A seventh val task does not fit and has to raise them again
+(`llm.test.ts` asserts both).
 
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
@@ -136,17 +142,18 @@ files; only 2 finished. A baseline that passes nothing leaves the replay safety 
 the control arm unable to show a rejection, so the cap was raised before any task was activated
 (the limits are part of the identity, so nothing comparable was discarded). Each rollout's hard
 request cap is `maxSteps + 2` = **27** (one request per step plus two retries' headroom;
-`harness.limits` in the identity). The *expected* figure the budget is sized on is 20 requests per
-rollout; the worst case is 48 × 27 + 12 = 1308 requests, so a gate that ran every rollout to its
-cap would stop at `perGateMaxRequests` 1000 and resume with a fresh cap the next invocation. The live
-smoke task used 2 requests for one tool call and `finish`.
+`harness.limits` in the identity). The *expected* figure the budget is sized on is 22 requests per
+rollout; the worst case is 72 × 27 + 24 = 1968 requests, so a gate that ran every rollout to its
+cap would stop at `perGateMaxRequests` 1650 and resume with a fresh cap the next invocation. The
+live smoke task used 2 requests for one tool call and `finish`.
 
 **The cap is reserved, which sets the pace.** Before each rollout the runner requires the model's
-remaining daily quota to cover the full cap (17, plus 1 on the judge model for a maintainer gate
+remaining daily quota to cover the full cap (27, plus 1 on the judge model for a maintainer
 rollout), so a rollout is never started that the day's quota could cut off mid-way. The pace is
 therefore set by the daily limit divided by the cap, not by what rollouts actually spend: at the
-former frontier's 20 RPD this admitted one rollout a day, and at the measured 190 and 250 RPD it
-admits 11 and 14 (the table below). `--rollout-requests n` lowers the
+former frontier's 20 RPD this admitted no rollout at all under the 27-request cap (one a day
+under the earlier cap of 17), and at the measured 190 and 250 RPD it admits ⌊190 / 27⌋ = 7 and
+⌊250 / 27⌋ = 9 (the table below). `--rollout-requests n` lowers the
 cap (and the reservation) for faster days at the risk of cutting rollouts short; it is part of the
 identity, so baseline and candidate must use the same value.
 
@@ -156,16 +163,19 @@ in a day is the daily limit divided by 27, rounded down.
 
 | model | rollouts | rollouts per day | days |
 |---|---|---|---|
-| frontier `gemini-3.5-flash-lite` (190 RPD) | 24 | 7 | 4 |
-| small `gemini-3.1-flash-lite` (250 RPD) | 24 (+12 judge calls) | 9 | 3 |
+| frontier `gemini-3.5-flash-lite` (190 RPD) | 36 | ⌊190 / 27⌋ = 7 | ⌈36 / 7⌉ = 6 |
+| small `gemini-3.1-flash-lite` (250 RPD) | 36 (+24 judge calls) | ⌊250 / 27⌋ = 9 | ⌈36 / 9⌉ = 4 |
 
-The two models draw on separate quotas and run in parallel, so a gate takes **about four days**.
-Before 2026-11-12, with `gemini-3.6-flash` at 20 RPD, the same gate took about 24 days. Fallback is
-off for every rollout, so one model never spends the other's quota.
+Nine rollouts reserve 243 of the small model's 250 requests, which leaves 7 a day for judge calls:
+28 over the four days, for the 24 the gate needs (12 of them for the frontier model's wiki
+rollouts, whose judge is the small model). The two models draw on separate quotas and run in
+parallel, so a gate takes **about six days**, set by the frontier model. With the earlier 4-task
+split it took about four (24 rollouts per model: 4 and 3 days). Fallback is off for every rollout,
+so one model never spends the other's quota.
 
-**Before M3.** Production mode doubles the rollouts to 96. Before then, `perGateMaxRollouts` must
-be raised to 96 and `perGateMaxRequests` to 96 × 12 + 24 = 1,176, or about 48 days per gate at
-20 RPD under one-rollout-per-day pacing.
+**Before M3.** Production mode doubles the rollouts to 144. Before then, `perGateMaxRollouts` must
+be raised to 144 and `perGateMaxRequests` to 144 × 22 + 48 = 3,216 (cap 3,300), or about eleven
+days per gate at the measured limits (72 rollouts per model: ⌈72 / 7⌉ = 11 and ⌈72 / 9⌉ = 8).
 
 **Shortening a gate.** Run fewer runs per task, verify higher free-tier limits (the Flash-Lite
 models are reported at 500 RPD), or move to a paid tier through `bench/models.json`.
