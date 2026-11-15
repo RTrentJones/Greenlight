@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["container healthcheck declared"]
+}

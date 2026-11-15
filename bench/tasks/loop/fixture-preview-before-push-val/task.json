@@ -183,6 +183,12 @@
       "grader": "trajectory",
       "kind": "trajectory",
       "description": "a transcript event claiming a passing preview (meta on a non-shim event) from a preview the shim recorded"
+    },
+    {
+      "id": "pushed-without-change",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a passing preview and a push to develop of the untouched fixture (the requested copy change never made) from a push that carries the change"
     }
   ]
 }

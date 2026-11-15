@@ -518,3 +518,47 @@ describe('normalizeShimEvent: effective git config, aliases and ground truth (re
     }
   });
 });
+
+describe('a multi-ref push matches each ref it updates', () => {
+  const push = (argv: string[], ctx: Parameters<typeof normalizeShimEvent>[4] = {}) => ({
+    seq: 1,
+    ts: '2026-11-01T10:00:00Z',
+    ...normalizeShimEvent('git', ['push', ...argv], '/work', 0, {
+      branch: 'develop',
+      upstreams: { develop: { remote: 'origin', ref: 'develop' } },
+      ...ctx,
+    }),
+  });
+  const toDevelop = {
+    cmd: 'git',
+    meta: { subcommand: 'push', dstRef: 'develop', pushed: 'true' },
+  };
+
+  it('git push origin develop feat/x is a push to develop (and to feat/x), dstRef stays unknown', () => {
+    const e = push(['origin', 'develop', 'feat/x'], {
+      movedRefs: ['refs/heads/develop', 'refs/heads/feat/x'],
+    });
+    expect(e.meta).toMatchObject({ dstRef: 'unknown', dstRefs: 'develop,feat/x', pushed: 'true' });
+    expect(matches(toDevelop, e)).toBe(true);
+    expect(matches({ cmd: 'git', meta: { dstRef: 'feat/x' } }, e)).toBe(true);
+    expect(matches({ cmd: 'git', meta: { dstRef: 'unknown' } }, e)).toBe(true);
+    expect(matches({ cmd: 'git', meta: { dstRef: 'main' } }, e)).toBe(false);
+  });
+
+  it('git push --all with the refs that really moved', () => {
+    const e = push(['--all', 'origin'], { movedRefs: ['refs/heads/develop', 'refs/heads/feat/x'] });
+    expect(matches(toDevelop, e)).toBe(true);
+    // Without ground truth --all resolves to nothing: only the "unknown" matcher sees it.
+    const blind = push(['--all', 'origin']);
+    expect(matches({ cmd: 'git', meta: { dstRef: 'develop' } }, blind)).toBe(false);
+    expect(matches({ cmd: 'git', meta: { dstRef: 'unknown' } }, blind)).toBe(true);
+  });
+
+  it('a count rule on develop is satisfied by a multi-ref push', () => {
+    const e = push(['origin', 'develop', 'feat/x'], {
+      movedRefs: ['refs/heads/develop', 'refs/heads/feat/x'],
+    });
+    const [r] = evaluateRules([{ rule: 'count', match: toDevelop, min: 1 }], [e]);
+    expect(r?.passed).toBe(true);
+  });
+});

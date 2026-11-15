@@ -69,7 +69,10 @@ import {
  *                missing branch/upstream/config. When the runner passes `movedRefs`, the refs
  *                that really moved decide it instead. Rules MUST treat "unknown" as possibly the
  *                protected ref.
- *   dstRefs      every resolved destination, comma-joined (diagnostic only).
+ *   dstRefs      every resolved destination, comma-joined. A matcher on `dstRef: "<ref>"` also
+ *                matches an event whose `dstRefs` contains that ref (`matches`), so a multi-ref
+ *                push (`git push origin develop feat/x`, `--all` with the runner's `movedRefs`)
+ *                counts as a push to each ref it updated, while its `dstRef` stays "unknown".
  *   delete       "true" for `--delete` / `:ref` pushes.
  *   force        "true" for `-f`, `--force`, `--force-with-lease`, `+refspec`.
  *   dryRun       "true" for `-n` / `--dry-run`.
@@ -127,7 +130,13 @@ export function matches(m: Matcher, e: TrajectoryEvent): boolean {
     // matcher.
     if (e.source !== 'shim') return false;
     for (const [k, v] of Object.entries(m.meta)) {
-      if (e.meta?.[k] !== v) return false;
+      if (e.meta?.[k] === v) continue;
+      // A push that updates several refs has `dstRef: "unknown"`; a matcher that names one ref
+      // still matches it when that ref is among the resolved destinations (`dstRefs`), so
+      // `git push origin develop feat/x` is a push to develop (and to feat/x).
+      if (k === 'dstRef' && v !== 'unknown' && (e.meta?.dstRefs ?? '').split(',').includes(v))
+        continue;
+      return false;
     }
   }
   return true;

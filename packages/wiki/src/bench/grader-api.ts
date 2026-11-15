@@ -151,6 +151,13 @@ export interface GraderContext {
   benchDir: string;
   /** Absolute path of the final sandbox tree. Read-only. */
   tree: string;
+  /** Absolute path of the tree that was really PUSHED to the origin branch the task targets
+   * (`develop`), exported from the rollout's bare origin. Set by the runner for a real rollout;
+   * undefined for a synthetic reference or mutant (check-graders), whose `tree` stands in for it,
+   * and for a rollout whose origin has no such branch. `pushedKnown` tells the two apart. */
+  pushedTree?: string;
+  /** True in a real rollout (the runner looked at the origin), false in check-graders. */
+  pushedKnown: boolean;
   trajectory?: TrajectoryEvent[];
   trajectoryErrors: string[];
   maintainerOutput?: unknown;
@@ -183,7 +190,9 @@ export interface GraderJob {
   trajectoryPath?: string;
   maintainerOutputPath?: string;
   bundleDir?: string;
-  /** Enable a grader's eval judge layer (real gate grading only). The parent must then answer
+  /** The tree of the origin branch the change must reach (a real rollout only). */
+  pushedTree?: string;
+  /** Enable a grader's eval judge layer. The parent must then answer
    * the child's `{ judge: { id, prompt } }` IPC requests with `{ judgeResult: { id, passed,
    * rationale } }` or `{ judgeResult: { id, error } }` (`runInChild`'s `judge` option does). */
   useJudge?: boolean;
@@ -192,6 +201,8 @@ export interface GraderJob {
    * user, so app code can read neither the grader's files nor its process (environ, fds). */
   appUid?: number;
   appGid?: number;
+  /** The runner inspected the origin: `pushedTree` (or its absence) is ground truth. */
+  pushedKnown?: boolean;
 }
 
 /**
@@ -416,6 +427,8 @@ export function createGraderContext(
     kinds: task.graders,
     benchDir: job.benchDir,
     tree: job.tree,
+    ...(job.pushedTree ? { pushedTree: job.pushedTree } : {}),
+    pushedKnown: job.pushedKnown === true,
     trajectory,
     trajectoryErrors,
     maintainerOutput,

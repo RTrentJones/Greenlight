@@ -83,6 +83,10 @@ export interface Sandbox {
   /** Copies the final tree (with `.git`) to `dest`, which must not exist. Only regular files,
    * directories and symlinks are copied; nothing is followed. */
   exportTree(dest: string): Promise<void>;
+  /** Copies the tree of one branch of the bare ORIGIN (what was really pushed) to `dest`, which
+   * must not exist. Call it after `finish`. Returns false, leaving no `dest`, when the origin has
+   * no such branch or cannot be read. */
+  exportOriginBranch(branch: string, dest: string): Promise<boolean>;
   dispose(): Promise<void>;
 }
 
@@ -124,19 +128,32 @@ interface Collected {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** stdout as bytes, with `binary`. */
+  stdoutBuf?: Buffer;
 }
 
 function collect(
   proc: ChildProcess,
-  o: { stdin?: string | Buffer; timeoutMs: number; maxOutput: number; onTimeout: () => void },
+  o: {
+    stdin?: string | Buffer;
+    timeoutMs: number;
+    maxOutput: number;
+    onTimeout: () => void;
+    binary?: boolean;
+  },
 ): Promise<Collected> {
   return new Promise((res) => {
     let out = '';
     let err = '';
     let timedOut = false;
+    const chunks: Buffer[] = [];
+    let size = 0;
     const cap = (s: string, b: Buffer) => (s.length < o.maxOutput ? s + b.toString() : s);
     proc.stdout?.on('data', (b: Buffer) => {
-      out = cap(out, b);
+      if (o.binary) {
+        size += b.length;
+        if (size <= o.maxOutput) chunks.push(b);
+      } else out = cap(out, b);
     });
     proc.stderr?.on('data', (b: Buffer) => {
       err = cap(err, b);
@@ -155,6 +172,8 @@ function collect(
         stdout: out.slice(0, o.maxOutput),
         stderr: err.slice(0, o.maxOutput),
         timedOut,
+        // Over the cap the bytes are incomplete: report none rather than a truncated archive.
+        ...(o.binary && size <= o.maxOutput ? { stdoutBuf: Buffer.concat(chunks) } : {}),
       });
     });
     proc.stdin?.on('error', () => {});
@@ -461,14 +480,16 @@ export interface RunnerImage {
 
 /**
  * `harness.imageDigest`: a hash of the build context (`bench/runner/`, whose Dockerfile pins the
- * base image by digest and every apk package by version), the shim uid, and the package list
+ * base image by digest and installs its apk packages unpinned), the shim uid, and the package list
  * actually installed in the image (`apk info -v`, sorted).
  *
  * Why not the local image id: it changes on every rebuild (layer timestamps), so a pruned and
  * rebuilt image would refuse every resume across days although nothing an agent can observe
  * changed. The context hash names what was asked for; the package list proves what was installed
- * (a transitive dependency the pins do not cover would show up there), so a drifted rebuild still
- * changes the identity.
+ * (name and version of every package, direct or transitive). The packages are deliberately not
+ * pinned in the Dockerfile (a rolling mirror stops serving a pinned revision at the next security
+ * patch, and the build then fails everywhere it is not cached), so a rebuild that installs a newer
+ * package changes this digest: a new identity and a re-baseline, never a build failure.
  */
 export function runnerImageDigest(contextHash: string, uid: number, packages: string): string {
   const list = packages
@@ -629,8 +650,8 @@ export async function createDockerSandbox(
   };
   const dexec = (
     argv: string[],
-    eo: ExecOptions & { stdinBuf?: Buffer; bare?: boolean; as?: As } = {},
-  ): Promise<ExecResult> => {
+    eo: ExecOptions & { stdinBuf?: Buffer; bare?: boolean; as?: As; binary?: boolean } = {},
+  ): Promise<ExecResult & { stdoutBuf?: Buffer }> => {
     const secs = Math.max(1, Math.ceil((eo.timeoutMs ?? 120_000) / 1000));
     // In-container `timeout` so a timed-out command dies inside too (killing the docker client
     // alone would leave it running); `bare` for the runner's own commands.
@@ -653,6 +674,7 @@ export async function createDockerSandbox(
       timeoutMs: secs * 1000 + 10_000,
       maxOutput: eo.maxOutput ?? 1024 * 1024,
       onTimeout: () => proc.kill('SIGKILL'),
+      ...(eo.binary ? { binary: true } : {}),
     }).then((r) => ({ ...r, timedOut: r.timedOut || r.exit === 137 }));
   };
 
@@ -742,6 +764,27 @@ export async function createDockerSandbox(
         });
       });
       extractTar(buf, assertSafeTar(buf), dest);
+    },
+    async exportOriginBranch(branch, dest) {
+      if (!/^[\w./-]+$/.test(branch)) return false;
+      const r = await dexec(
+        [
+          '/usr/bin/git',
+          '--git-dir=/srv/origin.git',
+          'archive',
+          '--format=tar',
+          `refs/heads/${branch}`,
+        ],
+        { bare: true, as: 'git', maxOutput: MAX_TREE_BYTES, binary: true },
+      );
+      if (r.exit !== 0 || !r.stdoutBuf) return false;
+      try {
+        extractTar(r.stdoutBuf, assertSafeTar(r.stdoutBuf), dest);
+        return true;
+      } catch {
+        rmSync(dest, { recursive: true, force: true });
+        return false;
+      }
     },
     async dispose() {
       if (disposed) return;
@@ -873,6 +916,25 @@ export async function createProcessSandbox(
     async exportTree(dest) {
       assertPlainTree(work);
       cpSync(work, dest, { recursive: true, verbatimSymlinks: true });
+    },
+    async exportOriginBranch(branch, dest) {
+      if (!/^[\w./-]+$/.test(branch)) return false;
+      try {
+        const buf = execFileSync(
+          git,
+          ['--git-dir', origin, 'archive', '--format=tar', `refs/heads/${branch}`],
+          {
+            env: { ...baseEnv, GIT_CONFIG_GLOBAL: '/dev/null' },
+            stdio: ['ignore', 'pipe', 'ignore'],
+            maxBuffer: MAX_TREE_BYTES,
+          },
+        );
+        extractTar(buf, assertSafeTar(buf), dest);
+        return true;
+      } catch {
+        rmSync(dest, { recursive: true, force: true });
+        return false;
+      }
     },
     async dispose() {
       rmSync(root, { recursive: true, force: true });

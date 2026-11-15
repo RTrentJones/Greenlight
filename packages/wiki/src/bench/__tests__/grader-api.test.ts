@@ -1,4 +1,6 @@
+import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -52,7 +54,7 @@ describe('createGraderContext', () => {
     expect(ctx.maintainerOutput).toEqual({ create_pages: [], update_pages: [] });
     const v = ctx.validateMaintainerOutput(ctx.maintainerOutput);
     expect(v.success).toBe(false);
-    expect(v.error).toMatch(/update_index/);
+    expect(v.error).toMatch(/append_log/);
     writeFileSync(p, '{');
     expect(
       createGraderContext(job({ maintainerOutputPath: p })).ctx.maintainerOutputError,
@@ -208,4 +210,94 @@ createServer((req, res) => {
       await clock.stop();
     }
   }, 60_000);
+});
+
+describe('the clock coordinator waits for an announced child while it is alive (the join flake)', () => {
+  const LIB = join(here, '../../../../../bench/graders/_lib');
+  const kids: ChildProcess[] = [];
+  afterAll(() => {
+    for (const k of kids) k.kill('SIGKILL');
+  });
+  /** A live process that never talks to the clock by itself. */
+  const sleeper = () => {
+    const k = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore' });
+    kids.push(k);
+    return k;
+  };
+  /** A hand-driven participant: says hello with `keys` and answers every `advance`. */
+  const participant = (socketPath: string, keys: string[]) =>
+    new Promise<{ send: (m: unknown) => void; close: () => void }>((res) => {
+      const sock = connect(socketPath);
+      sock.setEncoding('utf8');
+      let buf = '';
+      const send = (m: unknown) => sock.write(`${JSON.stringify(m)}\n`);
+      sock.on('data', (chunk: string) => {
+        buf += chunk;
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const msg = JSON.parse(buf.slice(0, i));
+          buf = buf.slice(i + 1);
+          if (msg.op === 'welcome') res({ send, close: () => sock.destroy() });
+          if (msg.op === 'advance') send({ op: 'advanced', id: msg.id, next: null });
+        }
+      });
+      sock.on('connect', () => send({ op: 'hello', keys }));
+    });
+  const start = Date.parse('2026-11-01T10:00:00Z');
+  const coordinator = async (o: Record<string, unknown> = {}) => {
+    const { startClockCoordinator } = await import(join(LIB, 'fake-clock-coordinator.mjs'));
+    return startClockCoordinator({ start, ...o });
+  };
+
+  it('a child that takes longer than the old 5 s deadline to join is still waited for', async () => {
+    const clock = await coordinator();
+    try {
+      const parent = await participant(clock.socketPath, ['p:1']);
+      const child = sleeper();
+      parent.send({ op: 'expect', key: `p:${child.pid}`, now: start });
+      // A loaded machine: the child's Node boots, and joins, only after 5.6 s.
+      setTimeout(() => void participant(clock.socketPath, [`p:${child.pid}`]), 5600);
+      const state = await clock.advance(start + 60_000);
+      expect(clock.problems()).toEqual([]);
+      expect(clock.joined()).toBe(2);
+      expect(state.participants).toBe(2);
+    } finally {
+      await clock.stop();
+    }
+  }, 30_000);
+
+  it('a child that exited before joining is dropped at once, with no problem', async () => {
+    const clock = await coordinator();
+    try {
+      const parent = await participant(clock.socketPath, ['p:1']);
+      const child = sleeper();
+      const gone = new Promise((r) => child.once('exit', r));
+      child.kill('SIGKILL');
+      await gone;
+      parent.send({ op: 'expect', key: `p:${child.pid}`, now: start });
+      const t0 = Date.now();
+      await clock.advance(start + 60_000);
+      expect(Date.now() - t0).toBeLessThan(3000);
+      expect(clock.problems()).toEqual([]);
+    } finally {
+      await clock.stop();
+    }
+  }, 30_000);
+
+  it('a live child that never joins within the cap is a HARNESS error, not a verdict', async () => {
+    const clock = await coordinator({ joinTimeoutMs: 300 });
+    try {
+      const parent = await participant(clock.socketPath, ['p:1']);
+      const child = sleeper();
+      parent.send({ op: 'expect', key: `p:${child.pid}`, now: start });
+      const err = await clock.advance(start + 60_000).then(
+        () => undefined,
+        (e: Error & { harness?: boolean }) => e,
+      );
+      expect(err?.name).toBe('ClockJoinTimeoutError');
+      expect(err?.harness).toBe(true);
+      expect(err?.message).toMatch(/is still running, and did not join the clock in 300 ms/);
+    } finally {
+      await clock.stop();
+    }
+  }, 30_000);
 });
