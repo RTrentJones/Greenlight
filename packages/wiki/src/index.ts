@@ -28,6 +28,9 @@ export * from './bench/shims';
 export * from './bench/sandbox';
 export * from './bench/grade';
 export * from './bench/runner';
+// External rollouts (06 §4.9): the rollout server, its manifest and the client an outside agent runs.
+export * from './bench/external';
+export * from './bench/rollout-client';
 // M2-02 / M2-03: outlet evaluation for the human-applied outlets, and the control arm.
 export * from './bench/outlets';
 // M2-01 / M2-04: the ITERATE state machine and the review hand-off.

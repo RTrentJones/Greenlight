@@ -95,7 +95,9 @@ export const RetainedEvidenceSchema = z
 
 export const AgentSchema = z
   .object({
-    vendor: z.enum(['greenlight-harness', 'gemini-cli', 'claude', 'codex', 'other']),
+    // `external`: a bench rollout driven by an agent launched from outside the harness (06 §4.9);
+    // `version` is then the agent id its launcher DECLARED, which the harness cannot verify.
+    vendor: z.enum(['greenlight-harness', 'gemini-cli', 'claude', 'codex', 'other', 'external']),
     version: z.string().optional(),
     model: z.string().optional(),
     servedBy: z.string().optional(),
