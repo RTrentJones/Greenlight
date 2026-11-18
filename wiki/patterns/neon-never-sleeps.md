@@ -13,6 +13,8 @@ affects: "*"
 relevance: app-code
 evidence:
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
+  - raw:20261118T082244Z-1afa7547
+  - raw:20261118T082244Z-33d05e6f
   - commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42
 catches:
   description: over a simulated idle window, the app issues zero queries to the store
@@ -41,3 +43,5 @@ Run reapers only while jobs run. Point container healthchecks and keepalives at 
 A replay counts store queries over an idle window and requires zero. A planned doctor rule flags
 `needs-silence` tools whose probe touches the store. This stays a hypothesis until a deployed app
 is shown suspending after the change.
+
+The bench replay named in `catches` shows the healthcheck timer is enough on its own: with a `/health` healthcheck every 30 s the simulated idle window recorded 21 store queries and the store awake 600 s of 600 s (raw:20261118T082244Z-33d05e6f). With the healthcheck and keepalive on a store-free route it recorded 0 queries and the store suspended (raw:20261118T082244Z-1afa7547). That is a bench replay, not a deployed app, so the status stays hypothesis.

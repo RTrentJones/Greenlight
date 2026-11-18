@@ -14,6 +14,8 @@ relevance: app-code
 evidence:
   - commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
+  - raw:20261118T082244Z-1afa7547
+  - raw:20261118T082244Z-33d05e6f
 catches:
   description: the probe path matches the liveness model — store-reaching for needs-traffic, store-free for needs-heal and needs-silence
 remediation:
@@ -38,3 +40,5 @@ time.
 ## How it is caught
 A planned doctor rule compares `liveness.probe` against the liveness model. App contract C2 ships
 both routes in every template.
+
+Bench replay of a mcp/oci app whose Postgres is Neon (idle-probe-leaves-store-asleep, train): the failing run declared both the container healthcheck and the keepalive probe on `/health`, which queries the database. The grader counted 20 queries from the healthcheck and 1 from the keepalive, the store stayed awake 600 s of 600 s, and with the database stopped both probes returned 503, so a store outage read as a dead container (raw:20261118T082244Z-33d05e6f). The passing run pointed both at `/`, which has no database dependency, and left a comment saying so: 0 store queries, store suspended, probes 200 with the database stopped, and `/health` still reporting the database (raw:20261118T082244Z-1afa7547). The rule is conditional on the liveness model: for a container whose job is to be found dead or alive, the probe must stay off the store; a store-reaching probe belongs only to a store that needs traffic.
