@@ -501,7 +501,10 @@ describe('external rollouts through the process sandbox', () => {
     expect(codes).toEqual([1, 1, 1]);
     const after = await client(open.manifest, open.rollout.handle, ['read_file', 'wiki/index.md']);
     expect(after.code).toBe(3);
-    expect(after.err).toMatch(/refused: the rollout is closed \(finish_invalid/);
+    // Refused either by the closed session or, once grading is over, by the server being gone.
+    expect(after.err).toMatch(
+      /refused: the rollout (is closed \(finish_invalid|server is not reachable)/,
+    );
     const fr = await frun;
     expect(fr.status, fr.message).toBe('complete');
     expect(fr.record?.outcomes[0]?.score).toBe(0);
@@ -522,7 +525,7 @@ describe('external rollouts through the process sandbox', () => {
     expect(c.out).toMatch(/the step budget is used up: the rollout is closed/);
     const d = await client(m, rollout.handle, ['finish', 'late']);
     expect(d.code).toBe(3);
-    expect(d.err).toMatch(/refused: the rollout is closed \(step_limit/);
+    expect(d.err).toMatch(/refused: the rollout (is closed \(step_limit|server is not reachable)/);
     const r = await run;
     // Out of budget = a graded outcome (as for a harness rollout), not a deferral.
     expect(r.status, r.message).toBe('complete');
