@@ -18,8 +18,8 @@
         "tpm": 250000
       }
     },
-    "maintainer": "frontier",
-    "proposer": "frontier",
+    "maintainer": "external",
+    "proposer": "external",
     "judge": "small"
   },
   "temperature": 0.2
