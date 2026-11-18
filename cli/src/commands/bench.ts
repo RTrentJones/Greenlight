@@ -1,4 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   type EvaluationRecord,
@@ -9,6 +11,8 @@ import {
   LEDGER_FILE,
   ModelsConfigSchema,
   PrerequisiteError,
+  ROLLOUT_CLIENT_FILE,
+  ROLLOUT_CLIENT_SOURCE,
   type RunResult,
   type RunnerAssets,
   activateTasks,
@@ -71,6 +75,28 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        --max-steps (default 25) and --rollout-requests (the per-rollout request
                        cap, default max-steps + 2) are part of the identity; a model whose daily
                        quota left is below the cap is skipped for today (exit 1, deferred).
+      [--agent-mode external] [--agent "<agent id>"] [--manifest <file>] [--concurrency n]
+      [--claim-timeout <min>] [--external-timeout-factor x]
+                       External rollouts (06 §4.9): when the selected models are external in
+                       bench/models.json ({ "id": "<label>", "external": true }), no model is
+                       called. This ONE invocation stays up as the rollout server: it opens up to
+                       --concurrency (default 4) sandboxes at once, writes the manifest (--manifest,
+                       rewritten on every change) and a dependency-free client outside the
+                       repository, waits for an outside agent to drive each rollout through the
+                       client, grades each as it closes, and seals as usual. Run it in the
+                       background; dispatch one agent per manifest rollout whose state is "open",
+                       telling it only: run \`<command> prompt\` and follow it. --agent (required)
+                       is who drives the rollouts, e.g. claude-code/<model>: recorded as DECLARED
+                       (identity agent.vendor external, agent.version the id), never verified.
+                       A rollout nobody claims within --claim-timeout (default 10 min) is
+                       deferred (exit 1; --resume opens only what is left); one that runs past
+                       its wall clock (the task's timeoutMin × --external-timeout-factor,
+                       default 3, part of the identity) or its steps is graded as it stands.
+                       A selection mixing external and harness-driven models is refused (exit 2).
+  rollout <handle> <verb> [argument] [flags]
+                       the rollout client of an external rollout, for an agent that has this CLI
+                       instead of the client file: prompt | status | read_file | write_file |
+                       list_dir | list_files | bash | finish (\`rollout --help\` lists the forms)
   check-graders [taskId…] [--verbose]
                        every grader passes its reference and fails every mutant (alias: mutants)
   models --check       verify bench/models.json against models.list
@@ -83,6 +109,8 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
           [--dry-run] [--handoff-only] [--models frontier,small] [--runs n] [--max-steps n]
           [--rollout-requests n] [--candidate <commit|dir>] [--adopt-pins] [--break-lock]
           [--maintainer-output <file> | --proposal <file>] [--agent "<agent id>"]
+          [--rollout-agent "<agent id>"] [--manifest <file>] [--concurrency n]
+          [--claim-timeout <min>] [--external-timeout-factor x]
                        one WikiSkill iteration (06 §1.3) as a resumable state machine: train
                        evidence → maintainer → baseline → proposer → outlet evaluation → control
                        arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
@@ -110,6 +138,13 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        not external, the step is not awaiting it, it was already accepted, or a
                        pin drifted. The proposer reads traces only through
                        \`greenlight wiki read raw:<id> --bundle <dir>\` (logged; 4 distinct reads).
+                       External rollouts (06 §4.9): when the gate models are external, the
+                       train, baseline, candidate and control steps serve their rollouts from
+                       this process exactly as \`bench run\` does (same manifest, client and
+                       flags; --rollout-agent is the declared agent id, fixed at creation). The
+                       command blocks while a step's rollouts are open: run it in the background
+                       and dispatch agents from the manifest. Unclaimed rollouts defer the step
+                       (exit 1); --resume reopens them.
                        Exit codes: 0 complete; 1 deferred (quota: resume on a later day), blocked
                        or failed; 2 usage; 3 missing prerequisite; 4 refused by policy;
                        5 awaiting-agent (a human or an agent must act; nothing failed).
@@ -130,6 +165,8 @@ export async function benchCommand(args: string[], io: BenchIo = defaultIo()): P
     switch (sub) {
       case 'run':
         return await runCmd(rest, io);
+      case 'rollout':
+        return rolloutCmd(rest, io);
       case 'check-graders':
       case 'mutants':
         return await checkGradersCmd(rest, io);
@@ -206,6 +243,12 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
       '--max-requests',
       '--max-steps',
       '--rollout-requests',
+      '--agent-mode',
+      '--agent',
+      '--manifest',
+      '--concurrency',
+      '--claim-timeout',
+      '--external-timeout-factor',
     ],
     boolean: ['--force', '--json'],
   });
@@ -260,6 +303,8 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
     maxRequests: posInt(v['--max-requests'], '--max-requests'),
     maxSteps: posInt(v['--max-steps'], '--max-steps'),
     rolloutRequestCap: posInt(v['--rollout-requests'], '--rollout-requests'),
+    ...externalFlags(v, io, oneOf('--agent-mode', ['harness', 'external'] as const)),
+    ...(v['--agent'] !== undefined ? { agent: v['--agent'] } : {}),
     assets,
     env: io.env,
     ...(io.fetchImpl ? { fetchImpl: io.fetchImpl } : {}),
@@ -275,6 +320,7 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
         recordPath: r.recordPath,
         requests: r.requests,
         rollouts: r.rollouts,
+        ...(r.manifest ? { manifest: r.manifest } : {}),
         ...(r.remaining ? { remaining: r.remaining, deferredModels: r.deferredModels } : {}),
       }),
     );
@@ -284,6 +330,58 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
     io.err(`  ${m}: ${keys.length} rollout(s) left — ${r.deferredModels?.[m] ?? 'deferred'}`);
   io.err(`${r.status}: ${r.message}`);
   return EXIT[r.status];
+}
+
+const posNum = (v: string | undefined, name: string): number | undefined => {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0)
+    throw new Error(`\`greenlight bench\`: ${name} needs a value > 0`);
+  return n;
+};
+
+/** The external-rollout flags shared by `bench run` and `bench iterate` (06 §4.9). */
+function externalFlags(
+  v: Record<string, string>,
+  io: BenchIo,
+  agentMode?: 'harness' | 'external',
+): {
+  agentMode?: 'harness' | 'external';
+  manifest?: string;
+  concurrency?: number;
+  claimTimeoutMs?: number;
+  externalTimeoutFactor?: number;
+} {
+  const claim = posNum(v['--claim-timeout'], '--claim-timeout');
+  const factor = posNum(v['--external-timeout-factor'], '--external-timeout-factor');
+  const concurrency = posInt(v['--concurrency'], '--concurrency');
+  return {
+    ...(agentMode ? { agentMode } : {}),
+    ...(v['--manifest'] !== undefined ? { manifest: resolve(io.cwd, v['--manifest']) } : {}),
+    ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(claim !== undefined ? { claimTimeoutMs: claim * 60_000 } : {}),
+    ...(factor !== undefined ? { externalTimeoutFactor: factor } : {}),
+  };
+}
+
+/**
+ * `greenlight bench rollout <handle> <verb> …` (06 §4.9): the rollout client, for an agent that
+ * has this CLI on PATH. It runs the SAME dependency-free client `bench run` writes next to the
+ * manifest (one implementation), from a private temp file, with stdio passed through.
+ */
+function rolloutCmd(args: string[], io: BenchIo): number {
+  const dir = mkdtempSync(join(tmpdir(), 'greenlight-rollout-client-'));
+  try {
+    const file = join(dir, ROLLOUT_CLIENT_FILE);
+    writeFileSync(file, ROLLOUT_CLIENT_SOURCE);
+    const r = spawnSync(process.execPath, [file, ...args], {
+      stdio: 'inherit',
+      env: { ...io.env, GREENLIGHT_ROLLOUT_INVOCATION: 'greenlight bench rollout' },
+    });
+    return r.status ?? 3;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function printPassRates(io: BenchIo, r: RunResult): void {
@@ -402,6 +500,11 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       '--maintainer-output',
       '--proposal',
       '--agent',
+      '--rollout-agent',
+      '--manifest',
+      '--concurrency',
+      '--claim-timeout',
+      '--external-timeout-factor',
     ],
     boolean: ['--json', '--dry-run', '--handoff-only', '--adopt-pins', '--break-lock'],
   });
@@ -475,6 +578,19 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       : {}),
     ...(v['--proposal'] !== undefined ? { proposal: resolve(io.cwd, v['--proposal']) } : {}),
     ...(v['--agent'] !== undefined ? { agent: v['--agent'] } : {}),
+    // External rollouts (06 §4.9): the rollout steps serve them from this process.
+    ...(v['--rollout-agent'] !== undefined ? { rolloutAgent: v['--rollout-agent'] } : {}),
+    ...(() => {
+      const x = externalFlags(v, io);
+      return {
+        ...(x.manifest ? { rolloutManifest: x.manifest } : {}),
+        ...(x.concurrency !== undefined ? { rolloutConcurrency: x.concurrency } : {}),
+        ...(x.claimTimeoutMs !== undefined ? { rolloutClaimTimeoutMs: x.claimTimeoutMs } : {}),
+        ...(x.externalTimeoutFactor !== undefined
+          ? { externalTimeoutFactor: x.externalTimeoutFactor }
+          : {}),
+      };
+    })(),
     ...(io.fetchImpl ? { fetchImpl: io.fetchImpl } : {}),
     log: (s: string) => io.err(s),
     ...(io.iterate ?? {}),

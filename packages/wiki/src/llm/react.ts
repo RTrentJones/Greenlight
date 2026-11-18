@@ -199,6 +199,68 @@ function toError(e: unknown): ReactError {
   return { kind: 'model_error', message: err?.message ?? String(e) };
 }
 
+/** Default cap on a tool result's length (`ReactOptions.maxToolResultChars`). */
+export const DEFAULT_MAX_TOOL_RESULT_CHARS = 20_000;
+
+/**
+ * Runs ONE tool call against a registry, the way every caller must: an unknown tool and invalid
+ * arguments are results (not throws), a throwing tool is an error result, and the text is
+ * truncated at `maxChars` from the end the tool keeps. Shared by the ReAct loop and by the
+ * external rollout server (06 §4.9), so a tool call is the same call whoever drives it.
+ */
+export async function executeToolCall(
+  registry: ReadonlyMap<string, ReactTool>,
+  call: { name: string; args: Record<string, unknown> },
+  ctx: ToolContext,
+  maxChars: number = DEFAULT_MAX_TOOL_RESULT_CHARS,
+): Promise<{ ok: boolean; result: string; durationMs: number }> {
+  const started = Date.now();
+  const tool = registry.get(call.name);
+  let ok = true;
+  let result: unknown;
+  if (!tool) {
+    ok = false;
+    result = { error: `unknown tool "${call.name}"` };
+  } else {
+    const parsed = tool.argsSchema?.safeParse(call.args);
+    if (parsed && !parsed.success) {
+      ok = false;
+      result = { error: 'invalid arguments', issues: issuesOf(parsed.error) };
+    } else {
+      try {
+        result = await tool.run(call.args, ctx);
+      } catch (e) {
+        ok = false;
+        result = { error: (e as Error)?.message ?? String(e) };
+      }
+    }
+  }
+  const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
+  return {
+    ok,
+    result: truncate(text, maxChars, tool?.keep ?? 'tail'),
+    durationMs: Date.now() - started,
+  };
+}
+
+/** What a tool response says once few steps are left (06 §4.8). */
+export function stepsRemainingNote(left: number): { steps_remaining: number; note: string } {
+  return {
+    steps_remaining: left,
+    note:
+      left === 0
+        ? 'no steps remain'
+        : `${left} step(s) remain: finish the work and call ${FINISH_TOOL} before they run out`,
+  };
+}
+
+/** The message a rejected `finish` goes back with while attempts remain. */
+export const finishRejectedMessage = (attemptsLeft: number): string =>
+  `output rejected; fix these and call finish again (${attemptsLeft} attempt(s) left)`;
+
+/** The issues of a failed `finish` validation, as the model is shown them. */
+export const finishIssues = (e: z.ZodError): string[] => issuesOf(e);
+
 export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
   const now = o.now ?? (() => new Date());
   const transcript: TranscriptEntry[] = [];
@@ -222,7 +284,7 @@ export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
   log({ kind: 'user', text: o.task });
 
   const budget = o.budget ?? new RequestBudget(o.maxSteps * 3);
-  const maxChars = o.maxToolResultChars ?? 20_000;
+  const maxChars = o.maxToolResultChars ?? DEFAULT_MAX_TOOL_RESULT_CHARS;
   const maxFinish = o.maxFinishAttempts ?? 1;
   let usage = emptyUsage();
   const served = new Set<string>();
@@ -301,37 +363,17 @@ export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
         finishCall ??= fc;
         continue;
       }
-      const started = Date.now();
-      const tool = registry.get(fc.name);
-      let ok = true;
-      let result: unknown;
-      if (!tool) {
-        ok = false;
-        result = { error: `unknown tool "${fc.name}"` };
-      } else {
-        const parsed = tool.argsSchema?.safeParse(fc.args);
-        if (parsed && !parsed.success) {
-          ok = false;
-          result = { error: 'invalid arguments', issues: issuesOf(parsed.error) };
-        } else {
-          try {
-            result = await tool.run(fc.args, { step, ...(o.signal ? { signal: o.signal } : {}) });
-          } catch (e) {
-            ok = false;
-            result = { error: (e as Error)?.message ?? String(e) };
-          }
-        }
-      }
-      const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
-      const clipped = truncate(text, maxChars, tool?.keep ?? 'tail');
-      log({
-        kind: 'tool_result',
-        step,
-        name: fc.name,
+      const {
         ok,
         result: clipped,
-        durationMs: Date.now() - started,
-      });
+        durationMs,
+      } = await executeToolCall(
+        registry,
+        fc,
+        { step, ...(o.signal ? { signal: o.signal } : {}) },
+        maxChars,
+      );
+      log({ kind: 'tool_result', step, name: fc.name, ok, result: clipped, durationMs });
       responses.push({
         functionResponse: {
           name: fc.name,
@@ -359,7 +401,7 @@ export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
         functionResponse: {
           name: FINISH_TOOL,
           response: {
-            error: `output rejected; fix these and call finish again (${maxFinish - finishAttempts} attempt(s) left)`,
+            error: finishRejectedMessage(maxFinish - finishAttempts),
             issues,
           },
           ...(finishCall.id ? { id: finishCall.id } : {}),
@@ -372,15 +414,7 @@ export async function runReact<T>(o: ReactOptions<T>): Promise<ReactResult<T>> {
       for (const part of responses) {
         const fr = (part as { functionResponse?: { response: Record<string, unknown> } })
           .functionResponse;
-        if (fr)
-          fr.response = {
-            ...fr.response,
-            steps_remaining: left,
-            note:
-              left === 0
-                ? 'no steps remain'
-                : `${left} step(s) remain: finish the work and call ${FINISH_TOOL} before they run out`,
-          };
+        if (fr) fr.response = { ...fr.response, ...stepsRemainingNote(left) };
       }
     }
     contents.push({ role: 'user', parts: responses });

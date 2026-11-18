@@ -788,6 +788,9 @@ evidence refs, and the PR goes through normal human review. Nothing in this comm
 
 ```
 greenlight bench run [--split train|val|test] [--tasks <glob>] [--model <id>]… [--runs 3] [--mode isolation|production|both] [--skills-ref <git-ref>] [--json]
+                     [--agent-mode external] [--agent "<agent id>"] [--manifest <file>] [--concurrency 4]
+                     [--claim-timeout <min>] [--external-timeout-factor 3]
+greenlight bench rollout <handle> <verb> [argument] [flags]
 greenlight bench gate <proposalId> [--models <a>,<b>] [--runs 3] [--alpha 0.05]
 greenlight bench gate --recompute <gateInputHash>
 greenlight bench check-graders [--tasks <glob>]          # alias: bench mutants
@@ -795,6 +798,8 @@ greenlight bench iterate [--scope <skill|all>] [--resume <iterationId>] [--sandb
                          [--models frontier,small] [--runs n] [--max-steps n] [--rollout-requests n]
                          [--candidate <commit|dir>] [--adopt-pins] [--break-lock]
                          [--maintainer-output <file> | --proposal <file>] [--agent "<agent id>"]
+                         [--rollout-agent "<agent id>"] [--manifest <file>] [--concurrency 4]
+                         [--claim-timeout <min>] [--external-timeout-factor 3]
 greenlight bench review <iterationId> --decision accept|reject --reason "<text>"
 greenlight bench monitor [--since <date>]
 greenlight bench report [--proposal <id>] [--json]
@@ -816,6 +821,26 @@ greenlight bench report [--proposal <id>] [--json]
   - Each rollout produces a `bench` raw record carrying its task, split, model, mode, skill-set
     hash and run id (08 §5).
   - It prints pass rates per task and per split.
+  - **External rollouts (06 §4.9).** When the selected models are `external` in
+    `bench/models.json`, no model is called and the invocation stays up as the rollout server. It
+    needs `--agent "<agent id>"` (who drives the rollouts; recorded as declared). It writes a
+    manifest (`--manifest <file>`; default next to the client, in a fresh directory under the
+    system temp dir) and the client, opens at most `--concurrency` sandboxes at once, grades each
+    rollout as it closes, and seals as usual. `--claim-timeout <min>` (default 10) defers a
+    rollout nobody claims; `--external-timeout-factor` (default 3, part of the identity)
+    multiplies the rollout timeout into the wall clock. `--agent-mode external` asserts the mode;
+    it is refused (exit 2) when the selected models are not external, as are a selection that
+    mixes external and harness-driven models and a missing `--agent`. A run with deferred
+    rollouts exits 1; `--resume <evaluationId>` opens only those. `--json` adds `manifest`.
+- **`rollout`** is the client of an external rollout (06 §4.9), for an agent that has the CLI on
+  PATH; it runs the same program as the `rollout-client.mjs` the manifest names. Verbs: `prompt`,
+  `status`, `read_file <path> [--offset n] [--limit n]`, `write_file <path> --content-stdin`,
+  `list_dir [path]`, `list_files [path] [--depth n]`, `bash <command> [--timeout-sec n]` (or
+  `--command-stdin`), `finish <summary>` (or a JSON object, or `--json-stdin`). Every verb also
+  takes one JSON object as its argument.
+  - **Exit codes:** 0 the call ran; 1 the call ran and reported an error (a tool error, a rejected
+    `finish`); 2 usage; 3 refused (bad handle or token, not open yet, closed, step budget used up,
+    server gone).
 - **`gate`** implements 06 §5: the single policy table (06 §5.4), the two models, and both
   evaluation modes. It writes a content-addressed `EvaluationRecord` (06 §5.8), and one
   `candidate-accepted` or `candidate-rejected` ledger event that references it. `--recompute
@@ -836,6 +861,11 @@ greenlight bench report [--proposal <id>] [--json]
     JSON and validated exactly like a harness-produced output. Each needs `--resume <iterationId>`
     and `--agent "<agent id>"` (one token: who produced the file, recorded in place of a model
     id). Only one of the two per invocation, and neither with `--dry-run` or `--handoff-only`.
+  - **External rollouts (06 §4.9).** With external gate models, the train, baseline, candidate and
+    control steps serve their rollouts from the `iterate` process, with the manifest, client and
+    flags of `bench run`. The command blocks while a step's rollouts are open. `--rollout-agent
+    "<agent id>"` is the declared agent; it is fixed at creation, and a different one on resume is
+    refused (exit 4). Unclaimed rollouts defer the step (exit 1).
   - **Exit codes:** 0 complete; 1 deferred (quota: resume on a later day), blocked, or failed,
     including a bundle whose three submissions were refused; 2 usage; 3 missing prerequisite
     (docker, a submitted file that cannot be read); 4 refused by policy (a drifted pin; a
@@ -855,7 +885,7 @@ greenlight bench report [--proposal <id>] [--json]
 **Configuration files** (06 §5):
 
 - `bench/models.json` lists the gate models: the frontier and the small model, with their agent
-  commands;
+  commands; either may be `external` (08 §10.6, 06 §4.9);
 - `bench/gate.json` holds `alpha`, `runs`, the blast-radius strictness table and the monitor
   regression threshold;
 - `bench/budget.json` is `{ "monthlyUsd": <n>, "perGateMaxUsd": <n>, "perGateMaxRollouts": <n> }`

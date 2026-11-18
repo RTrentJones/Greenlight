@@ -323,6 +323,9 @@ export interface IterationState {
     runs?: number;
     maxSteps?: number;
     rolloutRequestCap?: number;
+    /** External rollouts (06 §4.9): the declared agent id every evaluation of the iteration
+     * runs under (`identity.agent.version`), so its records stay comparable. */
+    rolloutAgent?: string;
     agentMaxSteps: { maintainer: number; proposer: number };
     incidents: string[];
     /** The controls directory, relative to the bench directory. */
@@ -476,6 +479,16 @@ export interface IterateOptions {
   proposal?: string;
   /** `--agent <id>`: who produced the submitted file (`AGENT_ID_RE`). */
   agent?: string;
+  /** `--rollout-agent <id>`: external rollouts (06 §4.9), when the gate models are external in
+   * bench/models.json: the declared id of the agent that drives them. Fixed at creation. While a
+   * rollout step runs, `iterate` itself is the rollout server: it blocks, and the launcher
+   * dispatches agents from the manifest. */
+  rolloutAgent?: string;
+  /** External rollouts: the manifest file (rewritten by every rollout step). */
+  rolloutManifest?: string;
+  rolloutConcurrency?: number;
+  rolloutClaimTimeoutMs?: number;
+  externalTimeoutFactor?: number;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -934,6 +947,14 @@ function runOptions(c: Ctx, over: Partial<BenchRunOptions>): BenchRunOptions {
     ...(o.skipModelsCheck ? { skipModelsCheck: true } : {}),
     ...(o.rolloutTimeoutMs !== undefined ? { rolloutTimeoutMs: o.rolloutTimeoutMs } : {}),
     ...(o.dockerBin ? { dockerBin: o.dockerBin } : {}),
+    // External rollouts (06 §4.9): runBench serves them from inside this process.
+    ...(st.rolloutAgent ? { agent: st.rolloutAgent } : {}),
+    ...(o.rolloutManifest ? { manifest: o.rolloutManifest } : {}),
+    ...(o.rolloutConcurrency !== undefined ? { concurrency: o.rolloutConcurrency } : {}),
+    ...(o.rolloutClaimTimeoutMs !== undefined ? { claimTimeoutMs: o.rolloutClaimTimeoutMs } : {}),
+    ...(o.externalTimeoutFactor !== undefined
+      ? { externalTimeoutFactor: o.externalTimeoutFactor }
+      : {}),
     log: c.log,
     ...over,
   };
@@ -3027,6 +3048,7 @@ function newState(
       ...(o.runs !== undefined ? { runs: o.runs } : {}),
       ...(o.maxSteps !== undefined ? { maxSteps: o.maxSteps } : {}),
       ...(o.rolloutRequestCap !== undefined ? { rolloutRequestCap: o.rolloutRequestCap } : {}),
+      ...(o.rolloutAgent ? { rolloutAgent: o.rolloutAgent } : {}),
       agentMaxSteps: { ...DEFAULT_AGENT_MAX_STEPS, ...(o.agentMaxSteps ?? {}) },
       incidents,
       controlsDir: benchRel(o.controlsDir ?? join(o.benchDir, 'controls')),
@@ -3180,6 +3202,18 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
             exitCode: 0,
           };
         }
+        // The rollout agent is fixed once known: every record of the iteration must carry it.
+        if (
+          o.rolloutAgent &&
+          s.settings.rolloutAgent &&
+          o.rolloutAgent !== s.settings.rolloutAgent
+        ) {
+          throw new IterationError(
+            `iteration ${s.iterationId} runs its rollouts as agent ${s.settings.rolloutAgent}; a different --rollout-agent would make its records incomparable`,
+            4,
+          );
+        }
+        if (o.rolloutAgent && !s.settings.rolloutAgent) s.settings.rolloutAgent = o.rolloutAgent;
         // Before anything a submitted file could reach: drifted inputs refuse the resume.
         checkPins(s, o, log);
       } else {
@@ -3443,6 +3477,11 @@ export function planIteration(o: IterateOptions): { lines: string[]; state?: Ite
   const accepted = s?.acceptedSkillSetHash ?? resolveAcceptedSkillSet(o.wikiRoot, o.skillsDir);
   lines.push(`accepted skill set ${accepted}`);
   const config = readModels(o.benchDir);
+  if (config.roles.frontier.external || config.roles.small.external) {
+    lines.push(
+      `rollouts: external agent ${s?.settings.rolloutAgent ?? o.rolloutAgent ?? '(pass --rollout-agent <id>)'} (06 §4.9): each rollout step serves its rollouts from this process and writes a manifest; no request, no quota`,
+    );
+  }
   const gateCfg = readGateCfg(o.benchDir);
   const tasks = loadTasks(o.benchDir).tasks.filter((t) => t.spec.state !== 'quarantined');
   const models = (s?.settings.models ?? o.models)?.length ?? 2;

@@ -323,6 +323,106 @@ pnpm greenlight bench iterate --resume <iterationId>
   file and the two `greenlight wiki` commands yourself, so that it cannot open `.greenlight/raw/`
   (val and test records) or `.greenlight/bundle-keys/` (06 §3.6).
 
+## Running rollouts with an external agent
+
+A gate model in `models.json` may be external (06 §4.9, ADR-20 amendment):
+
+```json
+"frontier": { "id": "outside-large", "external": true },
+"small":    { "id": "outside-small", "external": true },
+"judge":    { "id": "gemini-3.1-flash-lite", "limits": { "rpm": 10, "rpd": 250 } }
+```
+
+`id` is a label you choose; an external entry has no `limits`. The eval judge is still called by
+the harness (one request per maintainer rollout), so it needs a harness-driven entry of its own
+once the entry it named is external. Both gate models must be external, or neither: one
+evaluation has one agent, and a mixed selection is refused (exit 2).
+
+`bench run` then calls no model. One invocation stays up as the **rollout server**: it opens up to
+`--concurrency` (default 4) sandboxes at once, writes a manifest and a small client outside the
+repository, lets an outside agent drive each rollout through that client, grades each rollout as
+it closes, and seals the record as usual. The tools, the step budget, the trajectory recorder, the
+separate grading container, the raw records and the gate are unchanged.
+
+```sh
+# (a) A train run. Run it in the background: it blocks until every rollout is closed.
+M=/tmp/greenlight-launch/manifest.json
+pnpm greenlight bench run --split train \
+  --agent "claude-code/<model>" --manifest "$M" --concurrency 4 &
+
+# The launcher's loop, until the command exits (the manifest then says "status": "ended"):
+#   read $M; for every rollout whose "state" is "open" and that you have not dispatched yet,
+#   start ONE fresh agent, outside this repository, with exactly this instruction:
+#       Run `<command> prompt` and do exactly what it prints. Use only that client;
+#       do not read or write any file on this machine.
+#   where <command> is that rollout's "command" from the manifest.
+jq -r '.rollouts[] | select(.state == "open") | .command' "$M"
+
+# Exit 0: sealed. Exit 1 (deferred): some rollouts were not claimed in time; open only those:
+pnpm greenlight bench run --resume "$(jq -r .evaluationId "$M")" --manifest "$M" &
+
+# (b) A val baseline: the same, on the val split (gate.json's runs per task and model).
+pnpm greenlight bench run --split val \
+  --agent "claude-code/<model>" --manifest "$M" --concurrency 4 &
+```
+
+**A whole iteration** with external rollouts, maintainer and proposer. While a rollout step runs,
+`bench iterate` is the rollout server, so each of these commands blocks and is served by the same
+launcher loop over `$M`. `--rollout-agent` is needed once; it is fixed for the iteration.
+
+```sh
+# 1. Train rollouts (served from $M), then the maintainer bundle: exit 5.
+pnpm greenlight bench iterate --scope all \
+  --rollout-agent "claude-code/<model>" --manifest "$M" &
+# 2. The maintainer agent writes maintainer-output.json (see the section above). Handing it in
+#    continues with the val baseline rollouts (served from $M), then the proposer bundle: exit 5.
+pnpm greenlight bench iterate --resume <iterationId> --manifest "$M" \
+  --maintainer-output maintainer-output.json --agent "claude-code/<model>" &
+# 3. The proposer agent writes proposal.json. Handing it in continues with the candidate rollouts
+#    and the control arm (served from $M), the ledger and the hand-off: exit 0.
+pnpm greenlight bench iterate --resume <iterationId> --manifest "$M" \
+  --proposal proposal.json --agent "claude-code/<model>" &
+# Any step that exits 1 (deferred: unclaimed rollouts): run it again.
+pnpm greenlight bench iterate --resume <iterationId> --manifest "$M" &
+```
+
+A train run (a) and a baseline (b) made beforehand under the same `--agent` id and limits are
+reused by identity, so step 1 and the baseline of step 2 then open no rollout.
+
+- **What one agent is told:** only the instruction above. `prompt` prints everything else: the
+  rules, the tool verbs, the system prompt (the skills under test in full, then the role) and the
+  task. The verbs are `read_file`, `write_file`, `list_dir`, `list_files`, `bash` and `finish`;
+  a maintainer task has the three read verbs and takes its `MaintainerOutput` as
+  `finish --json-stdin`. File content and long commands go through stdin. An agent with the CLI
+  on PATH may use `greenlight bench rollout <handle> <verb> …` instead of the client file.
+- **Waves.** At most `--concurrency` rollouts are `open` or `claimed` at once. When one closes
+  (`grading`, then `done`), the next `queued` one becomes `open` and the manifest is rewritten.
+  Poll the manifest every few seconds and dispatch what is newly `open`. A handle of a `queued`
+  rollout is refused until then.
+- **Timeouts.** An `open` rollout must get its first command within `--claim-timeout` (default
+  10 minutes), or it is deferred: no record, and `--resume` reopens it. From the first command the
+  rollout has the task's `timeoutMin` × `--external-timeout-factor` (default 3; 30 minutes for a
+  10-minute task) and `--max-steps` steps (default 25; one tool call or `finish` is one step).
+  When either runs out the rollout is closed and **graded as it stands**, like a harness rollout
+  that ran out. Both limits are part of the identity. An agent that only asked for the prompt and
+  then went silent is deferred, not graded.
+- **Exit codes of the client:** 0 the call ran; 1 it ran and reported an error (a tool error, a
+  rejected `finish`); 2 usage; 3 refused (bad handle or token, not open yet, closed, budget used
+  up, server gone).
+- **Records.** The identity has `agent: { vendor: "external", version: "<agent id>" }`, so an
+  external evaluation is never compared with a harness-driven one or with another agent's; run a
+  baseline and its candidate under the same `--agent` id. Raw records carry `agent.vendor:
+  external` and `servedBy: "<label>@<agent id>"`. Both are **declared** by the launcher: the
+  harness cannot verify which agent or model produced the steps. No quota is reserved and no
+  `spend` event is written for an external model; only the judge's requests are counted.
+- **Isolation is the launcher's job.** The sandbox is as closed as ever (no network, no bench
+  mount, grading elsewhere). The outside agent is not in it: it runs on your machine and could
+  open `bench/references/` or the graders if it went looking. The client and the manifest are
+  written under the system temp dir, and neither the handle nor the prompt names a repository
+  path, but nothing more can be enforced from here. Start each agent fresh, with a working
+  directory outside this repository and no other context. `evo.yml` has no launcher: external
+  rollouts are local-only.
+
 ## Runner (`bench/runner/`, `greenlight bench run`)
 
 `greenlight bench run` (packages/wiki/src/bench/runner.ts) runs each rollout in a throwaway sandbox
@@ -330,7 +430,7 @@ and grades it somewhere else (06 §4.2). What runs where:
 
 | where | what | sees |
 |---|---|---|
-| host | the ReAct loop (the only holder of model access: `GEMINI_API_KEY` in the host env, or none when an egress proxy injects it, with `NODE_USE_ENV_PROXY=1`), the shim socket server, the trajectory writer, the origin and tree read-out, the diff, raw/evaluation records | everything |
+| host | the ReAct loop, or for an external rollout the rollout server that takes its place (see above) (the only holder of model access: `GEMINI_API_KEY` in the host env, or none when an egress proxy injects it, with `NODE_USE_ENV_PROXY=1`), the shim socket server, the trajectory writer, the origin and tree read-out, the diff, raw/evaluation records | everything |
 | rollout container | every agent tool call (`read_file`, `write_file`, `list_dir`, `list_files`, `bash`; a maintainer rollout gets the three read tools only) via `docker exec` as uid 10000 | tmpfs `/work` (fixture + `.claude/skills/`, fresh git repo), tmpfs `/srv/origin.git` (bare origin), `/opt/real/greenlight` (the built CLI, read-only, inside a root:shim 0750 directory), `/run/greenlight-shim` (read-only; socket 0600 owned by the shim user) |
 | grading container | `graders/<id>/grade.mjs` as root (DAC_OVERRIDE/SETUID/SETGID/KILL only), the agent's app as uid 10000 | the exported tree and trajectory (read-only), a staged copy of `tasks/<id>/task.json`, `graders/<id>/`, `graders/_lib/`, `fixtures/` |
 

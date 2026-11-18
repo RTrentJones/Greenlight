@@ -252,6 +252,10 @@ export const BaselineIdentitySchema = z
             maxSteps: z.number().int().min(1),
             requestsPerRollout: z.number().int().min(1),
             timeoutMin: z.number().positive().nullable(),
+            /** External rollouts only (06 §4.9): the wall clock of a rollout is its timeout
+             * (`timeoutMin`, else the task's) times this factor, counted from the agent's first
+             * command. Absent for harness-driven rollouts. */
+            externalTimeoutFactor: z.number().positive().optional(),
           })
           .strict()
           .optional(),
@@ -570,23 +574,50 @@ export const BudgetSchema = z
   })
   .strict();
 
+const ModelLimitsSchema = z
+  .object({
+    rpm: z.number().int().min(1),
+    rpd: z.number().int().min(1),
+    tpm: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+/**
+ * A gate model. Harness-driven (the default): the harness's own ReAct loop calls it, so it needs
+ * `limits`. External (`external: true`, 06 §4.9): its rollouts are driven by an agent launched
+ * from outside the harness through the rollout client; `id` is then a LABEL the launcher declares,
+ * and the entry has no fallback, limits or price (the harness makes no request for it).
+ */
 const ModelEntrySchema = z
   .object({
     id: z.string().min(1),
+    external: z.literal(true).optional(),
     fallback: z.string().min(1).optional(),
-    limits: z
-      .object({
-        rpm: z.number().int().min(1),
-        rpd: z.number().int().min(1),
-        tpm: z.number().int().min(1).optional(),
-      })
-      .strict(),
+    limits: ModelLimitsSchema.optional(),
     priceUsdPerMTok: z
       .object({ input: z.number().min(0), output: z.number().min(0) })
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((e, ctx) => {
+    if (e.external) {
+      for (const k of ['fallback', 'limits', 'priceUsdPerMTok'] as const) {
+        if (e[k] !== undefined)
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [k],
+            message: `an external model entry has no ${k}: the harness makes no request for it`,
+          });
+      }
+    } else if (e.limits === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['limits'],
+        message: 'a harness-driven model entry needs limits (rpm, rpd)',
+      });
+    }
+  });
 
 export const ModelsConfigSchema = z
   .object({
@@ -598,10 +629,12 @@ export const ModelsConfigSchema = z
         small: ModelEntrySchema,
         // `external`: the role is done by an agent the harness does not call (06 §2.5, §3.6):
         // `bench iterate` writes the bundle, stops as `awaiting-agent`, and takes the output back
-        // as a file. Never the judge: a grader runs inside every rollout.
+        // as a file.
         maintainer: z.enum(['frontier', 'small', 'external']),
         proposer: z.enum(['frontier', 'small', 'external']),
-        judge: z.enum(['frontier', 'small']),
+        // Never external: a grader runs inside every maintainer rollout, on the host. Either one
+        // of the two entries by name, or (when that entry is external) an entry of its own.
+        judge: z.union([z.enum(['frontier', 'small']), ModelEntrySchema]),
       })
       .strict(),
     temperature: z.number().min(0).max(2),
@@ -610,6 +643,23 @@ export const ModelsConfigSchema = z
   .refine((m) => m.roles.frontier.id !== m.roles.small.id, {
     message: 'the gate pair must be two different models (06 §5.3)',
     path: ['roles', 'small', 'id'],
+  })
+  .superRefine((m, ctx) => {
+    // A role the harness itself calls cannot resolve to an entry the harness never calls.
+    for (const role of ['maintainer', 'proposer', 'judge'] as const) {
+      const v = m.roles[role];
+      const entry = v === 'frontier' || v === 'small' ? m.roles[v] : v === 'external' ? null : v;
+      if (entry?.external) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['roles', role],
+          message:
+            role === 'judge'
+              ? 'the eval judge is called by the harness and cannot be an external model: give roles.judge a harness-driven entry of its own ({ "id": …, "limits": … })'
+              : `the ${role} role names an external model entry: set it to "external" (06 §2.5, §3.6) or to a harness-driven entry`,
+        });
+      }
+    }
   });
 
 export type TaskSpec = z.infer<typeof TaskSpecSchema>;

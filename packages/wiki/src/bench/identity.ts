@@ -126,21 +126,25 @@ export function skillSetHashOf(skillsDir: string): string {
 /**
  * The settings of `bench/models.json` that change what a rollout or a grader returns (06 §1.5):
  * the provider, the sampling temperature, the eval judge's model (06 §4.6: it decides maintainer
- * verdicts), and each gate role's id and fallback. Rate limits, prices, the key's env name and the
+ * verdicts), and each gate role's id, fallback and whether it is external (06 §4.9: driven by an
+ * agent outside the harness). Rate limits, prices, the key's env name and the
  * maintainer and proposer roles are left out: they change when and at what cost a rollout runs,
  * not its outcome. Hashed as `modelsConfigHash`, so a stored baseline is never reused, and never
  * compared, across a change in any of them.
  */
 export function modelsConfigIdentity(config: ModelsConfig): string {
+  // `external` is added only when set, so the hash of a config without it is what it always was.
   const entry = (e: ModelsConfig['roles']['frontier']) => ({
     id: e.id,
     fallback: e.fallback ?? null,
+    ...(e.external ? { external: true } : {}),
   });
+  const judge = config.roles.judge;
   return sha256(
     canonicalJson({
       provider: config.provider,
       temperature: config.temperature,
-      judge: config.roles[config.roles.judge].id,
+      judge: (typeof judge === 'string' ? config.roles[judge] : judge).id,
       frontier: entry(config.roles.frontier),
       small: entry(config.roles.small),
     }),

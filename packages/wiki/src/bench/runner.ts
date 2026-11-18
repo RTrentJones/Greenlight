@@ -34,7 +34,13 @@ import {
   type RateLimitPersistence,
   RequestBudget,
 } from '../llm/limits';
-import { checkModels, clientForRole, createLimiters, entryForRole } from '../llm/models';
+import {
+  checkModels,
+  clientForRole,
+  createLimiters,
+  entryForRole,
+  isExternalModel,
+} from '../llm/models';
 
 /** Backoff for transient model errors (429/5xx) inside a rollout. Free-tier demand spikes
  * last minutes, and a rollout cannot resume part-way, so the client's default (~10 s in total)
@@ -50,6 +56,7 @@ import {
   type ReactTool,
   type Skill,
   type TranscriptEntry,
+  buildSystemPrompt,
   runReact,
 } from '../llm/react';
 import { LEDGER_FILE, loadWiki, parseLedger } from '../load';
@@ -76,6 +83,15 @@ import {
 import type { LedgerEvent } from '../schema/ledger';
 import { checkBudget, estimateGateCost, spendEvent } from './budget';
 import { type LoadedTask, loadTasks } from './check-graders';
+import {
+  DEFAULT_CLAIM_TIMEOUT_MS,
+  DEFAULT_EXTERNAL_CONCURRENCY,
+  DEFAULT_EXTERNAL_TIMEOUT_FACTOR,
+  EXTERNAL_AGENT_ID_RE,
+  EXTERNAL_VENDOR,
+  RolloutServer,
+  externalBudgetNote,
+} from './external';
 import { gradeRollout } from './grade';
 import type { JudgeFn } from './grader-api';
 import { computeIdentity, sameIdentity } from './identity';
@@ -122,6 +138,14 @@ import { Sequencer, ShimChannel, mergeTrajectory, toJsonl, toolCallEvent } from 
  * error and a model error produce NO outcome: the evaluation stays unsealed (invalid), never a
  * fake 0. A trajectory that is incomplete (an origin ref moved with no recorded command, a lost or
  * truncated shim event) is an outcome with `graderError`: invalid at the gate, never a pass.
+ *
+ * External rollouts (06 §4.9): when the selected models are `external` in bench/models.json, step
+ * 3's ReAct loop is replaced by an agent launched from outside the harness. The runner opens up to
+ * `concurrency` sandboxes at once, serves each through the rollout server (external.ts) and writes
+ * a manifest for the launcher; the agent drives the SAME tools through the rollout client, and
+ * everything after the agent's last step (kill, export, grading, raw record, sealing) is the same
+ * code. No model client, no quota and no spend event exist for an external model; the identity
+ * carries `agent.vendor: external` and the declared agent id as `agent.version`.
  */
 
 export interface RunnerAssets {
@@ -189,6 +213,24 @@ export interface BenchRunOptions {
   rolloutTimeoutMs?: number;
   dockerBin?: string;
   log?: (s: string) => void;
+  /** `external`: the rollouts are driven by an outside agent (06 §4.9). Unset: decided by the
+   * selected models (external in bench/models.json or not); set, it must agree with them. */
+  agentMode?: 'harness' | 'external';
+  /** External rollouts: the declared agent id (who drives them, e.g. `claude-code/<model>`).
+   * Recorded as the identity's `agent.version`; on resume, the evaluation's own by default. */
+  agent?: string;
+  /** External rollouts: the manifest file a launcher polls (default: next to the client). */
+  manifest?: string;
+  /** External rollouts: where the client is written (default: a fresh directory under the
+   * system temp dir, outside the repository). */
+  externalDir?: string;
+  /** External rollouts: sandboxes open at once (default 4). */
+  concurrency?: number;
+  /** External rollouts: an open rollout nobody claims within this is deferred (default 10 min). */
+  claimTimeoutMs?: number;
+  /** External rollouts: the wall clock is the rollout timeout times this (default 3). Part of
+   * `harness.limits`. */
+  externalTimeoutFactor?: number;
 }
 
 export type RunStatus =
@@ -228,6 +270,8 @@ export interface RunResult {
   remaining?: Record<string, string[]>;
   /** On `deferred`: why each deferred model stopped (quota, unavailable, request cap). */
   deferredModels?: Record<string, string>;
+  /** External rollouts: the manifest the invocation wrote. */
+  manifest?: string;
 }
 
 /** The daily quota persistence the runner reads remaining quota from and seeds from the ledger. */
@@ -818,6 +862,8 @@ interface RunCtx {
   run: { runId: string; attempt: number };
   now: () => Date;
   log: (s: string) => void;
+  /** Set when the rollouts are driven by an outside agent (06 §4.9). */
+  external?: { server: RolloutServer; agent: string; claimTimeoutMs: number };
 }
 
 type Limits = NonNullable<BaselineIdentity['harness']['limits']>;
@@ -926,48 +972,75 @@ async function runRollout(
     // The origin as the agent finds it: every later move must be explained by a recorded command.
     const originStart = await sb.originRefs();
     const brief = readFileSync(join(task.dir, 'brief.md'), 'utf8');
-    const client = clientForRole(c.config, roleOf(c.config, modelId), {
-      findSecrets: fixtureAwareDetector([...fixtureTexts(join(task.dir, 'fixture')), brief]),
-      limiters: c.limiters,
-      // No rollout ever falls back (06 §4.8): a fallback-served gate rollout is ungateable, a
-      // fallback-served train rollout is evidence about another model, and either would spend
-      // the other model's quota.
-      allowFallback: false,
-      ...(o.env ? { env: o.env } : {}),
-      ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
-      retryDelaysMs: o.retryDelaysMs ?? [...ROLLOUT_RETRY_DELAYS_MS],
-      ...(o.sleep ? { sleep: o.sleep } : {}),
-    });
     const timeoutMs =
       c.limits.timeoutMin !== null ? c.limits.timeoutMin * 60_000 : task.spec.timeoutMin * 60_000;
-    const abort = new AbortController();
-    // A plain abort surfaces as `aborted`: the agent ran out of time, and its tree is still graded.
-    const timer = setTimeout(() => abort.abort(), timeoutMs);
-    const perRollout = new ScopedBudget(c.limits.requestsPerRollout, c.budget);
     const tools = agentTools(
       sb,
       (name, args) => toolEvents.push(toolCallEvent(name, args, sb.workDir, sequencer.next())),
       { readOnly: isMaintainer },
     );
-    try {
-      result = (await runReact({
-        client,
-        skills: loadSkillsFor(o.skillsDir, task.spec.skills),
-        rolePrompt: `${isMaintainer ? maintainerPrompt() : AGENT_ROLE_PROMPT}\n\n${budgetNote(c.limits)}`,
-        task: brief,
-        tools,
-        finish: (isMaintainer
-          ? maintainerFinish(join(task.dir, 'fixture'))
-          : CodingFinish) as never,
+    const skills = loadSkillsFor(o.skillsDir, task.spec.skills);
+    const rolePrompt = isMaintainer ? maintainerPrompt() : AGENT_ROLE_PROMPT;
+    const finishSpec = isMaintainer ? maintainerFinish(join(task.dir, 'fixture')) : CodingFinish;
+    const maxFinishAttempts = isMaintainer ? 3 : 1;
+    if (c.external) {
+      // An outside agent drives the same tools through the rollout client (06 §4.9). The session
+      // resolves with the ReAct loop's result shape: an accepted finish, or `step_limit` /
+      // `aborted` (graded on the tree as it stands), or `deferred` when nobody claimed it.
+      const wallClockMs =
+        timeoutMs * (c.limits.externalTimeoutFactor ?? DEFAULT_EXTERNAL_TIMEOUT_FACTOR);
+      const budget = externalBudgetNote({
         maxSteps: c.limits.maxSteps,
+        wallClockMin: wallClockMs / 60_000,
         announceRemainingSteps: ANNOUNCE_REMAINING_STEPS,
-        budget: perRollout,
-        seed,
-        signal: abort.signal,
-        maxFinishAttempts: isMaintainer ? 3 : 1,
-      })) as ReactResult<Record<string, unknown>>;
-    } finally {
-      clearTimeout(timer);
+      });
+      result = await c.external.server.open(ROLLOUT_KEY(task.id, modelId, run), {
+        system: buildSystemPrompt(skills, `${rolePrompt}\n\n${budget}`),
+        brief,
+        tools,
+        finish: finishSpec as never,
+        maxSteps: c.limits.maxSteps,
+        maxFinishAttempts,
+        announceRemainingSteps: ANNOUNCE_REMAINING_STEPS,
+        wallClockMs,
+        claimTimeoutMs: c.external.claimTimeoutMs,
+        servedBy: modelId,
+      });
+    } else {
+      const client = clientForRole(c.config, roleOf(c.config, modelId), {
+        findSecrets: fixtureAwareDetector([...fixtureTexts(join(task.dir, 'fixture')), brief]),
+        limiters: c.limiters,
+        // No rollout ever falls back (06 §4.8): a fallback-served gate rollout is ungateable, a
+        // fallback-served train rollout is evidence about another model, and either would spend
+        // the other model's quota.
+        allowFallback: false,
+        ...(o.env ? { env: o.env } : {}),
+        ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
+        retryDelaysMs: o.retryDelaysMs ?? [...ROLLOUT_RETRY_DELAYS_MS],
+        ...(o.sleep ? { sleep: o.sleep } : {}),
+      });
+      const abort = new AbortController();
+      // A plain abort surfaces as `aborted`: the agent ran out of time, and its tree is still graded.
+      const timer = setTimeout(() => abort.abort(), timeoutMs);
+      const perRollout = new ScopedBudget(c.limits.requestsPerRollout, c.budget);
+      try {
+        result = (await runReact({
+          client,
+          skills,
+          rolePrompt: `${rolePrompt}\n\n${budgetNote(c.limits)}`,
+          task: brief,
+          tools,
+          finish: finishSpec as never,
+          maxSteps: c.limits.maxSteps,
+          announceRemainingSteps: ANNOUNCE_REMAINING_STEPS,
+          budget: perRollout,
+          seed,
+          signal: abort.signal,
+          maxFinishAttempts,
+        })) as ReactResult<Record<string, unknown>>;
+      } finally {
+        clearTimeout(timer);
+      }
     }
     if (result.transcript.some((e) => e.kind === 'tool_call' && e.name === 'finish')) {
       toolEvents.push(toolCallEvent('finish', {}, sb.workDir, sequencer.next()));
@@ -1299,7 +1372,7 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
   const lines: string[] = [
     `bench ${f.task.id} [${f.task.spec.split}] model ${f.modelId} run ${f.run} seed ${f.seed}`,
     `sandbox ${c.progress.selection.sandbox} (imageDigest ${c.identity.harness.imageDigest}); evaluation ${c.evaluationId}`,
-    `agent: ${r?.ok ? 'finished' : `ended with ${r?.error?.kind ?? 'no run'}${r?.error ? `: ${r.error.message}` : ''}`}; steps ${r?.steps ?? 0}, requests ${usage.requests}, servedBy ${servedBy}${r?.fallbackUsed ? ' (fallback)' : ''}`,
+    `agent: ${r?.ok ? 'finished' : `ended with ${r?.error?.kind ?? 'no run'}${r?.error ? `: ${r.error.message}` : ''}`}; steps ${r?.steps ?? 0}, requests ${usage.requests}, servedBy ${servedBy}${r?.fallbackUsed ? ' (fallback)' : ''}${c.external ? ` (declared: external agent ${c.external.agent}, not verified by the harness)` : ''}`,
     `status ${f.status}${f.reason ? `: ${f.reason}` : ''}; agent processes killed before grading: ${f.killed ?? 0}`,
   ];
   if (f.invalid) lines.push(`invalid: ${f.invalid}`);
@@ -1342,11 +1415,19 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
     startedAt: f.started.toISOString(),
     durationMs,
     agent: {
-      vendor: HARNESS_VENDOR,
-      version: HARNESS_VERSION,
+      // The harness loop, or `external` + the declared agent id (06 §4.9): as in the identity.
+      vendor: c.external ? EXTERNAL_VENDOR : HARNESS_VENDOR,
+      version: c.external ? c.external.agent : HARNESS_VERSION,
       model: f.modelId,
-      // The raw served-by values as the API reported them (`modelVersion`), unnormalized.
-      ...(r && r.servedBy.length > 0 ? { servedBy: r.servedBy.join(',') } : {}),
+      // The raw served-by values as the API reported them (`modelVersion`), unnormalized. For an
+      // external rollout: the model label and the agent id, both DECLARED by the launcher.
+      ...(r && r.servedBy.length > 0
+        ? {
+            servedBy: c.external
+              ? `${r.servedBy.join(',')}@${c.external.agent}`
+              : r.servedBy.join(','),
+          }
+        : {}),
     },
     bench: {
       task: f.task.id,
@@ -1511,6 +1592,50 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
   }
   if (selected.length === 0)
     return done('usage', `no ${split} task matches ${o.tasks?.join(', ') ?? '(all)'}`);
+  // External rollouts (06 §4.9): decided by the selected models. One evaluation has one agent
+  // (`identity.agent`), so a selection that mixes external and harness-driven models is refused.
+  const extModels = models.filter((m) => isExternalModel(config, m));
+  if (extModels.length > 0 && extModels.length < models.length) {
+    return done(
+      'usage',
+      `the selected models mix external (${extModels.join(', ')}) and harness-driven (${models.filter((m) => !extModels.includes(m)).join(', ')}) ones: one evaluation has one agent (06 §4.9). Run them as separate evaluations with --models, or make both gate models external`,
+    );
+  }
+  const external = extModels.length > 0;
+  if (o.agentMode === 'external' && !external) {
+    return done(
+      'usage',
+      `--agent-mode external needs the selected models (${models.join(', ')}) to be external in bench/models.json ({ "id": "<label>", "external": true })`,
+    );
+  }
+  if (o.agentMode === 'harness' && external) {
+    return done(
+      'usage',
+      `the selected models (${models.join(', ')}) are external in bench/models.json: the harness has no client for them (--agent-mode external)`,
+    );
+  }
+  let agentId: string | undefined;
+  if (external) {
+    agentId =
+      o.agent ??
+      (previous?.identity.agent.vendor === EXTERNAL_VENDOR
+        ? previous.identity.agent.version
+        : undefined);
+    if (!agentId) {
+      return done(
+        'usage',
+        'external rollouts need --agent "<agent id>": who drives them (e.g. claude-code/<model>); it is recorded in the identity as declared',
+      );
+    }
+    if (!EXTERNAL_AGENT_ID_RE.test(agentId) || findSecrets(agentId).length > 0) {
+      return done(
+        'usage',
+        '--agent needs an id of letters, digits and . _ : @ / + - (at most 100 characters)',
+      );
+    }
+  }
+  const concurrency = Math.max(1, Math.floor(o.concurrency ?? DEFAULT_EXTERNAL_CONCURRENCY));
+  const claimTimeoutMs = o.claimTimeoutMs ?? DEFAULT_CLAIM_TIMEOUT_MS;
   // A declared skill that is missing fails the RUN, loudly and before any request: a rollout
   // without the skill under test would be graded as if the skill had been there.
   const missingSkills = selected.flatMap((t) =>
@@ -1535,6 +1660,15 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       (was && o.maxSteps === undefined ? was.requestsPerRollout : rolloutRequestCap(maxSteps)),
     timeoutMin:
       o.rolloutTimeoutMs !== undefined ? o.rolloutTimeoutMs / 60_000 : (was?.timeoutMin ?? null),
+    // External rollouts only: how much longer than the task's timeout an outside agent gets.
+    ...(external
+      ? {
+          externalTimeoutFactor:
+            o.externalTimeoutFactor ??
+            was?.externalTimeoutFactor ??
+            DEFAULT_EXTERNAL_TIMEOUT_FACTOR,
+        }
+      : {}),
   };
 
   // 2. Identity (with the image built first, since its digest is part of it).
@@ -1548,7 +1682,11 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     greenlightVersion: o.assets.greenlightVersion,
     cliBuildHash: o.assets.cliBuildHash,
     imageDigest: image?.digest ?? 'process',
-    agent: { vendor: HARNESS_VENDOR, version: HARNESS_VERSION },
+    // An external evaluation is never comparable with a harness-driven one, nor with one whose
+    // launcher declared another agent.
+    agent: agentId
+      ? { vendor: EXTERNAL_VENDOR, version: agentId }
+      : { vendor: HARNESS_VENDOR, version: HARNESS_VERSION },
     models,
     mode: 'isolation',
     limits,
@@ -1618,14 +1756,19 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     modes: 1,
     requestsPerRollout: rpr,
   });
+  const isMaintainerKey = (key: string) =>
+    selected.find((t) => t.id === key.split('|')[0])?.spec.graders.includes('maintainer') === true;
+  // The harness's only requests in an external evaluation are the eval judge's (one per
+  // maintainer rollout): an external model has no quota to reserve and nothing to spend.
+  const judgeCalls = pending.filter(isMaintainerKey).length;
   const pendingEstimate = {
     ...estimate,
     rollouts: pending.length,
-    requests: Math.ceil(pending.length * rpr),
+    requests: external ? judgeCalls : Math.ceil(pending.length * rpr),
   };
   const check = checkBudget(budgetCfg, pendingEstimate, events, now());
   const refusals = [...check.refusals];
-  for (const m of models) {
+  for (const m of external ? [] : models) {
     const perModel = pending.filter((k) => k.split('|')[1] === m).length;
     const remaining = (await limiters.get(m)?.remainingToday()) ?? 0;
     const daily = checkBudget(
@@ -1646,7 +1789,8 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       { identity },
     );
   }
-  if (!o.skipModelsCheck) {
+  // An external evaluation with no maintainer rollout makes no model call at all: nothing to check.
+  if (!o.skipModelsCheck && !(external && judgeCalls === 0)) {
     let mc: Awaited<ReturnType<typeof checkModels>>;
     try {
       mc = await checkModels(config, o.fetchImpl, o.env ? { env: o.env } : {});
@@ -1655,7 +1799,9 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
         identity,
       });
     }
-    const missing = mc.missing.filter((m) => models.includes(m) || role !== 'train');
+    const missing = mc.missing.filter(
+      (m) => models.includes(m) || role !== 'train' || (external && judgeCalls > 0),
+    );
     if (missing.length > 0) {
       return done(
         'models-unavailable',
@@ -1739,8 +1885,107 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       need.set(judgeModel, (need.get(judgeModel) ?? 0) + 1);
     return need;
   };
+  let manifestPath: string | undefined;
+  /** Everything a rollout's result changes, for both schedulers. */
+  const settle = (key: string, m: string, r: RolloutOutcome, all: readonly string[]) => {
+    rollouts.push(r.summary);
+    if (r.raw) progress.rawIds.push(r.summary.rawId);
+    // An external model has no requests of the harness's to account for: no spend event.
+    if (!external) charge(m, r.usage, 1);
+    if (r.judgeUsage) charge(judgeModel, r.judgeUsage, 0);
+    if (r.stop === 'deferred') {
+      // Only this model waits for another day; the key stays queued.
+      if (r.stopAll) for (const x of all) deferred.set(x, r.summary.reason ?? 'deferred');
+      else deferred.set(m, r.summary.reason ?? 'deferred');
+    } else {
+      queue.set(
+        m,
+        (queue.get(m) as string[]).filter((k) => k !== key),
+      );
+      if (r.outcome) progress.outcomes.push(r.outcome);
+      else progress.problems.push({ key, kind: r.summary.status, message: r.summary.reason ?? '' });
+    }
+    log(
+      `  ${external ? `${key}: ` : ''}${r.summary.status}${r.summary.score !== undefined ? ` score ${r.summary.score}` : ''}${r.summary.reason ? ` (${r.summary.reason})` : ''}; ${r.summary.requests} request(s); ${r.raw ? `raw ${r.summary.rawId}` : 'no raw record'}`,
+    );
+    saveProgress(stateDir, progress);
+  };
   try {
-    for (;;) {
+    if (external) {
+      // 4b. External rollouts (06 §4.9): up to `concurrency` sandboxes open at once, each served
+      // to its outside agent through the rollout server; the manifest tells the launcher which.
+      const server = await RolloutServer.start({
+        dir: o.externalDir ?? mkdtempSync(join(tmpdir(), 'greenlight-rollouts-')),
+        ...(o.manifest ? { manifestPath: o.manifest } : {}),
+        evaluationId,
+        agent: agentId as string,
+        concurrency,
+        claimTimeoutMs,
+        now,
+      });
+      ctx.external = { server, agent: agentId as string, claimTimeoutMs };
+      for (const key of pending) server.add(key);
+      server.writeManifest();
+      manifestPath = server.manifestPath;
+      log(
+        `external rollouts (agent ${agentId}): manifest ${server.manifestPath} — ${pending.length} rollout(s), ${concurrency} open at once; dispatch one agent per rollout whose state is "open" with: <command> prompt (claim within ${Math.round(claimTimeoutMs / 1000)} s)`,
+      );
+      let next = 0;
+      const worker = async () => {
+        for (;;) {
+          const key = pending[next++];
+          if (key === undefined) return;
+          const [taskId, m, runStr] = key.split('|') as [string, string, string];
+          const task = selected.find((t) => t.id === taskId) as LoadedTask;
+          if (isMaintainerKey(key)) {
+            // The eval judge is the one request of this rollout: its model's day and this
+            // invocation's cap must hold it, or the rollout waits (never an unjudged grade).
+            const left = await remainingOf(judgeModel);
+            const short =
+              left < 1
+                ? `daily quota: the judge model ${judgeModel} has no request left today`
+                : ctx.budget.remaining < 1
+                  ? `request cap: none of this invocation's ${cap} requests left for the judge`
+                  : undefined;
+            if (short) {
+              deferred.set(m, short);
+              server.settle(key, 'deferred', short);
+              continue;
+            }
+          }
+          log(`rollout ${taskId} · ${m} · run ${runStr}: open for agent ${agentId} …`);
+          let r: RolloutOutcome;
+          try {
+            r = await runRollout(ctx, task, m, Number(runStr));
+          } catch (e) {
+            const message = `harness: ${e instanceof Error ? e.message : String(e)}`;
+            queue.set(
+              m,
+              (queue.get(m) as string[]).filter((k) => k !== key),
+            );
+            progress.problems.push({ key, kind: 'error', message });
+            saveProgress(stateDir, progress);
+            server.settle(key, 'error', message);
+            log(`  ${key}: error (${message})`);
+            continue;
+          }
+          settle(key, m, r, [m]);
+          server.settle(
+            key,
+            r.stop === 'deferred' ? 'deferred' : r.outcome ? 'done' : 'error',
+            r.outcome
+              ? `graded: score ${r.outcome.score}${r.outcome.graderError ? ' (grader error)' : ''}`
+              : r.summary.reason,
+          );
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: Math.min(concurrency, pending.length) }, worker));
+      } finally {
+        await server.close();
+      }
+    }
+    while (!external) {
       const live = models.filter((m) => (queue.get(m)?.length ?? 0) > 0 && !deferred.has(m));
       if (live.length === 0) break;
       // The model with the most quota left goes next (ties: models.json order), so the models
@@ -1774,24 +2019,7 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
       const task = selected.find((t) => t.id === taskId) as LoadedTask;
       log(`rollout ${taskId} · ${m} · run ${runStr} (${left.get(m)} request(s) left today) …`);
       const r = await runRollout(ctx, task, m, Number(runStr));
-      rollouts.push(r.summary);
-      if (r.raw) progress.rawIds.push(r.summary.rawId);
-      charge(m, r.usage, 1);
-      if (r.judgeUsage) charge(judgeModel, r.judgeUsage, 0);
-      if (r.stop === 'deferred') {
-        // Only this model waits for another day; the key stays queued.
-        if (r.stopAll) for (const x of live) deferred.set(x, r.summary.reason ?? 'deferred');
-        else deferred.set(m, r.summary.reason ?? 'deferred');
-      } else {
-        (queue.get(m) as string[]).shift();
-        if (r.outcome) progress.outcomes.push(r.outcome);
-        else
-          progress.problems.push({ key, kind: r.summary.status, message: r.summary.reason ?? '' });
-      }
-      log(
-        `  ${r.summary.status}${r.summary.score !== undefined ? ` score ${r.summary.score}` : ''}${r.summary.reason ? ` (${r.summary.reason})` : ''}; ${r.summary.requests} request(s); ${r.raw ? `raw ${r.summary.rawId}` : 'no raw record'}`,
-      );
-      saveProgress(stateDir, progress);
+      settle(key, m, r, live);
       if (r.stop === 'refused') {
         stop = 'refused';
         break;
@@ -1838,7 +2066,15 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     return done(
       'deferred',
       `deferred after ${allOutcomes.length}/${keys.length} rollouts — ${per}; resume later with \`greenlight bench run --resume ${evaluationId}\``,
-      { evaluationId, identity, rollouts, requests, remaining, deferredModels },
+      {
+        evaluationId,
+        identity,
+        rollouts,
+        requests,
+        remaining,
+        deferredModels,
+        ...(manifestPath ? { manifest: manifestPath } : {}),
+      },
     );
   }
   if (!complete) {
@@ -1870,7 +2106,15 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
   return done(
     'complete',
     `sealed ${role} evaluation ${record.hash}: ${passing}/${allOutcomes.length} rollouts passed`,
-    { evaluationId, identity, record, recordPath, rollouts, requests },
+    {
+      evaluationId,
+      identity,
+      record,
+      recordPath,
+      rollouts,
+      requests,
+      ...(manifestPath ? { manifest: manifestPath } : {}),
+    },
   );
 }
 
