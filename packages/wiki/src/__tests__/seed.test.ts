@@ -57,7 +57,10 @@ describe('framework wiki seed', () => {
         .map((p) => p.id)
         .sort();
     expect(status('confirmed')).toEqual(CONFIRMED);
-    expect(status('hypothesis')).toEqual(HYPOTHESES);
+    // The seeded hypotheses stay; the maintainer may add more (the first external-agent pass on
+    // 2026-11-18 added one), so this is containment. Confirmed stays exact: a promotion needs a
+    // deployed red→green run and should change this list on purpose.
+    expect(status('hypothesis')).toEqual(expect.arrayContaining(HYPOTHESES));
   });
 
   it('every confirmed pattern satisfies LR-05 with well-formed, resolved (non-TODO) evidence', () => {
