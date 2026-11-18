@@ -240,6 +240,22 @@ describe('findSecrets / redact', () => {
     expect(isCodeExpression('process.env.GITHUB_TOKEN,')).toBe(true);
   });
 
+  it('judges an unquoted value in a JSON-serialized trace as it read before serialization', () => {
+    // 2026-11-18: a rollout trace quoting `github_token = var.keepalive_github_token` was stored
+    // as JSON, the line break became `\\n`, and the bundle scan refused the trace as a secret.
+    const tf = '  github_token      = var.keepalive_github_token\n  cron = "0 6 */3 * *"\n';
+    expect(findSecrets(tf)).toEqual([]);
+    expect(findSecrets(JSON.stringify({ excerpt: tf }))).toEqual([]);
+    // A literal stays a finding either way, and only its own span is reported.
+    const lit = 'api_token=Zx9Qm4Lp7Tn2Vb8Kc3Rw\nnext line';
+    const stored = JSON.stringify({ excerpt: lit });
+    const found = findSecrets(stored);
+    expect(found).toHaveLength(1);
+    expect(stored.slice(found[0].index, found[0].index + found[0].length)).toBe(
+      'Zx9Qm4Lp7Tn2Vb8Kc3Rw',
+    );
+  });
+
   it('reports a log-line value without its trailing punctuation', () => {
     const text = `request failed (token=${RANDOM}), secret=${RANDOM};`;
     expect(redact(text)).toBe(

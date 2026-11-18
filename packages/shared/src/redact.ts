@@ -336,6 +336,10 @@ function contextFindings(text: string, kind: string, m: RegExpMatchArray): Secre
   let value = m[3] ?? '';
   const valueAt = (m.index ?? 0) + m[0].length - value.length;
   if (quote === '') {
+    // Inside a JSON-serialized string a line break reads as the two characters `\n`, which the
+    // value pattern swallows. An unquoted value ends at such an escape, so `x = var.y\n  z = …`
+    // in a stored trace is judged as the expression `var.y`, as it was before serialization.
+    value = value.replace(/\\(?:[nrt"\\]|u[0-9a-fA-F]{4}).*$/s, '');
     const keyValue = isKeyValueText(text, m, sep);
     // In `key=value` text the value ends where the next query parameter starts (`&page=2`).
     if (keyValue) value = value.replace(/&[\w.-]+=.*$/, '');
