@@ -34,7 +34,8 @@ import { parseFlags } from '../args';
  * `@rtrentjones/greenlight-wiki`'s runner (packages/wiki/src/bench/runner.ts). A framework-checkout
  * command: it reads `bench/` and builds the sandbox CLI with the checkout's esbuild.
  * Exit codes (07 §0): 0 done, 1 incomplete / mismatch / check failed, 2 usage, 3 missing
- * prerequisite, 4 refused by policy (budget, process sandbox for a gate role, changed identity).
+ * prerequisite, 4 refused by policy (budget, process sandbox for a gate role, changed identity),
+ * 5 (`bench iterate` only) awaiting an external agent's output.
  * `bench iterate` (M2-01) drives one resumable WikiSkill iteration; `bench review` (M2-04) records
  * the owner's review of its ledger rows. `bench gate <proposal>` stands alone in M3.
  */
@@ -81,6 +82,7 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
   iterate [--scope <skill|all>] [--resume <iterationId>] [--sandbox docker|process] [--json]
           [--dry-run] [--handoff-only] [--models frontier,small] [--runs n] [--max-steps n]
           [--rollout-requests n] [--candidate <commit|dir>] [--adopt-pins] [--break-lock]
+          [--maintainer-output <file> | --proposal <file>] [--agent "<agent id>"]
                        one WikiSkill iteration (06 §1.3) as a resumable state machine: train
                        evidence → maintainer → baseline → proposer → outlet evaluation → control
                        arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
@@ -95,6 +97,22 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        for them). --break-lock removes a lock written on another host.
                        A verify proposal needs the faulty and fixed artifacts, which M2 takes only
                        programmatically (OutletContext.artifacts): from the CLI it stays invalid.
+                       External roles: when bench/models.json sets roles.maintainer or
+                       roles.proposer to "external", that step makes no model call. It writes the
+                       bundle and stops as awaiting-agent (exit 5), printing the bundle path, the
+                       skill to follow (greenlight-wiki) and the command that hands the output
+                       back: --resume <id> --maintainer-output <file> (a MaintainerOutput JSON) or
+                       --resume <id> --proposal <file> (a ProposerOutput JSON), each with
+                       --agent "<agent id>" (who produced it, e.g. claude-code/<model>; recorded
+                       in place of a model id). The file is untrusted input: JSON only, at most
+                       1 MiB, validated exactly like a harness-produced output; three refused
+                       submissions fail the bundle. A file is refused (exit 4) when the role is
+                       not external, the step is not awaiting it, it was already accepted, or a
+                       pin drifted. The proposer reads traces only through
+                       \`greenlight wiki read raw:<id> --bundle <dir>\` (logged; 4 distinct reads).
+                       Exit codes: 0 complete; 1 deferred (quota: resume on a later day), blocked
+                       or failed; 2 usage; 3 missing prerequisite; 4 refused by policy;
+                       5 awaiting-agent (a human or an agent must act; nothing failed).
   review <iterationId> --decision accept|reject --reason "<text>" [--break-lock]
                        record the owner's review of an iteration's ledger rows (a review event;
                        a reject of an accepted candidate is a withdrawn event)
@@ -381,6 +399,9 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       '--max-steps',
       '--rollout-requests',
       '--candidate',
+      '--maintainer-output',
+      '--proposal',
+      '--agent',
     ],
     boolean: ['--json', '--dry-run', '--handoff-only', '--adopt-pins', '--break-lock'],
   });
@@ -395,6 +416,16 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
   if (!existsSync(join(p.bench, 'tasks')))
     throw new PrerequisiteError(`no bench at ${p.bench} (pass --bench <dir>)`);
   const repoRoot = resolve(p.bench, '..');
+  const submits =
+    v['--maintainer-output'] !== undefined ||
+    v['--proposal'] !== undefined ||
+    v['--agent'] !== undefined;
+  if (submits && (a.flags.has('--dry-run') || a.flags.has('--handoff-only'))) {
+    io.err(
+      '--maintainer-output, --proposal and --agent hand an output in: not with --dry-run or --handoff-only',
+    );
+    return 2;
+  }
   if (a.flags.has('--handoff-only')) {
     const id = v['--resume'];
     if (!id) {
@@ -438,6 +469,12 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       : {}),
     ...(a.flags.has('--adopt-pins') ? { adoptPins: true } : {}),
     ...(a.flags.has('--break-lock') ? { breakLock: true } : {}),
+    // An external agent's output (06 §2.5, §3.6): a path only; iterate reads it as untrusted JSON.
+    ...(v['--maintainer-output'] !== undefined
+      ? { maintainerOutput: resolve(io.cwd, v['--maintainer-output']) }
+      : {}),
+    ...(v['--proposal'] !== undefined ? { proposal: resolve(io.cwd, v['--proposal']) } : {}),
+    ...(v['--agent'] !== undefined ? { agent: v['--agent'] } : {}),
     ...(io.fetchImpl ? { fetchImpl: io.fetchImpl } : {}),
     log: (s: string) => io.err(s),
     ...(io.iterate ?? {}),
@@ -470,6 +507,8 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
         step: r.step,
         message: r.message,
         ...(r.remaining ? { remaining: r.remaining } : {}),
+        ...(r.awaiting ? { awaiting: r.awaiting } : {}),
+        ...(r.issues ? { issues: r.issues } : {}),
         ...(r.state?.handoff.file
           ? {
               handoff: join(
@@ -487,7 +526,8 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
   for (const [m, keys] of Object.entries(r.remaining ?? {}))
     io.err(`  ${m}: ${keys.length} rollout(s) left`);
   io.err(`${r.status}${r.step ? ` at ${r.step}` : ''}: ${r.message}`);
-  if (r.iterationId && r.status !== 'complete')
+  // An awaiting-agent message already carries the exact hand-back command.
+  if (r.iterationId && r.status !== 'complete' && r.status !== 'awaiting-agent')
     io.err(`resume with \`greenlight bench iterate --resume ${r.iterationId}\``);
   if (r.status === 'complete' && r.iterationId && !a.flags.has('--json')) {
     const file = join(stateDir, 'bench', 'iterations', r.iterationId, 'handoff.md');

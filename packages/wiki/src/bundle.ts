@@ -371,12 +371,18 @@ Do not edit the version field; the harness sets it.
 `;
 
 /** The harness header above the verbatim prompt: where the bundle is and how to address the
- * read-only CLI so reads land in this bundle's access log. */
-function promptHeader(dir: string, role: 'maintainer' | 'proposer'): string {
+ * read-only CLI so reads land in this bundle's access log. `handback` (an iteration's external
+ * role, 06 §2.5 / §3.6) adds how the output goes back to the harness. */
+function promptHeader(
+  dir: string,
+  role: 'maintainer' | 'proposer',
+  handback: readonly string[] = [],
+): string {
   return [
     `<!-- greenlight ${role} bundle: ${dir} -->`,
     `Run the read-only commands with GREENLIGHT_BUNDLE=${dir} set, so each read is recorded in`,
     `${dir}/${ACCESS_LOG}.`,
+    ...(handback.length > 0 ? ['', ...handback] : []),
     '',
     '---',
     '',
@@ -384,8 +390,12 @@ function promptHeader(dir: string, role: 'maintainer' | 'proposer'): string {
   ].join('\n');
 }
 
-export const renderPrompt = (template: string, dir: string, role: 'maintainer' | 'proposer') =>
-  promptHeader(dir, role) + template.replaceAll('{{dir}}', dir);
+export const renderPrompt = (
+  template: string,
+  dir: string,
+  role: 'maintainer' | 'proposer',
+  handback: readonly string[] = [],
+) => promptHeader(dir, role, handback) + template.replaceAll('{{dir}}', dir);
 
 // ---- maintainer bundle (06 §2.1) ------------------------------------------------------------
 
@@ -408,6 +418,8 @@ export interface MaintainerBundleInput {
   heldOutTaskIds?: readonly string[];
   /** `bench/splits.json`: decides which bench records are train. Without it, none are. */
   splits?: SplitIndex;
+  /** Lines for PROMPT.md's header: how an external agent hands its output back (06 §2.5). */
+  handback?: readonly string[];
   now?: Date;
 }
 
@@ -465,7 +477,7 @@ export function buildMaintainerBundle(input: MaintainerBundleInput): BundleFiles
   const incident = incidents[0];
 
   files.set('context.json', `${JSON.stringify(input.context, null, 2)}\n`);
-  files.set(PROMPT_FILE, renderPrompt(MAINTAINER_PROMPT, input.dir, 'maintainer'));
+  files.set(PROMPT_FILE, renderPrompt(MAINTAINER_PROMPT, input.dir, 'maintainer', input.handback));
   files.set(ACCESS_LOG, '');
   return seal(
     {
@@ -497,6 +509,8 @@ export interface ProposerBundleInput {
   splits?: SplitIndex;
   /** The accepted skill set whose train results `outcomes.md` reports (`acceptedSkillSet`). */
   acceptedSkillSetHash?: string;
+  /** Lines for PROMPT.md's header: how an external agent hands its output back (06 §3.6). */
+  handback?: readonly string[];
   now?: Date;
 }
 
@@ -518,7 +532,7 @@ export function buildProposerBundle(input: ProposerBundleInput): BundleFiles {
       acceptedSkillSetHash: input.acceptedSkillSetHash,
     }),
   );
-  files.set(PROMPT_FILE, renderPrompt(PROPOSER_PROMPT, input.dir, 'proposer'));
+  files.set(PROMPT_FILE, renderPrompt(PROPOSER_PROMPT, input.dir, 'proposer', input.handback));
   files.set(ACCESS_LOG, '');
   return seal(
     {

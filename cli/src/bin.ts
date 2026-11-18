@@ -54,6 +54,7 @@ const HELP = `greenlight <command>
   bench gate --recompute <gateInputHash>        re-derive a recorded gate decision
   bench activate <taskId…>                      activate pending tasks that have a baseline
   bench iterate [--scope s] [--resume <id>] [--dry-run] [--handoff-only] [--json]
+                [--maintainer-output <f> | --proposal <f>] [--agent <id>]
                                                 one resumable WikiSkill iteration → ledger + hand-off
   bench review <id> --decision accept|reject --reason "<text>"
                                                 record the owner's review of an iteration

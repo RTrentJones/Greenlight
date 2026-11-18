@@ -10,6 +10,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -18,7 +19,10 @@ import { type RawRecord, newRawId } from '@rtrentjones/greenlight-shared';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import {
+  ACCESS_LOG,
   type BundleContext,
+  BundleTrustError,
+  MIN_RAW_READS,
   PROPOSAL_FILE,
   PROPOSER_PROMPT,
   acceptedSkillSet,
@@ -46,7 +50,14 @@ import {
   withFileLock,
 } from '../ledger';
 import { type LintContext, introducedErrors, lint } from '../lint';
-import { type GeminiClient, type Usage, clientForRole, createLimiters, entryForRole } from '../llm';
+import {
+  type GeminiClient,
+  type Usage,
+  clientForRole,
+  createLimiters,
+  entryForRole,
+  isExternalRole,
+} from '../llm';
 import { RequestBudget } from '../llm/limits';
 import { FileQuotaStore, usageFromLedger } from '../llm/quota';
 import { type ReactResult, type ReactTool, runReact } from '../llm/react';
@@ -166,6 +177,14 @@ import { ensureRunnerImage, treeDiff } from './sandbox';
  * ledger event is appended only when its eventId is not in the ledger yet. A quota deferral (a
  * model's day is spent or it stays unavailable) persists the step as `deferred` and returns exit 1
  * with what remains. `reviewIteration` records the owner's review (06 §0 condition 4).
+ *
+ * EXTERNAL ROLES (06 §2.5, §3.6). When `bench/models.json` sets `roles.maintainer` or
+ * `roles.proposer` to `external`, that step makes no model call: it writes the same bundle, stores
+ * the step as `awaiting-external`, and the iteration stops as `awaiting-agent` (exit 5) with the
+ * bundle path and the exact command that hands the output back. The agent (anything that can read
+ * the bundle and run the CLI) writes one JSON file; `--resume <id> --maintainer-output <file>` or
+ * `--proposal <file>`, each with `--agent <id>`, feeds it through the SAME validation and
+ * application as a harness-produced output. No quota is reserved, no spend event is written.
  */
 
 export const ITERATION_STEPS = [
@@ -180,8 +199,45 @@ export const ITERATION_STEPS = [
 ] as const;
 export type IterationStep = (typeof ITERATION_STEPS)[number];
 
-export type StepStatus = 'pending' | 'deferred' | 'blocked' | 'failed' | 'done' | 'skipped';
-export type IterationStatus = 'running' | 'deferred' | 'blocked' | 'failed' | 'complete';
+export type StepStatus =
+  | 'pending'
+  | 'deferred'
+  | 'blocked'
+  | 'failed'
+  | 'done'
+  | 'skipped'
+  /** maintainer / proposer only: the bundle is written and an external agent's output is awaited. */
+  | 'awaiting-external';
+export type IterationStatus =
+  | 'running'
+  | 'deferred'
+  | 'blocked'
+  | 'failed'
+  | 'complete'
+  /** Stopped at a step whose role is external: a human or an agent must act (exit 5). */
+  | 'awaiting-agent';
+
+export type ExternalRole = 'maintainer' | 'proposer';
+
+/** A submitted output file is untrusted input: at most this many bytes, JSON only. */
+export const MAX_SUBMISSION_BYTES = 1024 * 1024;
+/** Submissions an external agent has per bundle, as `runReact`'s `maxFinishAttempts` (06 §2.4). */
+export const MAX_SUBMISSIONS = 3;
+/** `--agent`: who produced a submitted output, e.g. `claude-code/claude-sonnet-5-5`. One token,
+ * since it is written into `log.md` as the entry's actor. */
+export const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/;
+
+/** What an external role's state carries on top of the harness role's. */
+interface ExternalRoleState {
+  /** Who does the role in this iteration; absent in a state written before external roles. */
+  source?: 'harness' | 'external';
+  /** `--agent` of the accepted submission (in place of the model id a harness role records). */
+  agent?: string;
+  /** Submissions refused for the current bundle; `MAX_SUBMISSIONS` fail it. */
+  submissions?: number;
+  /** The issues of the last refused submission. */
+  issues?: string[];
+}
 
 /** The default step caps for the two LLM roles: each needs its whole cap (steps + 2) left in the
  * model's day before it starts, so both fit one free-tier day (20 RPD) on their own. */
@@ -282,7 +338,7 @@ export interface IterationState {
   baseCommit?: string;
   notes: string[];
   train: EvalStep;
-  maintainer: {
+  maintainer: ExternalRoleState & {
     status: StepStatus;
     message?: string;
     attempts: number;
@@ -298,7 +354,7 @@ export interface IterationState {
     model?: string;
   };
   baseline: EvalStep & { earlyStop?: boolean };
-  proposer: {
+  proposer: ExternalRoleState & {
     status: StepStatus;
     message?: string;
     attempts: number;
@@ -413,6 +469,13 @@ export interface IterateOptions {
   adoptPins?: boolean;
   /** `--break-lock`: remove a lock written on another host (which cannot be checked here). */
   breakLock?: boolean;
+  /** `--maintainer-output <file>`: an external agent's MaintainerOutput JSON (absolute path).
+   * Only with `resume` and `agent`, and only while the maintainer step is `awaiting-external`. */
+  maintainerOutput?: string;
+  /** `--proposal <file>`: an external agent's ProposerOutput JSON (absolute path); as above. */
+  proposal?: string;
+  /** `--agent <id>`: who produced the submitted file (`AGENT_ID_RE`). */
+  agent?: string;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -436,8 +499,21 @@ export interface IterateResult {
   state?: IterationState;
   /** On a rollout deferral: the rollout keys left per model. */
   remaining?: Record<string, string[]>;
-  /** 07 §0: 0 complete, 1 deferred/blocked/failed, 2 usage, 3 missing prerequisite, 4 policy. */
-  exitCode: 0 | 1 | 2 | 3 | 4;
+  /** On `awaiting-agent`: what the external agent needs. `bundle` is inside the iteration
+   * directory; `command` hands the output back. */
+  awaiting?: {
+    role: ExternalRole;
+    bundle: string;
+    skill: string;
+    command: string;
+    /** Refused submissions for this bundle, of `MAX_SUBMISSIONS`. */
+    submissions: number;
+  };
+  /** The issues of a submission refused in THIS invocation (it counted as one attempt). */
+  issues?: string[];
+  /** 07 §0: 0 complete, 1 deferred/blocked/failed, 2 usage, 3 missing prerequisite, 4 policy,
+   * 5 awaiting an external agent (a human or an agent must act; nothing failed). */
+  exitCode: 0 | 1 | 2 | 3 | 4 | 5;
 }
 
 export class IterationError extends Error {
@@ -463,7 +539,7 @@ const StateHeaderSchema = z
   .object({
     v: z.literal(1),
     iterationId: z.string().regex(ITERATION_ID_RE),
-    status: z.enum(['running', 'deferred', 'blocked', 'failed', 'complete']),
+    status: z.enum(['running', 'deferred', 'blocked', 'failed', 'complete', 'awaiting-agent']),
     step: z.enum(ITERATION_STEPS),
     settings: z.object({ scope: z.string(), sandbox: z.enum(['docker', 'process']) }).passthrough(),
     acceptedSkillSetHash: z.string(),
@@ -1259,7 +1335,7 @@ function applyStoredMaintainer(c: Ctx): StepOutcome {
   );
   if (!(m.writes && m.writes.length > 0 && onDisk)) {
     const output = JSON.parse(readFileSync(m.outputFile as string, 'utf8')) as unknown;
-    const p = prepareMaintainer(c, loadWiki(wikiRoot), output, `maintainer:${m.model}`);
+    const p = prepareMaintainer(c, loadWiki(wikiRoot), output, maintainerActor(m));
     if (!p.ok) {
       m.status = 'failed';
       m.message = `the stored maintainer output no longer applies: ${p.errors.slice(0, 3).join('; ')}`;
@@ -1277,6 +1353,11 @@ function applyStoredMaintainer(c: Ctx): StepOutcome {
   return { ok: true };
 }
 
+/** The `actor` of the maintainer's log entry (06 §2.4): the model the harness called, or the
+ * external agent that handed the output in. */
+const maintainerActor = (m: IterationState['maintainer']): string =>
+  `maintainer:${m.agent ?? m.model}`;
+
 function markBundleFailed(c: Ctx, bundleId: string, why: string): void {
   const wiki = loadWiki(c.o.wikiRoot);
   const log = appendLogEntry(wiki.log, {
@@ -1288,17 +1369,20 @@ function markBundleFailed(c: Ctx, bundleId: string, why: string): void {
   writeChangeset(c.o.wikiRoot, { writes: [{ path: LOG_FILE, content: log }] });
 }
 
-async function stepMaintainer(c: Ctx): Promise<StepOutcome> {
-  const m = c.s.maintainer;
-  if (m.outputFile && !m.applied) return applyStoredMaintainer(c);
-  const maxSteps = c.s.settings.agentMaxSteps.maintainer;
-  const call = await roleClient(c, 'maintainer', maxSteps);
-  if ('short' in call) {
-    m.status = 'deferred';
-    m.message = call.short;
-    return stop(c, 'maintainer', 'deferred', `maintainer: ${call.short}`, 1);
-  }
+/** `MaintainerOutput` plus everything `applyMaintainerOutput` and lint refuse (06 §2.4): the one
+ * validation of a maintainer output, whoever produced it. */
+const maintainerSchema = (c: Ctx, actor: string) =>
+  MaintainerOutputSchema.superRefine((v, ctx) => {
+    const p = prepareMaintainer(c, loadWiki(c.o.wikiRoot), v, actor);
+    for (const e of p.errors) zodIssue(ctx, e);
+  });
+
+/** Builds and writes the next maintainer bundle of the iteration (06 §2.1). PROMPT.md names the
+ * bundle as `bundle` for the harness loop (its tools mount it there) and by its real path for an
+ * external agent. */
+function writeMaintainerBundle(c: Ctx, external: boolean) {
   const o = c.o;
+  const m = c.s.maintainer;
   const train = recordByHash(o.wikiRoot, c.s.train.record as string);
   const store = loadRawStore(join(c.stateDir, 'raw'));
   const trainIds = new Set(train.outcomes.map((x) => x.rawId));
@@ -1312,11 +1396,11 @@ async function stepMaintainer(c: Ctx): Promise<StepOutcome> {
   m.attempts += 1;
   const bundleId = `${c.s.iterationId}-maintainer-${m.attempts}`;
   const bundleDir = join(c.dir, 'bundles', bundleId);
-  const wiki = loadWiki(o.wikiRoot);
   const bundle = buildMaintainerBundle({
     id: bundleId,
-    dir: 'bundle',
-    wiki,
+    dir: external ? bundleDir : 'bundle',
+    ...(external ? { handback: handbackLines(c, 'maintainer', bundleDir) } : {}),
+    wiki: loadWiki(o.wikiRoot),
     records,
     context: o.context ?? defaultContext(o),
     sample: { failing: 5, passing: 3 },
@@ -1331,36 +1415,55 @@ async function stepMaintainer(c: Ctx): Promise<StepOutcome> {
   m.bundleId = bundleId;
   m.bundleDir = relative(c.dir, bundleDir);
   m.rawIds = bundle.manifest.rawIds;
+  return { bundleId, bundleDir, bundle };
+}
+
+/** Stores a validated output in the iteration directory, then applies it exactly once. */
+function storeAndApplyMaintainer(c: Ctx, output: MaintainerOutput): StepOutcome {
+  const m = c.s.maintainer;
+  const outputFile = join(c.dir, 'maintainer-output.json');
+  writeFileSync(outputFile, `${JSON.stringify(output, null, 2)}\n`);
+  m.outputFile = outputFile;
+  m.applied = false;
+  c.save();
+  return applyStoredMaintainer(c);
+}
+
+async function stepMaintainer(c: Ctx): Promise<StepOutcome> {
+  const m = c.s.maintainer;
+  if (m.outputFile && !m.applied) return applyStoredMaintainer(c);
+  if (isExternalRole(c.config, 'maintainer')) return stepMaintainerExternal(c);
+  const maxSteps = c.s.settings.agentMaxSteps.maintainer;
+  const call = await roleClient(c, 'maintainer', maxSteps);
+  if ('short' in call) {
+    m.status = 'deferred';
+    m.message = call.short;
+    return stop(c, 'maintainer', 'deferred', `maintainer: ${call.short}`, 1);
+  }
+  const { bundleId, bundleDir, bundle } = writeMaintainerBundle(c, false);
+  m.source = 'harness';
   m.model = call.modelId;
   c.save();
-  const actor = `maintainer:${call.modelId}`;
-  const finishSchema = MaintainerOutputSchema.superRefine((v, ctx) => {
-    const p = prepareMaintainer(c, loadWiki(o.wikiRoot), v, actor);
-    for (const e of p.errors) zodIssue(ctx, e);
+  const finishSchema = maintainerSchema(c, maintainerActor(m));
+  const r = await runReact<MaintainerOutput>({
+    client: call.client,
+    skills: [],
+    rolePrompt: maintainerRolePrompt('bundle'),
+    task: [
+      `Your maintainer bundle is mounted at bundle/ (${bundle.manifest.files.length} files, ${bundle.manifest.rawIds.length} raw record(s)${c.s.settings.incidents.length ? `, ${c.s.settings.incidents.length} incident(s)` : ''}).`,
+      'Read it with read_file and list_dir. Submit your MaintainerOutput as the arguments of `finish`; a rejected submission comes back with its errors, and you have three.',
+    ].join('\n'),
+    tools: bundleFileTools(bundleDir),
+    finish: {
+      description: 'Submit the MaintainerOutput (08 §9.1) as the arguments.',
+      parameters: MAINTAINER_OUTPUT_JSON_SCHEMA as unknown as Record<string, unknown>,
+      schema: finishSchema as unknown as z.ZodType<MaintainerOutput>,
+    },
+    maxSteps,
+    budget: new RequestBudget(call.cap),
+    maxFinishAttempts: MAX_SUBMISSIONS,
   });
-  let r: ReactResult<MaintainerOutput>;
-  try {
-    r = await runReact<MaintainerOutput>({
-      client: call.client,
-      skills: [],
-      rolePrompt: maintainerRolePrompt('bundle'),
-      task: [
-        `Your maintainer bundle is mounted at bundle/ (${bundle.manifest.files.length} files, ${bundle.manifest.rawIds.length} raw record(s)${c.s.settings.incidents.length ? `, ${c.s.settings.incidents.length} incident(s)` : ''}).`,
-        'Read it with read_file and list_dir. Submit your MaintainerOutput as the arguments of `finish`; a rejected submission comes back with its errors, and you have three.',
-      ].join('\n'),
-      tools: bundleFileTools(bundleDir),
-      finish: {
-        description: 'Submit the MaintainerOutput (08 §9.1) as the arguments.',
-        parameters: MAINTAINER_OUTPUT_JSON_SCHEMA as unknown as Record<string, unknown>,
-        schema: finishSchema as unknown as z.ZodType<MaintainerOutput>,
-      },
-      maxSteps,
-      budget: new RequestBudget(call.cap),
-      maxFinishAttempts: 3,
-    });
-  } finally {
-    // nothing to clean: the bundle stays for the hand-off and the artifact upload
-  }
+  // The bundle stays for the hand-off and the artifact upload.
   chargeSpend(c, call.modelId, r, 'maintainer');
   if (!r.ok || !r.result) {
     const kind = r.error?.kind;
@@ -1375,12 +1478,212 @@ async function stepMaintainer(c: Ctx): Promise<StepOutcome> {
     m.message = why;
     return stop(c, 'maintainer', 'failed', `maintainer: ${why}`, 1);
   }
-  const outputFile = join(c.dir, 'maintainer-output.json');
-  writeFileSync(outputFile, `${JSON.stringify(r.result, null, 2)}\n`);
-  m.outputFile = outputFile;
-  m.applied = false;
-  c.save();
-  return applyStoredMaintainer(c);
+  return storeAndApplyMaintainer(c, r.result);
+}
+
+// ---- external roles (06 §2.5, §3.6) -----------------------------------------------------------
+
+const SUBMIT_FLAG: Record<ExternalRole, string> = {
+  maintainer: '--maintainer-output',
+  proposer: '--proposal',
+};
+const OUTPUT_NAME: Record<ExternalRole, string> = {
+  maintainer: 'MaintainerOutput',
+  proposer: 'ProposerOutput',
+};
+
+/** The command that hands an external role's output back to the iteration. */
+const handbackCommand = (c: Ctx, role: ExternalRole): string =>
+  [
+    `greenlight bench iterate --resume ${c.s.iterationId}`,
+    ...(c.s.settings.sandbox === 'process' ? ['--sandbox process'] : []),
+    `${SUBMIT_FLAG[role]} <file>`,
+    '--agent "<agent id>"',
+  ].join(' ');
+
+/** What PROMPT.md of an external role's bundle says above the verbatim prompt: the bundle belongs
+ * to an iteration, so the output goes back through `bench iterate`, never through the stand-alone
+ * `wiki ingest --apply` (which would write the wiki outside the iteration's state). */
+function handbackLines(c: Ctx, role: ExternalRole, bundleDir: string): string[] {
+  const own =
+    role === 'maintainer'
+      ? [
+          'Do NOT apply it yourself: never run `greenlight wiki ingest --apply` without `--dry-run`',
+          '(`greenlight wiki ingest --apply <file> --dry-run` is a safe pre-check; it writes nothing).',
+        ]
+      : [
+          'Read traces ONLY with `greenlight wiki traces --bundle <this dir>` and `greenlight wiki read',
+          'raw:<id> --bundle <this dir>`, run from the directory that holds `.greenlight/`: only reads',
+          `logged in ${bundleDir}/${ACCESS_LOG} count, and a change needs ${MIN_RAW_READS} distinct ones. Do not open`,
+          'files outside this bundle. (`greenlight wiki propose --apply <file> --bundle <this dir>` is a',
+          'safe pre-check of the proposal.)',
+        ];
+  return [
+    `This bundle belongs to bench iteration ${c.s.iterationId}; you are its ${role}, working outside`,
+    'the harness. Follow the greenlight-wiki skill. Write your output as ONE JSON object to a file',
+    `(at most ${MAX_SUBMISSION_BYTES} bytes) and hand it back with:`,
+    '',
+    `    ${handbackCommand(c, role)}`,
+    '',
+    ...own,
+    `A refused file comes back with its issues; a bundle takes ${MAX_SUBMISSIONS} submissions.`,
+  ];
+}
+
+/** The bundle directory of an external role, which must lie inside the iteration directory: the
+ * path comes from the state, and it is printed to an agent as where to work. */
+function externalBundleDir(c: Ctx, role: ExternalRole): string {
+  const rel = c.s[role].bundleDir;
+  const root = resolve(c.dir, 'bundles');
+  const dir = resolve(c.dir, rel ?? '');
+  if (!rel || dir === root || !inside(root, dir)) {
+    throw new IterationError(
+      `the ${role} bundle of iteration ${c.s.iterationId} (${rel ?? 'none'}) is not inside its iteration directory`,
+      4,
+    );
+  }
+  return dir;
+}
+
+/** True while `role`'s current bundle is on disk and is the one this harness issued (its
+ * manifest carries the MAC of the key in `.greenlight/bundle-keys/`). */
+function bundleIssued(c: Ctx, role: ExternalRole): boolean {
+  if (!c.s[role].bundleDir) return false;
+  try {
+    return openBundle(externalBundleDir(c, role), c.keysDir).manifest.role === role;
+  } catch (e) {
+    if (e instanceof BundleTrustError) return false;
+    throw e;
+  }
+}
+
+/** Stops the iteration as `awaiting-agent` (exit 5): the bundle is written, and a human or an
+ * agent must produce the role's output and hand it back. Nothing failed and no quota is waited
+ * for, so this is neither `failed` nor `deferred`. */
+function awaitAgent(c: Ctx, role: ExternalRole, refused?: string[], preface?: string): StepOutcome {
+  const st = c.s[role];
+  const bundle = externalBundleDir(c, role);
+  const submissions = st.submissions ?? 0;
+  const command = handbackCommand(c, role);
+  st.status = 'awaiting-external';
+  st.message = `awaiting an external agent's ${OUTPUT_NAME[role]} for bundle ${st.bundleId} (${submissions} of ${MAX_SUBMISSIONS} submissions refused)`;
+  const reads =
+    role === 'proposer'
+      ? [
+          `  read traces ONLY through the logged commands, run from the directory that holds .greenlight/: \`greenlight wiki traces --bundle ${bundle}\` and \`greenlight wiki read raw:<id> --bundle ${bundle}\` (also <page-id> and skill:<name>). A change needs at least ${MIN_RAW_READS} distinct logged raw reads; a file read any other way is not in the access log and does not count.`,
+        ]
+      : [];
+  const message = [
+    ...(preface ? [`${role}: ${preface}`] : []),
+    ...(refused
+      ? [
+          `${role}: the submitted ${OUTPUT_NAME[role]} was refused (submission ${submissions} of ${MAX_SUBMISSIONS}); nothing was written:`,
+          ...refused.slice(0, 10).map((e) => `  - ${e}`),
+        ]
+      : []),
+    `${role}: awaiting an external agent (bench/models.json roles.${role} is "external"; the harness makes no model call for it).`,
+    `  bundle: ${bundle}  (read PROMPT.md first)`,
+    `  skill: greenlight-wiki, section "${role === 'maintainer' ? 'Maintainer' : 'Proposer'}" (.claude/skills/greenlight-wiki/SKILL.md)`,
+    ...reads,
+    `  write ONE ${OUTPUT_NAME[role]} JSON object to a file (at most ${MAX_SUBMISSION_BYTES} bytes), then hand it back with:`,
+    `    ${command}`,
+    `  ${MAX_SUBMISSIONS - submissions} submission(s) left for this bundle.`,
+  ].join('\n');
+  return stop(c, role, 'awaiting-agent', message, 5, {
+    awaiting: { role, bundle, skill: 'greenlight-wiki', command, submissions },
+    ...(refused ? { issues: refused } : {}),
+  });
+}
+
+/** Reads a submitted output file as untrusted input: a regular file of at most
+ * `MAX_SUBMISSION_BYTES`, parsed as JSON and nothing else (never executed, never resolved against
+ * anything). A file that cannot be read at all is a missing prerequisite (exit 3) and no attempt;
+ * one that is too large or is not a JSON object is an invalid submission. */
+function readSubmission(
+  file: string,
+  role: ExternalRole,
+): { ok: true; value: unknown } | { ok: false; issues: string[] } {
+  const flag = SUBMIT_FLAG[role];
+  let size: number;
+  try {
+    const st = statSync(file);
+    if (!st.isFile()) throw new Error('not a regular file');
+    size = st.size;
+  } catch (e) {
+    throw new IterationError(`${flag}: cannot read ${file}: ${(e as Error).message}`, 3);
+  }
+  if (size > MAX_SUBMISSION_BYTES) {
+    return {
+      ok: false,
+      issues: [`the file is ${size} bytes; a submission is at most ${MAX_SUBMISSION_BYTES}`],
+    };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (e) {
+    return { ok: false, issues: [`the file is not valid JSON: ${(e as Error).message}`] };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, issues: [`the file must hold one ${OUTPUT_NAME[role]} JSON object`] };
+  }
+  return { ok: true, value };
+}
+
+const zodIssues = (e: z.ZodError): string[] =>
+  e.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message));
+
+/** A refused submission counts as one attempt; the third fails the bundle, as three rejected
+ * `finish` calls fail a harness role (06 §2.4). */
+function refuseSubmission(c: Ctx, role: ExternalRole, issues: string[]): StepOutcome {
+  const st = c.s[role];
+  st.submissions = (st.submissions ?? 0) + 1;
+  st.issues = issues.slice(0, 10);
+  if (st.submissions < MAX_SUBMISSIONS) return awaitAgent(c, role, issues);
+  const why = `finish_invalid: ${MAX_SUBMISSIONS} submissions refused (${issues.slice(0, 3).join('; ')})`;
+  if (role === 'maintainer') markBundleFailed(c, st.bundleId as string, why);
+  st.status = 'failed';
+  st.message = why;
+  return stop(
+    c,
+    role,
+    'failed',
+    [
+      `${role}: ${why}`,
+      ...issues.slice(0, 10).map((e) => `  - ${e}`),
+      `  bundle ${st.bundleId} is failed; resume without a file for a fresh bundle.`,
+    ].join('\n'),
+    1,
+    { issues },
+  );
+}
+
+/** The maintainer step when the role is external: the same bundle, no model call, no quota. */
+function stepMaintainerExternal(c: Ctx): StepOutcome {
+  const m = c.s.maintainer;
+  const file = c.o.maintainerOutput;
+  // A maintainer output is validated against the wiki, not the bundle, so a handed-in file is
+  // judged even when the bundle directory is gone.
+  if (m.status !== 'awaiting-external' || (file === undefined && !bundleIssued(c, 'maintainer'))) {
+    // First entry, a bundle that failed, or one that is gone: issue a fresh bundle and wait.
+    writeMaintainerBundle(c, true);
+    m.source = 'external';
+    m.model = undefined;
+    m.agent = undefined;
+    m.submissions = 0;
+    m.issues = undefined;
+    return awaitAgent(c, 'maintainer');
+  }
+  if (file === undefined) return awaitAgent(c, 'maintainer');
+  const agent = c.o.agent as string;
+  const read = readSubmission(file, 'maintainer');
+  if (!read.ok) return refuseSubmission(c, 'maintainer', read.issues);
+  const parsed = maintainerSchema(c, `maintainer:${agent}`).safeParse(read.value);
+  if (!parsed.success) return refuseSubmission(c, 'maintainer', zodIssues(parsed.error));
+  m.agent = agent;
+  m.issues = undefined;
+  m.status = 'pending';
+  return storeAndApplyMaintainer(c, parsed.data);
 }
 
 function defaultContext(o: IterateOptions): BundleContext {
@@ -1543,18 +1846,13 @@ function skillLintErrors(c: Ctx, candidateSkills: string): string[] {
     .map((f) => `${f.rule} ${f.page}: ${f.message}`);
 }
 
-async function stepProposer(c: Ctx): Promise<StepOutcome> {
-  const p = c.s.proposer;
+/** Builds and writes the next proposer bundle of the iteration (06 §3.1). It holds `index.md`,
+ * `skill-impact.md`, `outcomes.md`, `PROMPT.md`, `bundle.json` and an empty `access.jsonl`: never
+ * a raw record. Traces are served only by the logged `wiki read raw:<id>`. */
+function writeProposerBundle(c: Ctx, external: boolean) {
   const o = c.o;
-  const maxSteps = c.s.settings.agentMaxSteps.proposer;
-  const call = await roleClient(c, 'proposer', maxSteps);
-  if ('short' in call) {
-    p.status = 'deferred';
-    p.message = call.short;
-    return stop(c, 'proposer', 'deferred', `proposer: ${call.short}`, 1);
-  }
+  const p = c.s.proposer;
   const store = loadRawStore(join(c.stateDir, 'raw'));
-  const wiki = loadWiki(o.wikiRoot);
   const managed = loadSkills(o.skillsDir).map((s) => s.name);
   const scope = c.s.settings.scope;
   p.attempts += 1;
@@ -1562,8 +1860,9 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
   const bundleDir = join(c.dir, 'bundles', bundleId);
   const bundle = buildProposerBundle({
     id: bundleId,
-    dir: 'bundle',
-    wiki,
+    dir: external ? bundleDir : 'bundle',
+    ...(external ? { handback: handbackLines(c, 'proposer', bundleDir) } : {}),
+    wiki: loadWiki(o.wikiRoot),
     records: store.records,
     skills: scope === 'all' ? managed : [scope],
     ...(scope !== 'all' ? { skill: scope } : {}),
@@ -1576,11 +1875,16 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
   writeBundle(bundleDir, bundle, { keysDir: c.keysDir });
   p.bundleId = bundleId;
   p.bundleDir = relative(c.dir, bundleDir);
-  p.model = call.modelId;
-  c.save();
+  return { bundleId, bundleDir };
+}
 
+/** `ProposerOutput` plus `checkProposal` (the bundle's verified access log included) and the
+ * scratch lint of 06 §3.4: the one validation of a proposal, whoever produced it. `checkedId()`
+ * is the content id of the last output that passed. */
+function proposerSchema(c: Ctx, bundleDir: string) {
+  const o = c.o;
   let checkedId: string | undefined;
-  const finishSchema = z
+  const schema = z
     .preprocess(normalizeProposerOutput, ProposerOutputSchema)
     .superRefine((v, ctx) => {
       const checked = checkProposal({
@@ -1592,7 +1896,7 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
         keysDir: c.keysDir,
         records: loadRawStore(join(c.stateDir, 'raw')).records,
         ...(c.splits ? { splits: c.splits } : {}),
-        scope,
+        scope: c.s.settings.scope,
       });
       if (!checked.ok) {
         for (const e of checked.errors) zodIssue(ctx, e);
@@ -1609,45 +1913,25 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
       for (const e of errors) zodIssue(ctx, e);
       if (errors.length === 0) checkedId = checked.proposalId;
     });
-  const r = await runReact<ProposerOutput>({
-    client: call.client,
-    skills: [],
-    rolePrompt: PROPOSER_PROMPT.replaceAll('{{dir}}', 'bundle'),
-    task: [
-      'Your proposer bundle is mounted at bundle/ (index.md, skill-impact.md, outcomes.md).',
-      'The read-only commands are tools: `wiki_read` is `greenlight wiki read <ref>` and `wiki_traces` is `greenlight wiki traces`; read_file reads the bundle.',
-      'Submit your ProposerOutput as the arguments of `finish`; a rejected submission comes back with its errors, and you have three.',
-    ].join('\n'),
-    tools: proposerTools(c, bundleDir),
-    finish: {
-      description: 'Submit the ProposerOutput (08 §9.2) as the arguments.',
-      parameters: PROPOSER_OUTPUT_JSON_SCHEMA as unknown as Record<string, unknown>,
-      schema: finishSchema as unknown as z.ZodType<ProposerOutput>,
-    },
-    maxSteps,
-    budget: new RequestBudget(call.cap),
-    maxFinishAttempts: 3,
-  });
-  chargeSpend(c, call.modelId, r, 'proposer');
-  if (!r.ok || !r.result || !checkedId) {
-    const kind = r.error?.kind;
-    const why = `${kind}: ${r.error?.message ?? 'no output'}${r.error?.issues?.length ? ` (${r.error.issues.slice(0, 3).join('; ')})` : ''}`;
-    p.status = resumable(kind) ? 'deferred' : 'failed';
-    p.message = why;
-    return stop(
-      c,
-      'proposer',
-      p.status === 'deferred' ? 'deferred' : 'failed',
-      `proposer: ${why}`,
-      1,
-    );
-  }
-  const proposal = r.result;
-  const proposalId = uniqueProposalId(checkedId, ledgerEvents(o.wikiRoot), c.s.iterationId);
+  return { schema, checkedId: () => checkedId };
+}
+
+/** Records a validated proposal: `proposal.json` in the bundle and the iteration directory, the
+ * state, and for `no_action` the sealed event. */
+function acceptProposal(
+  c: Ctx,
+  proposal: ProposerOutput,
+  checkedId: string,
+  bundleDir: string,
+): StepOutcome {
+  const p = c.s.proposer;
+  const scope = c.s.settings.scope;
+  const proposalId = uniqueProposalId(checkedId, ledgerEvents(c.o.wikiRoot), c.s.iterationId);
   const record = {
     proposalId,
-    bundle: bundleId,
+    bundle: p.bundleId,
     validatedAt: c.now().toISOString(),
+    ...(p.agent ? { agent: p.agent } : {}),
     output: proposal,
   };
   writeFileSync(join(bundleDir, PROPOSAL_FILE), `${JSON.stringify(record, null, 2)}\n`);
@@ -1681,6 +1965,100 @@ async function stepProposer(c: Ctx): Promise<StepOutcome> {
   }
   c.save();
   return { ok: true };
+}
+
+async function stepProposer(c: Ctx): Promise<StepOutcome> {
+  const p = c.s.proposer;
+  if (isExternalRole(c.config, 'proposer')) return stepProposerExternal(c);
+  const maxSteps = c.s.settings.agentMaxSteps.proposer;
+  const call = await roleClient(c, 'proposer', maxSteps);
+  if ('short' in call) {
+    p.status = 'deferred';
+    p.message = call.short;
+    return stop(c, 'proposer', 'deferred', `proposer: ${call.short}`, 1);
+  }
+  const { bundleDir } = writeProposerBundle(c, false);
+  p.source = 'harness';
+  p.model = call.modelId;
+  c.save();
+
+  const check = proposerSchema(c, bundleDir);
+  const r = await runReact<ProposerOutput>({
+    client: call.client,
+    skills: [],
+    rolePrompt: PROPOSER_PROMPT.replaceAll('{{dir}}', 'bundle'),
+    task: [
+      'Your proposer bundle is mounted at bundle/ (index.md, skill-impact.md, outcomes.md).',
+      'The read-only commands are tools: `wiki_read` is `greenlight wiki read <ref>` and `wiki_traces` is `greenlight wiki traces`; read_file reads the bundle.',
+      'Submit your ProposerOutput as the arguments of `finish`; a rejected submission comes back with its errors, and you have three.',
+    ].join('\n'),
+    tools: proposerTools(c, bundleDir),
+    finish: {
+      description: 'Submit the ProposerOutput (08 §9.2) as the arguments.',
+      parameters: PROPOSER_OUTPUT_JSON_SCHEMA as unknown as Record<string, unknown>,
+      schema: check.schema as unknown as z.ZodType<ProposerOutput>,
+    },
+    maxSteps,
+    budget: new RequestBudget(call.cap),
+    maxFinishAttempts: MAX_SUBMISSIONS,
+  });
+  chargeSpend(c, call.modelId, r, 'proposer');
+  const checkedId = check.checkedId();
+  if (!r.ok || !r.result || !checkedId) {
+    const kind = r.error?.kind;
+    const why = `${kind}: ${r.error?.message ?? 'no output'}${r.error?.issues?.length ? ` (${r.error.issues.slice(0, 3).join('; ')})` : ''}`;
+    p.status = resumable(kind) ? 'deferred' : 'failed';
+    p.message = why;
+    return stop(
+      c,
+      'proposer',
+      p.status === 'deferred' ? 'deferred' : 'failed',
+      `proposer: ${why}`,
+      1,
+    );
+  }
+  return acceptProposal(c, r.result, checkedId, bundleDir);
+}
+
+/** The proposer step when the role is external: the same bundle, no model call, no quota. The
+ * agent reads through `greenlight wiki read|traces --bundle <dir>` (another process; the bundle's
+ * key is in `.greenlight/bundle-keys/`, where that CLI looks), so the access log `checkProposal`
+ * verifies is written by the CLI, never by the agent. */
+function stepProposerExternal(c: Ctx): StepOutcome {
+  const p = c.s.proposer;
+  const file = c.o.proposal;
+  if (p.status !== 'awaiting-external' || !bundleIssued(c, 'proposer')) {
+    // First entry, a failed bundle, or one this harness cannot open (its key is per machine): a
+    // fresh bundle with an empty access log. A file handed in with it is not judged against it.
+    const stale = p.status === 'awaiting-external';
+    writeProposerBundle(c, true);
+    p.source = 'external';
+    p.model = undefined;
+    p.agent = undefined;
+    p.submissions = 0;
+    p.issues = undefined;
+    if (!stale) return awaitAgent(c, 'proposer');
+    const note = `the earlier proposer bundle could not be opened here (its key is per machine), so ${p.bundleId} was issued; its access log starts empty`;
+    if (!c.s.notes.includes(note)) c.s.notes.push(note);
+    return awaitAgent(
+      c,
+      'proposer',
+      undefined,
+      `${note}.${file !== undefined ? ' The submitted file was NOT judged and counts as no attempt: read through the new bundle, then submit again.' : ''}`,
+    );
+  }
+  if (file === undefined) return awaitAgent(c, 'proposer');
+  const bundleDir = externalBundleDir(c, 'proposer');
+  const read = readSubmission(file, 'proposer');
+  if (!read.ok) return refuseSubmission(c, 'proposer', read.issues);
+  const check = proposerSchema(c, bundleDir);
+  const parsed = check.schema.safeParse(read.value);
+  const checkedId = check.checkedId();
+  if (!parsed.success) return refuseSubmission(c, 'proposer', zodIssues(parsed.error));
+  if (!checkedId) return refuseSubmission(c, 'proposer', ['the proposal did not pass its checks']);
+  p.agent = c.o.agent as string;
+  p.issues = undefined;
+  return acceptProposal(c, parsed.data as ProposerOutput, checkedId, bundleDir);
 }
 
 // ---- step 5/6: candidate evaluation -----------------------------------------------------------
@@ -2477,6 +2855,8 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
     `- bundle: \`${m.bundleId ?? '—'}\` (${m.rawIds?.length ?? 0} raw record(s), incidents: ${s.settings.incidents.join(', ') || 'none'})`,
   );
   lines.push(`- status: ${m.status}${m.message ? ` — ${m.message}` : ''}`);
+  if (m.source === 'external')
+    lines.push(`- produced by: external agent \`${m.agent ?? '(not handed in yet)'}\``);
   if (m.indexCorrections?.length)
     lines.push(`- index corrections: ${m.indexCorrections.join('; ')}`);
   if (m.outputFile && existsSync(m.outputFile)) {
@@ -2503,12 +2883,20 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
   }
 
   const cost = iterationCost(s, events);
+  // A role done by an external agent has no request, quota or spend event of the harness's: the
+  // table says so, and by whom, instead of showing nothing for it.
+  const external = (['maintainer', 'proposer'] as const).filter((r) => s[r].source === 'external');
   lines.push('### Cost', '');
-  if (cost.length === 0) lines.push('_No spend recorded (cached evidence only)._');
+  if (cost.length === 0 && external.length === 0)
+    lines.push('_No spend recorded (cached evidence only)._');
   else {
     lines.push('| model | requests | rollouts | tokens in | tokens out |', '|---|---|---|---|---|');
     for (const x of cost)
       lines.push(`| ${x.model} | ${x.requests} | ${x.rollouts} | ${x.tokensIn} | ${x.tokensOut} |`);
+    for (const r of external)
+      lines.push(
+        `| ${r}: external agent \`${s[r].agent ?? '(not handed in yet)'}\` (not called by the harness; no quota, no spend event) | — | — | — | — |`,
+      );
   }
   lines.push('');
   if (s.notes.length) lines.push('### Notes', '', ...s.notes.map((n) => `- ${n}`), '');
@@ -2683,6 +3071,78 @@ const STEP_FNS: Record<IterationStep, (c: Ctx) => Promise<StepOutcome> | StepOut
 
 const stepStatus = (s: IterationState, step: IterationStep): StepStatus => s[step].status;
 
+/** The role a submitted file is for, after the usage checks: one file per invocation, only on a
+ * resume, and always with a well-formed `--agent`. */
+function submittedRole(o: IterateOptions): ExternalRole | undefined {
+  const both = o.maintainerOutput !== undefined && o.proposal !== undefined;
+  if (both) {
+    throw new IterationError(
+      'pass --maintainer-output or --proposal, not both: one step at a time',
+      2,
+    );
+  }
+  const role: ExternalRole | undefined =
+    o.maintainerOutput !== undefined
+      ? 'maintainer'
+      : o.proposal !== undefined
+        ? 'proposer'
+        : undefined;
+  if (!role) {
+    if (o.agent !== undefined) {
+      throw new IterationError(
+        '--agent names who produced a submitted output: pass it with --maintainer-output or --proposal',
+        2,
+      );
+    }
+    return undefined;
+  }
+  const flag = SUBMIT_FLAG[role];
+  if (!o.resume) throw new IterationError(`${flag} needs --resume <iterationId>`, 2);
+  if (o.agent === undefined) {
+    throw new IterationError(
+      `${flag} needs --agent "<agent id>" (who produced the file, e.g. claude-code/<model>)`,
+      2,
+    );
+  }
+  if (!AGENT_ID_RE.test(o.agent) || findSecrets(o.agent).length > 0) {
+    throw new IterationError(
+      '--agent must be one token of letters, digits and . _ : / @ + - (at most 100 characters, starting with a letter or digit)',
+      2,
+    );
+  }
+  return role;
+}
+
+/** Refuses (exit 4) a submitted file the iteration is not waiting for: the role is not external,
+ * its step is not `awaiting-external` (another step is, or it already has its output), or the
+ * iteration is complete. Runs after the pin check, so drifted inputs refuse first. */
+function checkSubmission(c: Ctx, role: ExternalRole): void {
+  const s = c.s;
+  const st = s[role];
+  const flag = SUBMIT_FLAG[role];
+  if (!isExternalRole(c.config, role)) {
+    throw new IterationError(
+      `${flag} refused: the ${role} role is "${c.config.roles[role]}" in bench/models.json, not "external"; the harness produces its output`,
+      4,
+    );
+  }
+  if (st.status === 'done' || (role === 'maintainer' && s.maintainer.outputFile !== undefined)) {
+    throw new IterationError(
+      `${flag} refused: iteration ${s.iterationId} already has its ${role} output (from ${st.agent ?? st.model ?? 'an earlier run'}); a second submission is never applied`,
+      4,
+    );
+  }
+  if (st.status !== 'awaiting-external') {
+    const waiting = (['maintainer', 'proposer'] as const).find(
+      (r) => s[r].status === 'awaiting-external',
+    );
+    throw new IterationError(
+      `${flag} refused: iteration ${s.iterationId} is not awaiting the ${role}'s output (it is ${s.status} at ${s.step}${waiting ? `, awaiting the ${waiting}` : ''}; the ${role} step is ${st.status})`,
+      4,
+    );
+  }
+}
+
 export async function iterate(o: IterateOptions): Promise<IterateResult> {
   const now = o.now ?? (() => new Date());
   const log = o.log ?? (() => {});
@@ -2692,6 +3152,7 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
     assertOutsideSkills(o.skillsDir, o.wikiRoot, 'the wiki');
     const id = o.resume ?? o.iterationId ?? `iter-${newRawId(now())}`;
     if (!ITERATION_ID_RE.test(id)) throw new IterationError(`"${id}" is not an iteration id`, 2);
+    const submitted = submittedRole(o);
     if (o.resume && !existsSync(iterationStatePath(stateDir, id)))
       throw new IterationError(`no iteration ${id} at ${iterationStatePath(stateDir, id)}`, 2);
     if (!o.resume && existsSync(iterationStatePath(stateDir, id)))
@@ -2709,7 +3170,7 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
             4,
           );
         }
-        if (s.status === 'complete') {
+        if (s.status === 'complete' && !submitted) {
           return {
             status: 'complete',
             iterationId: s.iterationId,
@@ -2719,6 +3180,7 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
             exitCode: 0,
           };
         }
+        // Before anything a submitted file could reach: drifted inputs refuse the resume.
         checkPins(s, o, log);
       } else {
         if (existsSync(iterationStatePath(stateDir, id)))
@@ -2757,6 +3219,7 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
         log,
         save: () => saveState(stateDir, s, now()),
       };
+      if (submitted) checkSubmission(c, submitted);
       s.status = 'running';
       s.message = undefined;
       c.save();
@@ -2960,6 +3423,9 @@ const AFTER_ACCEPT: ReadonlySet<string> = new Set([
 
 // ---- dry run ----------------------------------------------------------------------------------
 
+const EXTERNAL_PLAN =
+  'external agent: no request; stops as awaiting-agent (exit 5) until its output is handed in';
+
 /** What `bench iterate --dry-run` reports: the steps left and what they would spend. No request,
  * no write, no docker. */
 export function planIteration(o: IterateOptions): { lines: string[]; state?: IterationState } {
@@ -2995,11 +3461,15 @@ export function planIteration(o: IterateOptions): { lines: string[]; state?: Ite
         ? `reuse a sealed train record if its identity matches (${cached.map((r) => r.hash.slice(0, 12)).join(', ')}), else ${train.length * models} rollout(s)`
         : `${train.length * models} rollout(s)`;
     if (step === 'maintainer')
-      what = `≤ ${(s?.settings.agentMaxSteps.maintainer ?? DEFAULT_AGENT_MAX_STEPS.maintainer) + 2} request(s) on ${entryForRole(config, 'maintainer').id}`;
+      what = isExternalRole(config, 'maintainer')
+        ? EXTERNAL_PLAN
+        : `≤ ${(s?.settings.agentMaxSteps.maintainer ?? DEFAULT_AGENT_MAX_STEPS.maintainer) + 2} request(s) on ${entryForRole(config, 'maintainer').id}`;
     if (step === 'baseline')
       what = `${val.length * models * runs} rollout(s) unless a sealed baseline of this identity exists`;
     if (step === 'proposer')
-      what = `≤ ${(s?.settings.agentMaxSteps.proposer ?? DEFAULT_AGENT_MAX_STEPS.proposer) + 2} request(s) on ${entryForRole(config, 'proposer').id}`;
+      what = isExternalRole(config, 'proposer')
+        ? EXTERNAL_PLAN
+        : `≤ ${(s?.settings.agentMaxSteps.proposer ?? DEFAULT_AGENT_MAX_STEPS.proposer) + 2} request(s) on ${entryForRole(config, 'proposer').id}`;
     if (step === 'evaluate')
       what = `skill: ${val.length * models * runs} candidate rollout(s); other outlets: evaluateOutlet`;
     if (step === 'control')
