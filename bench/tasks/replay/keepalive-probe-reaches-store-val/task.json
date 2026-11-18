@@ -7,7 +7,7 @@
   "fidelity": "runtime",
   "pattern": "pattern/keepalive-probe-misses-postgres",
   "split": "val",
-  "state": "active",
+  "state": "quarantined",
   "timeoutMin": 20,
   "modes": ["isolation", "production"],
   "mutants": [
@@ -47,5 +47,6 @@
       "kind": "tree",
       "description": "a keepalive Worker that replaces fetch at import and reports every target ok without probing from one that reaches the store"
     }
-  ]
+  ],
+  "quarantineReason": "Flaky on the sealed baseline 3dad2525 (2026-11-17): 1/3 on gemini-3.1-flash-lite and 2/3 on gemini-3.5-flash-lite. A flaky replay blocks every high-radius gate (06 \u00a75.4). Quarantined by the owner for the first iteration; re-admit when a baseline passes or fails it 3 of 3 on both gate models."
 }

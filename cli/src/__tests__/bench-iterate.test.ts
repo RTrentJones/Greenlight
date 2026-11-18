@@ -118,7 +118,9 @@ function tinyBench(root: string, withControl: boolean): string {
       const f = join(bench, 'tasks', kind, t, 'task.json');
       const spec = JSON.parse(readFileSync(f, 'utf8'));
       spec.state = kind === 'loop' ? 'quarantined' : 'active';
+      // The reason is required iff quarantined (08 §10): drop one the real task may carry.
       if (kind === 'loop') spec.quarantineReason = 'not exercised by the iterate test';
+      else spec.quarantineReason = undefined;
       writeFileSync(f, `${JSON.stringify(spec, null, 2)}\n`);
     }
   }
