@@ -250,10 +250,9 @@ describe('findSecrets / redact', () => {
     const lit = 'api_token=Zx9Qm4Lp7Tn2Vb8Kc3Rw\nnext line';
     const stored = JSON.stringify({ excerpt: lit });
     const found = findSecrets(stored);
-    expect(found).toHaveLength(1);
-    expect(stored.slice(found[0].index, found[0].index + found[0].length)).toBe(
+    expect(found.map((f) => stored.slice(f.index, f.index + f.length))).toEqual([
       'Zx9Qm4Lp7Tn2Vb8Kc3Rw',
-    );
+    ]);
   });
 
   it('reports a log-line value without its trailing punctuation', () => {
