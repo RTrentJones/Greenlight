@@ -1,0 +1,73 @@
+{
+  "kind": "gate-input",
+  "proposalId": "prop-7f23497cfb29",
+  "algorithm": 2,
+  "ts": "2026-11-18T08:39:17.666Z",
+  "outlet": "skill",
+  "radius": "medium",
+  "path": "standard",
+  "config": {
+    "alpha": 0.05,
+    "runs": 3,
+    "acceptShorterOnTie": false,
+    "nonRegressionFraction": 0.1,
+    "maxBaselineAgeDays": 30
+  },
+  "models": {
+    "frontier": "claude-code-sonnet",
+    "small": "claude-code-haiku"
+  },
+  "modes": ["isolation"],
+  "modesDeclared": true,
+  "acceptedSkillSetHash": "9711d1991e567db7885178608a08ff6c7c939dca476eb9a2330d00ac3c3063ae",
+  "candidateSkillSetHash": "4d90aa9b25e424b9e3fba645adfcb794740319436f87fc7c9d6923135994ee21",
+  "tasks": [
+    {
+      "id": "loop/fixture-preview-before-push-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "loop/new-route-joins-verify-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "replay/idle-probe-leaves-store-asleep-val",
+      "kind": "replay",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+    },
+    {
+      "id": "replay/keepalive-probe-reaches-store-val",
+      "kind": "replay",
+      "state": "quarantined",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-supabase"]
+    },
+    {
+      "id": "wiki/contradicted-root-cause-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    },
+    {
+      "id": "wiki/probe-layer-incidents-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    }
+  ],
+  "baselineRecords": ["456e9da7477c04c1dfafd93c4457c35053bcd2ccc1595472b2a971690992d2bd"],
+  "candidateRecords": ["0cf2e7f1c663d2b90a776fc1a3c706938ff02cbf7baa532f9e29d31cf1c91ebd"],
+  "skill": "greenlight-wiki",
+  "pattern": ["pattern/probe-touches-wrong-layer"],
+  "hash": "0fa2fc0c853efd68620c8801eef5a99d30b6a33d0d2ac3895ff4f4b42b01c8ff"
+}

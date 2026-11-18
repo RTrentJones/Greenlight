@@ -44,10 +44,11 @@ describe('framework wiki seed', () => {
 
   it('is fully generated: lint --fix has nothing to change (index, skill-impact)', () => {
     expect(fix(wiki).writes).toEqual([]);
-    // The seed proposes nothing, so its ledger holds only harness `spend` events from bench runs
-    // (budget accounting persists there, 06 §9), each of which must validate.
+    // Every ledger event validates and was written by the harness: `spend` events from bench runs
+    // (budget accounting persists there, 06 §9) and, since the first iteration on 2026-11-18, the
+    // gate's decisions. No agent or person writes the ledger directly.
     expect(wiki.ledgerErrors).toEqual([]);
-    expect(wiki.ledger.every((e) => e.stage === 'spend' && e.writer === 'harness')).toBe(true);
+    expect(wiki.ledger.every((e) => e.writer === 'harness')).toBe(true);
   });
 
   it('seeds exactly the three confirmed patterns and the named hypotheses (15 §8.1)', () => {

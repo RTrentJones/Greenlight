@@ -16,3 +16,6 @@ Confirmed pattern/spec-typo-disables-assertion: strict validation shipped in 0.1
 Created pattern/keepalive-target-incomplete-doctor-green (hypothesis): the failing haiku replay wrote a supabase keepalive target without url or anon key, doctor's coverage line still read green, and the store paused after 21 simulated days (raw:20261118T082244Z-d1cf1920).
 Updated pattern/probe-touches-wrong-layer and pattern/neon-never-sleeps with the idle-probe replay pair: /health on healthcheck and keepalive gave 21 store queries and 503s with the DB stopped, while / gave 0 queries and 200s (raw:20261118T082244Z-33d05e6f vs raw:20261118T082244Z-1afa7547).
 The two loop/fixture-preview-before-push runs passed (branch from develop, preview, push develop, no promote; raw:20261118T082244Z-cd538e20, raw:20261118T082244Z-ebe7ae29), so there is no failure to record. Nothing is confirmed: no deployed red-to-green run is in the bundle. The three wiki-task records (raw:20261118T082400Z-d184cc22, raw:20261118T082405Z-691f4206, raw:20261118T082411Z-56c9eaec) are earlier maintainer attempts on other bundles and are not cited.
+
+## 2026-11-18T08:47:02.853Z — harness — candidate-rejected prop-7f23497cfb29
+bench iterate iter-20261118T082243Z-7826702e: candidate-rejected (skill, greenlight-wiki); ledger event 9cd18f044b965b2b3fdbc448b2eeb490646c0e364548c1cb3cceb497e6ad0d85
