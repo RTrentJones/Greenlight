@@ -317,6 +317,18 @@ function setup(withControl = true, roles: RoleSources = {}) {
   const bench = tinyBench(root, withControl, roles);
   const wiki = join(root, 'wiki');
   cpSync(join(REPO, 'wiki'), wiki, { recursive: true });
+  // This world installs its own greenlight-wiki skill below, so a gate decision copied from the
+  // live ledger would name an accepted skill set that is not installed here and every step would
+  // be refused. Keep the live spend events (budget history) and start with no decisions.
+  const ledgerFile = join(wiki, 'ledger.jsonl');
+  writeFileSync(
+    ledgerFile,
+    readFileSync(ledgerFile, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '' && JSON.parse(line).stage === 'spend')
+      .map((line) => `${line}\n`)
+      .join(''),
+  );
   const skills = join(root, 'skills');
   cpSync(join(REPO, '.claude', 'skills'), skills, { recursive: true });
   mkdirSync(join(skills, 'greenlight-wiki'), { recursive: true });
