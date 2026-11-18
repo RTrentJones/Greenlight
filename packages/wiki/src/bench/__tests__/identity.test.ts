@@ -17,6 +17,8 @@ import {
 import { findCachedTrain, globToRegExp, resolveModels } from '../runner';
 
 const REPO = resolve(__dirname, '../../../../..');
+/** The frozen harness-driven config: these cases do not depend on the live bench/models.json. */
+const HARNESS_MODELS_FILE = resolve(__dirname, '../../__tests__/fixtures/models-harness.json');
 const temps: string[] = [];
 afterAll(() => {
   for (const d of temps) rmSync(d, { recursive: true, force: true });
@@ -27,6 +29,7 @@ function world() {
   const root = mkdtempSync(join(tmpdir(), 'greenlight-identity-'));
   temps.push(root);
   cpSync(join(REPO, 'bench'), join(root, 'bench'), { recursive: true });
+  cpSync(HARNESS_MODELS_FILE, join(root, 'bench', 'models.json'));
   cpSync(join(REPO, '.claude', 'skills'), join(root, 'skills'), { recursive: true });
   writeFileSync(join(root, 'lock.yaml'), 'lockfileVersion: 9\n');
   const input = (over: Partial<IdentityInput> = {}): IdentityInput => {
@@ -298,7 +301,7 @@ describe('selection helpers', () => {
     expect(globToRegExp('replay/*-train').test('replay/x-train')).toBe(true);
   });
   it('model roles and ids resolve in models.json order', () => {
-    const config = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
+    const config = JSON.parse(readFileSync(HARNESS_MODELS_FILE, 'utf8'));
     const { frontier, small } = config.roles;
     expect(resolveModels(config, ['small', 'frontier'])).toEqual([frontier.id, small.id]);
     expect(resolveModels(config, [small.id])).toEqual([small.id]);

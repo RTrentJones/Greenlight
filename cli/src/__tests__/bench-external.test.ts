@@ -42,8 +42,15 @@ import { benchCommand } from '../commands/bench';
  */
 
 const REPO = resolve(__dirname, '../../..');
-const BENCH = join(REPO, 'bench');
-const LIVE = JSON.parse(readFileSync(join(BENCH, 'models.json'), 'utf8'));
+/** The frozen harness-driven config (the Gemini pair): these tests do not depend on which models
+ * the live bench/models.json names, or on whether it drives them itself. */
+const HARNESS_MODELS_FILE = join(REPO, 'packages/wiki/src/__tests__/fixtures/models-harness.json');
+const LIVE = JSON.parse(readFileSync(HARNESS_MODELS_FILE, 'utf8'));
+/** The real bench content with that config: one temp copy for the file, removed in afterAll. */
+const BENCH_ROOT = mkdtempSync(join(tmpdir(), 'greenlight-bench-harness-'));
+const BENCH = join(BENCH_ROOT, 'bench');
+cpSync(join(REPO, 'bench'), BENCH, { recursive: true });
+cpSync(HARNESS_MODELS_FILE, join(BENCH, 'models.json'));
 const JUDGE: string = LIVE.roles.small.id;
 const LOOP = 'loop/fixture-preview-before-push-train';
 const WIKI = 'wiki/probe-layer-incidents-train';
@@ -65,7 +72,7 @@ beforeAll(async () => {
   temps.push(resolve(assets.cliDir, '..'));
 }, 120_000);
 afterAll(() => {
-  for (const d of temps) rmSync(d, { recursive: true, force: true });
+  for (const d of [...temps, BENCH_ROOT]) rmSync(d, { recursive: true, force: true });
 });
 
 /** A copy of the bench whose gate pair is external; the judge keeps a harness-driven entry. */
@@ -628,7 +635,7 @@ describe('external rollouts through the process sandbox', () => {
     expect(JSON.stringify(judged.error?.issues)).toMatch(
       /give roles\.judge a harness-driven entry/,
     );
-    // The live config is unchanged in meaning: the flag enters the identity only when set.
+    // A harness-driven config is unchanged in meaning: the flag enters the identity only when set.
     const live = ModelsConfigSchema.parse(LIVE);
     const flagged = ModelsConfigSchema.parse({
       ...LIVE,

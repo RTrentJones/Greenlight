@@ -51,12 +51,18 @@ import { benchCommand } from '../commands/bench';
  */
 
 const REPO = resolve(__dirname, '../../..');
-/** The live gate pair (bench/models.json), so a model switch does not rewrite the tests. */
-const LIVE_MODELS = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
+/** The frozen harness-driven config (the Gemini pair): these tests do not depend on which models
+ * the live bench/models.json names, or on whether it drives them itself. */
+const HARNESS_MODELS_FILE = join(REPO, 'packages/wiki/src/__tests__/fixtures/models-harness.json');
+const LIVE_MODELS = JSON.parse(readFileSync(HARNESS_MODELS_FILE, 'utf8'));
+/** The real bench content with that config: one temp copy for the file, removed in afterAll. */
+const BENCH_ROOT = mkdtempSync(join(tmpdir(), 'greenlight-bench-harness-'));
+const BENCH = join(BENCH_ROOT, 'bench');
+cpSync(join(REPO, 'bench'), BENCH, { recursive: true });
+cpSync(HARNESS_MODELS_FILE, join(BENCH, 'models.json'));
 const FRONTIER: string = LIVE_MODELS.roles.frontier.id;
 const SMALL: string = LIVE_MODELS.roles.small.id;
 const reId = (id: string) => id.replace(/[.]/g, '\\.');
-const BENCH = join(REPO, 'bench');
 const DOCKER = dockerAvailable();
 const IDLE_VAL = 'replay/idle-probe-leaves-store-asleep-val';
 const CANDIDATE_MARKER = 'WIKI-MARKER: reconcile probe lessons by liveness model.';
@@ -74,7 +80,7 @@ beforeAll(async () => {
   temps.push(resolve(assets.cliDir, '..'));
 }, 120_000);
 afterAll(() => {
-  for (const d of temps) rmSync(d, { recursive: true, force: true });
+  for (const d of [...temps, BENCH_ROOT]) rmSync(d, { recursive: true, force: true });
 });
 
 function memoryQuota(): QuotaStore {
@@ -133,7 +139,7 @@ function tinyBench(root: string, withControl: boolean, roles: RoleSources = {}):
   writeFileSync(join(bench, 'gate.json'), '{ "alpha": 0.6, "runs": 1 }\n');
   const models = JSON.parse(readFileSync(join(bench, 'models.json'), 'utf8'));
   for (const r of ['frontier', 'small']) models.roles[r].limits = { rpm: 60, rpd: 1000, tpm: 1e7 };
-  // Fixed here, whatever the live bench/models.json says: a test names the roles it runs with
+  // Fixed here, whatever the fixture says: a test names the roles it runs with
   // (`external` = an agent outside the harness, 06 §2.5 / §3.6).
   models.roles.maintainer = roles.maintainer ?? 'frontier';
   models.roles.proposer = roles.proposer ?? 'frontier';

@@ -38,14 +38,20 @@ import { benchCommand } from '../commands/bench';
  */
 
 const REPO = resolve(__dirname, '../../..');
-/** The live gate pair (bench/models.json), so a model switch does not rewrite the tests. */
-const LIVE_MODELS = JSON.parse(readFileSync(join(REPO, 'bench', 'models.json'), 'utf8'));
+/** The frozen harness-driven config (the Gemini pair): these tests do not depend on which models
+ * the live bench/models.json names, or on whether it drives them itself. */
+const HARNESS_MODELS_FILE = join(REPO, 'packages/wiki/src/__tests__/fixtures/models-harness.json');
+const LIVE_MODELS = JSON.parse(readFileSync(HARNESS_MODELS_FILE, 'utf8'));
+/** The real bench content with that config: one temp copy for the file, removed in afterAll. */
+const BENCH_ROOT = mkdtempSync(join(tmpdir(), 'greenlight-bench-harness-'));
+const BENCH = join(BENCH_ROOT, 'bench');
+cpSync(join(REPO, 'bench'), BENCH, { recursive: true });
+cpSync(HARNESS_MODELS_FILE, join(BENCH, 'models.json'));
 const FRONTIER: string = LIVE_MODELS.roles.frontier.id;
 const SMALL: string = LIVE_MODELS.roles.small.id;
 const reId = (id: string) => id.replace(/[.]/g, '\\.');
-const BENCH = join(REPO, 'bench');
 const LOOP = 'loop/fixture-preview-before-push-train';
-/** The live daily quotas (bench/models.json, measured 2026-11-12): the scheduling tests pre-spend
+/** The fixture's daily quotas (as measured 2026-11-12): the scheduling tests pre-spend
  * against these so they keep describing equal headroom whatever the models' real limits are. */
 const RPD: Record<'frontier' | 'small', number> = (() => {
   const m = JSON.parse(readFileSync(join(BENCH, 'models.json'), 'utf8'));
@@ -233,7 +239,7 @@ beforeAll(async () => {
   temps.push(resolve(assets.cliDir, '..'));
 }, 120_000);
 afterAll(() => {
-  for (const d of temps) rmSync(d, { recursive: true, force: true });
+  for (const d of [...temps, BENCH_ROOT]) rmSync(d, { recursive: true, force: true });
 });
 
 function options(
@@ -1394,7 +1400,7 @@ describe('greenlight bench (CLI)', () => {
   }, 180_000);
 
   it('models --check reports each configured model', async () => {
-    const x = io(REPO);
+    const x = io(BENCH_ROOT);
     const m = fakeModel(() => finish);
     expect(await benchCommand(['models', '--check'], { ...x.io, fetchImpl: m.fetchImpl })).toBe(0);
     expect(x.err.join('\n')).toMatch(new RegExp(`✔ ${reId(FRONTIER)}`));

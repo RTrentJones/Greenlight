@@ -36,7 +36,12 @@ import { type ReactTool, runReact } from '../react';
 // Vision 06 §4.8 / roadmap M1-05: the Greenlight harness on the Gemini free tier.
 
 const ROOT = resolve(__dirname, '../../../../..');
-const modelsJson = JSON.parse(readFileSync(resolve(ROOT, 'bench/models.json'), 'utf8'));
+const liveModelsJson = JSON.parse(readFileSync(resolve(ROOT, 'bench/models.json'), 'utf8'));
+/** The frozen harness-driven config (the ADR-20 Gemini pair as of 2026-11-12). Only the one
+ * "live" test below reads bench/models.json. */
+const modelsJson = JSON.parse(
+  readFileSync(resolve(__dirname, '../../__tests__/fixtures/models-harness.json'), 'utf8'),
+);
 const budgetJson = JSON.parse(readFileSync(resolve(ROOT, 'bench/budget.json'), 'utf8'));
 // A frozen two-model config with a fallback, so the client, limiter and checkModels tests do not
 // depend on which models the live bench/models.json currently names (it changed on 2026-11-04).
@@ -147,7 +152,7 @@ const base = {
   finish,
 };
 
-describe('external roles (bench/models.json)', () => {
+describe('external roles (models.json)', () => {
   const withRoles = (roles: Record<string, string>) => ({
     ...modelsJson,
     roles: { ...modelsJson.roles, ...roles },
@@ -172,7 +177,16 @@ describe('external roles (bench/models.json)', () => {
 });
 
 describe('bench config files', () => {
-  it('bench/models.json validates against ModelsConfigSchema with the ADR-20 pair', () => {
+  it('the live bench/models.json is a valid config, whichever models it names', () => {
+    const m = ModelsConfigSchema.parse(liveModelsJson);
+    expect(m.roles.frontier.id).not.toBe(m.roles.small.id);
+    // The judge runs inside every rollout, so it resolves to an entry the harness calls.
+    expect(isExternalRole(m, 'judge')).toBe(false);
+    const judge = entryForRole(m, 'judge');
+    expect(judge.external ?? false).toBe(false);
+    expect(judge.limits).toBeDefined();
+  });
+  it('the harness fixture validates against ModelsConfigSchema with the ADR-20 pair', () => {
     const m = ModelsConfigSchema.parse(modelsJson);
     // Switched again on 2026-11-12 (ADR-20 amendment, trigger 2): gemini-3.6-flash admits 20 RPD.
     expect(m.roles.frontier.id).toBe('gemini-3.5-flash-lite');
