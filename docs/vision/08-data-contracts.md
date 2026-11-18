@@ -1089,9 +1089,9 @@ interface ModelsConfig {
   roles: {
     frontier: ModelEntry;                  // default gemini-3.8-flash
     small: ModelEntry;                     // default gemini-3.6-flash
-    maintainer: string;                    // role → one of the entries above, by name
-    proposer: string;
-    judge: string;
+    maintainer: 'frontier' | 'small' | 'external';   // role → one of the entries above, by name, or
+    proposer: 'frontier' | 'small' | 'external';     // 'external': an agent the harness does not call (06 §2.5, §3.6)
+    judge: 'frontier' | 'small';                     // never external: a grader runs inside every rollout
   };
   temperature: number;                     // 0.2
 }

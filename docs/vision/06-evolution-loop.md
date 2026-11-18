@@ -77,6 +77,9 @@ procedure ITERATE(scope, budget):
   # 2. Maintain.
   B ← maintainerBundle(wiki, sample(T, fail ≤5, pass ≤3), incidents?)   # §2.1, §3.2 — never val/test
   M ← maintainer(B); validate(M); applyAtomically(M); lint(wiki)         # §2.2–2.4
+                                                     # maintainer and proposer may each be an EXTERNAL agent
+                                                     # (§2.5, §3.6): the step writes B, stops as awaiting-agent,
+                                                     # and takes M (or P) back as a file through the same validate
 
   # 3. Propose.
   R ← baseline(id, split=val)                        # per model, per mode; re-run if id changed (§5.1)
@@ -289,6 +292,47 @@ maintainer does submit one, Greenlight does not trust it blindly:
 - Retries: the agent may resubmit up to three times. Each rejection is fed back with its errors.
   After three rejections the bundle is marked failed in `log.md`.
 
+### 2.5 An external maintainer
+
+The harness's own loop (§4.8) is one way to run the maintainer. `bench/models.json` may instead
+set `roles.maintainer` to `external` (08 §10.6): the role is then done by an agent the harness does
+not call and holds no key for, for example a coding agent's subagent working from the bundle with
+the CLI. The rollouts stay on the gate models; only this role's author changes.
+
+With an external maintainer, step 2 of `bench iterate` (§1.3):
+
+1. builds the bundle of §2.1 exactly as for the harness loop and writes it to
+   `.greenlight/bench/iterations/<id>/bundles/<id>-maintainer-<n>/`. `PROMPT.md` is the prompt of
+   §2.2 under a header that names the bundle's real path, the iteration, and the hand-back command;
+2. stores the step as `awaiting-external` and stops the iteration as **`awaiting-agent`** (exit 5,
+   §9). The message names the role, the bundle path (always inside the iteration directory), the
+   skill to follow (`greenlight-wiki`) and the command below. No model is called, no quota is
+   reserved or checked, and no `spend` event is written;
+3. takes the output back as a file:
+
+   ```sh
+   greenlight bench iterate --resume <iterationId> --maintainer-output <file> --agent "<agent id>"
+   ```
+
+   `<file>` holds one `MaintainerOutput` JSON object. `--agent` is required: one token naming who
+   produced it (for example `claude-code/<model>`). It is stored in the state, is the `actor` of the
+   log entry (`maintainer:<agent id>`, where a harness maintainer records `maintainer:<model>`),
+   and appears in the hand-off's maintainer section and cost table.
+
+The file is untrusted input. It is read as JSON and nothing else (a regular file of at most 1 MiB;
+never executed), and then goes through **the same** validation and application as a
+harness-produced output (§2.4): `MaintainerOutput`, `applyMaintainerOutput`, the lint findings the
+change introduces, and the store-then-apply-once write. A refused file changes nothing, comes back
+with its issues, and counts as one submission; after three the bundle is marked failed in `log.md`
+and the step fails (exit 1), and a plain `--resume` issues a fresh bundle. A file that cannot be
+read at all is a missing prerequisite (exit 3) and counts as nothing.
+
+A file is refused outright (exit 4) when the role is not `external`, when the maintainer step is
+not `awaiting-external` (another step is awaited, or a bundle failed), when the iteration already
+has its maintainer output (a second submission is never applied), or when a pin drifted (§9: the
+pin check runs first). The agent must not apply the output itself: `wiki ingest --apply` writes
+the wiki outside the iteration's state (`--dry-run` is a safe pre-check).
+
 ## 3. Proposer
 
 ### 3.1 Bundle and tools
@@ -442,6 +486,58 @@ ledger unify the process, and each outlet keeps the evidence that fits it.
 human-applied outlets as ledger events (§6.1). A pattern's remediation becomes `verified: true`
 only at the `verified-in-production` stage, or at `merged` for evidence that can only be shown in
 the bench (template and skill changes). It never becomes verified at `candidate-accepted`.
+
+### 3.6 An external proposer
+
+`roles.proposer` may be `external` as well (08 §10.6), independently of the maintainer. Step 3 of
+`bench iterate` then builds the proposer bundle of §3.1, writes it to
+`.greenlight/bench/iterations/<id>/bundles/<id>-proposer-<n>/`, stores the step as
+`awaiting-external`, and stops as `awaiting-agent` (exit 5) with the bundle path, the skill and the
+hand-back command. No model is called, no quota is reserved and no `spend` event is written.
+
+**What the bundle contains.** Exactly `index.md`, `skill-impact.md`, `outcomes.md`, `PROMPT.md`
+(§3.3 under the hand-back header), `bundle.json` and an empty `access.jsonl`. It contains no raw
+record, no pattern page and no skill: as for the harness proposer, there are no pre-sampled traces.
+
+**How the agent reads.** Through the read-only commands of §3.1, run as the CLI in its own process
+from the directory that holds `.greenlight/`:
+
+```sh
+greenlight wiki traces --bundle <bundle dir> [--skill <name>] [--failed] [--json]
+greenlight wiki read raw:<rawId> --bundle <bundle dir>       # also <page-id>, skill:<name>
+```
+
+The CLI opens the bundle against its key in `.greenlight/bundle-keys/<bundleId>` (written when the
+iteration issued the bundle), takes the role from the verified manifest, serves the read under the
+proposer's visibility rules (§1.4: val and test records and incident pages are refused), and
+appends the MAC-chained access-log entry. The agent never writes the log.
+
+**Handing the proposal back.**
+
+```sh
+greenlight bench iterate --resume <iterationId> --proposal <file> --agent "<agent id>"
+```
+
+`<file>` holds one `ProposerOutput` JSON object, read as untrusted input like a maintainer file
+(§2.5). It goes through the same `checkProposal` as a harness proposal (§3.4): the schema, the
+`version`, `blast-radius`, name and scope refusals, the cited patterns, and the bundle's
+**verified** access log, which must show at least four distinct `wiki read raw:` reads of real,
+visible records; then the scratch-skill lint. Three refused submissions fail the bundle (exit 1);
+a fresh bundle starts with an empty log, so its reads are made again. The outright refusals
+(exit 4) are those of §2.5. `--agent` is stored in the state and in `proposal.json`, and appears
+in the hand-off's cost table. (`wiki propose --apply <file> --bundle <dir>` is a safe pre-check.)
+
+**What the log rule does and does not prove here.** The rule is checked against the access log
+alone: a trace the agent opened in any other way is not in the log and does not count, and a
+proposal with no logged read is refused whatever the agent has seen. That part holds for any
+agent. What the harness loop adds, and an external agent lacks, is confinement: the loop's
+`read_file` cannot leave the bundle, while an external agent is a process on the owner's machine.
+Nothing in the harness stops such a process from opening `.greenlight/raw/*.json` directly (which
+holds val and test records the CLI would refuse), the maintainer's bundle, or the bundle key
+itself (with which it could forge a log). The trust assumption of §3.1 therefore moves to whoever
+starts the agent: give it read access to the bundle directory and the output file only, and shell
+access to the two `greenlight wiki` commands only. An agent run without those limits has not been
+shown to satisfy §1.4, and its proposal's evidence should be read that way.
 
 ## 4. Bench
 
@@ -1231,7 +1327,10 @@ only start an investigation. The bench decides.
     change outside `wiki/` (`.greenlight/` is ignored) means nothing is sealed.
   - **What a resume trusts.** A resume refuses (exit 4) when the installed skill set,
     `models.json`, `gate.json`, `splits.json`, the task set, `bench/controls/**` or
-    `bench/repro/**` differ from the iteration's creation. Pins fail closed: a state missing any
+    `bench/repro/**` differ from the iteration's creation. The `models.json` pin is over the
+    whole file, so it fixes whether the maintainer and the proposer are harness roles or
+    `external` for the iteration's lifetime (the evaluation identity of §1.5 deliberately leaves
+    those two roles out: they do not change what a rollout returns). Pins fail closed: a state missing any
     pin is refused unless `--adopt-pins` (the owner vouches for the inputs on disk; only the
     missing pins are adopted). Nothing restored is taken as is: the stored proposal is re-checked
     (all of `checkProposal` but the per-runner access log) and its id must be its content id; the
@@ -1251,6 +1350,24 @@ only start an investigation. The bench decides.
   - **Refusal.** `bench run` reports the expected cost before running (§4.5). It refuses to start a
     gate whose expected cost exceeds `perGateMaxUsd`, `perGateMaxRollouts` or the month's
     remaining budget.
+- **External roles and exit codes.** A maintainer or proposer set to `external` (§2.5, §3.6)
+  costs the harness nothing: no request, no quota reservation, no `spend` event. The hand-off's
+  cost table has a row per external role naming the agent that did it. `bench iterate` exits:
+
+  | code | status | what the caller does |
+  |---|---|---|
+  | 0 | `complete` | post the hand-off |
+  | 1 | `deferred` (a model's day is spent), `blocked`, or `failed` | resume on a later day, or fix what the message names |
+  | 2 | usage | fix the command |
+  | 3 | missing prerequisite (docker, a file that cannot be read) | supply it |
+  | 4 | refused by policy (a drifted pin, a submission the iteration is not awaiting, the process sandbox for val evidence) | do not retry as is |
+  | 5 | **`awaiting-agent`** | an external role's bundle is written: a human or an agent must produce the output and hand it back with `--maintainer-output` / `--proposal` and `--agent`. Nothing failed and no quota is waited for; a plain `--resume` returns the same bundle and exit 5 again |
+
+  A refused submission that leaves attempts is also exit 5, with its issues in the message and in
+  `--json` (`issues`; `awaiting` carries the role, bundle, skill and command). External roles are
+  **local-only for now**: `evo.yml` refuses to start when either role is `external` (before any
+  install, restore, rollout or seal), because the agent needs the bundle and its key on one
+  machine and bundle keys are never sealed.
 - **Early stop:** if the baseline already has capability 1.0 with every replay passing on both
   models, the proposer is not run, as in the paper, and neither is the control arm.
 

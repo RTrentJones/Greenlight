@@ -18,6 +18,7 @@ behavior, and they are listed in section 1 only for completeness.
   | 2 | usage error |
   | 3 | missing prerequisite (token, tool, file); the message names the fix |
   | 4 | refused by policy (promotion policy, ledger writer, lint error that blocks the write) |
+  | 5 | `bench iterate` only: `awaiting-agent`. An external role's bundle is written and a human or an agent must hand its output back (06 §2.5, §3.6, §9). Nothing failed |
 
 - **JSON output.** A command with `--json` prints exactly one JSON document to **stdout**, and
   human output goes to **stderr**. This is the convention `verify --json` already follows
@@ -790,6 +791,11 @@ greenlight bench run [--split train|val|test] [--tasks <glob>] [--model <id>]…
 greenlight bench gate <proposalId> [--models <a>,<b>] [--runs 3] [--alpha 0.05]
 greenlight bench gate --recompute <gateInputHash>
 greenlight bench check-graders [--tasks <glob>]          # alias: bench mutants
+greenlight bench iterate [--scope <skill|all>] [--resume <iterationId>] [--sandbox docker|process] [--dry-run] [--handoff-only] [--json]
+                         [--models frontier,small] [--runs n] [--max-steps n] [--rollout-requests n]
+                         [--candidate <commit|dir>] [--adopt-pins] [--break-lock]
+                         [--maintainer-output <file> | --proposal <file>] [--agent "<agent id>"]
+greenlight bench review <iterationId> --decision accept|reject --reason "<text>"
 greenlight bench monitor [--since <date>]
 greenlight bench report [--proposal <id>] [--json]
 ```
@@ -821,6 +827,23 @@ greenlight bench report [--proposal <id>] [--json]
     target.
 - **`check-graders`** (alias `mutants`) runs every grader against every mutant and exits 1 if any
   grader passes a mutant (06 §4.3). CI runs it whenever `bench/` changes.
+- **`iterate`** runs one WikiSkill iteration (06 §1.3) as a resumable state machine
+  (`.greenlight/bench/iterations/<id>/state.json`); `review` records the owner's review of its
+  ledger rows. `greenlight bench help` lists every flag.
+  - `--maintainer-output <file>` and `--proposal <file>` hand in the output of an **external**
+    role (`roles.maintainer` / `roles.proposer` set to `external` in `bench/models.json`; 06 §2.5,
+    §3.6): one `MaintainerOutput` or `ProposerOutput` JSON object, at most 1 MiB, read as untrusted
+    JSON and validated exactly like a harness-produced output. Each needs `--resume <iterationId>`
+    and `--agent "<agent id>"` (one token: who produced the file, recorded in place of a model
+    id). Only one of the two per invocation, and neither with `--dry-run` or `--handoff-only`.
+  - **Exit codes:** 0 complete; 1 deferred (quota: resume on a later day), blocked, or failed,
+    including a bundle whose three submissions were refused; 2 usage; 3 missing prerequisite
+    (docker, a submitted file that cannot be read); 4 refused by policy (a drifted pin; a
+    submission when the role is not external, when its step is not awaiting it, or after it was
+    accepted); **5 `awaiting-agent`**: an external role's bundle is written and its output must be
+    handed back (also after a refused submission that leaves attempts). With `--json`, exit 5
+    carries `awaiting: { role, bundle, skill, command, submissions }` and, after a refusal,
+    `issues`.
 - **`monitor`** runs the scheduled test-split re-run against the models in `bench/models.json`. It
   compares the result with the last accepted baseline and opens or updates a `greenlight-evo-alarm`
   issue when any model regresses beyond the threshold in `bench/gate.json`. It refuses to start if

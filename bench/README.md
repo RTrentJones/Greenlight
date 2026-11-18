@@ -268,6 +268,61 @@ skill patch on `deploy-verify-promote` stating the overgeneral rule of `pairs/pr
 following it fails `replay/idle-probe-leaves-store-asleep-val`, so the gate must reject it with
 `replay-regression`.
 
+## Running the maintainer and proposer with an external agent
+
+`models.json` may set `roles.maintainer` and/or `roles.proposer` to `"external"` (06 §2.5, §3.6).
+`bench iterate` then makes no model call for that role: it writes the bundle, stops with exit 5
+(`awaiting-agent`), and takes the role's output back as a JSON file. The rollouts stay on the gate
+models, no key or secret is involved for the role, and no quota or spend is recorded for it. The
+two roles are independent (one may stay `frontier`). Run everything from the repository root (the
+directory that holds `.greenlight/`); `evo.yml` refuses external roles, so this is local-only.
+
+```sh
+# 1. Start. Train rollouts run; the maintainer step writes its bundle and stops (exit 5).
+pnpm greenlight bench iterate --scope all            # prints the iteration id, the bundle path, the command
+
+# 2. The maintainer agent: follow .claude/skills/greenlight-wiki (Maintainer). Read
+#    <bundle>/PROMPT.md, then wiki/, raw/, incident/ and context.json inside the bundle.
+#    Write ONE MaintainerOutput JSON object to a file. Do not apply it yourself.
+pnpm greenlight wiki ingest --apply maintainer-output.json --dry-run     # optional pre-check, writes nothing
+pnpm greenlight bench iterate --resume <iterationId> \
+  --maintainer-output maintainer-output.json --agent "claude-code/<model>"
+
+# 3. The val baseline runs (resume on later days while it exits 1, deferred). Then the proposer
+#    step writes its bundle and stops (exit 5).
+pnpm greenlight bench iterate --resume <iterationId>
+
+# 4. The proposer agent: follow greenlight-wiki (Proposer). Read <bundle>/PROMPT.md, index.md,
+#    skill-impact.md and outcomes.md; then read through the LOGGED commands only:
+pnpm greenlight wiki traces --bundle <bundle> --failed
+pnpm greenlight wiki read raw:<rawId> --bundle <bundle>                  # at least 4 distinct ids
+pnpm greenlight wiki read pattern/<slug> --bundle <bundle>
+pnpm greenlight wiki read skill:<name> --bundle <bundle>
+#    Write ONE ProposerOutput JSON object to a file.
+pnpm greenlight wiki propose --apply proposal.json --bundle <bundle>     # optional pre-check
+pnpm greenlight bench iterate --resume <iterationId> \
+  --proposal proposal.json --agent "claude-code/<model>"
+
+# 5. Candidate rollouts, the control arm, the ledger and the hand-off follow as usual.
+pnpm greenlight bench iterate --resume <iterationId>
+```
+
+- **Exit codes:** 0 complete, 1 deferred / blocked / failed, 2 usage, 3 missing prerequisite,
+  4 refused by policy, **5 awaiting an external agent**. `--json` on exit 5 gives
+  `awaiting: { role, bundle, skill, command, submissions }`.
+- **A refused file** changes nothing and comes back with its issues (exit 5, `issues` in `--json`);
+  a bundle takes three submissions, then fails (exit 1) and a plain `--resume` issues a new one.
+  A file is refused outright (exit 4) when the step is not awaiting it, when it was already
+  accepted, when the role is not external, or when a pin drifted.
+- **`--agent`** is one token (letters, digits, `. _ : / @ + -`) naming who produced the file. It is
+  the log entry's actor (`maintainer:<agent id>`) and is shown in the hand-off's cost table.
+- **The proposer bundle** holds `index.md`, `skill-impact.md`, `outcomes.md`, `PROMPT.md`,
+  `bundle.json` and `access.jsonl`, and no trace. Only reads the CLI logged in that
+  `access.jsonl` count toward the four-trace rule; a file opened any other way does not. The
+  harness cannot confine an external agent, though: limit it to the bundle directory, the output
+  file and the two `greenlight wiki` commands yourself, so that it cannot open `.greenlight/raw/`
+  (val and test records) or `.greenlight/bundle-keys/` (06 §3.6).
+
 ## Runner (`bench/runner/`, `greenlight bench run`)
 
 `greenlight bench run` (packages/wiki/src/bench/runner.ts) runs each rollout in a throwaway sandbox
