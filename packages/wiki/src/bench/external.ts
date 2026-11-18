@@ -101,6 +101,9 @@ interface Session {
   finishAttempts: number;
   /** Set once: why the session closed. Later calls are refused with it. */
   closed?: string;
+  /** Set when the wall clock ran out while a call was in flight: no further call is taken, and
+   * the session closes as soon as that call has returned. */
+  closing?: string;
   /** Serializes the session's calls: one tool call at a time, whatever the agent launches. */
   chain: Promise<unknown>;
   claimTimer?: NodeJS.Timeout;
@@ -345,6 +348,7 @@ export class RolloutServer {
       // turns), then close: the tree is graded as it stands.
       // An agent that asked for the prompt and never made a call left no evidence: deferred.
       const secs = Math.round(spec.wallClockMs / 1000);
+      s.closing = `the rollout's wall clock (${secs} s) ran out`;
       void s.chain.then(() =>
         this.end(s, {
           error:
@@ -419,6 +423,7 @@ export class RolloutServer {
         'this rollout is not open yet: its sandbox starts when an earlier rollout finishes. Wait, then run `prompt` again',
       );
     if (s.closed !== undefined) return refused(`the rollout is closed (${s.closed})`);
+    if (s.closing !== undefined) return refused(`the rollout is closed (${s.closing})`);
     const spec = s.spec as ExternalRolloutSpec;
     if (verb === 'prompt') {
       this.claim(s);
