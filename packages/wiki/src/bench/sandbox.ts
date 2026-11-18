@@ -856,7 +856,21 @@ export async function createProcessSandbox(
     if (!bin)
       return Promise.resolve({ exit: 2, stdout: '', stderr: 'empty argv', timedOut: false });
     const proc = spawn(bin, args, { cwd: work, env, detached: true });
-    if (proc.pid) groups.add(proc.pid);
+    if (proc.pid) {
+      const pgid = proc.pid;
+      groups.add(pgid);
+      // A group that is empty when its leader exits is forgotten: `finish` must never signal a
+      // pgid the system has since given to an unrelated process. That matters once a sandbox
+      // stays open for a long time (an external rollout, 06 §4.9). A group that outlives its
+      // leader (a background child) keeps its id in use and stays listed.
+      proc.once('exit', () => {
+        try {
+          process.kill(-pgid, 0);
+        } catch {
+          groups.delete(pgid);
+        }
+      });
+    }
     const kill = () => {
       try {
         if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
