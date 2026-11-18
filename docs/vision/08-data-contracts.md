@@ -357,7 +357,9 @@ interface RawRecord extends EvidenceIdentity {
   kind: 'preview' | 'ship' | 'verify' | 'keepalive' | 'alert' | 'bench' | 'session';
   passed: boolean;
   startedAt: string; durationMs: number;
-  agent?: { vendor: 'greenlight-harness' | 'gemini-cli' | 'claude' | 'codex' | 'other'; version?: string; model?: string; servedBy?: string; sessionRef?: string };
+  agent?: { vendor: 'greenlight-harness' | 'gemini-cli' | 'claude' | 'codex' | 'other' | 'external'; version?: string; model?: string; servedBy?: string; sessionRef?: string };
+                               // 'external': a bench rollout driven by an outside agent (06 §4.9); version is the DECLARED
+                               // agent id, model the label of models.json, servedBy "<label>@<agent id>" (declared, not verified)
   bench?: {                    // REQUIRED iff kind == 'bench'
     task: string; split: 'train' | 'val' | 'test'; model: string; mode: 'isolation' | 'production';
     skillSetHash: string; evaluationId: string; run: number; seed: string;
@@ -734,11 +736,16 @@ interface BaselineIdentity {
   harness: { runnerVersion: string; imageDigest: string;   // imageDigest: "ctx:sha256:<build context + shim uid + apk -v list>" (M6), or "process"
              processHost?: string;   // iff imageDigest is "process": sha256 over host name, platform, arch and Node
                                      // version, since "process" alone is equal on every machine
-             limits?: { maxSteps: number; requestsPerRollout: number; timeoutMin: number | null } };  // part of comparability; resume refuses a change
-  agent: { vendor: string; version: string };
+             limits?: { maxSteps: number; requestsPerRollout: number; timeoutMin: number | null;
+                        externalTimeoutFactor?: number } };  // part of comparability; resume refuses a change.
+                                     // externalTimeoutFactor: external rollouts only (06 §4.9), wall clock = timeout × factor
+  agent: { vendor: string; version: string };   // the harness loop and its version, or
+                                                // { vendor: 'external', version: '<declared agent id>' } (06 §4.9)
   models: string[];           // from models.json, in order
-  modelsConfigHash?: string;  // sha256 over { provider, temperature, judge model id, frontier and small { id, fallback } }
-                              // of models.json (§10.6); absent only in records written before the field existed
+  modelsConfigHash?: string;  // sha256 over { provider, temperature, judge model id, frontier and small { id, fallback,
+                              // external: true when set } } of models.json (§10.6); absent only in records written
+                              // before the field existed. `external` enters the object only when set, so a config
+                              // without external entries hashes as before
   skillSetHash: string;       // over every managed skill's SKILL.md + PURPOSE.md content
   mode: 'isolation' | 'production';
   wikiSnapshotHash: string | null;   // REQUIRED for production mode
@@ -1091,16 +1098,54 @@ interface ModelsConfig {
     small: ModelEntry;                     // default gemini-3.6-flash
     maintainer: 'frontier' | 'small' | 'external';   // role → one of the entries above, by name, or
     proposer: 'frontier' | 'small' | 'external';     // 'external': an agent the harness does not call (06 §2.5, §3.6)
-    judge: 'frontier' | 'small';                     // never external: a grader runs inside every rollout
+    judge: 'frontier' | 'small' | ModelEntry;        // never external: a grader runs inside every maintainer rollout.
+                                                     // An entry of its own when the named entry would be external
   };
   temperature: number;                     // 0.2
 }
 interface ModelEntry {
-  id: string;                              // verified by `bench models --check` against models.list
+  id: string;                              // verified by `bench models --check` against models.list;
+                                           // for an external entry: a label the owner chooses
+  external?: true;                         // rollouts driven by an agent outside the harness (06 §4.9). Then NO
+                                           // fallback, limits or price: the harness makes no request for it
   fallback?: string;                       // retry target; a fallback-served gate rollout is invalid (06 §4.8)
-  limits: { rpm: number; rpd: number; tpm?: number };   // free-tier limits, from the fact page `fact/gemini-free`
+  limits?: { rpm: number; rpd: number; tpm?: number };  // REQUIRED unless external. Free-tier limits, from `fact/gemini-free`
   priceUsdPerMTok?: { input: number; output: number };  // absent = free
 }
+```
+
+The schema refuses an external entry that carries `fallback`, `limits` or a price, a
+harness-driven entry without `limits`, and a `maintainer`, `proposer` or `judge` role that
+resolves to an external entry (the first two are set to `"external"` instead; the judge gets an
+entry of its own). `bench models --check` verifies only the entries the harness calls.
+
+**The rollout manifest** (06 §4.9) is run state, not a record: `bench run` writes it outside the
+repository and rewrites it on every change.
+
+```ts
+interface RolloutManifest {
+  v: 1;
+  evaluationId: string;
+  agent: string;                           // the declared agent id (--agent)
+  updatedAt: string;
+  status: 'running' | 'ended';             // ended: the server is gone and every handle is dead
+  concurrency: number;
+  claimTimeoutSec: number;
+  clientPath: string;                      // absolute path of rollout-client.mjs
+  instruction: string;                     // the one sentence to give an agent
+  counts: Record<RolloutState, number>;
+  rollouts: {
+    key: string;                           // "<task>|<model>|<run>"
+    task: string; model: string; run: number;
+    state: RolloutState;
+    handle: string;                        // "gl1-<port>-<rollout id>-<token>"
+    command: string;                       // "node <clientPath> <handle>": append a verb
+    detail?: string;                       // why it closed, or its score
+    openedAt?: string; claimedAt?: string; closedAt?: string;
+    stepsUsed: number;
+  }[];
+}
+type RolloutState = 'queued' | 'open' | 'claimed' | 'grading' | 'done' | 'deferred' | 'error';
 ```
 
 The limit values are copied from `fact/gemini-free` (15 §5) when it is seeded, and that page's

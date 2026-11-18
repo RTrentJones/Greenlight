@@ -1626,3 +1626,148 @@ Everything the harness sends must therefore be publishable:
 
 An owner who needs prompts kept out of training uses a paid Gemini tier or another provider, which
 is configured through `bench/models.json`.
+
+### 4.9 Rollouts driven by an external agent (ADR-20 amendment)
+
+**Why.** On the free tier one gate takes days (§4.8). The owner may instead run the rollouts with
+agents launched from outside the harness, for example one fresh coding-agent subagent per rollout,
+so that an iteration finishes in hours. This is the inference agent's counterpart of the external
+maintainer and proposer (§2.5, §3.6). Only the driver of the rollout changes. The sandbox, the
+tools, the trajectory shims and recorder, the kill before read-out, grading in a separate
+container, the raw record, redaction of stored artifacts, the sealed EvaluationRecord and the gate
+are the same code as for a harness rollout.
+
+**Configuration.** A gate model entry of `bench/models.json` may be external (08 §10.6):
+`{ "id": "<label>", "external": true }`. It has no `limits`, `fallback` or price, because the
+harness makes no request for it. `id` is a label the owner chooses. The eval judge (§4.6) is still
+called by the harness for every maintainer rollout, so `roles.judge` cannot resolve to an external
+entry: when the entry it would name is external, it is given a harness-driven entry of its own
+(`"judge": { "id": …, "limits": … }`). The schema refuses the config otherwise.
+
+An evaluation has one agent (`identity.agent`), so a selection that mixes external and
+harness-driven models is refused with a usage error. A gate therefore needs both gate models
+external, or both harness-driven; a single model of either kind can still be run alone with
+`--models`.
+
+**One invocation is the rollout server.** `bench run` decides the mode from the selected models
+(`--agent-mode external` only asserts it). With external models it needs `--agent "<agent id>"`,
+the launcher's declaration of who drives the rollouts, and then, in ONE long-lived invocation:
+
+1. creates or resumes the evaluation exactly as for harness rollouts (selection, identity, train
+   cache, baseline reuse, budget check on rollouts);
+2. starts a control endpoint on `127.0.0.1` (a random port) and writes two files into a fresh
+   directory under the system temp dir, outside the repository: the dependency-free client
+   `rollout-client.mjs` and the manifest (`--manifest <file>` puts the manifest elsewhere);
+3. opens at most `--concurrency` (default 4) rollouts at once. Opening one stages the fixture,
+   starts the sandbox and the shim channel, and sets its manifest state to `open`;
+4. waits for an outside agent to drive each open rollout through the client;
+5. when a rollout closes, kills its processes, exports the tree, grades it, writes the raw record,
+   and opens the next queued rollout;
+6. seals the EvaluationRecord when every rollout has an outcome, as today.
+
+**The manifest** is JSON, rewritten atomically on every state change. It carries `evaluationId`,
+`agent`, `status` (`running`, then `ended`), `concurrency`, `claimTimeoutSec`, `clientPath`,
+`instruction`, `counts` per state, and one entry per pending rollout: `key` (`task|model|run`),
+`state`, `handle`, `command` (the exact client command prefix), `stepsUsed` and timestamps. The
+states are `queued` (no sandbox yet; a call is refused), `open` (dispatch an agent now), `claimed`
+(an agent made its first command), `grading`, `done`, `deferred` and `error`. A launcher polls the
+file and starts one agent for every rollout that is `open`; this is how it dispatches in waves.
+A handle is `gl1-<port>-<rollout id>-<token>`, with a random 128-bit token per rollout. It names
+no path.
+
+**The client.** `node <clientPath> <handle> <verb> …` (the same program is reachable as
+`greenlight bench rollout <handle> <verb> …`). The one thing an agent must be told is: run
+`<command> prompt` and do what it prints.
+
+| verb | effect | step |
+|---|---|---|
+| `prompt` | prints one document: the client rules, the tool verbs with their JSON schemas, the system prompt and the task brief | no |
+| `status` | prints the rollout's manifest entry | no |
+| `read_file`, `write_file`, `list_dir`, `list_files`, `bash` | the harness's own tool implementations (`agentTools`), run in the sandbox | yes |
+| `finish` | the harness's finish validation: a summary for a coding task, the `MaintainerOutput` for a maintainer task | yes |
+
+- The system prompt is built by the functions the harness loop uses (`buildSystemPrompt`, the
+  agent role prompt or the production maintainer prompt): the skills under test in full, then the
+  role. Only the budget paragraph differs, because a step means something else here.
+- The document states the rules plainly: use only this client; do not read or write any file on
+  the host; do not look at the directory or repository the client lives in; one tool call per
+  command. The client substitutes its own command line into the document, so neither the server
+  nor the stored transcript holds a host path.
+- Arguments are a short positional form, one JSON object, or JSON on stdin (`--json-stdin`). File
+  content and long commands go through stdin (`--content-stdin`, `--command-stdin`), never only
+  through argv.
+- Results are printed on stdout. Exit 0: the call ran. Exit 1: the call ran and reported an error
+  (a tool error, a rejected `finish` with its issues). Exit 2: usage. Exit 3: refused (bad handle
+  or token, rollout not open yet, rollout closed, step budget used up, server gone), with the
+  reason on stderr.
+
+**Step accounting.** One tool or `finish` command is one step, recorded as one model turn with one
+function call. The transcript therefore has the shape of a harness transcript (`system`, `user`,
+then `model`, `tool_call`, `tool_result` per step, `finish`, `error`), and excerpts, `usedSkills`,
+redaction and the trajectory's tool-call events work unchanged. A tool result is truncated like a
+harness tool result. From 5 steps left, every result ends with the `steps_remaining` note. A
+maintainer rollout has the three read tools only, and a rejected `finish` comes back with its
+issues up to three times, as in §2.4. The harness loop lets a model call several tools in one
+turn; an outside agent makes one call per step, so `--max-steps` (default 25, in the identity) is
+the knob if that proves tight.
+
+**How a rollout ends.** The rules are those of a harness rollout (§4.8):
+
+| ending | recorded as |
+|---|---|
+| `finish` accepted | graded |
+| the step budget is used up | `step_limit`: graded on the tree as it stands |
+| the wall clock runs out after at least one step | `aborted`: graded on the tree as it stands |
+| `finish` rejected with no attempt left | `finish_invalid`: graded |
+| nobody claims the rollout within `--claim-timeout` (default 10 minutes) | deferred: no raw record, no outcome |
+| an agent asked for the prompt and made no call before the wall clock ran out | deferred |
+| the judge of a maintainer rollout cannot be asked | deferred, as today |
+
+A deferred rollout is not evidence of anything: `bench run` exits 1 with the keys left, and
+`--resume <evaluationId>` opens only those (new handles, a new manifest; the agent id is the
+evaluation's own, and a different one is refused as a changed identity). The wall clock is the
+rollout timeout (the task's `timeoutMin`, or the override) times
+`harness.limits.externalTimeoutFactor` (default 3, `--external-timeout-factor`), counted from the
+agent's first command. The factor is in the identity because it changes outcomes; the claim
+timeout is not, because it only decides whether a rollout ran.
+
+**Identity and records.** An external evaluation is never comparable with a harness-driven one:
+
+- `identity.agent` is `{ vendor: "external", version: "<agent id>" }`;
+- `identity.harness.limits` carries `externalTimeoutFactor`;
+- `modelsConfigHash` covers each gate entry's `external` flag (added to the hashed object only
+  when set, so the hash of a config without external entries is unchanged);
+- a raw record's `agent` is `{ vendor: "external", version: "<agent id>", model: "<label>",
+  servedBy: "<label>@<agent id>" }`, and its excerpt says the agent was declared;
+- an outcome's `servedBy` is the model label, so the gate's "served by the configured model" rule
+  (§4.8) holds by construction. **It is declared, not verified**: the harness never sees which
+  model produced a step.
+
+**Quota, budget, spend.** An external model has no rate limiter and no daily quota, nothing is
+reserved for it, and no `spend` event is written for it; an outcome's `cost` is zero. The
+per-gate rollout cap of `bench/budget.json` still applies. The harness's only requests are the
+judge's, one per maintainer rollout: they are checked against the judge model's day and charged
+to it in a `spend` event, as for a harness rollout. An external evaluation with no maintainer
+task makes no model call at all and skips the `models.list` check.
+
+**`bench iterate`.** The train, baseline, candidate and control steps call the same runner, so in
+external mode `iterate` itself is the rollout server while such a step runs: it blocks, rewrites
+the manifest, and continues with the next step when the rollouts are done. `--rollout-agent
+"<agent id>"` is the declared id; it is fixed in the iteration's settings so that every record of
+the iteration carries it, and a different one on resume is refused (exit 4). Unclaimed rollouts
+defer the step (exit 1) and `--resume` reopens them. The external maintainer and proposer steps
+still stop as `awaiting-agent` (exit 5). A train or baseline evaluation run beforehand with `bench
+run` under the same agent id and limits is reused by identity (§1.5, §5.1).
+
+**What isolation is and is not.** The sandbox-side guarantees are unchanged: no network, the agent
+uid, no mount of `bench/` or the repository, the shim socket the agent cannot reach, grading in a
+separate container after every agent process is killed, trajectory integrity. What the harness
+cannot do is confine the outside agent itself. It runs on the host with whatever access its
+launcher gives it, and it could read `bench/references/`, the graders or earlier records. The
+cheap, real measures are taken: the client and manifest live outside the repository, the handle
+and the prompt name no repository path, and the prompt forbids host file access. Beyond that, an
+external rollout is a **declared-agent** run whose isolation from the answer key depends on the
+launcher: start each agent fresh, outside the repository, with nothing but its one instruction.
+Tool results go to the outside agent's provider without the send guard of §4.8; a rollout sandbox
+holds fixture data only, which is credential-free by construction.
+

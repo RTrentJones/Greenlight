@@ -417,6 +417,29 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
   `gemini-3.5-flash-lite`; a separate, stronger maintainer model would need a third `ModelEntry`
   and is deferred. No evaluation was in progress, and the M1 records were already incomparable to
   any M2 gate, so nothing is abandoned beyond what re-baselining already required.
+- **Amendment (2026-11-18, owner decision): rollouts may be driven by an external declared agent.**
+  The free-tier daily quota makes one gate take days. A gate model may therefore be marked
+  `external` in `bench/models.json`, and its rollouts are then driven by an agent launched from
+  outside the harness through the rollout client (06 §4.9), as the maintainer and proposer already
+  may be (06 §2.5, §3.6).
+  - **Unchanged, and still guaranteed by the harness:** the sandbox (no network, agent uid, no
+    bench or repository mount), the tool implementations and their step budget, the trajectory
+    shims and their integrity check, the kill before read-out, grading in a separate container,
+    raw records with redacted artifacts, the sealed EvaluationRecord, and the gate.
+  - **Declared, not verified:** which agent and which model produced the steps. The identity
+    records `agent.vendor: external` and the launcher's agent id as `agent.version`; an outcome's
+    `servedBy` equals its model label by construction. The fallback rule of this ADR ("a
+    fallback-served rollout is invalid") cannot be checked for an external model.
+  - **Not guaranteed:** that the outside agent stayed away from the answer key. It runs on the
+    host; keeping it out of `bench/references/`, the graders and earlier records is the launcher's
+    job. The harness keeps the client and manifest outside the repository and names no repository
+    path, nothing more.
+  - **Comparability.** External and harness-driven evaluations never share an identity, and
+    neither do two external evaluations with different declared agents. A baseline and its
+    candidate must be run by the same declared agent. One evaluation mixing external and
+    harness-driven models is refused.
+  - **Cost.** No quota, reservation or spend event exists for an external model. The eval judge
+    stays on a harness-driven model and is the only request the harness makes.
 - **Status.** Accepted.
 
 ## 2. Open questions

@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path';
 import {
   type BenchRunOptions,
   type DailyUsage,
+  type IterateOptions,
   ModelsConfigSchema,
   type QuotaStore,
   RawRecordSchema,
@@ -20,6 +21,9 @@ import {
   type RunResult,
   type RunnerAssets,
   dockerAvailable,
+  iterate,
+  loadEvaluationRecords,
+  loadIterationState,
   modelsConfigIdentity,
   pacificDay,
   parseLedger,
@@ -699,6 +703,102 @@ describe('external rollouts through the process sandbox', () => {
     out.length = 0;
     expect(await benchCommand(['rollout', 'nope', 'prompt'], io)).toBe(3);
   }, 180_000);
+});
+
+describe('bench iterate with external rollouts', () => {
+  it('the train step serves its rollouts from the iterate process, then stops for the external maintainer', async () => {
+    const root = tmp('greenlight-iterate-ext-');
+    // Two replay train tasks × the external pair; maintainer and proposer external too.
+    const bench = externalBench((m) => {
+      m.roles.maintainer = 'external';
+      m.roles.proposer = 'external';
+    });
+    for (const kind of readdirSync(join(bench, 'tasks'))) {
+      for (const t of readdirSync(join(bench, 'tasks', kind))) {
+        const f = join(bench, 'tasks', kind, t, 'task.json');
+        const spec = JSON.parse(readFileSync(f, 'utf8'));
+        spec.state = kind === 'replay' ? 'active' : 'quarantined';
+        spec.quarantineReason = kind === 'replay' ? undefined : 'not exercised by this test';
+        writeFileSync(f, `${JSON.stringify(spec, null, 2)}\n`);
+      }
+    }
+    const wiki = join(root, 'wiki');
+    cpSync(join(REPO, 'wiki'), wiki, { recursive: true });
+    const spentBefore = spendEvents({ wikiRoot: wiki } as BenchRunOptions).length;
+    const skills = join(root, 'skills');
+    cpSync(join(REPO, '.claude', 'skills'), skills, { recursive: true });
+    const stateDir = join(root, '.greenlight');
+    const manifest = join(root, 'launch', 'manifest.json');
+    const quota = memoryQuota();
+    const o: IterateOptions = {
+      repoRoot: REPO,
+      benchDir: bench,
+      skillsDir: skills,
+      wikiRoot: wiki,
+      stateDir,
+      sandbox: 'process',
+      assets,
+      env: {},
+      fetchImpl: noNetwork,
+      quotaStore: quota,
+      rolloutTimeoutMs: 120_000,
+      iterationId: 'iter-ext-rollouts',
+      rolloutAgent: AGENT,
+      rolloutManifest: manifest,
+      rolloutConcurrency: 2,
+    };
+    let settled = false;
+    const run = iterate(o).finally(() => {
+      settled = true;
+    });
+    // The launcher: one "agent" per open rollout, in waves of two; each one just finishes.
+    const dispatched = new Set<string>();
+    const waves: number[] = [];
+    while (!settled) {
+      const m = readManifest(manifest);
+      const open = (m?.rollouts ?? []).filter(
+        (x) => x.state === 'open' && !dispatched.has(x.handle),
+      );
+      if (m && open.length > 0) {
+        waves.push(m.rollouts.filter((x) => x.state === 'open' || x.state === 'claimed').length);
+        for (const x of open) dispatched.add(x.handle);
+        await Promise.all(
+          open.map(async (x) => {
+            expect((await client(m, x.handle, ['prompt'])).code).toBe(0);
+            expect((await client(m, x.handle, ['finish', 'nothing to do'])).code).toBe(0);
+          }),
+        );
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const r = await run;
+    expect(r.status, r.message).toBe('awaiting-agent');
+    expect(r.exitCode).toBe(5);
+    expect(r.step).toBe('maintainer');
+    expect(dispatched.size).toBe(4);
+    expect(Math.max(...waves)).toBeLessThanOrEqual(2);
+    const state = loadIterationState(stateDir, 'iter-ext-rollouts');
+    expect(state.settings.rolloutAgent).toBe(AGENT);
+    expect(state.train.status).toBe('done');
+    const rec = loadEvaluationRecords(wiki).find((x) => x.hash === state.train.record);
+    expect(rec?.role).toBe('train');
+    expect(rec?.identity.agent).toEqual({ vendor: 'external', version: AGENT });
+    expect(rec?.identity.models).toEqual([EXT_FRONTIER, EXT_SMALL]);
+    expect(rec?.outcomes).toHaveLength(4);
+    expect(rec?.outcomes.every((x) => x.servedBy === x.model)).toBe(true);
+    expect(spendEvents({ wikiRoot: wiki } as BenchRunOptions)).toHaveLength(spentBefore);
+    // Another declared rollout agent on resume would make the records incomparable.
+    const swapped = await iterate({
+      ...o,
+      iterationId: undefined,
+      resume: 'iter-ext-rollouts',
+      rolloutAgent: 'x/y',
+    });
+    expect(swapped).toMatchObject({ status: 'refused', exitCode: 4 });
+    expect(swapped.message).toMatch(
+      /a different --rollout-agent would make its records incomparable/,
+    );
+  }, 240_000);
 });
 
 describe.runIf(DOCKER)('external rollouts through the docker sandbox', () => {
