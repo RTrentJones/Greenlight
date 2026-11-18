@@ -34,6 +34,10 @@ name: evo
 #   (git status, run without the key).
 # - Bundle keys are never sealed: each run makes its own, so an in-flight proposer step reruns
 #   with a fresh bundle on a new runner (its access log cannot be verified there). No .lock either.
+# - External roles (06 §2.5, §3.6: roles.maintainer / roles.proposer = "external" in
+#   bench/models.json) are LOCAL-ONLY for now: the agent needs the bundle and its key on one
+#   machine, and nothing here hands a bundle out or takes an output in. The job fails before
+#   anything is installed, restored, run or sealed when either role is external.
 
 on:
   workflow_dispatch:
@@ -88,6 +92,20 @@ jobs:
           mkdir -p "$RUNNER_TEMP/evo-scripts"
           cp scripts/evo-state.mjs scripts/evo-restore.mjs "$RUNNER_TEMP/evo-scripts/"
           chmod 0444 "$RUNNER_TEMP/evo-scripts/"*
+
+      # `bench iterate` would stop as awaiting-agent (exit 5) at an external role, with a bundle
+      # no one here can act on. Refuse first: no install, no restore, no rollout, nothing sealed
+      # (the seal steps need the key step, which never runs after this failure).
+      - name: External roles are local-only
+        run: |
+          set -euo pipefail
+          for role in maintainer proposer; do
+            src=$(jq -r --arg r "$role" '.roles[$r]' bench/models.json)
+            if [ "$src" = "external" ]; then
+              echo "::error::bench/models.json sets roles.$role to \"external\". External roles are local-only for now: run \`greenlight bench iterate\` on your own machine and hand the agent's output back with --maintainer-output / --proposal. Nothing was run or sealed."
+              exit 1
+            fi
+          done
 
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
 
@@ -214,6 +232,8 @@ jobs:
           echo "iteration=$id" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
           # 0 complete, 1 deferred / blocked (resume on a later day); anything else fails the run.
+          # 5 is awaiting-agent: unreachable past the check above, and never a state to resume here.
+          if [ "$code" -eq 5 ]; then echo "::error::bench iterate is awaiting an external agent (exit 5): external roles are local-only for now, and this run cannot be resumed from evo.yml"; fi
           if [ "$code" -gt 1 ]; then exit "$code"; fi
 
       - name: Print the hand-off

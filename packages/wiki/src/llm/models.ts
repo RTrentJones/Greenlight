@@ -9,9 +9,29 @@ import { type RateLimitPersistence, RateLimiter } from './limits';
 export type ModelRole = 'maintainer' | 'proposer' | 'judge';
 type Entry = ModelsConfig['roles']['frontier'];
 
-/** The entry ('frontier' | 'small') a role maps to. */
+/** Where a role's output comes from: one of the two entries, or (maintainer and proposer only)
+ * `external`, an agent the harness never calls (06 §2.5, §3.6). */
+export function roleSource(
+  config: ModelsConfig,
+  role: ModelRole,
+): 'frontier' | 'small' | 'external' {
+  return config.roles[role];
+}
+
+/** True when `role` is done by an external agent: no client, no quota and no spend for it. */
+export const isExternalRole = (config: ModelsConfig, role: ModelRole): boolean =>
+  roleSource(config, role) === 'external';
+
+/** The entry ('frontier' | 'small') a role maps to. An external role has none: asking for one is
+ * a harness error, never a silent default. */
 export function entryForRole(config: ModelsConfig, role: ModelRole): Entry {
-  return config.roles[config.roles[role]];
+  const source = roleSource(config, role);
+  if (source === 'external') {
+    throw new Error(
+      `the ${role} role is external in bench/models.json: the harness has no model for it`,
+    );
+  }
+  return config.roles[source];
 }
 
 /** Every distinct model entry in the config, and fallbacks that name another entry's id. */

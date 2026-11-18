@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   cpSync,
@@ -110,7 +110,9 @@ function treeFiles(dir: string): [string, string][] {
 
 /** A tiny bench: the real tasks, graders and mutants, with the loop tasks quarantined, the rest
  * active, one run per gate cell, and generous quota so a fake "day" is bounded only by the 429s. */
-function tinyBench(root: string, withControl: boolean): string {
+type RoleSources = { maintainer?: string; proposer?: string };
+
+function tinyBench(root: string, withControl: boolean, roles: RoleSources = {}): string {
   const bench = join(root, 'bench');
   cpSync(BENCH, bench, { recursive: true });
   for (const kind of readdirSync(join(bench, 'tasks'))) {
@@ -131,6 +133,10 @@ function tinyBench(root: string, withControl: boolean): string {
   writeFileSync(join(bench, 'gate.json'), '{ "alpha": 0.6, "runs": 1 }\n');
   const models = JSON.parse(readFileSync(join(bench, 'models.json'), 'utf8'));
   for (const r of ['frontier', 'small']) models.roles[r].limits = { rpm: 60, rpd: 1000, tpm: 1e7 };
+  // Fixed here, whatever the live bench/models.json says: a test names the roles it runs with
+  // (`external` = an agent outside the harness, 06 §2.5 / §3.6).
+  models.roles.maintainer = roles.maintainer ?? 'frontier';
+  models.roles.proposer = roles.proposer ?? 'frontier';
   writeFileSync(join(bench, 'models.json'), `${JSON.stringify(models, null, 2)}\n`);
   if (!withControl) rmSync(join(bench, 'controls'), { recursive: true, force: true });
   return bench;
@@ -300,9 +306,9 @@ const DAY = 86_400_000;
 const gitOut = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
-function setup(withControl = true) {
+function setup(withControl = true, roles: RoleSources = {}) {
   const root = tmp('greenlight-iterate-');
-  const bench = tinyBench(root, withControl);
+  const bench = tinyBench(root, withControl, roles);
   const wiki = join(root, 'wiki');
   cpSync(join(REPO, 'wiki'), wiki, { recursive: true });
   const skills = join(root, 'skills');
@@ -944,6 +950,31 @@ describe('evo.yml', () => {
     expect(text).toContain('persist-credentials: false');
   });
 
+  it('refuses external roles before anything runs: they are local-only', () => {
+    const text = readFileSync(join(REPO, '.github/workflows/evo.yml'), 'utf8');
+    const check = text.indexOf('- name: External roles are local-only');
+    expect(check).toBeGreaterThan(0);
+    // Before the install, the state key, the restore and the iteration: nothing runs or is sealed.
+    for (const later of [
+      'pnpm install',
+      '- name: The state key is set',
+      '- name: Restore the iteration state',
+      '- name: bench iterate',
+    ])
+      expect(check).toBeLessThan(text.indexOf(later));
+    const step = text.slice(check, text.indexOf('- uses: jdx/mise-action'));
+    expect(step).toContain('for role in maintainer proposer');
+    expect(step).toContain('[ "$src" = "external" ]');
+    expect(step).toContain('exit 1');
+    expect(step).not.toMatch(/secrets\./);
+    // The seal steps need the key step's output, which a failed check never produces.
+    expect(text).toMatch(
+      /Seal the resumable state\n\s+if: always\(\) && steps\.key\.outputs\.present == 'yes'/,
+    );
+    // An awaiting-agent exit fails the job with its own message.
+    expect(text).toContain('if [ "$code" -eq 5 ]');
+  });
+
   it('restores only a provenance-checked, authenticated blob, and uploads state only sealed', () => {
     const text = readFileSync(join(REPO, '.github/workflows/evo.yml'), 'utf8');
     // The job runs only on the allow-listed branch.
@@ -1259,4 +1290,452 @@ describe('bench iterate without docker (process sandbox)', () => {
     expect(r1.exitCode).toBe(4);
     expect(r1.message).toMatch(/process sandbox/);
   }, 300_000);
+});
+
+/**
+ * External roles (06 §2.5, §3.6): `roles.maintainer` / `roles.proposer` set to `external` in
+ * bench/models.json. The step makes no model call: it writes the bundle and stops as
+ * `awaiting-agent` (exit 5); a scripted "agent" here writes the output file, does its reads by
+ * running the real CLI (`greenlight wiki read|traces --bundle <dir>`, a separate process), and
+ * hands the file back with `--resume <id> --maintainer-output|--proposal <file> --agent <id>`.
+ */
+const AGENT = 'claude-code/scripted-test-agent';
+const TSX = join(REPO, 'node_modules', '.bin', 'tsx');
+
+/** The real CLI entry point, in its own process, from the directory that holds `.greenlight/`. */
+function cli(cwd: string, ...args: string[]) {
+  const r = spawnSync(TSX, [join(REPO, 'cli', 'src', 'bin.ts'), ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' },
+  });
+  return { code: r.status, out: r.stdout, err: r.stderr };
+}
+
+const maintainerOutput = (wiki: string) => ({
+  create_pages: [],
+  update_pages: [
+    {
+      id: 'pattern/probe-touches-wrong-layer',
+      ops: [
+        {
+          op: 'append',
+          text: '\nThe layer depends on the liveness model: needs-traffic probes reach the store; needs-silence probes leave it alone.\n',
+        },
+      ],
+    },
+  ],
+  update_index: readFileSync(join(wiki, 'index.md'), 'utf8'),
+  append_log: 'probe-touches-wrong-layer: conditional on the liveness model (both incidents).',
+});
+
+const spendOf = (wiki: string, id: string) =>
+  ledger(wiki)
+    .filter((e) => e.stage === 'spend' && e.spend?.evaluationId?.startsWith(`${id}/`))
+    .map((e) => e.spend?.evaluationId);
+
+/** The process sandbox cannot produce val evidence (06 §4.2), so these tests mark the baseline
+ * step done by hand to reach the proposer without docker. Nothing reads the missing record until
+ * a skill candidate is evaluated, which the process sandbox refuses anyway. */
+function skipBaseline(stateDir: string, id: string): void {
+  const file = join(iterationDir(stateDir, id), 'state.json');
+  const s = JSON.parse(readFileSync(file, 'utf8')) as IterationState;
+  s.baseline.status = 'done';
+  writeFileSync(file, `${JSON.stringify(s, null, 2)}\n`);
+}
+
+describe('bench iterate with external roles', () => {
+  it('process sandbox, both roles external: awaiting-agent (exit 5), refused and accepted files, reads logged by the real CLI', async () => {
+    const env = setup(false, { maintainer: 'external', proposer: 'external' });
+    const id = 'iter-test-external';
+    const dir = iterationDir(env.stateDir, id);
+    const opts = (day: number, over: Partial<IterateOptions> = {}) =>
+      env.options(day, { sandbox: 'process', ...over });
+    const file = (name: string, content: unknown) => {
+      const f = join(env.root, name);
+      writeFileSync(f, typeof content === 'string' ? content : JSON.stringify(content));
+      return f;
+    };
+    const state = () => loadIterationState(env.stateDir, id);
+    const pattern = () =>
+      readFileSync(join(env.wiki, 'patterns/probe-touches-wrong-layer.md'), 'utf8');
+
+    // Day 0: train runs on the fake models; the maintainer step writes its bundle and stops.
+    const r0 = await iterate(opts(0, { iterationId: id }));
+    expect(r0.status, r0.message).toBe('awaiting-agent');
+    expect(r0.exitCode).toBe(5);
+    expect(r0.step).toBe('maintainer');
+    expect(state().status).toBe('awaiting-agent');
+    expect(state().maintainer.status).toBe('awaiting-external');
+    expect(state().maintainer.source).toBe('external');
+    const mBundle = r0.awaiting?.bundle as string;
+    // The path handed to the agent is inside the iteration directory, and is a real bundle.
+    expect(relative(dir, mBundle).startsWith('..')).toBe(false);
+    expect(mBundle).toBe(join(dir, state().maintainer.bundleDir as string));
+    const mPrompt = readFileSync(join(mBundle, 'PROMPT.md'), 'utf8');
+    expect(mPrompt).toContain(mBundle);
+    // The bundle itself says how the output goes back, and not to apply it outside the iteration.
+    expect(mPrompt).toContain(`--resume ${id} --sandbox process --maintainer-output <file>`);
+    expect(mPrompt).toContain('never run `greenlight wiki ingest --apply` without `--dry-run`');
+    expect(mPrompt).toContain('You are the Wiki Maintainer for a Greenlight installation.');
+    expect(openBundle(mBundle, join(env.stateDir, 'bundle-keys')).manifest.role).toBe('maintainer');
+    expect(r0.awaiting).toMatchObject({ role: 'maintainer', skill: 'greenlight-wiki' });
+    expect(r0.message).toContain(
+      `greenlight bench iterate --resume ${id} --sandbox process --maintainer-output <file> --agent "<agent id>"`,
+    );
+    expect(r0.message).toContain('greenlight-wiki');
+
+    // Resuming without a file changes nothing: the same bundle is still awaited.
+    const again = await iterate(opts(0, { resume: id }));
+    expect(again.exitCode).toBe(5);
+    expect(again.awaiting?.bundle).toBe(mBundle);
+    expect(state().maintainer.attempts).toBe(1);
+
+    // A bundle path that leaves the iteration directory (a tampered state) is never printed.
+    const stateFile = join(dir, 'state.json');
+    const goodState = readFileSync(stateFile, 'utf8');
+    const moved = JSON.parse(goodState) as IterationState;
+    moved.maintainer.bundleDir = '../../../../elsewhere';
+    writeFileSync(stateFile, JSON.stringify(moved));
+    const outside = await iterate(opts(0, { resume: id }));
+    expect(outside.exitCode).toBe(4);
+    expect(outside.message).toMatch(/is not inside its iteration directory/);
+    expect(outside.awaiting).toBeUndefined();
+    writeFileSync(stateFile, goodState);
+
+    // Usage: a file needs --resume and a well-formed --agent; one file per invocation.
+    const good = file('maintainer.json', maintainerOutput(env.wiki));
+    for (const over of [
+      { resume: id, maintainerOutput: good },
+      { maintainerOutput: good, agent: AGENT },
+      { resume: id, maintainerOutput: good, agent: 'two words' },
+      { resume: id, maintainerOutput: good, proposal: good, agent: AGENT },
+      { resume: id, agent: AGENT },
+    ] as Partial<IterateOptions>[]) {
+      const u = await iterate(opts(0, over));
+      expect(u.exitCode, u.message).toBe(2);
+    }
+    // A file that cannot be read is a missing prerequisite, not an attempt.
+    const gone = await iterate(
+      opts(0, { resume: id, maintainerOutput: join(env.root, 'nope.json'), agent: AGENT }),
+    );
+    expect(gone.exitCode).toBe(3);
+    expect(state().maintainer.submissions ?? 0).toBe(0);
+
+    // The wrong step: a proposal while the maintainer is awaited is refused (exit 4).
+    const wrong = await iterate(opts(0, { resume: id, proposal: good, agent: AGENT }));
+    expect(wrong.exitCode).toBe(4);
+    expect(wrong.message).toMatch(/not awaiting the proposer's output .*awaiting the maintainer/);
+
+    // Pin drift wins over a perfectly good file.
+    const gate = join(env.bench, 'gate.json');
+    const gateText = readFileSync(gate, 'utf8');
+    writeFileSync(gate, '{ "alpha": 0.6, "runs": 2 }\n');
+    const drift = await iterate(opts(0, { resume: id, maintainerOutput: good, agent: AGENT }));
+    expect(drift.exitCode).toBe(4);
+    expect(drift.message).toMatch(/bench\/gate\.json changed/);
+    writeFileSync(gate, gateText);
+    expect(pattern()).not.toContain('needs-silence probes leave it alone');
+
+    // Invalid files are refused with their issues, each counting as one attempt; the wiki is
+    // untouched. The third fails the bundle (marked in log.md), as three rejected `finish` do.
+    const bad1 = await iterate(
+      opts(0, {
+        resume: id,
+        maintainerOutput: file('bad1.json', { create_pages: 'nope', append_log: 'x' }),
+        agent: AGENT,
+      }),
+    );
+    expect(bad1.status).toBe('awaiting-agent');
+    expect(bad1.exitCode).toBe(5);
+    expect(bad1.issues?.join('\n')).toMatch(/create_pages/);
+    expect(bad1.message).toMatch(/was refused \(submission 1 of 3\)/);
+    expect(state().maintainer.submissions).toBe(1);
+    const bad2 = await iterate(
+      opts(0, {
+        resume: id,
+        maintainerOutput: file('bad2.json', '{ this is not json'),
+        agent: AGENT,
+      }),
+    );
+    expect(bad2.exitCode).toBe(5);
+    expect(bad2.issues?.join('\n')).toMatch(/not valid JSON/);
+    // Schema-valid, refused by applyMaintainerOutput: a patch target that does not occur.
+    const bad3 = await iterate(
+      opts(0, {
+        resume: id,
+        maintainerOutput: file('bad3.json', {
+          ...maintainerOutput(env.wiki),
+          update_pages: [
+            {
+              id: 'pattern/probe-touches-wrong-layer',
+              ops: [{ op: 'replace', target: 'TEXT THAT IS NOT IN THE PAGE', text: 'x' }],
+            },
+          ],
+        }),
+        agent: AGENT,
+      }),
+    );
+    expect(bad3.status, bad3.message).toBe('failed');
+    expect(bad3.exitCode).toBe(1);
+    expect(bad3.message).toMatch(/3 submissions refused/);
+    expect(state().maintainer.status).toBe('failed');
+    expect(readFileSync(join(env.wiki, 'log.md'), 'utf8')).toContain(
+      `ingest failed ${id}-maintainer-1`,
+    );
+    expect(pattern()).not.toContain('needs-silence probes leave it alone');
+    // A file for a failed bundle is refused; a plain resume issues a fresh bundle.
+    const late = await iterate(opts(0, { resume: id, maintainerOutput: good, agent: AGENT }));
+    expect(late.exitCode).toBe(4);
+    const fresh = await iterate(opts(0, { resume: id }));
+    expect(fresh.exitCode).toBe(5);
+    expect(state().maintainer.bundleId).toBe(`${id}-maintainer-2`);
+    expect(state().maintainer.submissions).toBe(0);
+    // An oversized file is an invalid submission too.
+    const big = await iterate(
+      opts(0, {
+        resume: id,
+        maintainerOutput: file('big.json', JSON.stringify({ pad: 'x'.repeat(1024 * 1024) })),
+        agent: AGENT,
+      }),
+    );
+    expect(big.issues?.join('\n')).toMatch(/a submission is at most 1048576/);
+    expect(state().maintainer.submissions).toBe(1);
+
+    // The valid file, through the CLI: applied exactly as a harness output is, then the proposer
+    // step stops in turn. The CLI's exit code is 5, and --json carries what the agent needs.
+    skipBaseline(env.stateDir, id);
+    const out: string[] = [];
+    const err: string[] = [];
+    const io = (day: number) => ({
+      cwd: env.root,
+      env: {},
+      out: (x: string) => out.push(x),
+      err: (x: string) => err.push(x),
+      assets: async () => assets,
+      iterate: opts(day),
+    });
+    const common = ['--bench', env.bench, '--root', env.wiki, '--skills', env.skills];
+    const resume = ['iterate', '--resume', id, '--sandbox', 'process', '--json', ...common];
+    const code = await benchCommand(
+      [...resume, '--maintainer-output', good, '--agent', AGENT],
+      io(1),
+    );
+    expect(code, err.join('\n')).toBe(5);
+    const json = JSON.parse(out.join('')) as { status: string; awaiting: { bundle: string } };
+    expect(json.status).toBe('awaiting-agent');
+    expect(json.awaiting).toMatchObject({ role: 'proposer', skill: 'greenlight-wiki' });
+    expect(err.join('\n')).not.toContain('resume with `greenlight bench iterate --resume');
+    expect(state().maintainer).toMatchObject({ status: 'done', applied: true, agent: AGENT });
+    expect(pattern()).toContain('needs-silence probes leave it alone');
+    expect(readFileSync(join(env.wiki, 'log.md'), 'utf8')).toContain(`maintainer:${AGENT}`);
+    // Applied once: a second submission is refused, and the page holds the text once.
+    const twice = await iterate(opts(1, { resume: id, maintainerOutput: good, agent: AGENT }));
+    expect(twice.exitCode).toBe(4);
+    expect(twice.message).toMatch(/already has its maintainer output/);
+    expect(pattern().split('needs-silence probes leave it alone').length).toBe(2);
+
+    // The proposer bundle holds no raw record: traces come only from the logged CLI.
+    const pBundle = json.awaiting.bundle;
+    expect(pBundle).toBe(join(dir, state().proposer.bundleDir as string));
+    expect(readdirSync(pBundle).sort()).toEqual([
+      'PROMPT.md',
+      'access.jsonl',
+      'bundle.json',
+      'index.md',
+      'outcomes.md',
+      'skill-impact.md',
+    ]);
+    const pPrompt = readFileSync(join(pBundle, 'PROMPT.md'), 'utf8');
+    expect(pPrompt).toContain(`--resume ${id} --sandbox process --proposal <file>`);
+    expect(pPrompt).toContain(`${pBundle}/access.jsonl`);
+    const proposal = file('proposal.json', env.fake.proposal);
+    const submit = (day: number) => iterate(opts(day, { resume: id, proposal, agent: AGENT }));
+
+    // No logged read at all: refused, whatever the agent read some other way.
+    const rawDir = join(env.stateDir, 'raw');
+    expect(readdirSync(rawDir).length).toBeGreaterThanOrEqual(4);
+    readFileSync(join(rawDir, readdirSync(rawDir)[0] as string), 'utf8'); // a plain file read
+    const none = await submit(1);
+    expect(none.exitCode).toBe(5);
+    expect(none.issues?.join('\n')).toMatch(/access log shows 0 .*at least 4 are required/);
+    expect(state().proposer.submissions).toBe(1);
+
+    // Reads through the real CLI, in another process, against the iteration's bundle.
+    const traces = cli(env.root, 'wiki', 'traces', '--bundle', pBundle, '--json');
+    expect(traces.code, traces.err).toBe(0);
+    const ids = (JSON.parse(traces.out) as { rawId: string }[]).map((t) => t.rawId);
+    expect(ids.length).toBeGreaterThanOrEqual(4);
+    const readRaw = (rawId: string) => {
+      const r = cli(env.root, 'wiki', 'read', `raw:${rawId}`, '--bundle', pBundle);
+      expect(r.code, r.err).toBe(0);
+      expect(r.out).toContain(rawId);
+    };
+    readRaw(ids[0] as string);
+    readRaw(ids[1] as string);
+    readRaw(ids[0] as string); // a re-read is one read
+    const few = await submit(1);
+    expect(few.exitCode).toBe(5);
+    expect(few.issues?.join('\n')).toMatch(/access log shows 2 .*at least 4 are required/);
+    expect(state().proposer.submissions).toBe(2);
+    // A read the CLI refuses is logged as refused, and never counts.
+    const unknown = cli(env.root, 'wiki', 'read', 'raw:not-a-record', '--bundle', pBundle);
+    expect(unknown.code).toBe(3);
+    readRaw(ids[2] as string);
+    readRaw(ids[3] as string);
+
+    // Four distinct logged reads: the same checkProposal accepts it. The candidate evaluation
+    // then needs docker (the process sandbox cannot produce val evidence), which is not this
+    // test's subject.
+    const ok = await submit(2);
+    expect(ok.message).toMatch(/process sandbox/);
+    expect(ok.step).toBe('evaluate');
+    expect(ok.exitCode).toBe(4);
+    const s = state();
+    expect(s.proposer).toMatchObject({ status: 'done', agent: AGENT, source: 'external' });
+    expect(s.proposer.rawReads?.length).toBe(4);
+    expect(s.proposer.proposal).toMatchObject({ action: 'patch', name: 'greenlight-wiki' });
+    const access = readAccessLog(openBundle(pBundle, join(env.stateDir, 'bundle-keys')));
+    expect(access.problems).toEqual([]);
+    expect(access.entries.filter((e) => e.refused).length).toBe(1);
+    expect(JSON.parse(readFileSync(join(dir, 'proposal.json'), 'utf8'))).toMatchObject({
+      proposalId: s.proposer.proposalId,
+      agent: AGENT,
+    });
+    const after = await submit(2);
+    expect(after.exitCode).toBe(4);
+    expect(after.message).toMatch(/already has its proposer output/);
+    // No quota was reserved and no spend event written for either role.
+    expect(spendOf(env.wiki, id)).toEqual([]);
+  }, 600_000);
+
+  it('process sandbox, mixed: an external maintainer and a harness proposer; the hand-off says who did what', async () => {
+    const env = setup(false, { maintainer: 'external' });
+    const id = 'iter-test-mixed';
+    const dir = iterationDir(env.stateDir, id);
+    const opts = (day: number, over: Partial<IterateOptions> = {}) =>
+      env.options(day, { sandbox: 'process', ...over });
+    env.fake.proposal = { action: 'no_action', reason: 'the training traces show nothing new' };
+
+    const r0 = await iterate(opts(0, { iterationId: id }));
+    expect(r0.status, r0.message).toBe('awaiting-agent');
+    expect(r0.step).toBe('maintainer');
+    // A proposal is refused twice over: the proposer is the harness's here.
+    const good = join(env.root, 'maintainer.json');
+    writeFileSync(good, JSON.stringify(maintainerOutput(env.wiki)));
+    const notExternal = await iterate(opts(0, { resume: id, proposal: good, agent: AGENT }));
+    expect(notExternal.exitCode).toBe(4);
+    expect(notExternal.message).toMatch(/proposer role is "frontier" .*not "external"/);
+
+    skipBaseline(env.stateDir, id);
+    const r1 = await iterate(opts(1, { resume: id, maintainerOutput: good, agent: AGENT }));
+    // The harness proposer ran on the fake model (its reads logged by the in-process tools), and
+    // its no_action completes the iteration.
+    expect(r1.status, r1.message).toBe('complete');
+    expect(r1.exitCode).toBe(0);
+    const s = loadIterationState(env.stateDir, id);
+    expect(s.maintainer).toMatchObject({ source: 'external', agent: AGENT, applied: true });
+    expect(s.proposer).toMatchObject({ source: 'harness', model: FRONTIER, status: 'done' });
+    expect(s.proposer.agent).toBeUndefined();
+    expect(s.evaluate.kind).toBe('no-action');
+    // Spend: the harness proposer's requests only; nothing for the external maintainer.
+    expect(spendOf(env.wiki, id)).toEqual([`${id}/proposer`]);
+    const md = readFileSync(join(dir, 'handoff.md'), 'utf8');
+    expect(md).toContain(`- produced by: external agent \`${AGENT}\``);
+    expect(md).toMatch(new RegExp(`\\| ${reId(FRONTIER)} \\| \\d+ \\|`));
+    expect(md).toContain(
+      `| maintainer: external agent \`${AGENT}\` (not called by the harness; no quota, no spend event) | — | — | — | — |`,
+    );
+    expect(md).not.toContain('proposer: external agent');
+    // A complete iteration takes no further file.
+    const done = await iterate(opts(1, { resume: id, maintainerOutput: good, agent: AGENT }));
+    expect(done.exitCode).toBe(4);
+    expect(done.message).toMatch(/already has its maintainer output/);
+  }, 600_000);
+
+  (DOCKER ? it : it.skip)(
+    'docker: one full iteration with both roles external, gated and handed off',
+    async () => {
+      const env = setup(false, { maintainer: 'external', proposer: 'external' });
+      const id = 'iter-test-external-full';
+      const dir = iterationDir(env.stateDir, id);
+      const r0 = await iterate(env.options(0, { iterationId: id }));
+      expect(r0.status, r0.message).toBe('awaiting-agent');
+      expect(r0.step).toBe('maintainer');
+      expect(r0.message).toContain(
+        `greenlight bench iterate --resume ${id} --maintainer-output <file> --agent "<agent id>"`,
+      );
+      const mFile = join(env.root, 'maintainer.json');
+      writeFileSync(mFile, JSON.stringify(maintainerOutput(env.wiki)));
+      // The maintainer's file is applied, the val baseline runs on the rollout models, and the
+      // proposer step stops for its agent.
+      const r1 = await iterate(
+        env.options(1, { resume: id, maintainerOutput: mFile, agent: AGENT }),
+      );
+      expect(r1.status, r1.message).toBe('awaiting-agent');
+      expect(r1.step).toBe('proposer');
+      expect(loadIterationState(env.stateDir, id).baseline.record).toBeTruthy();
+      const pBundle = r1.awaiting?.bundle as string;
+      const traces = cli(env.root, 'wiki', 'traces', '--bundle', pBundle, '--json');
+      expect(traces.code, traces.err).toBe(0);
+      for (const t of (JSON.parse(traces.out) as { rawId: string }[]).slice(0, 4)) {
+        expect(cli(env.root, 'wiki', 'read', `raw:${t.rawId}`, '--bundle', pBundle).code).toBe(0);
+      }
+      const pFile = join(env.root, 'proposal.json');
+      writeFileSync(pFile, JSON.stringify(env.fake.proposal));
+      const r2 = await iterate(env.options(2, { resume: id, proposal: pFile, agent: AGENT }));
+      expect(r2.status, r2.message).toBe('complete');
+      expect(r2.exitCode).toBe(0);
+      const s = loadIterationState(env.stateDir, id);
+      expect(s.maintainer).toMatchObject({ source: 'external', agent: AGENT, applied: true });
+      expect(s.proposer).toMatchObject({ source: 'external', agent: AGENT });
+      expect(s.proposer.rawReads?.length).toBe(4);
+      expect(s.evaluate.event?.stage).toBe('candidate-accepted');
+      const events = ledger(env.wiki);
+      expect(ledgerProblems(events)).toEqual([]);
+      expect(events.filter((e) => e.stage !== 'spend').map((e) => e.stage)).toEqual([
+        'candidate-accepted',
+      ]);
+      // Rollouts spent the gate models' quota; the two roles spent none.
+      expect(spendOf(env.wiki, id)).toEqual([]);
+      const md = readFileSync(join(dir, 'handoff.md'), 'utf8');
+      expect(md).toContain('kind: pr');
+      expect(md).toMatch(new RegExp(`\\| ${reId(SMALL)} \\| \\d+ \\|`));
+      for (const role of ['maintainer', 'proposer'])
+        expect(md).toContain(`| ${role}: external agent \`${AGENT}\` (not called by the harness`);
+    },
+    900_000,
+  );
+
+  it('--dry-run names an external role and spends nothing on it', async () => {
+    const env = setup(false, { maintainer: 'external', proposer: 'external' });
+    const out: string[] = [];
+    const code = await benchCommand(
+      [
+        'iterate',
+        '--dry-run',
+        '--sandbox',
+        'process',
+        '--bench',
+        env.bench,
+        '--root',
+        env.wiki,
+        '--skills',
+        env.skills,
+      ],
+      { cwd: env.root, env: {}, out: (x) => out.push(x), err: (x) => out.push(x) },
+    );
+    expect(code, out.join('\n')).toBe(0);
+    const plan = out.join('\n');
+    expect(plan).toMatch(
+      /maintainer\s+pending\s+external agent: no request; stops as awaiting-agent/,
+    );
+    expect(plan).toMatch(/proposer\s+pending\s+external agent: no request/);
+    // A file is never taken on a dry run.
+    const bad = await benchCommand(
+      ['iterate', '--dry-run', '--proposal', 'x.json', '--agent', AGENT, '--bench', env.bench],
+      { cwd: env.root, env: {}, out: () => {}, err: () => {} },
+    );
+    expect(bad).toBe(2);
+  });
 });

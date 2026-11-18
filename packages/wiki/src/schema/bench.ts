@@ -596,8 +596,11 @@ export const ModelsConfigSchema = z
       .object({
         frontier: ModelEntrySchema,
         small: ModelEntrySchema,
-        maintainer: z.enum(['frontier', 'small']),
-        proposer: z.enum(['frontier', 'small']),
+        // `external`: the role is done by an agent the harness does not call (06 §2.5, §3.6):
+        // `bench iterate` writes the bundle, stops as `awaiting-agent`, and takes the output back
+        // as a file. Never the judge: a grader runs inside every rollout.
+        maintainer: z.enum(['frontier', 'small', 'external']),
+        proposer: z.enum(['frontier', 'small', 'external']),
         judge: z.enum(['frontier', 'small']),
       })
       .strict(),

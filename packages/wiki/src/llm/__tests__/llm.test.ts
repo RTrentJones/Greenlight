@@ -22,7 +22,14 @@ import {
   RateLimiter,
   RequestBudget,
 } from '../limits';
-import { checkModels, clientForRole, createLimiters } from '../models';
+import {
+  checkModels,
+  clientForRole,
+  createLimiters,
+  entryForRole,
+  isExternalRole,
+  roleSource,
+} from '../models';
 import { FileQuotaStore, quotaFileName, seedQuotaFromLedger, usageFromLedger } from '../quota';
 import { type ReactTool, runReact } from '../react';
 
@@ -140,6 +147,30 @@ const base = {
   finish,
 };
 
+describe('external roles (bench/models.json)', () => {
+  const withRoles = (roles: Record<string, string>) => ({
+    ...modelsJson,
+    roles: { ...modelsJson.roles, ...roles },
+  });
+  it('maintainer and proposer may be external; the judge may not', () => {
+    const m = ModelsConfigSchema.parse(withRoles({ maintainer: 'external', proposer: 'external' }));
+    expect(isExternalRole(m, 'maintainer')).toBe(true);
+    expect(isExternalRole(m, 'proposer')).toBe(true);
+    expect(isExternalRole(m, 'judge')).toBe(false);
+    expect(roleSource(m, 'proposer')).toBe('external');
+    expect(ModelsConfigSchema.safeParse(withRoles({ judge: 'external' })).success).toBe(false);
+    expect(ModelsConfigSchema.safeParse(withRoles({ maintainer: 'claude' })).success).toBe(false);
+  });
+  it('an external role has no model entry and no client', () => {
+    const m = ModelsConfigSchema.parse(withRoles({ maintainer: 'external' }));
+    expect(() => entryForRole(m, 'maintainer')).toThrow(/maintainer role is external/);
+    expect(() => clientForRole(m, 'maintainer', { findSecrets })).toThrow(
+      /maintainer role is external/,
+    );
+    expect(entryForRole(m, 'judge').id).toBe(m.roles.small.id);
+  });
+});
+
 describe('bench config files', () => {
   it('bench/models.json validates against ModelsConfigSchema with the ADR-20 pair', () => {
     const m = ModelsConfigSchema.parse(modelsJson);
@@ -147,11 +178,11 @@ describe('bench config files', () => {
     expect(m.roles.frontier.id).toBe('gemini-3.5-flash-lite');
     expect(m.roles.small.id).toBe('gemini-3.1-flash-lite');
     expect(m.roles.frontier.id).not.toBe(m.roles.small.id);
-    expect([m.roles.maintainer, m.roles.proposer, m.roles.judge]).toEqual([
-      'frontier',
-      'frontier',
-      'small',
-    ]);
+    // The maintainer and proposer may be a gate entry or `external` (an agent the harness does not
+    // call, 06 §2.5 / §3.6); the judge runs inside every rollout, so it is always an entry.
+    for (const role of [m.roles.maintainer, m.roles.proposer])
+      expect(['frontier', 'small', 'external']).toContain(role);
+    expect(m.roles.judge).toBe('small');
     expect(m.temperature).toBe(0.2);
   });
   it('bench/budget.json admits the first M2 gate (README-models.md arithmetic)', () => {
