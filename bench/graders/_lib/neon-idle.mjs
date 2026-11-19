@@ -18,6 +18,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reserveAppPort } from './app-port.mjs';
 import { startClockCoordinator } from './fake-clock-coordinator.mjs';
 import { createWorkersFetch, startStub, startWorkerHost } from './workers-runtime.mjs';
 
@@ -183,6 +184,10 @@ export async function gradeNeonIdle(ctx, { variant }) {
   // One simulated clock for every process and thread the app runs (fake-clock-coordinator.mjs).
   const clock = await startClockCoordinator({ start: fake.clock.now() });
   ctx.onCleanup(() => clock.stop());
+  // The app's port is reserved, never merely picked (app-port.mjs): whatever else listened on it
+  // would answer in the app's place, and be graded.
+  const reserved = await reserveAppPort();
+  ctx.onCleanup(() => reserved.release());
   let app;
   try {
     app = await ctx.spawnApp({
@@ -190,6 +195,7 @@ export async function gradeNeonIdle(ctx, { variant }) {
       command: cmd,
       env: { [cfg.dbEnv]: fake.url, NODE_ENV: 'production', ...clock.env() },
       preload: [SHIM],
+      port: reserved.port,
       readyPath: '/',
     });
   } catch (e) {

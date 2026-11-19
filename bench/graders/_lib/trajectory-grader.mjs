@@ -28,6 +28,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reserveAppPort } from './app-port.mjs';
 
 export const CHANGE_CHECK = 'the requested change is in what was pushed';
 export const ROUTE_CHECK = 'the new route is served by what was pushed';
@@ -79,12 +80,17 @@ async function gradeRoute(ctx, route) {
   };
 
   // 1. The route, from the app as pushed.
+  // The app's port is reserved, never merely picked (app-port.mjs): whatever else listened on it
+  // would answer in the app's place, and be graded.
+  const reserved = await reserveAppPort();
+  ctx.onCleanup(() => reserved.release());
   let app;
   let served = false;
   try {
     app = await ctx.spawnApp({
       cwd: join(root, route.dir),
       command: route.command,
+      port: reserved.port,
       readyPath: '/health/live',
     });
     const { status, text } = await get(app, route.path);
