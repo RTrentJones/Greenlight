@@ -41,3 +41,8 @@ The new-route loop pair (raw:20261119T212358Z-4d1f0364 pass, raw:20261119T212358
 
 ## 2026-11-19T21:44:18.722Z — harness — candidate-accepted prop-9c74a7769477
 bench iterate iter-20261119T212356Z-84d9a2fe: candidate-accepted (skill, greenlight-wiki); ledger event b32c66d887dacd4e02b51a9ee92ec75047f45782a05e1a9bb0eb4e7400146c48
+
+## 2026-11-19T23:47:57.547Z — maintainer:claude-code/sonnet — ingest
+No page changes: the evidence was already compiled. The passing supabase keepalive replay (raw:20261119T233853Z-c97f6efc: store not paused after 21 simulated days, every sweep ran a query, a paused store read as failing) matches what pattern/keepalive-target-incomplete-doctor-green and pattern/probe-touches-wrong-layer already record, and the needs-traffic versus needs-silence rule naming both incident pages is already on pattern/probe-touches-wrong-layer.
+The passing new-route loop run (raw:20261119T233853Z-58d9c7e0: preview, push develop, new route checked in the pushed verify config, no promote) is the expected preview-before-push loop and needs no page.
+The three wiki-task records (raw:20261119T233853Z-23d117ff, raw:20261119T233853Z-52aad3a2, raw:20261119T233853Z-7551aea2) are maintainer attempts on other bundles (a different wiki and different incidents) and their contents are not cited as evidence here. Nothing confirmed: no deployed red-to-green run in the bundle.
