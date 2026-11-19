@@ -34,3 +34,7 @@ No page changes: the idle-probe replay pair (raw:20261119T072754Z-5a64f852 fail,
 
 ## 2026-11-19T09:50:26.218Z — harness — candidate-rejected prop-e817d701446f
 bench iterate iter-20261119T085724Z-ce459784: candidate-rejected (skill, greenlight-wiki); ledger event d19fb278cb6c408e4a0aa264448374b63ed8970efb68427f0d15c84969014837
+
+## 2026-11-19T21:29:28.387Z — maintainer:claude-code/sonnet — ingest
+No page changes: the evidence was already compiled. The passing idle-probe replay (raw:20261119T212358Z-cef7f758: 0 store queries, liveness 200 with the database stopped) and the passing supabase keepalive replay (raw:20261119T212358Z-e82078c5: store not paused after 21 simulated days) match what pattern/probe-touches-wrong-layer, pattern/neon-never-sleeps and pattern/keepalive-target-incomplete-doctor-green already record.
+The new-route loop pair (raw:20261119T212358Z-4d1f0364 pass, raw:20261119T212358Z-9853a6bd fail: pushed develop before a passing preview) is the expected preview-before-push loop and is covered by the deploy-verify-promote skill; no wiki failure pattern is added. The four wiki-task records (raw:20261119T212358Z-12227084, raw:20261119T212358Z-e2ccc69f, raw:20261119T212358Z-ec017344, raw:20261119T212358Z-efacb4e4) are earlier maintainer attempts on other bundles and are not cited. Nothing confirmed: no deployed red-to-green run in the bundle.
