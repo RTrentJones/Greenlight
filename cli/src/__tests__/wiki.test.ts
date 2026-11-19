@@ -155,6 +155,31 @@ C.
     expect(await run('lint', '--strict')).toBe(0);
   });
 
+  it('--apply refuses to write behind an iteration that is waiting for its maintainer', async () => {
+    const id = 'iter-20261119T000000Z-aaaaaaaa';
+    const dir = join(cwd, '.greenlight', 'bench', 'iterations', id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        v: 1,
+        iterationId: id,
+        status: 'awaiting-agent',
+        step: 'maintainer',
+        settings: { scope: 'all', sandbox: 'docker' },
+        acceptedSkillSetHash: 'x',
+      }),
+    );
+    const before = snapshot(join(cwd, 'wiki'));
+    const o = output([{ id: 'pattern/new-one', content: page('new-one') }]);
+    expect(await apply(o)).toBe(4);
+    expect(snapshot(join(cwd, 'wiki'))).toEqual(before);
+    // A dry run still validates, and the guard lifts once the iteration moves on.
+    expect(await run('ingest', '--apply', 'out.json', '--dry-run')).toBe(0);
+    rmSync(join(cwd, '.greenlight', 'bench'), { recursive: true });
+    expect(await apply(o)).toBe(0);
+  });
+
   it('--apply is atomic: a failing third op leaves every file unchanged', async () => {
     const before = snapshot(join(cwd, 'wiki'));
     const o = output(

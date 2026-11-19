@@ -15,6 +15,7 @@ import {
   type SplitIndex,
   acceptedSkillSet,
   applyMaintainerOutput,
+  awaitingIterations,
   buildMaintainerBundle,
   buildProposerBundle,
   checkProposal,
@@ -71,7 +72,9 @@ const USAGE = `usage: greenlight wiki <subcommand>
   ingest [--sample a:b] [--incident <id>] [--seed <s>] [--skill <n>] [--tool <n>] [--out <dir>]
                        write a maintainer bundle (.greenlight/bundles/<id>/) and print its path
   ingest --apply <maintainer-output.json> [--dry-run]
-                       validate and apply a MaintainerOutput atomically, then lint
+                       validate and apply a MaintainerOutput atomically, then lint. Refused
+                       (exit 4) while a \`bench iterate\` iteration waits for its maintainer:
+                       that output goes to \`bench iterate --resume <id> --maintainer-output\`
   propose [--skill <name>] [--out <dir>]
                        write a proposer bundle (index, skill-impact, outcomes, PROMPT.md)
   propose --apply <proposer-output.json> [--bundle <dir>]
@@ -348,6 +351,18 @@ async function ingestApply(
   if (a.flags.has('--dry-run')) {
     for (const w of applied.changeset.writes) io.out(`would write ${w.path}`);
     return 0;
+  }
+  // An iteration waiting for its maintainer applies the output itself (`bench iterate
+  // --maintainer-output`), so the write is pinned and recorded in its state. Writing the wiki
+  // directly would drift the pins the iteration resumes against.
+  const waiting = awaitingIterations(join(io.cwd, '.greenlight')).find(
+    (i) => i.step === 'maintainer',
+  );
+  if (waiting) {
+    io.err(
+      `✘ iteration ${waiting.iterationId} is waiting for this maintainer output; nothing written. The output is valid: hand it to the iteration with \`greenlight bench iterate --resume ${waiting.iterationId} --maintainer-output ${file} --agent "<agent id>"\`, which applies it`,
+    );
+    return 4;
   }
   writeChangeset(p.root, applied.changeset);
   for (const w of applied.changeset.writes) io.out(`wrote ${w.path}`);

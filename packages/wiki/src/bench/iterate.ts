@@ -597,6 +597,29 @@ export function loadIterationState(stateDir: string, id: string): IterationState
   return json as IterationState;
 }
 
+/**
+ * The iterations under `stateDir` that are stopped waiting for an external agent, with the step
+ * they wait at. Read-only and tolerant (an unreadable state is skipped): it backs a guard, not a
+ * decision. `wiki ingest --apply` uses it to refuse writing the wiki behind an iteration's back.
+ */
+export function awaitingIterations(
+  stateDir: string,
+): { iterationId: string; step: IterationStep }[] {
+  const dir = join(stateDir, 'bench', 'iterations');
+  if (!existsSync(dir)) return [];
+  const out: { iterationId: string; step: IterationStep }[] = [];
+  for (const id of readdirSync(dir).sort()) {
+    if (!ITERATION_ID_RE.test(id) || !existsSync(iterationStatePath(stateDir, id))) continue;
+    try {
+      const s = loadIterationState(stateDir, id);
+      if (s.status === 'awaiting-agent') out.push({ iterationId: id, step: s.step });
+    } catch {
+      // Not a state this version reads: nothing to guard.
+    }
+  }
+  return out;
+}
+
 function saveState(stateDir: string, s: IterationState, now: Date): void {
   s.updatedAt = now.toISOString();
   const file = iterationStatePath(stateDir, s.iterationId);
