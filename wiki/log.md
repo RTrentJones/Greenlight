@@ -31,3 +31,6 @@ bench iterate iter-20261119T072753Z-7ecd23b8: candidate-rejected (skill, greenli
 
 ## 2026-11-19T08:58:34.590Z — maintainer:claude-code/sonnet — ingest
 No page changes: the idle-probe replay pair (raw:20261119T072754Z-5a64f852 fail, raw:20261119T072754Z-eb5865ee pass) is already on pattern/probe-touches-wrong-layer and pattern/neon-never-sleeps. The passing preview-before-push runs (raw:20261119T072754Z-07871640, raw:20261119T072754Z-70c4d981) show the expected loop (preview, push develop, no promote) and need no page. The wiki-task records (raw:20261119T072754Z-98ef40cc, raw:20261119T072754Z-c39ed33c, raw:20261119T072754Z-e44080b0, raw:20261119T072754Z-fe96b4a4) are earlier maintainer attempts on other bundles and are not cited. Nothing confirmed.
+
+## 2026-11-19T09:50:26.218Z — harness — candidate-rejected prop-e817d701446f
+bench iterate iter-20261119T085724Z-ce459784: candidate-rejected (skill, greenlight-wiki); ledger event d19fb278cb6c408e4a0aa264448374b63ed8970efb68427f0d15c84969014837
