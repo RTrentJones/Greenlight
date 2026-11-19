@@ -28,3 +28,6 @@ No new pages: nothing in the bundle contradicts an existing root cause. Raw 2026
 
 ## 2026-11-19T07:45:50.990Z — harness — candidate-rejected prop-5b359b1ae601
 bench iterate iter-20261119T072753Z-7ecd23b8: candidate-rejected (skill, greenlight-wiki); ledger event bdd2a490c7aaf9bbafa33fc371b7b13ed687c4417b2a402509e22efbe58b3777
+
+## 2026-11-19T08:58:34.590Z — maintainer:claude-code/sonnet — ingest
+No page changes: the idle-probe replay pair (raw:20261119T072754Z-5a64f852 fail, raw:20261119T072754Z-eb5865ee pass) is already on pattern/probe-touches-wrong-layer and pattern/neon-never-sleeps. The passing preview-before-push runs (raw:20261119T072754Z-07871640, raw:20261119T072754Z-70c4d981) show the expected loop (preview, push develop, no promote) and need no page. The wiki-task records (raw:20261119T072754Z-98ef40cc, raw:20261119T072754Z-c39ed33c, raw:20261119T072754Z-e44080b0, raw:20261119T072754Z-fe96b4a4) are earlier maintainer attempts on other bundles and are not cited. Nothing confirmed.
