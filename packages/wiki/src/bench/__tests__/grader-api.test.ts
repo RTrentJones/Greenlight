@@ -164,6 +164,8 @@ createServer((req, res) => {
   res.end(JSON.stringify(counts));
 }).listen(Number(process.env.PORT), '127.0.0.1');
 `;
+  // The coordinator waits up to 120 s for a slow process to join the clock (joinTimeoutMs, set
+  // after a load flake), so a cap under that turned a slow-but-correct run into a failure.
   it('20 polls in 10 simulated minutes, whatever clock or thread or process they use', async () => {
     const dir = mkdtempSync(join(work, 'clock-app-'));
     writeFileSync(join(dir, 'app.mjs'), APP);
@@ -209,7 +211,7 @@ createServer((req, res) => {
       await cleanup();
       await clock.stop();
     }
-  }, 60_000);
+  }, 180_000);
 });
 
 describe('the clock coordinator waits for an announced child while it is alive (the join flake)', () => {
