@@ -175,6 +175,8 @@ interface Fake {
   exhaust: { step: IterationStep; model: string } | null;
   phase: IterationStep | null;
   rolloutCalls: number;
+  /** Runs at the start of each bench rollout, with the step in progress. */
+  onRollout?: (phase: IterationStep | null) => void;
   proposal: Record<string, unknown>;
 }
 
@@ -284,6 +286,7 @@ function fakeModel(wiki: string): Fake {
     }
     // A bench rollout: identify the task by its brief (the first user turn).
     fake.rolloutCalls++;
+    fake.onRollout?.(fake.phase);
     const brief = String((body.contents?.[0]?.parts[0] as { text?: string })?.text ?? '');
     const task = briefs.get(brief) ?? '';
     if (task.startsWith('wiki/')) {
@@ -401,6 +404,16 @@ describe('bench iterate (M2-01, M2-04)', () => {
         [null, null],
       ];
       const results: IterateResult[] = [];
+      // A process killed mid-evaluation must resume it: the step's evaluation id is in state.json
+      // before the first rollout of the step runs, not only once the runner returns.
+      const seenAtRollout = new Map<string, string | undefined>();
+      env.fake.onRollout = (phase) => {
+        if (phase !== 'train' && phase !== 'baseline') return;
+        if (seenAtRollout.has(phase)) return;
+        const file = join(iterationDir(env.stateDir, id), 'state.json');
+        const x = JSON.parse(readFileSync(file, 'utf8')) as IterationState;
+        seenAtRollout.set(phase, x[phase].evaluationId);
+      };
       let logBeforeLastDay = '';
       let sealedCandidate: string | undefined;
       for (const [day, [step, model, over]] of plan.entries()) {
@@ -484,6 +497,11 @@ describe('bench iterate (M2-01, M2-04)', () => {
         }
       }
       const s = loadIterationState(env.stateDir, id) as IterationState;
+      env.fake.onRollout = undefined;
+      for (const phase of ['train', 'baseline'] as const) {
+        expect(seenAtRollout.has(phase), phase).toBe(true);
+        expect(seenAtRollout.get(phase), phase).toBe(s[phase].evaluationId);
+      }
       const dir = iterationDir(env.stateDir, id);
       expect(
         readFileSync(

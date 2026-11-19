@@ -1122,7 +1122,19 @@ async function evaluation(
   const resume = st.evaluationId ? st.evaluationId : undefined;
   let r: RunResult;
   try {
-    r = await runBench(runOptions(c, { ...over, ...(resume ? { resume } : {}) }));
+    r = await runBench(
+      runOptions(c, {
+        ...over,
+        ...(resume ? { resume } : {}),
+        // Recorded as soon as the evaluation exists: a killed process must resume it, not start
+        // a fresh one that discards the rollouts already graded.
+        onEvaluationStarted: (id) => {
+          if (st.evaluationId === id) return;
+          st.evaluationId = id;
+          c.save();
+        },
+      }),
+    );
   } catch (e) {
     st.status = 'failed';
     st.message = (e as Error).message;

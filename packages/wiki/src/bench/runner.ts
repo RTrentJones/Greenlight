@@ -172,6 +172,10 @@ export interface BenchRunOptions {
   wikiRoot: string;
   /** Holds `raw/`, `bench/runs/`, `quota/` (default `<repoRoot>/.greenlight`). */
   stateDir?: string;
+  /** Called once the evaluation's progress file exists, before any rollout runs, so a caller can
+   * record the id durably: a process killed mid-evaluation then resumes it instead of starting a
+   * fresh one and discarding the finished rollouts. */
+  onEvaluationStarted?: (evaluationId: string) => void;
   runnerDir?: string;
   split?: Split;
   /** Globs over task ids (`*` within a segment, `**` across). */
@@ -1856,6 +1860,7 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     log,
   };
   saveProgress(stateDir, progress);
+  o.onEvaluationStarted?.(evaluationId);
   log(
     `evaluation ${evaluationId}: ${role} on ${split}, ${selected.length} task(s) × ${models.length} model(s) × ${runs} run(s), ${pending.length} pending, ${o.sandbox} sandbox; limits ${limits.maxSteps} steps / ${limits.requestsPerRollout} requests per rollout; request cap ${cap}`,
   );
