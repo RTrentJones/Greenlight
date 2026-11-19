@@ -19,3 +19,9 @@ The two loop/fixture-preview-before-push runs passed (branch from develop, previ
 
 ## 2026-11-18T08:47:02.853Z — harness — candidate-rejected prop-7f23497cfb29
 bench iterate iter-20261118T082243Z-7826702e: candidate-rejected (skill, greenlight-wiki); ledger event 9cd18f044b965b2b3fdbc448b2eeb490646c0e364548c1cb3cceb497e6ad0d85
+
+## 2026-11-19T07:33:26.550Z — maintainer:claude-code/sonnet — ingest
+Updated pattern/probe-touches-wrong-layer with the explicit liveness-model rule (needs-traffic reaches the store; needs-silence and needs-heal stay off it) citing both incidents, plus the second idle-probe replay (raw:20261119T072754Z-5a64f852 fail, raw:20261119T072754Z-eb5865ee pass).
+Updated pattern/neon-never-sleeps with the same replay pair (21 queries, awake 600 s vs 0 queries, awake 240 s).
+Updated pattern/keepalive-target-incomplete-doctor-green with the passing comparison run (raw:20261119T072754Z-54d87fc2); all stay hypothesis (bench replays, no deployed red-to-green).
+No new pages: nothing in the bundle contradicts an existing root cause. Raw 20261119T072754Z-70c4d981 (preview, add verify check for new route, push develop, no promote) passed and needs no page.

@@ -2,7 +2,7 @@
 id: pattern/neon-never-sleeps
 type: pattern
 title: Idle-time polling keeps a scale-to-zero Neon compute awake
-updated: 2026-11-01
+updated: 2026-11-19
 status: hypothesis
 kind: failure
 class: free-tier-physics
@@ -15,6 +15,8 @@ evidence:
   - post:https://rtrentjones.dev/blog/keepalive-green-database-paused/
   - raw:20261118T082244Z-1afa7547
   - raw:20261118T082244Z-33d05e6f
+  - raw:20261119T072754Z-5a64f852
+  - raw:20261119T072754Z-eb5865ee
   - commit:RTrentJones/RTrentJones.dev@16cee9a60db9a93d55567bd41d21378a193c0e42
 catches:
   description: over a simulated idle window, the app issues zero queries to the store
@@ -45,3 +47,5 @@ A replay counts store queries over an idle window and requires zero. A planned d
 is shown suspending after the change.
 
 The bench replay named in `catches` shows the healthcheck timer is enough on its own: with a `/health` healthcheck every 30 s the simulated idle window recorded 21 store queries and the store awake 600 s of 600 s (raw:20261118T082244Z-33d05e6f). With the healthcheck and keepalive on a store-free route it recorded 0 queries and the store suspended (raw:20261118T082244Z-1afa7547). That is a bench replay, not a deployed app, so the status stays hypothesis.
+
+Second replay, same cell: the run that wrote a 30 s HEALTHCHECK against `/health` recorded 21 store queries over the idle window (20 from the healthcheck, 1 from the keepalive) and the store awake 600 s of 600 s (raw:20261119T072754Z-5a64f852). The run that used a store-free route recorded 0 queries and the store awake 240 s of 600 s, the suspension the free tier needs (raw:20261119T072754Z-eb5865ee). The idle-window query count, not the presence of a healthcheck, separates them.
