@@ -1,0 +1,803 @@
+{
+  "identity": {
+    "taskSetHash": "0f16dbcb5e8818d6abaf37f746a111b231d9ddf0eb0016a9a6b74a527c74ed0f",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "loop/new-route-joins-verify-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "quarantined",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-supabase"]
+      },
+      {
+        "id": "wiki/contradicted-root-cause-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      }
+    ],
+    "splitsHash": "ca9414308a05266e1c2873c1bb34e1e6872ccf0d7492dc48fc97c82d06524868",
+    "graderSetHash": "fe64ed0faebd56f0897cfbf755e3356ca6c4321e4b0bbe6cc8112c380bc89339",
+    "depsHash": "72196b3d6edc304c859e56474dab84b2412346629d52a7f8e0cf1d073ac3dc9c",
+    "harness": {
+      "runnerVersion": "0.3.0",
+      "imageDigest": "ctx:sha256:3dcf056da115df89381da7cd1256dccfd1357473fd6f6a2869cd65ed94cb45ce",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null,
+        "externalTimeoutFactor": 3
+      }
+    },
+    "agent": {
+      "vendor": "external",
+      "version": "claude-code-subagent"
+    },
+    "models": ["claude-code-sonnet", "claude-code-haiku"],
+    "modelsConfigHash": "7938ed696af22082ab1ec68badccea55526fe714acb67552730072140e668ff5",
+    "skillSetHash": "9711d1991e567db7885178608a08ff6c7c939dca476eb9a2330d00ac3c3063ae",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "baseline",
+  "createdAt": "2026-11-19T07:36:40.382Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "1406011140",
+      "rawId": "20261119T073327Z-74d0498d",
+      "durationMs": 107686,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "808972896",
+      "rawId": "20261119T073327Z-11ddbb8e",
+      "durationMs": 102473,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "25154409",
+      "rawId": "20261119T073327Z-e5e8e4e1",
+      "durationMs": 108819,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "525931321",
+      "rawId": "20261119T073327Z-3ac0b854",
+      "durationMs": 130529,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "1423149878",
+      "rawId": "20261119T073327Z-607a1361",
+      "durationMs": 100234,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "499384530",
+      "rawId": "20261119T073327Z-3d13af4c",
+      "durationMs": 116662,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=trailnotes, passed=true}, git {subcommand=push, dstRef=develop})"
+        }
+      ],
+      "seed": "1932997942",
+      "rawId": "20261119T073327Z-7c59a8ea",
+      "durationMs": 106466,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "550432303",
+      "rawId": "20261119T073327Z-35fab5e6",
+      "durationMs": 119721,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "1792421217",
+      "rawId": "20261119T073327Z-9bb031d6",
+      "durationMs": 118595,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "511838459",
+      "rawId": "20261119T073327Z-e42cea32",
+      "durationMs": 94705,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "620364533",
+      "rawId": "20261119T073327Z-84f3fdd7",
+      "durationMs": 97457,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "1071534915",
+      "rawId": "20261119T073327Z-dcc7843e",
+      "durationMs": 102698,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1213123135",
+      "rawId": "20261119T073327Z-44a336b0",
+      "durationMs": 96796,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1506702107",
+      "rawId": "20261119T073327Z-dd4ecd28",
+      "durationMs": 100345,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the keepalive; zero store queries over the idle window; store suspended at the end of the idle window; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1519853201",
+      "rawId": "20261119T073327Z-9803d8c4",
+      "durationMs": 99537,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "248374747",
+      "rawId": "20261119T073327Z-e6ff0b82",
+      "durationMs": 104535,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "995305417",
+      "rawId": "20261119T073327Z-89d79dd1",
+      "durationMs": 115722,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1261554000",
+      "rawId": "20261119T073327Z-48ab07af",
+      "durationMs": 102278,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "2002146314",
+      "rawId": "20261119T073504Z-f1ccd1d1",
+      "durationMs": 66972,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1862788050",
+      "rawId": "20261119T073505Z-f6b3ec1c",
+      "durationMs": 78406,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; the new pattern states the root cause the new evidence shows; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "917132682",
+      "rawId": "20261119T073507Z-8e4e2d8d",
+      "durationMs": 77027,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "923263527",
+      "rawId": "20261119T073327Z-1850fcf7",
+      "durationMs": 119957,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1155911287",
+      "rawId": "20261119T073327Z-eabd431c",
+      "durationMs": 132207,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1199418400",
+      "rawId": "20261119T073502Z-51931ec5",
+      "durationMs": 50157,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "378218878",
+      "rawId": "20261119T073510Z-5771c1a0",
+      "durationMs": 81409,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "342127262",
+      "rawId": "20261119T073510Z-dc054041",
+      "durationMs": 86147,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1213018103",
+      "rawId": "20261119T073512Z-c8094a64",
+      "durationMs": 65888,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1491321855",
+      "rawId": "20261119T073508Z-40c87569",
+      "durationMs": 58593,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "2058905455",
+      "rawId": "20261119T073508Z-9e67da9e",
+      "durationMs": 92187,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1009633468",
+      "rawId": "20261119T073510Z-742889fb",
+      "durationMs": 66049,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    }
+  ],
+  "hash": "ceae2dd653681f1ebda0225097baa9239d3494c689cd642d9472bb7be569a573"
+}
