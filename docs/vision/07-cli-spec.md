@@ -875,7 +875,9 @@ greenlight bench report [--proposal <id>] [--json]
     accepted); **5 `awaiting-agent`**: an external role's bundle is written and its output must be
     handed back (also after a refused submission that leaves attempts). With `--json`, exit 5
     carries `awaiting: { role, bundle, skill, command, submissions }` and, after a refusal,
-    `issues`.
+    `issues`. Exit 1 is three outcomes: automation reads `status` from `--json` (`deferred`,
+    `blocked` or `failed`) and treats only `deferred` as "try again later"; an exit 1 with no JSON
+    on stdout is a crash.
 - **`monitor`** runs the scheduled test-split re-run against the models in `bench/models.json`. It
   compares the result with the last accepted baseline and opens or updates a `greenlight-evo-alarm`
   issue when any model regresses beyond the threshold in `bench/gate.json`. It refuses to start if

@@ -58,6 +58,41 @@ drift, or an unguarded migrations dir; `--strict` fails on warnings for CI). Cro
 BAMCP etc.), the skill ships as the Greenlight Claude Code **plugin**; mechanics ride the
 `@rtrentjones/greenlight*` npm deps.
 
+## 2.0 layer (wiki, bench, gate)
+
+Built on the `2.0` branch (draft PR #38), **not released**. It adds the evolution loop: a wiki that
+compiles evidence into patterns, a bench that runs and grades agent rollouts, and a gate that decides
+whether a proposed skill change is accepted. The spec is [docs/vision/](docs/vision/README.md) (state
+table at its top; 06 the loop, 07 the CLI, 08 the schemas); the operator's guide is
+[bench/README.md](bench/README.md).
+
+- **Where:** `packages/wiki` (wiki engine, bench runner, gate, iterate), `cli/src/commands/wiki.ts`,
+  `cli/src/commands/bench.ts`, `bench/` (tasks, hidden graders/references/mutants, `models.json`,
+  `gate.json`, `budget.json`), `wiki/` (pages, `ledger.jsonl`, `evidence/eval/` sealed records).
+- **Skill text changes only through the gate.** Do not edit `.claude/skills/**` or its
+  `plugin/skills/**` mirror by hand. An accepted candidate is copied in by a PR that carries only
+  that text, then recorded with `greenlight bench merged <proposalId> --ref <PR URL>`. Until the
+  `merged` event exists, `bench iterate` refuses to start (exit 4). A merge does not bump the skill's
+  `version` frontmatter; the accepted skill set is its hash in the ledger.
+- **Never hand-edit `wiki/ledger.jsonl` or `wiki/skill-impact.md`.** The harness appends the ledger
+  and `greenlight wiki render` writes the other. `bench iterate`, `run`, `merged` and
+  `gate --recompute` stop (exit 3) on a ledger line that is not a valid event.
+- **Code changes invalidate an in-flight evaluation.** The lockfile and the built CLI bundle are
+  hashed into an evaluation's identity, and the skills and the bench inputs (tasks, graders,
+  `models.json`, `gate.json`, `splits.json`) are pinned, so a change to any of them refuses the
+  resume. Land code changes before starting an iteration, and check
+  `.greenlight/bench/iterations/*/state.json` for one that is `running` before touching them.
+- **Gate rollouts need a docker daemon.** `--sandbox process` is local development only and is
+  refused for baseline and candidate evaluations.
+- **Local only today.** `bench/models.json` declares external rollout models and roles, which
+  `evo.yml` refuses; that workflow has never run. `.greenlight/` (raw records, iteration state) is
+  gitignored.
+
+Commands: `pnpm greenlight wiki lint --strict`; `pnpm bench:check-graders`; `pnpm greenlight bench
+iterate [--resume <id>]`; `bench review <iterationId> --decision accept|reject --reason "…" --reviewer
+"<who>"`; `bench merged`; `bench gate --recompute <gateInputHash>`; `pnpm greenlight bench help` and
+`wiki help` list every flag.
+
 ## Specs & background
 
 - **[greenlight-v2.md](greenlight-v2.md) is the executable spec — build from this.** It reflects the as-built framework + the forward aims; V1 ([docs/archive/greenlight-v1.md](docs/archive/greenlight-v1.md)) is the historical record. Treat v2 as the source of truth; if reality forces a deviation, update v2 in the same change.

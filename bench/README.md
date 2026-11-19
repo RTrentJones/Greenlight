@@ -43,6 +43,9 @@ The val split is 6 tasks: 4 objective, two per skill (`deploy-verify-promote`: t
 families; `greenlight-wiki`: the two `wiki/` families), and the 2 replay tasks. The two families
 of a skill measure different behaviour (06 §4.1): preview-before-push against "add it to the
 verify loop"; a rule conditional on the liveness model against the "wrong root cause" rule.
+As of 2026-11-19 five of the six are `active`: `replay/keepalive-probe-reaches-store-val` is
+`quarantined`, and `replay/idle-probe-leaves-store-asleep-val` was quarantined for part of that day
+and is active again (history in [README-models.md](README-models.md)).
 
 Variants differ in tool name, store table names and app framework, so a val instance is unseen by
 the proposer (06 §10.2). `TaskSpec.split` must match both the suffix and `splits.json` (a test
@@ -309,7 +312,16 @@ pnpm greenlight bench iterate --resume <iterationId>
 
 - **Exit codes:** 0 complete, 1 deferred / blocked / failed, 2 usage, 3 missing prerequisite,
   4 refused by policy, **5 awaiting an external agent**. `--json` on exit 5 gives
-  `awaiting: { role, bundle, skill, command, submissions }`.
+  `awaiting: { role, bundle, skill, command, submissions }`. Exit 1 covers three outcomes, told
+  apart by `status` in `--json` (`deferred`, `blocked` or `failed`): only `deferred` means "run the
+  same command again later", and an exit 1 with no JSON on stdout is a crash. Exit 3 includes a
+  `wiki/ledger.jsonl` with a complete line that is not a valid event: the commands that decide from
+  the ledger (`bench iterate`, `bench run`, `bench merged`, `bench gate --recompute`) stop and name
+  the line (08 §8).
+- **The maintainer's output goes to the iteration.** While an iteration waits for its maintainer,
+  `wiki ingest --apply <file>` without `--dry-run` is refused (exit 4) and prints the
+  `bench iterate --resume … --maintainer-output` command to use instead; the `--dry-run` pre-check
+  above still works.
 - **A refused file** changes nothing and comes back with its issues (exit 5, `issues` in `--json`);
   a bundle takes three submissions, then fails (exit 1) and a plain `--resume` issues a new one.
   A file is refused outright (exit 4) when the step is not awaiting it, when it was already
@@ -422,6 +434,79 @@ reused by identity, so step 1 and the baseline of step 2 then open no rollout.
   path, but nothing more can be enforced from here. Start each agent fresh, with a working
   directory outside this repository and no other context. `evo.yml` has no launcher: external
   rollouts are local-only.
+
+## A safety-fix iteration (`bench iterate --safety-fix`)
+
+By default `bench iterate` gates its skill proposal on the standard path, which requires a strict
+capability gain. The safety-fix path (06 §5.4) is for a proposal motivated by a val replay task
+that fails in the baseline:
+
+```sh
+pnpm greenlight bench iterate --scope all --safety-fix replay/idle-probe-leaves-store-asleep-val
+```
+
+The named tasks (comma-separated, each an active val replay task) must fail in the baseline and
+pass under the candidate. No capability gain is required; replay safety on the other replay tasks
+and the non-regression bound still apply. The path waives efficacy, so the owner chooses it and
+the proposer cannot: the targets are fixed when the iteration is created, a resume that names
+others is refused, and the control arm is still gated on the standard path. The ledger event
+carries `path: "safety-fix"`.
+
+## After the gate: review, merge, record
+
+`bench iterate` ends at a ledger event and a hand-off. Nothing has changed in `.claude/skills` at
+that point: `candidate-accepted` means the gate passed, and the remaining steps are the owner's.
+In order:
+
+1. **Read the hand-off**, `.greenlight/bench/iterations/<iterationId>/handoff.md` (`handoff.json`
+   beside it; `bench iterate --resume <iterationId> --handoff-only` regenerates both). It holds the
+   outcome and its reasons, the per-model gate table, the diff, the control arm's result, the cost,
+   and the `bench gate --recompute <gateInputHash>` command that re-derives the decision from the
+   stored records without a rollout. Read the caveats as part of the decision: a
+   `safety-vacuous` reason means no replay task constrained the candidate, and a control arm
+   that was not rejected says the gate's safety check went unexercised. The CLI does not call
+   GitHub; whoever runs the loop posts the hand-off.
+2. **Record the review.** A rejected candidate is reviewed too (06 §10.3).
+
+   ```sh
+   pnpm greenlight bench review <iterationId> --decision accept|reject \
+     --reason "<why>" --reviewer "<who>"
+   ```
+
+   `--reviewer` (or `GREENLIGHT_REVIEWER`) is required and names the person, or the delegate
+   acting for the owner; it is free text, recorded as `review.by` and not verified. The command
+   writes a `review` event per recorded proposal of the iteration, which annotates the ledger and
+   moves no stage. A `reject` of a proposal that is already accepted or merged writes a `withdrawn`
+   event instead. An iteration is reviewed once.
+3. **Open a pull request that carries only the accepted skill text.** Copy the gated candidate,
+   `.greenlight/bench/iterations/<iterationId>/candidates/<proposalId>/skills/<skill>/`, byte for
+   byte into `.claude/skills/<skill>/` and its mirror `plugin/skills/<skill>/` (`pnpm
+   check-plugin-sync` checks the mirror). Do not edit the text on the way and do not add another
+   skill change to the same pull request: `bench merged` accepts only a tree whose skills hash to
+   the candidate the gate evaluated. A merge does not bump the skill's `version` frontmatter; the
+   accepted skill set is identified by its hash.
+4. **Merge it.**
+5. **Record the merge**, on the tree the change was merged into:
+
+   ```sh
+   pnpm greenlight bench merged <proposalId> --ref <pull request URL or commit sha>
+   ```
+
+   This appends the `merged` event, which is what moves the accepted skill set (06 §6.1), and
+   re-renders `wiki/skill-impact.md`. It is refused (exit 4) for a proposal that is not at
+   `candidate-accepted`, for a control-arm proposal, and when the installed skills are not the
+   gated candidate. Running it again for a proposal already recorded is a no-op (exit 0).
+6. **Commit `wiki/ledger.jsonl` and `wiki/skill-impact.md`.** Neither file is edited by hand.
+
+**If step 5 is skipped**, the next `bench iterate` refuses to start (exit 4): the installed skills
+are no longer the accepted set the ledger names. When the installed skills are the gated candidate
+of an accepted proposal, the message names that proposal and the `bench merged` command that
+records it. Otherwise it reports the two hashes, and the fix is to check out the accepted skills.
+
+What is and is not committed: the ledger, `skill-impact.md`, the wiki pages and log, and the sealed
+evaluation and gate-input records under `wiki/evidence/eval/` are committed. `.greenlight/` is
+gitignored, so the raw rollout records (`.greenlight/raw/`), the per-rollout transcripts and trees,
+the iteration state and the hand-off stay on the machine that ran the iteration.
 
 ## Runner (`bench/runner/`, `greenlight bench run`)
 

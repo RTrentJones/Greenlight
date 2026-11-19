@@ -5,10 +5,34 @@ JSON cannot carry comments, so the provenance of both files is recorded here (vi
 
 ## Models
 
-| role | entry | id | fallback |
+As of 2026-11-19 (`bench/models.json`):
+
+| role | driven by | id | limits |
 |---|---|---|---|
-| maintainer, proposer | frontier | `gemini-3.5-flash-lite` | — |
-| judge | small | `gemini-3.1-flash-lite` | — |
+| frontier (gate rollouts) | an external agent (`"external": true`) | `claude-code-sonnet` | none: no quota is reserved and no `spend` event is written |
+| small (gate rollouts) | an external agent (`"external": true`) | `claude-code-haiku` | none |
+| maintainer | an external agent (`"external"`) | none: the `--agent` id given at hand-in is recorded | none |
+| proposer | an external agent (`"external"`) | none: the `--agent` id given at hand-in is recorded | none |
+| judge | the harness (`provider: gemini`, key `GEMINI_API_KEY`) | `gemini-3.1-flash-lite` | 10 RPM, 250 RPD, 250,000 TPM |
+
+No entry sets a fallback. An external id is a label the owner chose, and the harness cannot verify
+which agent or model produced a rollout or a role's output (06 §4.9, §2.5, §3.6). The eval judge is
+therefore the only model the harness calls and the only one that spends quota. `evo.yml` refuses a
+configuration with an external role or rollout model, so this configuration runs locally only. The
+operator's steps are in [README.md](README.md) ("Running the maintainer and proposer with an
+external agent", "Running rollouts with an external agent").
+
+**Switched to external agents on 2026-11-18** (commits `b1ceb66`, `aedc84a`). The maintainer and
+proposer roles became `"external"` first, then the frontier and small gate roles, and the judge got
+an entry of its own because the entry it used to name (small) is no longer harness-driven. Every
+evaluation made with the harness-driven models is incomparable with the external ones: whether a
+gate role is external is part of the models identity.
+
+The sections below record the harness-driven configuration that preceded it. They still describe
+how the client, fallback, limits and quota behave for any harness-driven model, and today they
+apply to the judge only. The budget arithmetic that depends on the frontier and small models'
+daily limits ("Days per gate") does not apply to external rollouts, which are bounded by the
+rollout and request caps alone.
 
 **Switched again on 2026-11-12** (ADR-20 amendment, trigger 2). The measured limits put
 `gemini-3.6-flash` at 20 RPD, one 17-request rollout a day, and no bench task had a baseline yet,
@@ -156,7 +180,7 @@ M2-03 control arm, which expects a rejection on this task, can only report incon
 fault: no provider skill says that liveness for a scale-to-zero store must stay off the store, so
 agents choose the database-checking route about as often as not. That is what the safety-fix path
 exists for (06 §5.4), and `bench iterate --safety-fix <task>` now reaches it, so the task is
-active again and named as the target of the next iteration.
+active again and named as the target of the next iteration, which is in progress.
 
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
@@ -180,9 +204,10 @@ under the earlier cap of 17), and at the measured 190 and 250 RPD it admits ⌊1
 cap (and the reservation) for faster days at the risk of cutting rollouts short; it is part of the
 identity, so baseline and candidate must use the same value.
 
-**Days per gate at the measured limits.** Each model runs half the rollouts. The runner reserves a
-full rollout cap (`maxSteps + 2` = 27 requests) before starting each rollout, so the number that fit
-in a day is the daily limit divided by 27, rounded down.
+**Days per gate at the measured limits (the harness-driven gate pair, until 2026-11-18, at 3 runs
+per task).** Each model runs half the rollouts. The runner reserves a full rollout cap
+(`maxSteps + 2` = 27 requests) before starting each rollout, so the number that fit in a day is the
+daily limit divided by 27, rounded down.
 
 | model | rollouts | rollouts per day | days |
 |---|---|---|---|

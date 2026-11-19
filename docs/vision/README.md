@@ -10,16 +10,21 @@ Status: **partly built on the `2.0` branch; nothing released.** It supersedes
 `docs/plan-wiki-skill.md` and `docs/wiki-skill-design.md`, which remain as the working drafts it
 grew from.
 
-| Milestone | State (2026-11-15) |
+| Milestone | State (2026-11-19) |
 |---|---|
 | M0 | Code done: check ids, evidence identity, schemas, roadmap check. Not released; the blocking issues #30–#37 are open and not yet linked from the M3–M6 items. |
-| M1 | Code done: wiki engine, bench runner and sandbox, graders, gate, budget. **Exit criteria not met:** a full review on 2026-11-14 found the bench cannot yet measure skill quality and the gate's statistics do not hold at this bench size (`wiki/drills/m1-2026-11-15.md`). `wiki capture --manual` is not built. |
-| M2 | `bench iterate`, outlet evaluation, the control arm and the review hand-off are built and have never run end to end. The iteration (M2-05) has not been run. The ledger holds spend events only. |
+| M1 | Code done: wiki engine, bench runner and sandbox, graders, gate, budget. The exit review recorded on 2026-11-15 (`wiki/drills/m1-2026-11-15.md`) found that the bench could not measure skill quality and that the gate's statistics did not hold at this bench size. Both were fixed afterwards: the wiki task's prompt and output schema, a second objective task family per skill with per-skill slices, an exact stratified permutation test, an `underpowered` outcome when the test cannot reach alpha, and a flaky baseline replay task that blocks the gate instead of rejecting the candidate. Neither of those two outcomes writes a ledger event. **The exit drill has not been run again**, so no record of a passed M1 drill exists. `wiki capture --manual` is not built. |
+| M2 | `bench iterate`, outlet evaluation, the control arm and the review hand-off are built, and the iteration has run end to end four times with external rollouts, maintainer and proposer (`wiki/skill-impact.md`). The gate rejected three proposals to the `greenlight-wiki` skill, two as not significant at 3 runs per task and one for a replay regression. It accepted the fourth, `prop-9c74a7769477`, a pre-submit checklist in that skill (capability 0.00→0.70 and 0.00→0.50 on the two models at 5 runs per task); it was reviewed, merged by pull request #39 and recorded with `bench merged`. **Not yet shown:** replay safety was vacuous for the accepted change, because the only active val replay task was quarantined at the time, and the control arm was underpowered and has no ledger row, so the M2 exit condition on the control (06 §10.3) is unmet and no `wiki/drills/m2-*.md` record exists. That replay task is active again, and a safety-fix iteration targeting it (06 §5.4) is in progress. |
 | M3–M7 | Not started. |
 
-No release has been cut for any milestone, CI first ran on this branch on 2026-11-15 (draft pull
-request #38), and `evo.yml` has never run. Treat every "complete" in the pack as "written", not
-"proven", until its drill record exists under `wiki/drills/`.
+No release has been cut for any milestone. CI runs on the branch (draft pull request #38). `evo.yml`
+has never run, and it refuses to run while a role or a rollout model in `bench/models.json` is
+external, so today the evolution loop runs locally only. Raw rollout records (`.greenlight/raw/`)
+stay on the machine that produced them; the sealed evaluation records under `wiki/evidence/eval/`
+and the ledger are committed. A merge does not bump a skill's `version` frontmatter: the accepted
+skill set is identified by its hash in the ledger (06 §6.1). Treat every "complete" in the pack as
+"written", not "proven", until its drill record exists under `wiki/drills/`. The operator's steps
+are in [bench/README.md](../../bench/README.md).
 
 **Revision 2 (after the owner's review of `b44c8ae`).** The WikiSkill cycle is now the method that
 drives every improvement from the first working milestone. It is no longer a late phase

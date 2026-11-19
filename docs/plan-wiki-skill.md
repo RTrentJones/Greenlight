@@ -1,11 +1,13 @@
 # Plan — the Greenlight wiki skill
 
-> **Superseded** by the vision pack in [docs/vision/](vision/README.md). Kept as the working draft it grew from.
-
-
-Status: **PLAN** (not built). The rationale is in [wiki-skill-design.md](wiki-skill-design.md).
-This plan sets the priorities, and where the two disagree, this plan wins. Background:
-WikiSkill (arXiv:2608.27454).
+Status: **superseded working draft.** The vision pack in [docs/vision/](vision/README.md) replaces
+this plan and is the specification to build from. Part of what the plan describes (the wiki engine,
+the bench, the gate and the evolution loop) is built on the `2.0` branch and not released; the
+current state is the table at the top of [docs/vision/README.md](vision/README.md). The text below
+is kept unchanged as the draft the pack grew from: where it says something is to be built, check the
+pack. The rationale is in [wiki-skill-design.md](wiki-skill-design.md); between these two drafts,
+this plan sets the priorities and wins where they disagree. Background: WikiSkill
+(arXiv:2608.27454).
 
 ## The vision this serves
 

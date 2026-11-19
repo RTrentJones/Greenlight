@@ -84,6 +84,25 @@ branch → change → preview → verify → develop/beta → verify → promote
 See **[docs/architecture.md](docs/architecture.md)** for how it all fits together and
 [greenlight-v2.md](greenlight-v2.md) for the spec.
 
+## The 2.0 layer: wiki, bench and gate (unreleased)
+
+The `2.0` branch adds a second loop on top of the delivery loop, one that improves the skills the
+agent follows. A wiki (`wiki/`, `greenlight wiki …`) compiles incidents and failing runs into
+patterns. A bench (`bench/`, `greenlight bench …`) runs agents on fixed tasks in throwaway sandboxes
+and grades what they did. A gate compares a proposed skill change with the current skills on that
+bench, and a change reaches the skill text only after it passes the gate, the owner reviews it, and
+it is merged. Each of those steps is an event in `wiki/ledger.jsonl`, rendered to
+`wiki/skill-impact.md`.
+
+Status on 2026-11-19: built on the `2.0` branch (draft pull request #38), with nothing from it
+released to npm. The loop (`greenlight bench iterate`) has run end to end on a local machine four
+times. The gate rejected three proposed skill changes and accepted one, which was reviewed, merged
+and recorded. The workflow meant to run the loop in CI (`evo.yml`) has not run yet, and the replay
+safety check was vacuous for the accepted change, so the gate's safety half is still unproven.
+
+Start with [bench/README.md](bench/README.md) for how to run the bench and the loop, and
+[docs/vision/README.md](docs/vision/README.md) for the specification and the per-milestone state.
+
 ## Two planes over one spine
 
 The manifest (`greenlight.config.ts`) + the CLI + the agent kit drive two related planes:

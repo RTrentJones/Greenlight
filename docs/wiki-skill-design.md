@@ -1,7 +1,8 @@
 # Wiki skill — design considerations
 
-> **Superseded** by the vision pack in [docs/vision/](vision/README.md). Kept as the working draft it grew from.
-
+Status: **superseded working draft.** The vision pack in [docs/vision/](vision/README.md) replaces
+it, and part of the design is built on the `2.0` branch (not released; state in
+[docs/vision/README.md](vision/README.md)). Kept unchanged below as the draft the pack grew from.
 
 Companion to [plan-wiki-skill.md](plan-wiki-skill.md). The plan describes *what* to build. This
 document works out *why the design has the shape it does*. It starts from the failures the
