@@ -109,22 +109,22 @@ production mode lands in M3 (14, M1-05: "isolation mode only"). The baseline is 
 ```
 monthlyUsd 0, perGateMaxUsd 0   free tier: the dollar caps stay at 0 (ADR-20)
 
-perGateMaxRollouts 72
+perGateMaxRollouts 120
   = 6 val tasks          (loop 2, wiki 2: the 4 objective tasks, two per skill;
                           replay 2: constraints only. bench/splits.json)
-  × 3 runs per task
+  × 5 runs per task      (bench/gate.json; 3 until 2026-11-19, see below)
   × 2 models             (the frontier and small gate pair)
   × 1 mode               (isolation only in M2)
   × 2                    (candidate + baseline re-run)
-  = 72                   an estimate exactly at the cap runs (checkBudget is strict ">")
+  = 120                  an estimate exactly at the cap runs (checkBudget is strict ">")
 
-perGateMaxRequests 1650
+perGateMaxRequests 2750
   requests per rollout, observed at about 22 under the 25-step cap (HTTP attempts, retries
   included: RequestBudget counts every one)
   + the wiki tasks' eval judge: 1 call per wiki rollout
-    = 24 wiki rollouts (2 tasks × 3 runs × 2 models × 2) → 24 requests
-  = 72 × 22 + 24 = 1608 → cap 1650
-    (estimateGateCost with requestsPerRollout 22 = 1584, plus the 24 judge calls)
+    = 40 wiki rollouts (2 tasks × 5 runs × 2 models × 2) → 40 requests
+  = 120 × 22 + 40 = 2680 → cap 2750
+    (estimateGateCost with requestsPerRollout 22 = 2640, plus the 40 judge calls)
 
 splitAcrossDays true            the gate cannot fit in one day's rpd (below)
 ```
@@ -135,6 +135,15 @@ exact test could not reach p < 0.05 (06 §5.2), so a second objective family was
 the caps follow the split. A seventh val task does not fit and has to raise them again
 (`llm.test.ts` asserts both).
 
+**Why 5 runs (2026-11-19).** The two first gated iterations both rejected a skill patch that
+moved the wiki slice from 0/6 to 3/6 on the frontier model. The exact stratified test of 06 §5.2
+multiplies, per slice task, the chance that all of its passes landed on the candidate: at 3 runs
+the observed 2/3 and 1/3 give 3/15 × 3/6 = 0.1, and even 3/3 on one task alone is 1/20. At 5 runs
+the same pass rates (3/5 and 2/5) give 10/120 × 10/45 ≈ 0.019, a one-task slice can reach 1/252,
+and the non-regression bound over 4 objective tasks becomes 2 passes. The cost is two thirds more
+rollouts per gate; a third task family per skill was the alternative, at the price of new fixtures,
+references, graders and mutants. `shipped-shape.test.ts` pins this arithmetic.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading
@@ -143,8 +152,8 @@ the control arm unable to show a rejection, so the cap was raised before any tas
 (the limits are part of the identity, so nothing comparable was discarded). Each rollout's hard
 request cap is `maxSteps + 2` = **27** (one request per step plus two retries' headroom;
 `harness.limits` in the identity). The *expected* figure the budget is sized on is 22 requests per
-rollout; the worst case is 72 × 27 + 24 = 1968 requests, so a gate that ran every rollout to its
-cap would stop at `perGateMaxRequests` 1650 and resume with a fresh cap the next invocation. The
+rollout; the worst case is 120 × 27 + 40 = 3280 requests, so a gate that ran every rollout to its
+cap would stop at `perGateMaxRequests` 2750 and resume with a fresh cap the next invocation. The
 live smoke task used 2 requests for one tool call and `finish`.
 
 **The cap is reserved, which sets the pace.** Before each rollout the runner requires the model's
@@ -173,9 +182,11 @@ parallel, so a gate takes **about six days**, set by the frontier model. With th
 split it took about four (24 rollouts per model: 4 and 3 days). Fallback is off for every rollout,
 so one model never spends the other's quota.
 
-**Before M3.** Production mode doubles the rollouts to 144. Before then, `perGateMaxRollouts` must
-be raised to 144 and `perGateMaxRequests` to 144 × 22 + 48 = 3,216 (cap 3,300), or about eleven
-days per gate at the measured limits (72 rollouts per model: ⌈72 / 7⌉ = 11 and ⌈72 / 9⌉ = 8).
+**Before M3.** Production mode doubles the rollouts to 240. Before then, `perGateMaxRollouts` must
+be raised to 240 and `perGateMaxRequests` to 240 × 22 + 80 = 5,360 (cap 5,500), or about five weeks
+per gate on the Gemini free tier at the measured limits (240 rollouts per model: ⌈240 / 7⌉ = 35 and
+⌈240 / 9⌉ = 27 days). External-agent rollouts make no quota requests, so they are bounded by the
+caps alone.
 
 **Shortening a gate.** Run fewer runs per task, verify higher free-tier limits (the Flash-Lite
 models are reported at 500 RPD), or move to a paid tier through `bench/models.json`.

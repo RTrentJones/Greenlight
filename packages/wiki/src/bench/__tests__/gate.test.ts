@@ -767,18 +767,19 @@ describe('releaseCheck (06 §5.7)', () => {
 });
 
 describe('gate config', () => {
-  it('bench/gate.json holds the defaults', () => {
+  it('bench/gate.json holds the defaults, except 5 runs per task', () => {
     const json = JSON.parse(
       readFileSync(new URL('../../../../../bench/gate.json', import.meta.url), 'utf8'),
     );
-    expect(loadGateConfig(json)).toEqual(GateConfigSchema.parse({}));
+    // 5 runs since 2026-11-19: at 3, a 0/6 → 3/6 slice gain was p 0.1 (README-models.md).
+    expect(loadGateConfig(json)).toEqual(GateConfigSchema.parse({ runs: 5 }));
     // No key the exact test ignores: `resamples` went with the bootstrap (06 §5.2).
     expect(Object.keys(json).sort()).toEqual(['acceptShorterOnTie', 'alpha', 'runs']);
     // ... and a file that still carries it loads all the same.
     expect(loadGateConfig({ ...json, resamples: 1000 })).toEqual(loadGateConfig(json));
     expect(loadGateConfig(json)).toEqual({
       alpha: 0.05,
-      runs: 3,
+      runs: 5,
       acceptShorterOnTie: false,
       nonRegressionFraction: 0.1,
       maxBaselineAgeDays: 30,
