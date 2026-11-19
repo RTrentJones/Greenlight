@@ -801,7 +801,7 @@ greenlight bench iterate [--scope <skill|all>] [--resume <iterationId>] [--sandb
                          [--rollout-agent "<agent id>"] [--manifest <file>] [--concurrency 4]
                          [--claim-timeout <min>] [--external-timeout-factor 3]
                          [--safety-fix <val replay task>[,…]]
-greenlight bench review <iterationId> --decision accept|reject --reason "<text>"
+greenlight bench review <iterationId> --decision accept|reject --reason "<text>" --reviewer "<who>"
 greenlight bench merged <proposalId> --ref <commit sha | pull request URL> [--json]
 greenlight bench monitor [--since <date>]
 greenlight bench report [--proposal <id>] [--json]

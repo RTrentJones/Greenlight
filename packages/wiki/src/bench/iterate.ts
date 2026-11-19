@@ -43,10 +43,12 @@ import {
 } from '../bundle';
 import { appendLogEntry } from '../index-gen';
 import {
+  LedgerReadError,
   appendEvent,
   appendEvents,
   gateInputOfEvent,
   proposalHistory,
+  readLedgerEvents,
   renderSkillImpact,
   withFileLock,
 } from '../ledger';
@@ -106,7 +108,6 @@ import {
   controlOutcome,
   decide,
   earlyStopEvent,
-  loadGateConfig,
   rejectedForReplayRegression,
 } from './gate';
 import {
@@ -135,6 +136,7 @@ import {
   type RunnerAssets,
   type SandboxKind,
   loadEvaluationRecords,
+  readGateConfigFile,
   resolveModels,
   rolloutRequestCap,
   runBench,
@@ -398,6 +400,7 @@ export interface IterationState {
     reason: string;
     ts: string;
     eventIds: string[];
+    by?: string;
   };
   /** A review whose events are computed and saved before they are appended: a retry after a
    * crash appends the same events (same eventIds) instead of new ones. */
@@ -406,6 +409,7 @@ export interface IterationState {
     reason: string;
     ts: string;
     events: LedgerEvent[];
+    by?: string;
   };
 }
 
@@ -571,8 +575,25 @@ export function loadIterationState(stateDir: string, id: string): IterationState
   if (!ITERATION_ID_RE.test(id)) throw new IterationError(`"${id}" is not an iteration id`, 2);
   const file = iterationStatePath(stateDir, id);
   if (!existsSync(file)) throw new IterationError(`no iteration ${id} at ${file}`, 2);
-  const json = JSON.parse(readFileSync(file, 'utf8')) as unknown;
-  StateHeaderSchema.parse(json);
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (e) {
+    throw new IterationError(
+      `${file} is not JSON (${(e as Error).message}); the iteration cannot be resumed from it. Restore the file, or start a new iteration`,
+      3,
+    );
+  }
+  const header = StateHeaderSchema.safeParse(json);
+  if (!header.success) {
+    throw new IterationError(
+      `${file} is not an iteration state this version reads (${header.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('; ')}); start a new iteration`,
+      3,
+    );
+  }
   return json as IterationState;
 }
 
@@ -816,8 +837,7 @@ function readModels(benchDir: string): ModelsConfig {
 }
 
 function readGateCfg(benchDir: string) {
-  const f = join(benchDir, 'gate.json');
-  return loadGateConfig(existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {});
+  return readGateConfigFile(benchDir);
 }
 
 function readSplits(benchDir: string): SplitIndex | undefined {
@@ -826,8 +846,12 @@ function readSplits(benchDir: string): SplitIndex | undefined {
 }
 
 function ledgerEvents(wikiRoot: string): LedgerEvent[] {
-  const f = join(wikiRoot, LEDGER_FILE);
-  return existsSync(f) ? parseLedger(readFileSync(f, 'utf8')).events : [];
+  try {
+    return readLedgerEvents(wikiRoot);
+  } catch (e) {
+    if (e instanceof LedgerReadError) throw new IterationError(e.message, 3);
+    throw e;
+  }
 }
 
 function recordByHash(wikiRoot: string, hash: string): EvaluationRecord {
@@ -2945,7 +2969,7 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
   lines.push('### Review', '');
   if (s.review) {
     lines.push(
-      `Reviewed ${s.review.ts}: **${s.review.decision}** — ${s.review.reason}`,
+      `Reviewed ${s.review.ts}${s.review.by ? ` by ${s.review.by}` : ''}: **${s.review.decision}** — ${s.review.reason}`,
       '',
       `Ledger events: ${s.review.eventIds.map((x) => `\`${x}\``).join(', ')}`,
     );
@@ -3410,6 +3434,8 @@ export function reviewIteration(o: {
   iterationId: string;
   decision: 'accept' | 'reject';
   reason: string;
+  /** Who is reviewing, recorded on every event (`review.by`). */
+  reviewer?: string;
   benchDir?: string;
   now?: () => Date;
   breakLock?: boolean;
@@ -3418,6 +3444,9 @@ export function reviewIteration(o: {
   const now = o.now ?? (() => new Date());
   const reason = o.reason.trim();
   if (!reason) throw new IterationError('a review needs --reason', 2);
+  const reviewer = o.reviewer?.trim() || undefined;
+  if (reviewer !== undefined && (reviewer.length > 120 || /[\r\n]/.test(reviewer)))
+    throw new IterationError('--reviewer is one line of at most 120 characters', 2);
   if (!ITERATION_ID_RE.test(o.iterationId))
     throw new IterationError(`"${o.iterationId}" is not an iteration id`, 2);
   if (!existsSync(iterationStatePath(o.stateDir, o.iterationId)))
@@ -3444,9 +3473,12 @@ export function reviewIteration(o: {
       );
     }
     let pending = s.reviewPending;
-    if (pending && (pending.decision !== o.decision || pending.reason !== reason)) {
+    if (
+      pending &&
+      (pending.decision !== o.decision || pending.reason !== reason || pending.by !== reviewer)
+    ) {
       throw new IterationError(
-        `iteration ${s.iterationId} has a half-recorded review (${pending.decision}: ${pending.reason}); rerun it with the same --decision and --reason to finish it`,
+        `iteration ${s.iterationId} has a half-recorded review (${pending.decision}${pending.by ? ` by ${pending.by}` : ''}: ${pending.reason}); rerun it with the same --decision, --reason and --reviewer to finish it`,
         4,
       );
     }
@@ -3471,7 +3503,11 @@ export function reviewIteration(o: {
           ...(reverts ? { skillSetHash: skillSetHashOf(o.skillsDir) } : {}),
           ...(target.control ? { control: true } : {}),
           reason: `owner review (${o.decision}): ${reason}`,
-          review: { decision: o.decision, iteration: s.iterationId },
+          review: {
+            decision: o.decision,
+            iteration: s.iterationId,
+            ...(reviewer ? { by: reviewer } : {}),
+          },
         });
       });
     };
@@ -3491,7 +3527,7 @@ export function reviewIteration(o: {
     } else {
       const ts = now().toISOString();
       events = derive(ts, new Set());
-      pending = { decision: o.decision, reason, ts, events };
+      pending = { decision: o.decision, reason, ts, events, ...(reviewer ? { by: reviewer } : {}) };
       s.reviewPending = pending;
       saveState(o.stateDir, s, now());
     }
@@ -3515,6 +3551,7 @@ export function reviewIteration(o: {
       reason,
       ts: pending.ts,
       eventIds: events.map((e) => e.eventId),
+      ...(reviewer ? { by: reviewer } : {}),
     };
     s.reviewPending = undefined;
     saveState(o.stateDir, s, now());

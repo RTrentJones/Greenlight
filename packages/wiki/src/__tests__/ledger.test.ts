@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   FileLockTimeoutError,
+  LedgerReadError,
   LedgerWriteError,
   acceptedSkillSetState,
   appendEvent,
@@ -15,6 +16,7 @@ import {
   ledgerProblems,
   orderLedgerEvents,
   proposalHistory,
+  readLedgerEvents,
   renderSkillImpact,
   withFileLock,
 } from '../ledger';
@@ -239,6 +241,37 @@ describe('appendEvent', () => {
       { line: 2, message: 'not valid JSON' },
       { line: 4, message: 'writer must be "harness": only the harness writes the ledger' },
     ]);
+  });
+});
+
+describe('readLedgerEvents (the reader for code that decides)', () => {
+  const good = JSON.stringify(sealEvent({ ...event }));
+
+  it('reads a missing file as an empty ledger and a clean file as its events', () => {
+    expect(readLedgerEvents(writeTree({}))).toEqual([]);
+    const root = writeTree({ 'ledger.jsonl': `${good}\n` });
+    expect(readLedgerEvents(root).map((e) => e.proposalId)).toEqual(['p-010']);
+  });
+
+  it('refuses a ledger with a complete line that is not an event, naming the line', () => {
+    const root = writeTree({ 'ledger.jsonl': `${good}\n{"stage":"merged"}\n${good}\n` });
+    let thrown: unknown;
+    try {
+      readLedgerEvents(root);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(LedgerReadError);
+    expect((thrown as LedgerReadError).errors.map((e) => e.line)).toEqual([2]);
+    expect((thrown as Error).message).toContain('line 2');
+  });
+
+  it('ignores a torn tail (a crash mid-append), which the next append repairs', () => {
+    const root = writeTree({ 'ledger.jsonl': `${good}\n{"ts":"2026-10-06T09:0` });
+    expect(readLedgerEvents(root)).toHaveLength(1);
+    // A whole last event that only lacks its newline is still an event.
+    const whole = writeTree({ 'ledger.jsonl': `${good}\n${good}` });
+    expect(readLedgerEvents(whole)).toHaveLength(2);
   });
 });
 

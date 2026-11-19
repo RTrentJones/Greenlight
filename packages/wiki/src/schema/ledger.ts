@@ -159,6 +159,9 @@ const LedgerEventObject = z
       .object({
         decision: z.enum(['accept', 'reject']),
         iteration: z.string().min(1).optional(),
+        /** Who reviewed, as they named themselves (`bench review --reviewer`): a person, or a
+         * delegate acting for the owner. Free text, never verified; absent on older events. */
+        by: z.string().min(1).max(120).optional(),
       })
       .strict()
       .optional(),

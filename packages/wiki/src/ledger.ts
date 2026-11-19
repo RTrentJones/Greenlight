@@ -274,6 +274,43 @@ export function appendEvent(root: string, event: LedgerEventInput): LedgerEvent 
   return withFileLock(`${file}.lock`, () => appendLocked(root, file, data));
 }
 
+/** A ledger that holds a complete line which is not a valid event. Every decision the harness
+ * takes from the ledger (the accepted skill set, the stage machine, spend) would be computed over
+ * a history with that event missing, so readers that decide refuse instead (exit 3). */
+export class LedgerReadError extends Error {
+  constructor(
+    readonly file: string,
+    readonly errors: readonly { line: number; message: string }[],
+  ) {
+    super(
+      `${file} has ${errors.length} line(s) that are not valid ledger events (${errors
+        .slice(0, 3)
+        .map((e) => `line ${e.line}: ${e.message}`)
+        .join(
+          '; ',
+        )}${errors.length > 3 ? '; …' : ''}). Nothing is decided from a ledger with events missing: run \`greenlight wiki lint\` (LR-14) and repair the file first`,
+    );
+    this.name = 'LedgerReadError';
+  }
+}
+
+/**
+ * The events of `<wikiRoot>/ledger.jsonl` for a reader that DECIDES from them. Throws
+ * `LedgerReadError` when a complete line is not a valid event. A torn tail (a last line without
+ * its newline that does not parse: a crash mid-append, which the next append repairs) is ignored,
+ * because the event it would have been was never written. A missing file is an empty ledger.
+ */
+export function readLedgerEvents(wikiRoot: string): LedgerEvent[] {
+  const file = join(wikiRoot, LEDGER_FILE);
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, 'utf8');
+  const { events, errors } = parseLedger(text);
+  const lastLine = text.endsWith('\n') ? -1 : text.split('\n').length;
+  const real = errors.filter((e) => e.line !== lastLine);
+  if (real.length > 0) throw new LedgerReadError(file, real);
+  return events;
+}
+
 /** Cuts a torn tail: a last line without its newline that does not parse as an event (a crash
  * mid-append). A complete last line that only lacks its newline is kept. Call under the lock. */
 function repairTornTail(file: string, text: string): { text: string; repaired?: string } {
@@ -599,7 +636,10 @@ function proposalRow(history: ProposalHistory): Row {
   const evidence = evs.flatMap(evidenceLines);
   if (unmeasured(evs)) evidence.push('**unmeasured**');
   for (const e of evs) {
-    if (e.review) evidence.push(`owner review ${e.ts.slice(0, 10)}: ${e.review.decision}`);
+    if (e.review)
+      evidence.push(
+        `owner review ${e.ts.slice(0, 10)}: ${e.review.decision}${e.review.by ? ` (by ${e.review.by})` : ''}`,
+      );
   }
   const cells = [
     last.ts.slice(0, 10),

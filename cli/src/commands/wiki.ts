@@ -37,7 +37,7 @@ import {
   writeBundle,
   writeChangeset,
 } from '@rtrentjones/greenlight-wiki';
-import { parseFlags } from '../args';
+import { UsageError, parseFlags } from '../args';
 import { findManifestPath, loadManifest } from '../manifest';
 import { MODULE_REF } from '../version';
 
@@ -116,8 +116,7 @@ export async function wikiCommand(args: string[], io: WikiIo = defaultIo()): Pro
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     io.err(msg);
-    if (err instanceof Usage || msg.includes('unknown flag') || msg.includes('needs a value'))
-      return 2;
+    if (err instanceof Usage || err instanceof UsageError) return 2;
     if (err instanceof BundleLeakError || err instanceof BundleSecretError) return 4;
     return withCode(err);
   }

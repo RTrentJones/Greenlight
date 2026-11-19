@@ -198,7 +198,20 @@ export class RolloutServer {
     writeFileSync(s.clientPath, ROLLOUT_CLIENT_SOURCE);
     chmodSync(s.clientPath, 0o755);
     s.server = createServer((req, res) => {
-      void s.handle(req, res);
+      // A request must never take the serving process down: whatever `handle` throws (it runs
+      // before the token check, so any local process can reach it) ends as a refused reply.
+      s.handle(req, res).catch((e: unknown) => {
+        try {
+          const body = JSON.stringify({
+            exit: 3,
+            output: `refused: rollout server error: ${(e as Error)?.message ?? String(e)}`,
+          });
+          if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(body);
+        } catch {
+          res.destroy();
+        }
+      });
     });
     // A `bash` call may run for ten minutes: no request or socket timeout.
     s.server.requestTimeout = 0;
@@ -388,7 +401,10 @@ export class RolloutServer {
         if (size > 32 * 1024 * 1024) return refuse(413, 'request too large (32 MiB)');
         chunks.push(c as Buffer);
       }
-      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+        return refuse(400, 'the request is not a JSON object');
+      body = parsed as typeof body;
     } catch {
       return refuse(400, 'the request is not JSON');
     }

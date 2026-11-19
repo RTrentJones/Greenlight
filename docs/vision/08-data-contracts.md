@@ -461,6 +461,13 @@ The ledger is a sequence of **append-only events**. Only the harness writes it, 
 any line's `writer` is not `harness` (LR-14). A proposal's history is the set of its events (06
 §6.1).
 
+**Readers that decide refuse a damaged ledger.** `bench iterate`, `bench run`, `bench merged` and
+`bench gate --recompute` take the accepted skill set, the stage machine and spend from this file.
+They read it strictly: a complete line that is not a valid event stops them (exit 3) and names the
+line, because a decision computed over a history with an event missing is wrong without looking
+wrong. A torn tail (a last line without its newline that does not parse, left by a crash
+mid-append) is ignored, since that event was never written; the next append repairs it.
+
 ```ts
 type LedgerEvent = {
   ts: string;
@@ -485,7 +492,7 @@ type LedgerEvent = {
   skillSetHash?: string;                 // only on withdrawn; REQUIRED when it withdraws a MERGED bench- or
                                          // template-gated proposal: the accepted skill set after the revert (06 §6.1)
   spend?: { usd: number; rollouts: number; requests: number; tokensIn: number; tokensOut: number; evaluationId?: string };  // requests: the free-tier binding constraint (ADR-20)
-  review?: { decision: 'accept' | 'reject'; iteration?: string };  // REQUIRED on review; allowed on withdrawn
+  review?: { decision: 'accept' | 'reject'; iteration?: string; by?: string };  // REQUIRED on review; allowed on withdrawn
 };
 
 type Evidence =
@@ -534,8 +541,11 @@ equal instants keep append order):
 | any stage (not start) | `review` (an annotation; the stage machine stays where it was) |
 
 **The owner's review (roadmap M2-04, 06 §0 condition 4).** `greenlight bench review <iterationId>
---decision accept|reject --reason "<text>"` records it for every proposal the iteration recorded,
-the control arm included. The proposal's LATEST stage in the ledger decides: a `reject` of a
+--decision accept|reject --reason "<text>" --reviewer "<who>"` records it for every proposal the
+iteration recorded, the control arm included. `--reviewer` (or `GREENLIGHT_REVIEWER`) is required
+and lands in `review.by`: who decided, a person or a delegate acting for the owner. It is free
+text and not verified; it exists so a ledger row says whether a human or an agent reviewed it.
+Events written before the field existed have none. The proposal's LATEST stage in the ledger decides: a `reject` of a
 proposal whose latest stage is `candidate-accepted` or later (`merged`, `released`,
 `verified-in-production`) is the `withdrawn` event (abandoned after acceptance) carrying `review`.
 The events are computed under the iteration's lock and saved in its state before they are

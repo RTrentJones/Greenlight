@@ -17,6 +17,7 @@ import {
   type DailyUsage,
   type IterateOptions,
   type IterateResult,
+  IterationError,
   type IterationState,
   type IterationStep,
   type OutletContext,
@@ -638,7 +639,7 @@ describe('bench iterate (M2-01, M2-04)', () => {
       rmSync(join(dir, 'handoff.md'));
       const io = (out: string[]) => ({
         cwd: env.root,
-        env: {},
+        env: { GREENLIGHT_REVIEWER: 'owner (test)' },
         out: (x: string) => out.push(x),
         err: (x: string) => out.push(x),
         iterate: { now: () => new Date(env.base + 9 * DAY) },
@@ -689,6 +690,9 @@ describe('bench iterate (M2-01, M2-04)', () => {
         [s.proposer.proposalId, 'withdrawn', 'reject'],
         [ctl?.proposalId, 'review', 'reject'],
       ]);
+      // Every review event names who decided, and the hand-off repeats it.
+      expect(reviews.map((e) => e.review?.by)).toEqual(['owner (test)', 'owner (test)']);
+      expect(readFileSync(join(dir, 'handoff.md'), 'utf8')).toContain('by owner (test)');
       expect(readFileSync(join(dir, 'handoff.md'), 'utf8')).toContain('**reject**');
       // A crash after the review's append but before its state save: the retry appends nothing
       // twice (same eventIds), and a different decision is refused while one is half-recorded.
@@ -699,6 +703,7 @@ describe('bench iterate (M2-01, M2-04)', () => {
         reason: 'owner wants a smaller rule',
         ts: half.review?.ts as string,
         events: reviewEvents,
+        by: 'owner (test)',
       };
       half.review = undefined;
       writeFileSync(join(dir, 'state.json'), `${JSON.stringify(half, null, 2)}\n`);
@@ -976,9 +981,49 @@ describe('bench iterate guards', () => {
       await benchCommand(['review', 'iter-x', '--decision', 'maybe', '--reason', 'r'], io),
     ).toBe(2);
     expect(await benchCommand(['review', 'iter-x', '--decision', 'accept'], io)).toBe(2);
+    // A review is attributed: no --reviewer and no GREENLIGHT_REVIEWER is a usage error.
+    const errs: string[] = [];
     expect(
-      await benchCommand(['review', 'iter-x', '--decision', 'accept', '--reason', 'r'], io),
+      await benchCommand(['review', 'iter-x', '--decision', 'accept', '--reason', 'r'], {
+        ...io,
+        err: (x: string) => errs.push(x),
+      }),
     ).toBe(2);
+    expect(errs.join('\n')).toContain('--reviewer');
+    expect(
+      await benchCommand(
+        ['review', 'iter-x', '--decision', 'accept', '--reason', 'r', '--reviewer', 'me'],
+        io,
+      ),
+    ).toBe(2);
+  });
+
+  it('refuses stray positional arguments and unreadable state with their own exit codes', async () => {
+    const root = tmp('greenlight-iterate-args-');
+    const errs: string[] = [];
+    const io = { cwd: root, env: {}, out: () => {}, err: (x: string) => errs.push(x) };
+    // A flag value that lost its flag must not run the command with different semantics.
+    expect(await benchCommand(['iterate', 'provider-neon', '--dry-run'], io)).toBe(2);
+    expect(errs.join('\n')).toContain('unexpected argument "provider-neon"');
+    expect(await benchCommand(['run', 'val'], io)).toBe(2);
+    expect(await benchCommand(['gate', 'abc'], io)).toBe(2);
+    // A state file that is not JSON, or not a state, is a missing prerequisite (exit 3) with the
+    // file named, never an uncaught parse error.
+    const id = 'iter-20261119T000000Z-aaaaaaaa';
+    const dir = join(root, '.greenlight', 'bench', 'iterations', id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'state.json'), '{"v": 1, "iterationId": ');
+    expect(() => loadIterationState(join(root, '.greenlight'), id)).toThrowError(/is not JSON/);
+    writeFileSync(join(dir, 'state.json'), '{"v": 7}');
+    let thrown: unknown;
+    try {
+      loadIterationState(join(root, '.greenlight'), id);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(IterationError);
+    expect((thrown as IterationError).exitCode).toBe(3);
+    expect((thrown as Error).message).toContain('state.json');
   });
 });
 

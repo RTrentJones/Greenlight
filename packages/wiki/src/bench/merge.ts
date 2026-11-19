@@ -5,17 +5,18 @@
  * that changed the gated text (a squash with edits, a conflict resolution, a second change on
  * top) is refused, because no evaluation ever ran that tree.
  */
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  LedgerReadError,
   LedgerWriteError,
   appendEvents,
   gateInputOfEvent,
   proposalHistory,
   readGateSkillSets,
+  readLedgerEvents,
   renderSkillImpact,
 } from '../ledger';
-import { LEDGER_FILE, SKILL_IMPACT_FILE, parseLedger } from '../load';
+import { LEDGER_FILE, SKILL_IMPACT_FILE } from '../load';
 import { writeChangeset } from '../patch';
 import { type LedgerEvent, sealEvent } from '../schema/ledger';
 import { skillSetHashOf } from './identity';
@@ -41,8 +42,12 @@ export interface RecordMergeResult {
 const short = (h: string): string => h.slice(0, 12);
 
 function readLedger(wikiRoot: string): LedgerEvent[] {
-  const f = join(wikiRoot, LEDGER_FILE);
-  return existsSync(f) ? parseLedger(readFileSync(f, 'utf8')).events : [];
+  try {
+    return readLedgerEvents(wikiRoot);
+  } catch (e) {
+    if (e instanceof LedgerReadError) throw new IterationError(e.message, 3);
+    throw e;
+  }
 }
 
 /**

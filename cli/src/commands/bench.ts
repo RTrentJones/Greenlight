@@ -9,6 +9,8 @@ import {
   type IterateOptions,
   IterationError,
   LEDGER_FILE,
+  type LedgerEvent,
+  LedgerReadError,
   ModelsConfigSchema,
   PrerequisiteError,
   ROLLOUT_CLIENT_FILE,
@@ -23,8 +25,8 @@ import {
   formatReport,
   iterate,
   loadEvaluationRecords,
-  parseLedger,
   planIteration,
+  readLedgerEvents,
   recompute,
   recordMerge,
   reviewIteration,
@@ -32,7 +34,8 @@ import {
   sameDecision,
   writeHandoff,
 } from '@rtrentjones/greenlight-wiki';
-import { parseFlags } from '../args';
+import { ZodError } from 'zod';
+import { UsageError, maxPositionals, parseFlags } from '../args';
 
 /**
  * `greenlight bench …` (vision 07 §3.10; roadmap M1-05/06). Thin wiring over
@@ -155,9 +158,14 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        Exit codes: 0 complete; 1 deferred (quota: resume on a later day), blocked
                        or failed; 2 usage; 3 missing prerequisite; 4 refused by policy;
                        5 awaiting-agent (a human or an agent must act; nothing failed).
-  review <iterationId> --decision accept|reject --reason "<text>" [--break-lock]
+                       Exit 1 is three outcomes: automation reads \`status\` from --json
+                       (deferred | blocked | failed) and treats only deferred as "try again
+                       later"; exit 1 with no JSON on stdout is a crash.
+  review <iterationId> --decision accept|reject --reason "<text>" --reviewer "<who>" [--break-lock]
                        record the owner's review of an iteration's ledger rows (a review event;
-                       a reject of an accepted candidate is a withdrawn event)
+                       a reject of an accepted candidate is a withdrawn event). --reviewer (or
+                       GREENLIGHT_REVIEWER) names who decided, a person or a delegate, and is
+                       recorded on each event; it is free text, not verified.
   merged <proposalId> --ref <commit sha | pull request URL> [--json]
                        record that an accepted proposal was merged (06 §6.1). The merged event is
                        what moves the accepted skill set, so run it on the tree the change was
@@ -208,8 +216,10 @@ export async function benchCommand(args: string[], io: BenchIo = defaultIo()): P
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     io.err(msg);
-    if (msg.includes('unknown flag') || msg.includes('needs a value')) return 2;
+    if (err instanceof UsageError) return 2;
     if (err instanceof PrerequisiteError) return 3;
+    // A config or state file that does not match its schema, or is not JSON at all.
+    if (err instanceof ZodError || err instanceof SyntaxError) return 3;
     if (err instanceof IterationError) return err.exitCode;
     if (err instanceof GateHarnessError) return 1;
     return 1;
@@ -240,7 +250,7 @@ const posInt = (v: string | undefined, name: string): number | undefined => {
   if (v === undefined) return undefined;
   const n = Number(v);
   if (!Number.isInteger(n) || n < 1)
-    throw new Error(`\`greenlight bench\`: ${name} needs a value ≥ 1`);
+    throw new UsageError(`\`greenlight bench\`: ${name} needs a value ≥ 1`);
   return n;
 };
 
@@ -268,13 +278,14 @@ async function runCmd(args: string[], io: BenchIo): Promise<number> {
     ],
     boolean: ['--force', '--json'],
   });
+  maxPositionals('bench run', a, 0);
   const p = paths(io, a.values);
   const v = a.values;
   const oneOf = <T extends string>(flag: string, allowed: readonly T[]): T | undefined => {
     const x = v[flag];
     if (x === undefined) return undefined;
     if (!(allowed as readonly string[]).includes(x))
-      throw new Error(
+      throw new UsageError(
         `\`greenlight bench run\`: ${flag} needs a value (one of ${allowed.join(', ')})`,
       );
     return x as T;
@@ -352,7 +363,7 @@ const posNum = (v: string | undefined, name: string): number | undefined => {
   if (v === undefined) return undefined;
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0)
-    throw new Error(`\`greenlight bench\`: ${name} needs a value > 0`);
+    throw new UsageError(`\`greenlight bench\`: ${name} needs a value > 0`);
   return n;
 };
 
@@ -427,6 +438,7 @@ async function checkGradersCmd(args: string[], io: BenchIo): Promise<number> {
 
 async function modelsCmd(args: string[], io: BenchIo): Promise<number> {
   const a = parseFlags('bench models', args, { value: COMMON, boolean: ['--check', '--json'] });
+  maxPositionals('bench models', a, 0);
   const p = paths(io, a.values);
   const file = join(p.bench, 'models.json');
   if (!existsSync(file)) throw new PrerequisiteError(`no ${file}`);
@@ -450,10 +462,11 @@ async function modelsCmd(args: string[], io: BenchIo): Promise<number> {
 
 function gateCmd(args: string[], io: BenchIo): number {
   const a = parseFlags('bench gate', args, { value: [...COMMON, '--recompute'] });
+  maxPositionals('bench gate', a, 0);
   const hash = a.values['--recompute'];
   if (!hash) {
     io.err(
-      '`bench gate <proposal>` is M2; only `bench gate --recompute <gateInputHash>` exists now',
+      '`bench gate <proposal>` is not built (M3); only `bench gate --recompute <gateInputHash>` exists now',
     );
     return 2;
   }
@@ -463,8 +476,13 @@ function gateCmd(args: string[], io: BenchIo): number {
   const gateInput = GateInputRecordSchema.parse(JSON.parse(readFileSync(file, 'utf8')));
   const records: EvaluationRecord[] = loadEvaluationRecords(p.wiki);
   const decision = recompute(gateInput, records);
-  const ledgerFile = join(p.wiki, LEDGER_FILE);
-  const events = existsSync(ledgerFile) ? parseLedger(readFileSync(ledgerFile, 'utf8')).events : [];
+  let events: LedgerEvent[];
+  try {
+    events = readLedgerEvents(p.wiki);
+  } catch (e) {
+    if (e instanceof LedgerReadError) throw new PrerequisiteError(e.message);
+    throw e;
+  }
   const recorded = events.find(
     (e) =>
       (e.evidence?.kind === 'bench' || e.evidence?.kind === 'template') &&
@@ -525,6 +543,7 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
     ],
     boolean: ['--json', '--dry-run', '--handoff-only', '--adopt-pins', '--break-lock'],
   });
+  maxPositionals('bench iterate', a, 0);
   const p = paths(io, a.values);
   const v = a.values;
   const stateDir = join(io.cwd, '.greenlight');
@@ -710,7 +729,7 @@ function mergedCmd(args: string[], io: BenchIo): number {
 
 function reviewCmd(args: string[], io: BenchIo): number {
   const a = parseFlags('bench review', args, {
-    value: [...COMMON, '--decision', '--reason'],
+    value: [...COMMON, '--decision', '--reason', '--reviewer'],
     boolean: ['--json', '--break-lock'],
   });
   const id = a.positional[0];
@@ -723,7 +742,14 @@ function reviewCmd(args: string[], io: BenchIo): number {
     !reason?.trim()
   ) {
     io.err(
-      'usage: greenlight bench review <iterationId> --decision accept|reject --reason "<text>"',
+      'usage: greenlight bench review <iterationId> --decision accept|reject --reason "<text>" --reviewer "<who>"',
+    );
+    return 2;
+  }
+  const reviewer = (a.values['--reviewer'] ?? io.env.GREENLIGHT_REVIEWER ?? '').trim();
+  if (!reviewer) {
+    io.err(
+      'a review is attributed: pass --reviewer "<who>" (or set GREENLIGHT_REVIEWER), naming the person, or the delegate acting for the owner',
     );
     return 2;
   }
@@ -735,6 +761,7 @@ function reviewCmd(args: string[], io: BenchIo): number {
     iterationId: id,
     decision,
     reason,
+    reviewer,
     benchDir: p.bench,
     ...(a.flags.has('--break-lock') ? { breakLock: true } : {}),
     log: (s: string) => io.err(s),

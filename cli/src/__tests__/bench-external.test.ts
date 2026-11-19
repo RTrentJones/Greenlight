@@ -571,6 +571,17 @@ describe('external rollouts through the process sandbox', () => {
     expect(bad.err).toMatch(/refused: bad handle or token/);
     const junk = await client(m, 'not-a-handle', ['prompt']);
     expect(junk.code).toBe(3);
+    // A request that is JSON but not an object reaches the server before the token check: it is
+    // refused, and the serving process survives it (the rest of this test still talks to it).
+    const port = rollout.handle.split('-')[1];
+    for (const payload of ['null', '[]', '"x"', '{nope']) {
+      const res = await fetch(`http://127.0.0.1:${port}/v1/call`, {
+        method: 'POST',
+        body: payload,
+      });
+      expect(res.status, payload).toBe(400);
+      expect(((await res.json()) as { exit: number }).exit).toBe(3);
+    }
     // The second rollout is not open yet (concurrency 1).
     const queued = m.rollouts.find((x) => x.key === k2)?.handle as string;
     const early = await client(m, queued, ['prompt']);

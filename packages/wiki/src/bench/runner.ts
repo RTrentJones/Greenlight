@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -25,7 +26,7 @@ import {
 } from '@rtrentjones/greenlight-shared';
 import { z } from 'zod';
 import { maintainerRolePrompt } from '../bundle';
-import { appendEvent } from '../ledger';
+import { LedgerReadError, appendEvent, readLedgerEvents } from '../ledger';
 import { FallbackDisabledError, GeminiHttpError } from '../llm/gemini';
 import {
   BudgetExhaustedError,
@@ -41,6 +42,7 @@ import {
   entryForRole,
   isExternalModel,
 } from '../llm/models';
+import { type GateConfig, GateConfigSchema, loadGateConfig } from './gate';
 
 /** Backoff for transient model errors (429/5xx) inside a rollout. Free-tier demand spikes
  * last minutes, and a rollout cannot resume part-way, so the client's default (~10 s in total)
@@ -374,7 +376,11 @@ export const progressPath = (stateDir: string, evaluationId: string) =>
 function saveProgress(stateDir: string, p: Progress): void {
   const file = progressPath(stateDir, p.evaluationId);
   mkdirSync(join(file, '..'), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(p, null, 2)}\n`);
+  // Written whole or not at all: a kill mid-write must not leave a truncated file, because a
+  // resume reads this to know which graded rollouts it already holds.
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(p, null, 2)}\n`);
+  renameSync(tmp, file);
 }
 
 /**
@@ -457,8 +463,12 @@ export function findCachedRecord(
 }
 
 function ledgerEvents(wikiRoot: string): LedgerEvent[] {
-  const f = join(wikiRoot, LEDGER_FILE);
-  return existsSync(f) ? parseLedger(readFileSync(f, 'utf8')).events : [];
+  try {
+    return readLedgerEvents(wikiRoot);
+  } catch (e) {
+    if (e instanceof LedgerReadError) throw new PrerequisiteError(e.message);
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1509,9 +1519,33 @@ function finishRaw(c: RunCtx, f: FinishInput): RolloutOutcome {
 
 // ---------------------------------------------------------------------------------------------
 
+/** `<benchDir>/gate.json`, validated; the defaults when the file is absent. One reader for the
+ * runner and the iteration, so a typo (`"runs": "5"`) is refused by both (exit 3) instead of
+ * silently changing how many rollouts the evidence holds. */
+export function readGateConfigFile(benchDir: string): GateConfig {
+  const file = join(benchDir, 'gate.json');
+  if (!existsSync(file)) return loadGateConfig({});
+  return readJson(file, GateConfigSchema as unknown as z.ZodType<GateConfig>, 'bench/gate.json');
+}
+
 function readJson<T>(path: string, schema: z.ZodType<T>, what: string): T {
   if (!existsSync(path)) throw new PrerequisiteError(`missing ${what} at ${path}`);
-  return schema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new PrerequisiteError(`${what} at ${path} is not JSON: ${(e as Error).message}`);
+  }
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) {
+    throw new PrerequisiteError(
+      `${what} at ${path} is not valid: ${parsed.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('; ')}`,
+    );
+  }
+  return parsed.data;
 }
 
 export class PrerequisiteError extends Error {}
@@ -1527,8 +1561,8 @@ export async function runBench(o: BenchRunOptions): Promise<RunResult> {
     BudgetSchema,
     'bench/budget.json',
   );
-  const gateCfg = existsSync(join(o.benchDir, 'gate.json'))
-    ? (JSON.parse(readFileSync(join(o.benchDir, 'gate.json'), 'utf8')) as { runs?: number })
+  const gateCfg: { runs?: number } = existsSync(join(o.benchDir, 'gate.json'))
+    ? readGateConfigFile(o.benchDir)
     : {};
   const loaded = loadTasks(o.benchDir);
   if (loaded.problems.length > 0) throw new PrerequisiteError(loaded.problems.join('\n'));
