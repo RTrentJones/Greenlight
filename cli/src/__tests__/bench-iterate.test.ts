@@ -69,6 +69,23 @@ const CANDIDATE_MARKER = 'WIKI-MARKER: reconcile probe lessons by liveness model
 const CONTROL_MARKER = 'must always query the database';
 
 const temps: string[] = [];
+/** A copy of the live wiki whose ledger keeps only `spend` events (budget history), so no gate
+ * decision or merge in the repository's own ledger pins an accepted skill set the test world
+ * does not install. Returns the copy's root. */
+const copyWikiWithoutDecisions = (dest: string): string => {
+  cpSync(join(REPO, 'wiki'), dest, { recursive: true });
+  const ledgerFile = join(dest, 'ledger.jsonl');
+  writeFileSync(
+    ledgerFile,
+    readFileSync(ledgerFile, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '' && JSON.parse(line).stage === 'spend')
+      .map((line) => `${line}\n`)
+      .join(''),
+  );
+  return dest;
+};
+
 const tmp = (p: string) => {
   const d = mkdtempSync(join(tmpdir(), p));
   temps.push(d);
@@ -318,20 +335,10 @@ const gitOut = (cwd: string, ...args: string[]) =>
 function setup(withControl = true, roles: RoleSources = {}) {
   const root = tmp('greenlight-iterate-');
   const bench = tinyBench(root, withControl, roles);
-  const wiki = join(root, 'wiki');
-  cpSync(join(REPO, 'wiki'), wiki, { recursive: true });
   // This world installs its own greenlight-wiki skill below, so a gate decision copied from the
   // live ledger would name an accepted skill set that is not installed here and every step would
   // be refused. Keep the live spend events (budget history) and start with no decisions.
-  const ledgerFile = join(wiki, 'ledger.jsonl');
-  writeFileSync(
-    ledgerFile,
-    readFileSync(ledgerFile, 'utf8')
-      .split('\n')
-      .filter((line) => line !== '' && JSON.parse(line).stage === 'spend')
-      .map((line) => `${line}\n`)
-      .join(''),
-  );
+  const wiki = copyWikiWithoutDecisions(join(root, 'wiki'));
   const skills = join(root, 'skills');
   cpSync(join(REPO, '.claude', 'skills'), skills, { recursive: true });
   mkdirSync(join(skills, 'greenlight-wiki'), { recursive: true });
@@ -939,6 +946,9 @@ describe('bench iterate guards', () => {
 
   it('--dry-run plans without a request or a write', async () => {
     const root = tmp('greenlight-iterate-dry-');
+    // The live ledger's accepted skill set need not be the installed one (a gated change waits
+    // for its merge), and this test is about planning, not the repository's current state.
+    const wiki = copyWikiWithoutDecisions(join(tmp('greenlight-iterate-dry-wiki-'), 'wiki'));
     const out: string[] = [];
     const code = await benchCommand(
       [
@@ -947,7 +957,7 @@ describe('bench iterate guards', () => {
         '--bench',
         BENCH,
         '--root',
-        join(REPO, 'wiki'),
+        wiki,
         '--skills',
         join(REPO, '.claude', 'skills'),
       ],

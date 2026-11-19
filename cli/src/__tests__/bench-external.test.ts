@@ -734,6 +734,18 @@ describe('bench iterate with external rollouts', () => {
     }
     const wiki = join(root, 'wiki');
     cpSync(join(REPO, 'wiki'), wiki, { recursive: true });
+    // Keep only the live spend events: a gate decision or merge in the repository's own ledger
+    // can name an accepted skill set other than the installed one (a gated change waiting for
+    // its merge), and this test is about serving rollouts, not the repository's current state.
+    const ledgerFile = join(wiki, 'ledger.jsonl');
+    writeFileSync(
+      ledgerFile,
+      readFileSync(ledgerFile, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '' && JSON.parse(line).stage === 'spend')
+        .map((line) => `${line}\n`)
+        .join(''),
+    );
     const spentBefore = spendEvents({ wikiRoot: wiki } as BenchRunOptions).length;
     const skills = join(root, 'skills');
     cpSync(join(REPO, '.claude', 'skills'), skills, { recursive: true });
