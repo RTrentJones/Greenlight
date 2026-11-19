@@ -25,3 +25,6 @@ Updated pattern/probe-touches-wrong-layer with the explicit liveness-model rule 
 Updated pattern/neon-never-sleeps with the same replay pair (21 queries, awake 600 s vs 0 queries, awake 240 s).
 Updated pattern/keepalive-target-incomplete-doctor-green with the passing comparison run (raw:20261119T072754Z-54d87fc2); all stay hypothesis (bench replays, no deployed red-to-green).
 No new pages: nothing in the bundle contradicts an existing root cause. Raw 20261119T072754Z-70c4d981 (preview, add verify check for new route, push develop, no promote) passed and needs no page.
+
+## 2026-11-19T07:45:50.990Z — harness — candidate-rejected prop-5b359b1ae601
+bench iterate iter-20261119T072753Z-7ecd23b8: candidate-rejected (skill, greenlight-wiki); ledger event bdd2a490c7aaf9bbafa33fc371b7b13ed687c4417b2a402509e22efbe58b3777
