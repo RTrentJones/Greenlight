@@ -26,6 +26,7 @@ import {
   parseLedger,
   planIteration,
   recompute,
+  recordMerge,
   reviewIteration,
   runBench,
   sameDecision,
@@ -151,6 +152,13 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
   review <iterationId> --decision accept|reject --reason "<text>" [--break-lock]
                        record the owner's review of an iteration's ledger rows (a review event;
                        a reject of an accepted candidate is a withdrawn event)
+  merged <proposalId> --ref <commit sha | pull request URL> [--json]
+                       record that an accepted proposal was merged (06 §6.1). The merged event is
+                       what moves the accepted skill set, so run it on the tree the change was
+                       merged into: it is refused (exit 4) unless the installed skills hash to
+                       the candidate the gate evaluated. A proposal already recorded as merged
+                       is a no-op (exit 0). Commit wiki/ledger.jsonl and wiki/skill-impact.md
+                       afterwards.
 
 common: --bench <dir> (default bench), --root <wiki dir> (default wiki),
         --skills <dir> (default .claude/skills).
@@ -180,6 +188,8 @@ export async function benchCommand(args: string[], io: BenchIo = defaultIo()): P
         return await iterateCmd(rest, io);
       case 'review':
         return reviewCmd(rest, io);
+      case 'merged':
+        return mergedCmd(rest, io);
       case undefined:
       case 'help':
       case '--help':
@@ -650,6 +660,42 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
     if (existsSync(file)) io.out(readFileSync(file, 'utf8'));
   }
   return r.exitCode;
+}
+
+function mergedCmd(args: string[], io: BenchIo): number {
+  const a = parseFlags('bench merged', args, {
+    value: [...COMMON, '--ref'],
+    boolean: ['--json'],
+  });
+  const id = a.positional[0];
+  const ref = a.values['--ref'];
+  if (!id || a.positional.length > 1 || !ref?.trim()) {
+    io.err('usage: greenlight bench merged <proposalId> --ref <commit sha | pull request URL>');
+    return 2;
+  }
+  const p = paths(io, a.values);
+  const r = recordMerge({
+    wikiRoot: p.wiki,
+    skillsDir: p.skills,
+    proposalId: id,
+    ref,
+    ...(io.iterate?.now ? { now: io.iterate.now } : {}),
+  });
+  if (a.flags.has('--json')) {
+    io.out(
+      JSON.stringify({
+        eventId: r.event.eventId,
+        already: r.already,
+        ...(r.acceptedSkillSetHash ? { acceptedSkillSetHash: r.acceptedSkillSetHash } : {}),
+      }),
+    );
+  }
+  io.err(
+    r.already
+      ? `✔ ${id} was already recorded as merged (${r.event.eventId}); nothing written`
+      : `✔ merged ${id} (${r.event.eventId})${r.acceptedSkillSetHash ? `; the accepted skill set is now ${r.acceptedSkillSetHash.slice(0, 12)}` : ''}`,
+  );
+  return 0;
 }
 
 function reviewCmd(args: string[], io: BenchIo): number {

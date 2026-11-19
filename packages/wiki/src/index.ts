@@ -35,6 +35,7 @@ export * from './bench/rollout-client';
 export * from './bench/outlets';
 // M2-01 / M2-04: the ITERATE state machine and the review hand-off.
 export * from './bench/iterate';
+export * from './bench/merge';
 export * from './ids';
 export * from './parse';
 export * from './load';

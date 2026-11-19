@@ -45,6 +45,7 @@ import { appendLogEntry } from '../index-gen';
 import {
   appendEvent,
   appendEvents,
+  gateInputOfEvent,
   proposalHistory,
   renderSkillImpact,
   withFileLock,
@@ -3078,14 +3079,36 @@ function newState(
   };
 }
 
+/**
+ * The accepted, not yet merged proposal whose gated candidate IS `installedSkillSet`, if any: the
+ * one case where "the installed skills are not the accepted set" means "a merge was not recorded",
+ * so the refusal can name the command that fixes it.
+ */
+export function unrecordedMerge(wikiRoot: string, installedSkillSet: string): string | undefined {
+  const ledger = ledgerEvents(wikiRoot);
+  const ids = [...new Set(ledger.flatMap((e) => (e.proposalId ? [e.proposalId] : [])))];
+  for (const id of ids.reverse()) {
+    const h = proposalHistory(ledger, id);
+    if (h.latest !== 'candidate-accepted' || h.events.some((e) => e.control === true)) continue;
+    const accepted = h.events.find((e) => e.stage === 'candidate-accepted');
+    const gi = gateInputOfEvent(accepted);
+    const sets = gi === undefined ? undefined : readGateInput(wikiRoot, gi);
+    if (sets?.candidateSkillSetHash === installedSkillSet) return id;
+  }
+  return undefined;
+}
+
 /** The accepted skill set (06 §1.5): from the ledger's latest gated state, else the installed
  * skills. The installed skills must BE that set, since every rollout runs from them. */
 export function resolveAcceptedSkillSet(wikiRoot: string, skillsDir: string): string {
   const installed = skillSetHashOf(skillsDir);
   const fromLedger = acceptedSkillSet(ledgerEvents(wikiRoot), (h) => readGateInput(wikiRoot, h));
   if (fromLedger !== undefined && fromLedger !== installed) {
+    const unrecorded = unrecordedMerge(wikiRoot, installed);
     throw new IterationError(
-      `the installed skills (${installed.slice(0, 12)}) are not the accepted skill set ${fromLedger.slice(0, 12)} the ledger names; check out the accepted skills first`,
+      unrecorded
+        ? `the installed skills (${installed.slice(0, 12)}) are the gated candidate of accepted proposal ${unrecorded}, but the ledger has no merged event for it. If it was merged, record that: greenlight bench merged ${unrecorded} --ref <commit sha or pull request URL>`
+        : `the installed skills (${installed.slice(0, 12)}) are not the accepted skill set ${fromLedger.slice(0, 12)} the ledger names; check out the accepted skills first`,
       4,
     );
   }

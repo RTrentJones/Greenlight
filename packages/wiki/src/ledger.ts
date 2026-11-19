@@ -426,7 +426,7 @@ export function readGateSkillSets(wikiRoot: string, hash: string): GateSkillSets
   }
 }
 
-const gateInputOfEvent = (e: LedgerEvent | undefined): string | undefined =>
+export const gateInputOfEvent = (e: LedgerEvent | undefined): string | undefined =>
   e?.evidence && (e.evidence.kind === 'bench' || e.evidence.kind === 'template')
     ? e.evidence.gateInput
     : undefined;

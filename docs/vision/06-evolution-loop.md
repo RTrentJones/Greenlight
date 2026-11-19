@@ -1217,7 +1217,7 @@ stage is recorded separately, because each one proves something different:
 | `no-action` | harness | the proposer found nothing worth changing, and gave a reason |
 | `candidate-rejected` | harness | the outlet's acceptance rule failed, with the evidence |
 | `candidate-accepted` | harness | the outlet's acceptance rule passed. Nothing has shipped. |
-| `merged` | harness, from the PR merge event | a human reviewed and merged it |
+| `merged` | harness, from the PR merge event (`bench merged <proposalId> --ref <commit or PR>`, run on the merged tree) | a human reviewed and merged it, and the merged skills are the tree the gate evaluated |
 | `released` | harness, from the release workflow | it is in a published CLI version (`version` field) |
 | `verified-in-production` | `wiki remediate` with field evidence | the pattern's `catches` check went red→green on a deployed artifact |
 | `withdrawn` | human | reverted or abandoned after acceptance, with a reason |
@@ -1238,6 +1238,10 @@ time order (control-arm proposals never count):
 
 - a `merged` event of a proposal gated on bench or template evidence makes the **candidate**
   skill set of its gate input the accepted set;
+- `bench merged` writes that event only when the installed skill set hashes to that candidate. A
+  merge that changed the gated text (an edited squash, a conflict resolution, a second change on
+  top) is refused: no evaluation ran that tree, so it is gated again instead. Until the event is
+  recorded, `bench iterate` refuses to start and names the command;
 - that merge is allowed only when the gate input's **baseline** is the accepted set at that
   moment. A proposal gated against an older set, because another proposal merged in between, must
   be gated again on the new accepted set first; its `merged` event is refused, and so is one whose
