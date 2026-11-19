@@ -144,6 +144,14 @@ and the non-regression bound over 4 objective tasks becomes 2 passes. The cost i
 rollouts per gate; a third task family per skill was the alternative, at the price of new fixtures,
 references, graders and mutants. `shipped-shape.test.ts` pins this arithmetic.
 
+**Neon replay quarantined (2026-11-19).** `replay/idle-probe-leaves-store-asleep-val` failed and
+passed across runs with no skill change: 4/5 for the frontier model and 5/5 then 1/5 for the small
+model in iteration 3, and 2/3 for the small model in iteration 2. The failing rollouts read no skill
+file. As the only val replay task, it made every gate either blocked (flaky baseline) or rejected
+(replay regression) on rollout variance, so the owner quarantined it until it is made stable. While
+it is quarantined, the gate runs 4 val tasks (80 rollouts) with no replay safety constraint, and the
+M2-03 control arm, which expects a rejection on this task, can only report inconclusive.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading
