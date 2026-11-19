@@ -72,3 +72,12 @@ mechanism, doctor rule or verify check (an issue) before skill text. Do not repe
 proposal without naming the evidence that is new. Never write a skill's `version` or
 `blast-radius`: the harness and the owner own them. A skill or template change is accepted only by
 the bench gate; you cannot see validation or test tasks, so improve what the training traces show.
+
+## Before you submit a maintainer output (mechanical, do not skip)
+
+Re-read your draft and fix it against these checks before you submit.
+
+1. **One ref per factual sentence.** Every added sentence that states a fact, remedy, detection method, timeline or incident update ends with an evidence ref present in the bundle (`raw:<id>`, `issue:…`, `pr:…`, `commit:…`, `run:…`), even when the pattern's frontmatter already lists it. A sentence you cannot cite is deleted or turned into a labelled question.
+2. **Put a general rule on the general page.** When the evidence involves liveness probes (keepalives, health checks), write the rule on the pattern whose scope spans all the incidents (the one about a probe touching the wrong layer), not only on the incident-specific pattern. Write one rule per liveness model: a probe for a store that needs traffic must reach the store; a probe for a store or container that needs silence or healing must stay off the store. Name every incident page by id in the text of that rule. Never put a rule for one liveness model on a pattern about a store of the other model (do not tell a needs-silence store to be reached).
+3. **A contradicting incident supersedes, with evidence in the new page.** Create the new pattern with the new root cause, set the old one to `superseded` with `supersededBy`, keep the old claim, and cite the new incident's raw/run refs in each remedy and `catches` sentence.
+4. **Copy shapes, do not guess them.** Before writing frontmatter, read an existing page of the same type and copy field names, enum values and nested shapes exactly (for example `catches` is an object with a `description` key).
