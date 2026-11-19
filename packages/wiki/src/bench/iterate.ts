@@ -331,6 +331,8 @@ export interface IterationState {
     incidents: string[];
     /** The controls directory, relative to the bench directory. */
     controlsDir: string;
+    /** The owner's safety-fix targets (06 §5.4), sorted; absent on a standard-path iteration. */
+    safetyFixTargets?: string[];
   };
   /** The accepted skill set (06 §1.5) every baseline and train record must carry. */
   acceptedSkillSetHash: string;
@@ -439,6 +441,11 @@ export interface IterateOptions {
   /** `all` (default) or one managed skill. */
   scope?: string;
   resume?: string;
+  /** `--safety-fix <replay task>[,…]` (06 §5.4): the OWNER's choice to gate this iteration's
+   * skill proposal on the safety-fix path, naming the val replay tasks that fail in the baseline
+   * and that the proposal must fix. Fixed at creation; the control arm stays on the standard
+   * path. */
+  safetyFixTargets?: string[];
   sandbox: SandboxKind;
   assets: RunnerAssets;
   /** Gate models (default both) and val runs (default `bench/gate.json`). */
@@ -2209,10 +2216,11 @@ async function evaluateCandidate(
     d = (o.decide ?? decide)(baseline, r.record, {
       ts: cand.ts,
       radius: cand.radius,
-      // Always the standard path. The safety-fix and neutral paths waive efficacy, so the owner
-      // chooses them, never the proposer: ProposerOutput (08 §9.2) has no path field, and an
-      // iteration has no owner input at this step (06 §5.4).
-      path: 'standard',
+      // The standard path, unless the OWNER created the iteration with --safety-fix (06 §5.4).
+      // The safety-fix and neutral paths waive efficacy, so the proposer never chooses them
+      // (ProposerOutput, 08 §9.2, has no path field), and a control arm is always held to the
+      // standard path.
+      ...gatePathFor(c.s.settings, meta.control === true),
       models: gateModels(c.config),
       tasks: policyTasks(baseline),
       acceptedSkillSetHash: c.s.acceptedSkillSetHash,
@@ -3065,6 +3073,9 @@ function newState(
       agentMaxSteps: { ...DEFAULT_AGENT_MAX_STEPS, ...(o.agentMaxSteps ?? {}) },
       incidents,
       controlsDir: benchRel(o.controlsDir ?? join(o.benchDir, 'controls')),
+      ...(o.safetyFixTargets?.length
+        ? { safetyFixTargets: [...new Set(o.safetyFixTargets)].sort() }
+        : {}),
     },
     acceptedSkillSetHash: c.accepted,
     notes: [],
@@ -3077,6 +3088,17 @@ function newState(
     record: { status: 'pending' },
     handoff: { status: 'pending' },
   };
+}
+
+/** The gate path of one candidate of an iteration (06 §5.4): safety-fix only for the proposal of
+ * an iteration its owner created with `--safety-fix`, never for a control arm. */
+export function gatePathFor(
+  settings: Pick<IterationState['settings'], 'safetyFixTargets'>,
+  control: boolean,
+): { path: 'standard' } | { path: 'safety-fix'; safetyFixTargets: string[] } {
+  return settings.safetyFixTargets?.length && !control
+    ? { path: 'safety-fix', safetyFixTargets: settings.safetyFixTargets }
+    : { path: 'standard' };
 }
 
 /**
@@ -3248,6 +3270,17 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
             4,
           );
         }
+        // The gate path is the owner's choice at creation (06 §5.4); a resume cannot change it.
+        if (
+          o.safetyFixTargets &&
+          [...new Set(o.safetyFixTargets)].sort().join(',') !==
+            (s.settings.safetyFixTargets ?? []).join(',')
+        ) {
+          throw new IterationError(
+            `iteration ${s.iterationId} was created ${s.settings.safetyFixTargets?.length ? `with --safety-fix ${s.settings.safetyFixTargets.join(',')}` : 'on the standard path'}; the gate path is fixed at creation`,
+            4,
+          );
+        }
         if (o.rolloutAgent && !s.settings.rolloutAgent) s.settings.rolloutAgent = o.rolloutAgent;
         // Before anything a submitted file could reach: drifted inputs refuse the resume.
         checkPins(s, o, log);
@@ -3262,6 +3295,22 @@ export async function iterate(o: IterateOptions): Promise<IterateResult> {
           !loadSkills(o.skillsDir).some((x) => x.name === o.scope)
         )
           throw new IterationError(`scope ${o.scope} is not a managed skill`, 2);
+        if (o.safetyFixTargets?.length) {
+          const replay = new Set(
+            loadTasks(o.benchDir)
+              .tasks.filter(
+                (t) =>
+                  t.spec.kind === 'replay' && t.spec.split === 'val' && t.spec.state === 'active',
+              )
+              .map((t) => t.id),
+          );
+          const unknown = o.safetyFixTargets.filter((t) => !replay.has(t));
+          if (unknown.length > 0)
+            throw new IterationError(
+              `--safety-fix: ${unknown.join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not an active val replay task (active: ${[...replay].sort().join(', ') || 'none'})`,
+              2,
+            );
+        }
         s = newState(o, { id, accepted, now: now(), wiki });
         s.pins = iterationPins(o.benchDir, o.skillsDir);
         const head = headCommit(o.repoRoot);

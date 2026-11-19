@@ -152,6 +152,12 @@ file. As the only val replay task, it made every gate either blocked (flaky base
 it is quarantined, the gate runs 4 val tasks (80 rollouts) with no replay safety constraint, and the
 M2-03 control arm, which expects a rejection on this task, can only report inconclusive.
 
+**Reinstated (2026-11-19, later the same day).** The instability is a skill gap, not a bench
+fault: no provider skill says that liveness for a scale-to-zero store must stay off the store, so
+agents choose the database-checking route about as often as not. That is what the safety-fix path
+exists for (06 §5.4), and `bench iterate --safety-fix <task>` now reaches it, so the task is
+active again and named as the target of the next iteration.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading

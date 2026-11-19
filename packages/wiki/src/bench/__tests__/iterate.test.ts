@@ -31,6 +31,7 @@ import {
   acquireLock,
   blastRadius,
   buildHandoff,
+  gatePathFor,
   loadControls,
   materializeCandidate,
   pinTree,
@@ -158,6 +159,18 @@ describe('the review annotation (08 §8)', () => {
 });
 
 describe('iterate helpers', () => {
+  it('the gate path: safety-fix only for the owner-flagged proposal, never a control (06 §5.4)', () => {
+    expect(gatePathFor({}, false)).toEqual({ path: 'standard' });
+    expect(gatePathFor({ safetyFixTargets: [] }, false)).toEqual({ path: 'standard' });
+    expect(gatePathFor({ safetyFixTargets: ['replay/a-val'] }, false)).toEqual({
+      path: 'safety-fix',
+      safetyFixTargets: ['replay/a-val'],
+    });
+    expect(gatePathFor({ safetyFixTargets: ['replay/a-val'] }, true)).toEqual({
+      path: 'standard',
+    });
+  });
+
   it('blast radius: the larger of the 06 §5.4 table and the accepted PURPOSE.md', () => {
     expect(blastRadius('provider-neon', undefined)).toBe('medium');
     expect(blastRadius('deploy-verify-promote', undefined)).toBe('high');

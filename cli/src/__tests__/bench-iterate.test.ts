@@ -1252,6 +1252,19 @@ describe('bench iterate without docker (process sandbox)', () => {
     const opts = (day: number, over: Partial<IterateOptions> = {}) =>
       env.options(day, { sandbox: 'process', ...over });
 
+    // --safety-fix names active val replay tasks only: anything else is a usage error before
+    // any state is written (06 §5.4).
+    const bad = await iterate(
+      opts(0, { iterationId: 'iter-test-safety-fix', safetyFixTargets: ['replay/not-a-task'] }),
+    );
+    expect(bad.exitCode, bad.message).toBe(2);
+    expect(bad.message).toMatch(
+      /--safety-fix: replay\/not-a-task is not an active val replay task/,
+    );
+    expect(existsSync(join(iterationDir(env.stateDir, 'iter-test-safety-fix'), 'state.json'))).toBe(
+      false,
+    );
+
     // Day 0: train is sealed, then the maintainer's model has no quota left.
     env.fake.exhaust = { step: 'maintainer', model: FRONTIER };
     const r0 = await iterate(opts(0, { iterationId: id }));
@@ -1259,6 +1272,13 @@ describe('bench iterate without docker (process sandbox)', () => {
     expect(r0.step).toBe('maintainer');
     const s0 = loadIterationState(env.stateDir, id);
     expect(s0.train.status).toBe('done');
+    // The gate path is fixed at creation: this iteration is standard-path, so a resume that
+    // names safety-fix targets is refused before anything runs.
+    const repath = await iterate(
+      opts(0, { resume: id, safetyFixTargets: ['replay/idle-probe-leaves-store-asleep-val'] }),
+    );
+    expect(repath.exitCode, repath.message).toBe(4);
+    expect(repath.message).toMatch(/the gate path is fixed at creation/);
     expect(s0.pins?.skillSet).toBe(s0.acceptedSkillSetHash);
     const trainRecord = s0.train.record as string;
     const trainEval = s0.train.evaluationId as string;

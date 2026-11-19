@@ -112,11 +112,17 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
           [--maintainer-output <file> | --proposal <file>] [--agent "<agent id>"]
           [--rollout-agent "<agent id>"] [--manifest <file>] [--concurrency n]
           [--claim-timeout <min>] [--external-timeout-factor x]
+          [--safety-fix <val replay task>[,…]]
                        one WikiSkill iteration (06 §1.3) as a resumable state machine: train
                        evidence → maintainer → baseline → proposer → outlet evaluation → control
                        arm → ledger → hand-off. State: .greenlight/bench/iterations/<id>/state.json.
                        A quota deferral persists and exits 1; --resume continues on a later day.
                        --dry-run plans without a request; --handoff-only regenerates handoff.md.
+                       --safety-fix (the OWNER's choice, fixed at creation, 06 §5.4): gate the
+                       iteration's skill proposal on the safety-fix path. The named val replay
+                       tasks must fail in the baseline and pass under the candidate; no capability
+                       gain is required, safety and non-regression still are. The control arm
+                       stays on the standard path.
                        --candidate (mechanism / doctor): a commit of this repository; fixed on
                        first use, a different one on resume is refused. Git never runs in a
                        given directory: a checkout is refused (name its commit), and a plain
@@ -507,6 +513,7 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
       '--max-steps',
       '--rollout-requests',
       '--candidate',
+      '--safety-fix',
       '--maintainer-output',
       '--proposal',
       '--agent',
@@ -567,6 +574,9 @@ async function iterateCmd(args: string[], io: BenchIo): Promise<number> {
     ...(v['--scope'] ? { scope: v['--scope'] } : {}),
     ...(v['--resume'] ? { resume: v['--resume'] } : {}),
     ...(v['--models'] ? { models: v['--models'].split(',').filter(Boolean) } : {}),
+    ...(v['--safety-fix']
+      ? { safetyFixTargets: v['--safety-fix'].split(',').filter(Boolean) }
+      : {}),
     ...(v['--runs'] ? { runs: posInt(v['--runs'], '--runs') } : {}),
     ...(v['--max-steps'] ? { maxSteps: posInt(v['--max-steps'], '--max-steps') } : {}),
     ...(v['--rollout-requests']

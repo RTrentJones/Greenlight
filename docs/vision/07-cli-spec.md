@@ -800,6 +800,7 @@ greenlight bench iterate [--scope <skill|all>] [--resume <iterationId>] [--sandb
                          [--maintainer-output <file> | --proposal <file>] [--agent "<agent id>"]
                          [--rollout-agent "<agent id>"] [--manifest <file>] [--concurrency 4]
                          [--claim-timeout <min>] [--external-timeout-factor 3]
+                         [--safety-fix <val replay task>[,…]]
 greenlight bench review <iterationId> --decision accept|reject --reason "<text>"
 greenlight bench merged <proposalId> --ref <commit sha | pull request URL> [--json]
 greenlight bench monitor [--since <date>]

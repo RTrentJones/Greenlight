@@ -1013,11 +1013,14 @@ the ledger.
   the flaky rule would make it unfixable. A high-radius target is held to 3 of 3 on the candidate
   instead. Every non-target replay task still obeys the flaky rule.
 
-  `bench iterate` never takes this path, nor the neutral one. Both waive efficacy, so the owner
-  chooses them, not the proposer: `ProposerOutput` (08 §9.2) has no path field, and an iteration
-  has no owner input at its gate step. Every skill proposal of an iteration is gated on the
-  standard path; the alternative paths are reached by calling the gate with the path the owner
-  named (`GateContext.path`, with `safetyFixTargets` or `neutralReason`).
+  Both alternative paths waive efficacy, so the owner chooses them, never the proposer:
+  `ProposerOutput` (08 §9.2) has no path field. `bench iterate` takes the safety-fix path only
+  when its owner created the iteration with `--safety-fix <val replay task>[,…]`; the targets are
+  fixed at creation (a resume naming others is refused), each must be an active val replay task,
+  and the iteration's control arm is still gated on the standard path. An iteration started
+  without the flag gates its skill proposal on the standard path. `bench iterate` never takes the
+  neutral path, which is reached by calling the gate with `GateContext.path` and
+  `neutralReason`.
 - **Neutral-prerequisite path.** This path is for a change that enables a later change but cannot
   show a gain on its own, such as renaming a section that a mechanism will reference. Safety and
   non-regression must hold. The PR names the dependent proposal. A human must approve it
