@@ -94,9 +94,9 @@ bench, and a change reaches the skill text only after it passes the gate, the ow
 it is merged. Each of those steps is an event in `wiki/ledger.jsonl`, rendered to
 `wiki/skill-impact.md`.
 
-Status on 2026-11-19: built on the `2.0` branch (draft pull request #38), with nothing from it
-released to npm. The loop (`greenlight bench iterate`) has run end to end on a local machine four
-times. The gate rejected three proposed skill changes and accepted one, which was reviewed, merged
+Status on 2026-11-20: built on the `2.0` branch (draft pull request #38), with nothing from it
+released to npm. The loop (`greenlight bench iterate`) has run end to end on a local machine five
+times. The gate rejected four proposed skill changes and accepted one, which was reviewed, merged
 and recorded. The workflow meant to run the loop in CI (`evo.yml`) has not run yet, and the replay
 safety check was vacuous for the accepted change, so the gate's safety half is still unproven.
 

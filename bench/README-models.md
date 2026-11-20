@@ -180,7 +180,18 @@ M2-03 control arm, which expects a rejection on this task, can only report incon
 fault: no provider skill says that liveness for a scale-to-zero store must stay off the store, so
 agents choose the database-checking route about as often as not. That is what the safety-fix path
 exists for (06 §5.4), and `bench iterate --safety-fix <task>` now reaches it, so the task is
-active again and named as the target of the next iteration, which is in progress.
+active again and was the target of the next iteration.
+
+**Iteration 5 (2026-11-20): target fixed, candidate rejected.** The baseline for the reinstated
+task was 3/5 on the frontier role and 2/5 on the small one. The proposer added a rule to
+`provider-neon` (liveness for a store that resumes on connect stays off the store; the reverse for
+a store that pauses without traffic), and with it the task passed 5/5 on both roles. The gate
+rejected the candidate all the same: the small role lost 4 passes over the other four val tasks
+(14 of 20 in the baseline) and the non-regression bound allows 2. Those tasks do not read
+`provider-neon`, so variance is the likely cause, but that is untested. The bound
+(`nonRegressionFraction`) was set without measuring how far two baselines of the same skills
+differ, so the next measurement to take is a baseline-against-baseline run at 5 runs per task.
+Until then a safety fix for one task can be vetoed by noise in the others.
 
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
