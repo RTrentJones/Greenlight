@@ -46,3 +46,6 @@ bench iterate iter-20261119T212356Z-84d9a2fe: candidate-accepted (skill, greenli
 No page changes: the evidence was already compiled. The passing supabase keepalive replay (raw:20261119T233853Z-c97f6efc: store not paused after 21 simulated days, every sweep ran a query, a paused store read as failing) matches what pattern/keepalive-target-incomplete-doctor-green and pattern/probe-touches-wrong-layer already record, and the needs-traffic versus needs-silence rule naming both incident pages is already on pattern/probe-touches-wrong-layer.
 The passing new-route loop run (raw:20261119T233853Z-58d9c7e0: preview, push develop, new route checked in the pushed verify config, no promote) is the expected preview-before-push loop and needs no page.
 The three wiki-task records (raw:20261119T233853Z-23d117ff, raw:20261119T233853Z-52aad3a2, raw:20261119T233853Z-7551aea2) are maintainer attempts on other bundles (a different wiki and different incidents) and their contents are not cited as evidence here. Nothing confirmed: no deployed red-to-green run in the bundle.
+
+## 2026-11-20T05:12:54.326Z — harness — candidate-rejected prop-8961760898c6
+bench iterate iter-20261119T233852Z-f760f38b: candidate-rejected (skill, provider-neon); ledger event 2a82273e5a27a68d1dc492fe58b5a03f699e5e63a22c55861a1f23058765de1f
