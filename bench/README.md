@@ -365,9 +365,15 @@ pnpm greenlight bench run --split train \
 # The launcher's loop, until the command exits (the manifest then says "status": "ended"):
 #   read $M; for every rollout whose "state" is "open" and that you have not dispatched yet,
 #   start ONE fresh agent, outside this repository, with exactly this instruction:
-#       Run `<command> prompt` and do exactly what it prints. Use only that client;
-#       do not read or write any file on this machine.
-#   where <command> is that rollout's "command" from the manifest.
+#       Run `<command> prompt` and do exactly what it prints. Every shell command you run
+#       must start with `<command>`: the task's files exist only behind that client, so
+#       never run git, an editor or any other command directly, and do not read or write
+#       any file on this machine.
+#   where <command> is that rollout's "command" from the manifest (the manifest's own
+#   "instruction" field carries this text). The instruction is the only thing keeping an agent
+#   that has a shell on this machine inside its sandbox: an agent that ignores it can touch the
+#   checkout it was started from. Start agents outside this repository, with no credentials,
+#   and prefer a launcher that denies every command not beginning with the client.
 jq -r '.rollouts[] | select(.state == "open") | .command' "$M"
 
 # Exit 0: sealed. Exit 1 (deferred): some rollouts were not claimed in time; open only those:

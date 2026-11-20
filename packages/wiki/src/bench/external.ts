@@ -174,7 +174,7 @@ const STATES: ExternalState[] = [
 
 /** The sentence a launcher hands to each agent. The agent needs nothing else. */
 export const AGENT_INSTRUCTION =
-  'Run `<command> prompt` and do exactly what it prints. Use only that client; do not read or write any file on this machine.';
+  "Run `<command> prompt` and do exactly what it prints. Every shell command you run must start with `<command>`: the task's files exist only behind that client, so never run git, an editor or any other command directly, and do not read or write any file on this machine.";
 
 export class RolloutServer {
   private readonly sessions = new Map<string, Session>();

@@ -69,6 +69,11 @@ const defaultIo = (): BenchIo => ({
 
 export const BENCH_USAGE = `usage: greenlight bench <subcommand>
 
+EXPERIMENTAL: the bench, the gate and the evolution loop are unreleased (Greenlight 2.0). Flags,
+exit codes and file formats may change without notice, and the commands expect a framework
+checkout with a bench/ directory.
+
+
   run [--split train|val|test] [--tasks <glob>[,<glob>…]] [--models frontier,small] [--runs n]
       [--mode isolation] [--role train|baseline] [--sandbox docker|process] [--resume <evaluationId>]
       [--force] [--max-requests n] [--max-steps n] [--rollout-requests n] [--json]

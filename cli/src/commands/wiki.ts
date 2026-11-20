@@ -65,6 +65,10 @@ const defaultIo = (): WikiIo => ({
 
 const USAGE = `usage: greenlight wiki <subcommand>
 
+EXPERIMENTAL: the wiki is unreleased (Greenlight 2.0). Commands, page formats and exit codes may
+change without notice.
+
+
   lint [--strict] [--fix] [--json] [--framework] [--root <dir>]
                        run the wiki lint rules (exit 1 on errors; --strict also on warnings)
   render [--root <dir>]
