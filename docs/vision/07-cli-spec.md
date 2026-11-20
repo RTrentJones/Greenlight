@@ -49,6 +49,16 @@ behavior, and they are listed in section 1 only for completeness.
 Milestones are defined in 14. They are not versions: a command ships in whichever release
 completes the milestone that needs it.
 
+**Built on the `2.0` branch as of 2026-11-20** (run `greenlight wiki help` and `greenlight bench
+help` for the exact flags, which are authoritative where this document differs):
+`wiki lint`, `wiki render`, `wiki read`, `wiki traces`, `wiki ingest`, `wiki propose`;
+`bench run`, `bench rollout`, `bench check-graders` (alias `mutants`), `bench models`,
+`bench activate`, `bench iterate`, `bench review`, `bench merged`, `bench gate --recompute`.
+Everything else in the table below is specification that has not been built, including
+`wiki capture`, `wiki remediate`, `bench gate <proposalId>` (the iteration runs the gate today),
+`bench report`, `bench monitor`, and the version bump on acceptance: a merge is recorded with
+`bench merged`, and the accepted skill set is identified by its hash in the ledger.
+
 | command | status | milestone | serves |
 |---|---|---|---|
 | `verify` | changed (check ids, wiki links, `eval.check_id`) | M0 (ids), M3 (links) | FR-LOOP, FR-WIKI |
@@ -793,7 +803,7 @@ greenlight bench run [--split train|val|test] [--tasks <glob>] [--model <id>]…
 greenlight bench rollout <handle> <verb> [argument] [flags]
 greenlight bench gate <proposalId> [--models <a>,<b>] [--runs 3] [--alpha 0.05]
 greenlight bench gate --recompute <gateInputHash>
-greenlight bench check-graders [--tasks <glob>]          # alias: bench mutants
+greenlight bench check-graders [taskId…] [--verbose]      # alias: bench mutants
 greenlight bench iterate [--scope <skill|all>] [--resume <iterationId>] [--sandbox docker|process] [--dry-run] [--handoff-only] [--json]
                          [--models frontier,small] [--runs n] [--max-steps n] [--rollout-requests n]
                          [--candidate <commit|dir>] [--adopt-pins] [--break-lock]
