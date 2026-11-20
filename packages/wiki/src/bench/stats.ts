@@ -12,8 +12,19 @@ export type GateMode = BenchOutcome['mode'];
 
 /** The version of the gate's decision algorithm, recorded in every GateInputRecord (08 §10.4).
  * 1: paired bootstrap over task means, one-task-mean thresholds (records without the field).
- * 2: exact stratified permutation test on the patched skill's slice, thresholds in passes. */
-export const GATE_ALGORITHM = 2;
+ * 2: exact stratified permutation test on the patched skill's slice; non-regression is a fixed
+ *    count of passes, max(1, ⌊nonRegressionFraction × objective rollouts⌋) (legacy).
+ * 3: as 2, with non-regression decided by the same exact test in the other direction: a cell is a
+ *    regression when the one-sided p for "the candidate is worse" is ≤ alpha (06 §5.4).
+ * New gates are made with this version; a stored record is re-derived with its own. */
+export const GATE_ALGORITHM = 3;
+
+/** The algorithm versions this build can decide and recompute (06 §5.8). Version 1 is not among
+ * them: its records are reported as made with an older algorithm and stand as recorded. */
+export const SUPPORTED_GATE_ALGORITHMS: readonly number[] = [2, 3];
+
+/** The first version whose non-regression rule is the exact test; below it, the fixed count. */
+export const EXACT_NON_REGRESSION_SINCE = 3;
 
 /** Per-task pass counts and mean for one model and mode. */
 export interface TaskMean {
@@ -65,11 +76,17 @@ export interface Stratum {
   runs: number;
 }
 
+/** The alternative a one-sided test is run against: the candidate passes more often than the
+ * baseline (`greater`, the efficacy test) or less often (`less`, the non-regression test). */
+export type ExactTestTail = 'greater' | 'less';
+
 export interface ExactTestResult {
-  /** One-sided p: P(Σ candidate passes ≥ observed) under the null. `null` with no strata. */
+  /** One-sided p under the null: P(Σ candidate passes ≥ observed) for `greater`,
+   * P(Σ candidate passes ≤ observed) for `less`. `null` with no strata. */
   pValue: number | null;
   /** The smallest p ANY candidate outcome could reach against this baseline: every candidate
-   * rollout passing. `null` with no strata. A test whose `minP` is ≥ alpha cannot reject. */
+   * rollout passing (`greater`) or failing (`less`). `null` with no strata. A test whose `minP`
+   * is above the level it is compared with cannot reject. */
   minP: number | null;
   /** Σ candidate passes − Σ baseline passes. */
   diff: number;
@@ -95,9 +112,15 @@ function checkStratum(s: Stratum): void {
  * each task's total passes m_t, the candidate's passes C_t are then hypergeometric(2R, m_t, R),
  * independently across tasks. The statistic is Σ_t C_t; its null distribution is the exact
  * convolution of the per-task distributions, computed in integers, and the one-sided p-value is
- * P(Σ C_t ≥ observed). No normal approximation, no resampling.
+ * P(Σ C_t ≥ observed) for the `greater` tail (the default) or P(Σ C_t ≤ observed) for the `less`
+ * tail. The two tails are the same test with the arms exchanged: the `less` p of (baseline,
+ * candidate) equals the `greater` p of (candidate, baseline). No normal approximation, no
+ * resampling.
  */
-export function stratifiedExactTest(strata: readonly Stratum[]): ExactTestResult {
+export function stratifiedExactTest(
+  strata: readonly Stratum[],
+  tail: ExactTestTail = 'greater',
+): ExactTestResult {
   for (const s of strata) checkStratum(s);
   const diff = strata.reduce((d, s) => d + s.candidate - s.baseline, 0);
   if (strata.length === 0) return { pValue: null, minP: null, diff: 0, strata: 0 };
@@ -116,15 +139,23 @@ export function stratifiedExactTest(strata: readonly Stratum[]): ExactTestResult
     }
     dist = next;
     total *= choose(2 * s.runs, s.runs);
-    // Best case against this baseline: all R candidate rollouts pass, so m = baseline + R and the
-    // only arrangement at least as extreme puts R of the m passes in the candidate arm.
-    minNum *= choose(s.baseline + s.runs, s.runs);
+    // Best case against this baseline. `greater`: all R candidate rollouts pass, so m = baseline + R
+    // and the only arrangement at least as extreme puts R of the m passes in the candidate arm.
+    // `less`: all R fail, so m = baseline and the candidate arm holds R of the 2R − m failures.
+    minNum *=
+      tail === 'greater'
+        ? choose(s.baseline + s.runs, s.runs)
+        : choose(2 * s.runs - s.baseline, s.runs);
   }
   const observed = strata.reduce((c, s) => c + s.candidate, 0);
-  let tail = 0n;
-  for (let k = observed; k < dist.length; k++) tail += dist[k] as bigint;
+  let mass = 0n;
+  if (tail === 'greater') {
+    for (let k = observed; k < dist.length; k++) mass += dist[k] as bigint;
+  } else {
+    for (let k = 0; k <= observed; k++) mass += dist[k] as bigint;
+  }
   return {
-    pValue: ratio(tail, total),
+    pValue: ratio(mass, total),
     minP: ratio(minNum, total),
     diff,
     strata: strata.length,

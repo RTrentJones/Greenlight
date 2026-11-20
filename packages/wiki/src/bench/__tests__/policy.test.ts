@@ -103,6 +103,72 @@ function clean(over: Partial<PolicyInput> = {}): PolicyInput {
   };
 }
 
+describe('non-regression by algorithm version (06 §5.4, §5.8)', () => {
+  const vector = (id: string) => {
+    const v = VECTORS.find((x) => x.id === id);
+    if (!v) throw new Error(`missing vector ${id}`);
+    return v;
+  };
+  // Target cell 2 is small/isolation; at medium radius its only rule is non-regression.
+  const smallIso = (id: string, over: Partial<PolicyInput> = {}) =>
+    applyPolicy({ ...buildVector(vector(id), 'medium', 2).input, ...over });
+
+  it('the default is the current algorithm: the exact test, rejecting at p ≤ alpha', () => {
+    const out = smallIso('capability-loss-p-at-alpha');
+    expect(out.decision).toBe('reject');
+    expect(out.reasons.filter((r) => r.severity === 'fail')).toEqual([
+      {
+        code: 'capability-regression',
+        severity: 'fail',
+        model: S,
+        mode: 'isolation',
+        detail:
+          'baseline 15/30, candidate 12/30: Δ -3 passes over 10 tasks × 3 runs; one-sided exact p 0.05 ≤ alpha 0.05',
+      },
+    ]);
+    expect(JSON.stringify(smallIso('capability-loss-p-at-alpha', { algorithm: 3 }))).toBe(
+      JSON.stringify(out),
+    );
+  });
+
+  it('a loss that is not significant passes and is not reported', () => {
+    const out = smallIso('capability-loss-p-above-alpha');
+    expect(out.decision).toBe('accept');
+    expect(out.reasons.map((r) => r.code)).not.toContain('capability-regression');
+    expect(out.results.every((r) => r.decision === 'pass')).toBe(true);
+  });
+
+  it('the same evidence under algorithm 2 is decided by the fixed count, with its own wording', () => {
+    // −3 of 30 on one task: within the legacy bound of 3, although p = alpha.
+    expect(smallIso('capability-loss-p-at-alpha', { algorithm: 2 }).decision).toBe('accept');
+    // −3 of 30 over two tasks: within the bound under both.
+    expect(smallIso('capability-loss-p-above-alpha', { algorithm: 2 }).decision).toBe('accept');
+    const beyond = smallIso('capability-loss-significant', { algorithm: 2 });
+    expect(beyond.decision).toBe('reject');
+    expect(beyond.reasons).toContainEqual(
+      expect.objectContaining({
+        code: 'capability-regression',
+        detail: 'Δ -4 passes over 10 tasks × 3 runs; at most 3 may be lost',
+      }),
+    );
+  });
+
+  it('alpha is the configured one, and nonRegressionFraction is ignored from algorithm 3', () => {
+    const at = (over: Partial<PolicyInput>) => smallIso('capability-loss-p-at-alpha', over);
+    expect(at({ alpha: 0.04 }).reasons.map((r) => r.code)).not.toContain('capability-regression');
+    expect(JSON.stringify(at({ nonRegressionFraction: 0.5 }))).toBe(JSON.stringify(at({})));
+    expect(at({ algorithm: 2, nonRegressionFraction: 0.05 }).decision).toBe('reject');
+  });
+
+  it('production mode uses the same rule under its own code', () => {
+    const v = vector('capability-loss-p-at-alpha');
+    const out = applyPolicy(buildVector(v, 'medium', 3).input);
+    expect(out.reasons.filter((r) => r.severity === 'fail').map((r) => r.code)).toEqual([
+      'production-regression',
+    ]);
+  });
+});
+
 describe('applyPolicy details', () => {
   it('a grader crash is invalid (grader-error), never a fail or a regression, on any task', () => {
     const crash = (o: PolicyInput['candidate'][number]) => ({

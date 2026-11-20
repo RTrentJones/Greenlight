@@ -807,7 +807,8 @@ modes appear in the ledger evidence, per model.
    accepted skill-set hash the caller names, every candidate record carries one other skill-set
    hash, and all records agree on every identity field except `mode`, `wikiSnapshotHash` and the
    skill set. Any violation is a harness error.
-2. Run val with the candidate skill set: 3 runs, for each gate model, in each mode. A mode that
+2. Run val with the candidate skill set: R runs (`bench/gate.json` `runs`: 5 as shipped, 3 when
+   the key is absent), for each gate model, in each mode. A mode that
    any gated task declares (`TaskSpec.modes`) but that has no record on both sides makes the
    evaluation **invalid**; it is never skipped.
 
@@ -819,17 +820,19 @@ modes appear in the ledger evidence, per model.
    reported as `modes-partial`. Steps 5 and the production half of step 3 are then not evaluated,
    and the ledger evidence holds isolation results only. From M3 the declaration is dropped and
    both modes are required.
-3. **Constraint (replay).** For each model, every replay task that passed in the baseline (in at
-   least 2 of 3 runs) MUST pass in at least 2 of 3 candidate runs. Any regression rejects the
+3. **Constraint (replay).** For each model, every replay task that is baseline-passing (§5.4: at
+   least ⌈2R/3⌉ of R baseline runs) MUST pass in at least ⌈2R/3⌉ of R candidate runs (R of R at
+   high radius). Any regression rejects the
    proposal, which records `replay.regressions`. Every replay task counts, whichever skill is
    patched.
 4. **Objective (capability).** For each model, the candidate's capability score in **isolation**
    mode, on the patched skill's **slice** (§5.2), must be **strictly greater** than the
    baseline's, with an exact one-sided p-value below 0.05 (§5.2). This applies to every model
    under high blast radius; see §5.4 for the others.
-5. **Non-regression.** For each model, the candidate's score over every objective task must not
-   fall below the baseline's by more than the non-regression bound (§5.4), in production mode and,
-   for the cells step 4 tests, in isolation mode too. Production-mode replay obeys step 3.
+5. **Non-regression.** For each model, the candidate must not be significantly worse than the
+   baseline over every objective task: the exact one-sided p-value for "the candidate is worse"
+   (§5.2, §5.4) must be above alpha. This holds in production mode and, for the cells step 4
+   tests, in isolation mode too. Production-mode replay obeys step 3.
 6. Write the `candidate-accepted` or `candidate-rejected` ledger event (§6), with one evidence
    entry per model and mode.
 
@@ -838,7 +841,7 @@ modes appear in the ledger evidence, per model.
 | outcome | meaning | ledger |
 |---|---|---|
 | `accept` | every rule held | `candidate-accepted` |
-| `reject` | a rule failed: a replay regression, a loss beyond the bound, a path rule, or an efficacy test that was able to succeed and did not | `candidate-rejected` |
+| `reject` | a rule failed: a replay regression, a significant loss (§5.4), a path rule, or an efficacy test that was able to succeed and did not | `candidate-rejected` |
 | `invalid` | the evaluation cannot be gated (a fallback-served or grader-error rollout, a missing run or mode). Re-run it. | none |
 | `blocked` | the **baseline** cannot be gated against: at high radius it holds a flaky replay task (§5.4). This says nothing about the candidate. The reason names the task; the owner fixes or quarantines it and re-baselines. | none |
 | `underpowered` | every rule that needs no statistical power held, but the efficacy test cannot reach 0.05 at this shape (§5.2), so neither an accept nor a rejection would mean anything. The reason names the attainable minimum p. | none |
@@ -875,6 +878,12 @@ instead.
   (`stratifiedExactTest` in `packages/wiki/src/bench/stats.ts`), and p is the probability of a
   total at least as large as the one observed. Equivalently: of every way to hand each task's 2R
   outcomes to the two arms, the fraction that gives the candidate at least as many passes.
+- **The other direction (non-regression, §5.4).** The same test with the tail reversed gives the
+  one-sided p for "the candidate is worse than the baseline": the probability, under the same
+  null, of a candidate total at most as large as the one observed. It is the efficacy test with
+  the arms exchanged (`stratifiedExactTest(strata, 'less')`), computed over every objective task
+  instead of the slice. Because it conditions on each task's total passes, its type-I rate with
+  identical arms is at most alpha at any pass rate.
 - **Deterministic.** No resampling and no seed: the same outcomes always give the same p, and no
   string a proposer chooses can change it.
 - **Attainable minimum.** Against a given baseline the smallest p any candidate could reach is
@@ -955,35 +964,55 @@ table supplies its thresholds. Every cell of the table applies to both modes unl
 otherwise.
 
 **Definitions.**
-- A replay task is **baseline-passing** for a model and mode when it passed in at least 2 of 3
-  baseline runs.
-- A task is **flaky** when it passed in exactly 1 or 2 of 3 baseline runs.
+Thresholds are stated for R, the configured runs per task (`bench/gate.json` `runs`; 5 as
+shipped). The policy code computes each of them from R (`twoThirds`, `replayThreshold` in
+`packages/wiki/src/bench/policy.ts`).
+
+- A replay task is **baseline-passing** for a model and mode when it passed in at least
+  **⌈2R/3⌉ of R** baseline runs: 4 of 5 at the shipped 5 runs, 2 of 3 at 3.
+- A task is **flaky** when it passed in at least 1 and fewer than R baseline runs: 1 to 4 of 5.
 - **Strict improvement** is §5.2's test on the patched skill's slice: more passes than the
-  baseline, with exact p < 0.05.
-- **The bound** (non-regression) is stated in passes, over every objective task (not the slice).
-  With M objective rollouts per arm (tasks × runs), a model may lose at most
-  **max(1, ⌊0.1 × M⌋) passes** in aggregate (`bench/gate.json` `nonRegressionFraction`, default
-  0.1). One pass is always tolerated, because a single rollout is noise at any size; beyond that
-  the bound scales with the bench: 1 pass of 6 at the shipped shape (2 tasks × 3 runs), 3 of 30
-  at ten tasks. The earlier bound, "one task-mean", was R passes whatever the size: half of
-  capability at two tasks, where it accepted a model falling from 1.0 to 0.5.
+  baseline, with exact p < alpha (`bench/gate.json` `alpha`, 0.05).
+- **Non-regression** is tested over every objective task (not the slice), per model and mode. The
+  gate computes §5.2's exact one-sided p-value for "the candidate is worse than the baseline",
+  with the task as the stratum and the runs exchangeable within a task, and the cell is a
+  regression (`capability-regression` in isolation mode, `production-regression` in production
+  mode) when **p ≤ alpha**, the same `alpha` the efficacy test uses. The reason states the pass
+  counts, the difference and p, for example "baseline 15/20, candidate 11/20: Δ -4 passes over 4
+  tasks × 5 runs; one-sided exact p 0.0494 ≤ alpha 0.05". A loss whose p is above alpha passes the
+  check and is not reported. At 4 objective tasks × 5 runs with a baseline of 5, 5, 5 and 0, a
+  loss of one pass on each of three tasks has p = 1/8 and passes; two passes on each of two tasks
+  has p ≈ 0.049 and is a regression; one task falling from 5 to 0 has p = 1/252. The statistic is
+  the pass total, so a gain on one task offsets a loss on another, and a baseline that passes
+  nothing cannot be shown to regress. This is **algorithm 3** (§5.8).
+
+  Algorithm 2 and earlier used a fixed count: with M objective rollouts per arm (tasks × runs), a
+  model could lose at most max(1, ⌊0.1 × M⌋) passes (`bench/gate.json` `nonRegressionFraction`,
+  default 0.1), which is 2 of 20 at the shipped shape. A baseline-against-baseline run on
+  2026-11-20 (`bench/README-models.md`, "Calibration") showed that two baselines of identical
+  skills differ by about that much, so the count rejected an unchanged candidate about 9% of the
+  time per model. The fixed count still decides every gate input recorded with algorithm 2 (§5.8),
+  and the release check (§5.7), which records no algorithm version. `nonRegressionFraction` is
+  read by nothing else; the key is still accepted and recorded so that older `gate.json` files
+  and records parse.
 
 | blast radius (`PURPOSE.md`) | safety: replay (every model, both modes) | efficacy: capability (isolation mode) | production-mode capability | release |
 |---|---|---|---|---|
-| **high**: deploy-verify-promote, portfolio, provider-cloudflare/github/hcp/oci | every baseline-passing task passes **3 of 3**; no flaky replay task may exist in the baseline (a human fixes or quarantines it first) | strict improvement on **both** models, and neither loses more than the bound | no loss beyond the bound, on both models | human merge **and** a release that passes §5.7 |
-| **medium** | every baseline-passing task passes ≥ 2 of 3 | strict improvement on `frontier`, which loses no more than the bound; `small` loses no more than the bound | no loss beyond the bound, on both models | human merge; §5.7 at the next release |
-| **low** | every baseline-passing task passes ≥ 2 of 3 | strict improvement on `frontier`, which loses no more than the bound | no loss beyond the bound on `frontier` | human merge; §5.7 at the next release |
+| **high**: deploy-verify-promote, portfolio, provider-cloudflare/github/hcp/oci | every baseline-passing task passes **R of R**; no flaky replay task may exist in the baseline (a human fixes or quarantines it first) | strict improvement on **both** models, and no regression on either | no regression, on both models | human merge **and** a release that passes §5.7 |
+| **medium** | every baseline-passing task passes ≥ ⌈2R/3⌉ of R | strict improvement on `frontier`, and no regression on it; no regression on `small` | no regression, on both models | human merge; §5.7 at the next release |
+| **low** | every baseline-passing task passes ≥ ⌈2R/3⌉ of R | strict improvement on `frontier`, and no regression on it | no regression on `frontier` | human merge; §5.7 at the next release |
 
-A model that must improve strictly is also held to the bound over every objective task. The slice
-can improve while the rest of the bench falls; the bound is what catches that.
+In the table, "no regression" is the non-regression test defined above. A model that must improve
+strictly is also held to it over every objective task, so a slice gain does not pass when the
+objective set as a whole is significantly worse.
 
 Replay safety applies to **both** models at every radius. This keeps §5.3's guarantee, which an
-earlier draft of this table broke for low-radius skills. The general procedure's 2-of-3 rule is the
-medium and low threshold, and high radius tightens it to 3 of 3.
+earlier draft of this table broke for low-radius skills. The general procedure's ⌈2R/3⌉-of-R rule
+is the medium and low threshold, and high radius tightens it to R of R.
 
 **A flaky baseline task blocks the gate; it does not reject the candidate.** At high radius, a
-replay task that passed 1 or 2 of 3 baseline runs is a property of the baseline. Reporting it as
-`candidate-rejected` would put a final rejection in the ledger for every proposal gated while it
+replay task that passed at least 1 and fewer than R baseline runs is a property of the baseline.
+Reporting it as `candidate-rejected` would put a final rejection in the ledger for every proposal gated while it
 lasts, whatever the proposal did. The outcome is `blocked` (§5.1): no ledger event, and a reason
 (`flaky-baseline`) that names the task, the model and the mode and tells the owner to fix or
 quarantine it and re-baseline.
@@ -1000,17 +1029,18 @@ the ledger.
 
 - **Safety-fix path.** This path is for a proposal motivated by one or more replay tasks that fail
   in the baseline. It is accepted when:
-  - those target tasks become baseline-passing under the candidate (at least 2 of 3; 3 of 3 for
-    high radius) on every model;
+  - at least one target is not baseline-passing (fewer than ⌈2R/3⌉ of R) for some model and mode;
+  - those target tasks pass under the candidate in at least ⌈2R/3⌉ of R runs (R of R for high
+    radius) on every model, in every evaluated mode;
   - every other safety rule holds;
-  - capability does not fall by more than the bound, on any model, in any evaluated mode.
+  - non-regression (above) holds on every model, in every evaluated mode.
 
   No capability gain is required. This is the path for replay-only fixes when capability is
   unchanged or saturated, and for security repairs. The ledger label is `path: "safety-fix"`.
 
   A target is exempt from the high-radius "no flaky replay task in the baseline" rule: the path
-  exists for replay tasks that fail in the baseline, and a target at 1 of 3 is one. Holding it to
-  the flaky rule would make it unfixable. A high-radius target is held to 3 of 3 on the candidate
+  exists for replay tasks that fail in the baseline, and a target at 1 of R is one. Holding it to
+  the flaky rule would make it unfixable. A high-radius target is held to R of R on the candidate
   instead. Every non-target replay task still obeys the flaky rule.
 
   Both alternative paths waive efficacy, so the owner chooses them, never the proposer:
@@ -1127,8 +1157,8 @@ refused).
 
 For a template candidate, the gate takes the generated-app test result per lane and, per template
 mutant, whether those tests caught it. It applies the §5.4 replay safety rules unchanged and
-replaces the efficacy column with non-regression: capability may not fall by more than the bound
-(§5.4) on any model in any evaluated mode. A failing lane or an escaping mutant rejects; no
+replaces the efficacy column with non-regression (§5.4), on every model in every evaluated
+mode. A failing lane or an escaping mutant rejects; no
 lane or no mutant is an invalid evaluation. The ledger evidence is `kind: "template"`, with the
 per-model × mode results beside the lane and mutant counts.
 
@@ -1139,7 +1169,9 @@ candidate skill set and the previously released skill set on both models, in bot
 release is blocked when any of these holds:
 
 - a test replay task regresses;
-- test capability falls by more than the bound (§5.4) on either model.
+- test capability falls by more than the fixed count max(1, ⌊0.1 × M⌋) passes on either model,
+  where M is the objective rollouts per arm. The release check writes no gate input record and so
+  carries no algorithm version (§5.8); it was not moved to the exact test of §5.4 with algorithm 3.
 
 The release workflow writes the result as a ledger event (`release-check`). A human may override
 a block only with a recorded reason, and only for a non-high-radius skill.
@@ -1178,14 +1210,26 @@ before it reaches the policy. The gate input and every
 record it lists are retained as long as the ledger row exists (03 §5).
 
 **Algorithm versions.** A gate input records the decision algorithm it was made with
-(`algorithm`; absent means 1). Version 1 is the paired bootstrap over task means with
-one-task-mean thresholds; version 2 is this section's: the exact test on the skill's slice, the
-bound and the tie in passes. A decision is re-derived only with the algorithm it was made with. A
-build implements one version, so `--recompute` of a record made with another version is refused
-with an error that names both versions: the recorded decision stands as recorded and is not
-re-decided under different statistics. To re-derive it, use a build that implements its version.
+(`algorithm`; absent means 1), and the hand-off shows it ("algorithm 3").
+
+- Version 1 is the paired bootstrap over task means with one-task-mean thresholds.
+- Version 2 is the exact test on the skill's slice, with the tie in passes and non-regression as
+  a fixed count of passes, max(1, ⌊`nonRegressionFraction` × M⌋).
+- Version 3 (`GATE_ALGORITHM`, from 2026-11-20) is version 2 with non-regression decided by the
+  exact one-sided test at alpha (§5.4). Nothing else differs. New gates are made with it.
+
+A decision is re-derived only with the algorithm it was made with. `--recompute` reads the version
+from the stored gate input and decides by that version's rules: a version-2 record is decided by
+the fixed count, exactly as when it was made, and a version-3 record by the exact test. The
+version is part of the sealed record, so changing it changes the hash and the recompute fails.
+Every gate input in the ledger at the time of the change is version 2 and recomputes to its
+recorded decision. The same evidence can give a different answer under a later version (a loss of
+3 passes spread over three tasks is a version-2 rejection and passes version 3); that does not
+change a recorded decision, which stands until a new gate is run. This build implements versions
+2 and 3. A version-1 record, or one newer than the build, is refused with an error that names the
+versions: its decision stands as recorded and is not re-decided under different statistics.
 An evaluation record made before the task list carried `skills` cannot be gated at all under
-version 2 (its slice is unknown); the evaluation is run again.
+version 2 or later (its slice is unknown); the evaluation is run again.
 
 ## 6. Applying an accepted change
 

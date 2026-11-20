@@ -2,6 +2,8 @@ import type { TaskSpec } from '../schema/bench';
 import type { GateResult } from '../schema/ledger';
 import {
   type BenchOutcome,
+  EXACT_NON_REGRESSION_SINCE,
+  GATE_ALGORITHM,
   type GateMode,
   type Stratum,
   perTaskMeans,
@@ -14,10 +16,17 @@ import {
  * the two gate models (§5.3) in each evaluated mode (§4.7); the output is one GateResult per
  * model × mode (08 §8) plus an overall decision with machine-readable reasons.
  *
- * All threshold comparisons are done in integer pass counts, never floats: the non-regression
- * bound is a number of passes (`lossBound`), a tie is a number of passes (`tieTolerance`), and a
- * replay task "passes k of R" is a count. The boundary vectors (13 §2.8) sit exactly on these
- * integer edges, so there is no rounding to argue about.
+ * Threshold comparisons are done in integer pass counts, never floats: a tie is a number of passes
+ * (`tieTolerance`), a replay task "passes k of R" is a count, and the legacy non-regression bound
+ * is a number of passes (`lossBound`). The boundary vectors (13 §2.8) sit exactly on these integer
+ * edges, so there is no rounding to argue about.
+ *
+ * Non-regression (§5.4) depends on the gate's algorithm version (`PolicyInput.algorithm`). From
+ * version 3 it is the exact stratified permutation test of §5.2 in the other direction, over every
+ * gated objective task: a cell regresses when the one-sided p for "the candidate is worse" is
+ * ≤ alpha. Versions ≤ 2 use the fixed count `lossBound`; that path is kept so `recompute`
+ * reproduces every decision made under it, and is labelled LEGACY below. The release check (§5.7)
+ * records no algorithm version and still uses the fixed count.
  *
  * Efficacy (§5.2) is an exact stratified permutation test over the ROLLOUTS of the patched skill's
  * slice (the objective tasks whose `skills` name it). When the smallest p any candidate could
@@ -145,8 +154,12 @@ export interface PolicyInput {
    * `skills` name it. Absent (a template candidate, which has no efficacy rule): every objective
    * task. A skill no objective task names has an empty slice, so the outcome is `underpowered`. */
   skill?: string;
-  /** The non-regression bound as a fraction of the objective rollouts per arm (06 §5.4): a model
-   * may lose at most max(1, ⌊fraction × tasks × runs⌋) passes. Default 0.1. */
+  /** The gate's decision algorithm (stats.ts `GATE_ALGORITHM`). Default: the current one. It
+   * selects the non-regression rule: the exact test from version 3, the fixed count below. */
+  algorithm?: number;
+  /** LEGACY, algorithm versions ≤ 2 only: the non-regression bound as a fraction of the objective
+   * rollouts per arm. A model may lose at most max(1, ⌊fraction × tasks × runs⌋) passes. Default
+   * 0.1. Ignored from version 3. */
   nonRegressionFraction?: number;
   /** safety-fix path: the replay tasks that motivated the proposal (06 §5.4). */
   safetyFixTargets?: readonly string[];
@@ -192,9 +205,9 @@ export const DEFAULT_NON_REGRESSION_FRACTION = 0.1;
 const TIE_TOLERANCE_DIVISOR = 20;
 
 /**
- * The non-regression bound in passes (06 §5.4): over `rollouts` objective rollouts per arm (tasks ×
- * runs), a model may lose at most max(1, ⌊fraction × rollouts⌋) passes. One pass is always
- * tolerated (a single rollout is noise at any size); beyond that the bound scales with the bench.
+ * LEGACY (gate algorithm versions ≤ 2, and the release check of 06 §5.7): the non-regression bound
+ * in passes. Over `rollouts` objective rollouts per arm (tasks × runs), a model may lose at most
+ * max(1, ⌊fraction × rollouts⌋) passes. Gates of algorithm 3 and later do not use it (06 §5.4).
  */
 export function lossBound(rollouts: number, fraction = DEFAULT_NON_REGRESSION_FRACTION): number {
   return Math.max(1, Math.floor(rollouts * fraction + 1e-9));
@@ -263,6 +276,9 @@ export interface CellStats {
   /** The smallest p any candidate could reach against this baseline; null when p is not computed
    * or the slice is empty. */
   minP: number | null;
+  /** Non-regression (06 §5.4, algorithm ≥ 3): the exact one-sided p for "the candidate is worse
+   * than the baseline" over every objective task. Null with no objective task. */
+  lossP: number | null;
 }
 
 interface Gated {
@@ -499,6 +515,10 @@ function cellStats(
     objective,
     slice,
     diffUnits: sum(objective, 'candPasses') - sum(objective, 'basePasses'),
+    lossP: stratifiedExactTest(
+      objective.map((o) => ({ baseline: o.basePasses, candidate: o.candPasses, runs: r })),
+      'less',
+    ).pValue,
     sliceDiff: sliceCand - sliceBase,
     before: n === 0 ? 0 : sliceBase / (n * r),
     after: n === 0 ? 0 : sliceCand / (n * r),
@@ -581,13 +601,44 @@ function replaySafety(
   return { reasons, blocked, info, regressions, baselinePassing, passing };
 }
 
-/** Non-regression (06 §5.4): over every objective task, the cell loses at most `lossBound` passes. */
-function noWorse(c: CellStats, fraction: number): boolean {
+/** The non-regression rule of one gate: the algorithm version selects it (06 §5.4, §5.8). */
+interface NonRegression {
+  /** True for versions ≥ 3 (the exact test); false for the legacy fixed count. */
+  exact: boolean;
+  alpha: number;
+  /** LEGACY (versions ≤ 2): the fixed-count fraction. */
+  fraction: number;
+}
+
+/** LEGACY (algorithm ≤ 2): over every objective task, the cell loses at most `lossBound` passes. */
+function noWorseFixedCount(c: CellStats, fraction: number): boolean {
   return c.diffUnits >= -lossBound(c.objective.length * c.runs, fraction);
 }
 
-const lossDetail = (c: CellStats, fraction: number): string =>
-  `Δ ${c.diffUnits} passes over ${c.objective.length} tasks × ${c.runs} runs; at most ${lossBound(c.objective.length * c.runs, fraction)} may be lost`;
+/** Algorithm ≥ 3: the cell is a regression when the exact one-sided p for "the candidate is worse"
+ * over every objective task is ≤ alpha. A loss that is not significant passes. */
+function noWorseExact(c: CellStats, alpha: number): boolean {
+  return c.lossP === null || !(c.lossP <= alpha);
+}
+
+function noWorse(c: CellStats, rule: NonRegression): boolean {
+  return rule.exact ? noWorseExact(c, rule.alpha) : noWorseFixedCount(c, rule.fraction);
+}
+
+/** A p-value for a reason text: 3 significant digits (the comparison itself uses the exact value). */
+const shownP = (p: number | null): string =>
+  p === null ? 'not computed' : `${Number(p.toPrecision(3))}`;
+
+function lossDetail(c: CellStats, rule: NonRegression): string {
+  const shape = `Δ ${c.diffUnits} passes over ${c.objective.length} tasks × ${c.runs} runs`;
+  if (!rule.exact) {
+    // LEGACY wording, unchanged.
+    return `${shape}; at most ${lossBound(c.objective.length * c.runs, rule.fraction)} may be lost`;
+  }
+  const total = c.objective.length * c.runs;
+  const passes = (k: 'basePasses' | 'candPasses') => c.objective.reduce((s, o) => s + o[k], 0);
+  return `baseline ${passes('basePasses')}/${total}, candidate ${passes('candPasses')}/${total}: ${shape}; one-sided exact p ${shownP(c.lossP)} ≤ alpha ${rule.alpha}`;
+}
 
 function capabilityLabel(mode: GateMode): ReasonCode {
   return mode === 'isolation' ? 'capability-regression' : 'production-regression';
@@ -631,7 +682,7 @@ function standardCapability(
   role: 'frontier' | 'small',
   radius: BlastRadius,
   alpha: number,
-  fraction: number,
+  rule: NonRegression,
   powered: boolean,
 ): PolicyReason[] {
   const at = { model: c.model, mode: c.mode };
@@ -653,30 +704,30 @@ function standardCapability(
         }
       }
       // The slice may improve while the rest of the bench falls: the whole objective set is
-      // held to the non-regression bound as well.
-      if (!noWorse(c, fraction)) {
+      // held to the non-regression rule as well.
+      if (!noWorse(c, rule)) {
         out.push({
           code: 'capability-regression',
           severity: 'fail',
           ...at,
-          detail: lossDetail(c, fraction),
+          detail: lossDetail(c, rule),
         });
       }
       return out;
     }
-    // medium: small no worse than the bound; low: no efficacy rule on small.
-    if (radius === 'medium' && !noWorse(c, fraction)) {
+    // medium: small not regressed; low: no efficacy rule on small.
+    if (radius === 'medium' && !noWorse(c, rule)) {
       return [
-        { code: 'capability-regression', severity: 'fail', ...at, detail: lossDetail(c, fraction) },
+        { code: 'capability-regression', severity: 'fail', ...at, detail: lossDetail(c, rule) },
       ];
     }
     return [];
   }
   // production: both models at high and medium, frontier only at low.
   const checked = radius !== 'low' || role === 'frontier';
-  if (checked && !noWorse(c, fraction)) {
+  if (checked && !noWorse(c, rule)) {
     return [
-      { code: 'production-regression', severity: 'fail', ...at, detail: lossDetail(c, fraction) },
+      { code: 'production-regression', severity: 'fail', ...at, detail: lossDetail(c, rule) },
     ];
   }
   return [];
@@ -688,7 +739,11 @@ function standardCapability(
 export function applyPolicy(input: PolicyInput): PolicyOutput {
   const runs = input.runs ?? DEFAULT_RUNS;
   const alpha = input.alpha ?? DEFAULT_ALPHA;
-  const fraction = input.nonRegressionFraction ?? DEFAULT_NON_REGRESSION_FRACTION;
+  const rule: NonRegression = {
+    exact: (input.algorithm ?? GATE_ALGORITHM) >= EXACT_NON_REGRESSION_SINCE,
+    alpha,
+    fraction: input.nonRegressionFraction ?? DEFAULT_NON_REGRESSION_FRACTION,
+  };
   const modes = sortModes(input.modes);
   const roles = [
     ['frontier', input.models.frontier],
@@ -833,13 +888,13 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
           ? powerProblem(stats, alpha, input.skill)
           : null;
       // Reading (06 §5.6 template): "capability rollouts on cells using the template do not
-      // regress in either mode" is the non-regression bound of §5.4, on every model.
+      // regress in either mode" is the non-regression rule of §5.4, on every model.
       const capability = standardSkill
-        ? standardCapability(stats, role, input.radius, alpha, fraction, power === null)
-        : // Reading (06 §5.4, alternative paths): "capability does not fall by more than the
-          // bound" / "non-regression must hold" applies to every model in both modes, which is
-          // stricter than the standard path's per-radius production column.
-          noWorse(stats, fraction)
+        ? standardCapability(stats, role, input.radius, alpha, rule, power === null)
+        : // Reading (06 §5.4, alternative paths): "non-regression must hold" applies to every
+          // model in both modes, which is stricter than the standard path's per-radius
+          // production column.
+          noWorse(stats, rule)
           ? []
           : [
               {
@@ -847,7 +902,7 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
                 severity: 'fail' as const,
                 model,
                 mode,
-                detail: lossDetail(stats, fraction),
+                detail: lossDetail(stats, rule),
               },
             ];
       const target: PolicyReason[] = [];
@@ -1026,7 +1081,8 @@ export interface ReleasePolicyInput {
   /** Reading (06 §5.7): at high radius a test replay "regression" uses the 3-of-3 threshold of
    * §5.4, stricter than the general 2-of-3. Defaults to medium (2 of 3). */
   radius?: BlastRadius;
-  /** As PolicyInput.nonRegressionFraction. */
+  /** The fixed-count fraction (`lossBound`). The release check records no algorithm version, so
+   * it still uses the fixed count. Default 0.1. */
   nonRegressionFraction?: number;
 }
 
@@ -1041,7 +1097,11 @@ export function releasePolicy(input: ReleasePolicyInput): {
 } {
   const runs = input.runs ?? DEFAULT_RUNS;
   const radius = input.radius ?? 'medium';
-  const fraction = input.nonRegressionFraction ?? DEFAULT_NON_REGRESSION_FRACTION;
+  const rule: NonRegression = {
+    exact: false,
+    alpha: DEFAULT_ALPHA,
+    fraction: input.nonRegressionFraction ?? DEFAULT_NON_REGRESSION_FRACTION,
+  };
   const modes = sortModes(input.modes);
   const gated = gatedTasks(input.tasks);
   const ids = [input.models.frontier, input.models.small];
@@ -1074,13 +1134,13 @@ export function releasePolicy(input: ReleasePolicyInput): {
       // §5.7 has no flaky-baseline rule; only regressions block.
       const safety = replaySafety(c, radius, new Set());
       const fails = safety.reasons.filter((r) => r.code === 'replay-regression');
-      if (!noWorse(c, fraction)) {
+      if (!noWorse(c, rule)) {
         fails.push({
           code: capabilityLabel(mode),
           severity: 'fail',
           model,
           mode,
-          detail: lossDetail(c, fraction),
+          detail: lossDetail(c, rule),
         });
       }
       reasons.push(...fails);

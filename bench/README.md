@@ -447,7 +447,8 @@ pnpm greenlight bench iterate --scope all --safety-fix replay/idle-probe-leaves-
 
 The named tasks (comma-separated, each an active val replay task) must fail in the baseline and
 pass under the candidate. No capability gain is required; replay safety on the other replay tasks
-and the non-regression bound still apply. The path waives efficacy, so the owner chooses it and
+and the non-regression test (06 §5.4: a loss is a regression when its exact one-sided p is at
+most alpha) still apply. The path waives efficacy, so the owner chooses it and
 the proposer cannot: the targets are fixed when the iteration is created, a resume that names
 others is refused, and the control arm is still gated on the standard path. The ledger event
 carries `path: "safety-fix"`.

@@ -229,8 +229,11 @@ the policy table (06 §5.4). For each blast radius, model and mode, the vectors 
 - replay at 3/3, 2/3 and 1/3;
 - a flaky baseline task (high radius: `blocked`, not a rejection);
 - p = 0.049 and p = 0.051;
-- a capability delta exactly at the non-regression bound, and one pass beyond it;
-- a production-mode drop exactly at the bound;
+- a capability loss whose exact one-sided p is exactly alpha (a regression: the rule is
+  p ≤ alpha), one just above it, and a clearly significant one, in isolation and production mode
+  (06 §5.4, algorithm 3);
+- the legacy fixed-count vectors (a delta exactly at the algorithm-2 bound, and one pass beyond
+  it), pinned to `algorithm: 2` with the outcomes that version gave;
 - the safety-fix path with the target replay at 1/3 → 2/3;
 - the neutral path with and without a recorded reason;
 - an early stop at R = 1.0.
@@ -249,7 +252,8 @@ statistics. Two more suites cover what they cannot:
   shipped (2 objective tasks, 2 replay, 3 runs, 2 models) and on the sealed baseline's pattern
   (every objective cell 0/3, one replay 1/3 on `frontier`): the slice rule, `underpowered`, the
   type-I rate with identical arms, a flaky baseline as `blocked`, vacuous safety surfaced, the
-  control arm inconclusive, and the bound at two tasks.
+  control arm inconclusive, and non-regression under algorithm 3 and under the legacy algorithm 2,
+  including a version-2 gate input that recomputes to its recorded decision.
 
 ### 2.9 Evidence identity
 

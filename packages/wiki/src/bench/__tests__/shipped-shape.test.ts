@@ -2,13 +2,15 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { expand, identityTasksFor } from '../../__tests__/fixtures/policy/vectors';
 import { type EvaluationRecord, sealRecord } from '../../schema/bench';
-import { LedgerEventSchema } from '../../schema/ledger';
+import { type LedgerEvent, LedgerEventSchema } from '../../schema/ledger';
 import {
   type GateContext,
   controlOutcome,
   decide,
   loadGateConfig,
+  recompute,
   rejectedForReplayRegression,
+  sameDecision,
 } from '../gate';
 import { type BlastRadius, type PolicyTask, applyPolicy, lossBound } from '../policy';
 import { choose } from '../stats';
@@ -175,7 +177,8 @@ describe('the shipped val split, once every task is active', () => {
     expect(objective.filter((t) => t.skills?.includes('greenlight-wiki')).map((t) => t.id)).toEqual(
       [WIKI_SUPERSEDE, WIKI],
     );
-    // 4 objective tasks × 5 runs: a model may lose two passes, no more (06 §5.4)
+    // 4 objective tasks × 5 runs. The legacy (algorithm ≤ 2) fixed count let a model lose two
+    // passes, no more; from algorithm 3 a loss is tested exactly (06 §5.4).
     expect(R).toBe(5);
     expect(lossBound(objective.length * R)).toBe(2);
   });
@@ -324,7 +327,7 @@ describe('a two-task slice × 3 runs: the smallest shape that can decide', () =>
       expect(r.capability.minP).toBe(1 / 400);
     }
     LedgerEventSchema.parse(d.ledgerEvent);
-    expect(d.gateInput?.algorithm).toBe(2);
+    expect(d.gateInput?.algorithm).toBe(3);
   });
 
   it('decides on rollouts, not on the sign of two task means', () => {
@@ -474,8 +477,8 @@ describe('the sealed baseline pattern: objective 0/3 everywhere, one replay 1/3 
   });
 });
 
-describe('non-regression in passes (06 §5.4)', () => {
-  it('the bound is max(1 pass, 10% of the objective rollouts)', () => {
+describe('non-regression (06 §5.4): the exact test from algorithm 3, the fixed count before', () => {
+  it('LEGACY (algorithm ≤ 2): the bound is max(1 pass, 10% of the objective rollouts)', () => {
     expect(lossBound(6)).toBe(1); // the first baseline: 2 objective tasks × 3 runs
     expect(lossBound(12)).toBe(1); // the shipped split, all active: 4 objective tasks × 3 runs
     expect(lossBound(9)).toBe(1);
@@ -484,37 +487,188 @@ describe('non-regression in passes (06 §5.4)', () => {
     expect(lossBound(60)).toBe(6);
   });
 
-  it('medium radius: the small model may lose one pass of six, not half its capability', () => {
+  describe('medium radius, 2 objective tasks × 3 runs: the small model is held to non-regression only', () => {
     const base: Worlds = { [F]: world(3, 3, 0, 0), [S]: world(3, 3, 3, 3) };
     const cand = (wiki: number, loop: number): Worlds => ({
       [F]: world(3, 3, 3, 3),
       [S]: world(3, 3, wiki, loop),
     });
     const tasks = TWO_TASK_SLICE;
-    expect(gate(base, cand(3, 2), { tasks }).decision).toBe('accept'); // −1 pass
-    // −3 passes: 1.0 → 0.5 on the small model. "One task-mean" (3 passes at N = 2) accepted this.
-    const half = gate(base, cand(3, 0), { tasks });
-    expect(half.decision).toBe('reject');
-    expect(half.reasons).toContainEqual(
-      expect.objectContaining({
-        code: 'capability-regression',
-        model: S,
-        detail: 'Δ -3 passes over 2 tasks × 3 runs; at most 1 may be lost',
-      }),
-    );
-    expect(gate(base, cand(2, 2), { tasks }).decision).toBe('reject'); // −2 passes
+
+    it('algorithm 3: a loss is a regression when its exact p is ≤ alpha', () => {
+      expect(gate(base, cand(3, 2), { tasks }).decision).toBe('accept'); // −1 pass, p = 1/2
+      expect(gate(base, cand(2, 2), { tasks }).decision).toBe('accept'); // −2 passes, p = 1/4
+      expect(gate(base, cand(3, 1), { tasks }).decision).toBe('accept'); // −2 passes, p = 1/5
+      // −3 passes on one task, 1.0 → 0.5 on the small model: p = 1/20 = alpha.
+      const half = gate(base, cand(3, 0), { tasks });
+      expect(half.decision).toBe('reject');
+      expect(half.reasons).toContainEqual(
+        expect.objectContaining({
+          code: 'capability-regression',
+          model: S,
+          detail:
+            'baseline 6/6, candidate 3/6: Δ -3 passes over 2 tasks × 3 runs; one-sided exact p 0.05 ≤ alpha 0.05',
+        }),
+      );
+    });
+
+    it('LEGACY (algorithm 2): the small model may lose one pass of six', () => {
+      const legacy = { tasks, algorithm: 2 };
+      expect(gate(base, cand(3, 2), legacy).decision).toBe('accept'); // −1 pass
+      // −3 passes: 1.0 → 0.5 on the small model. "One task-mean" (3 passes at N = 2) accepted this.
+      const half = gate(base, cand(3, 0), legacy);
+      expect(half.decision).toBe('reject');
+      expect(half.reasons).toContainEqual(
+        expect.objectContaining({
+          code: 'capability-regression',
+          model: S,
+          detail: 'Δ -3 passes over 2 tasks × 3 runs; at most 1 may be lost',
+        }),
+      );
+      expect(gate(base, cand(2, 2), legacy).decision).toBe('reject'); // −2 passes
+    });
   });
 
-  it('a gain on the slice does not excuse a loss on the rest of the bench', () => {
-    // The slice is the loop task alone; the off-slice wiki task collapses (3/3 → 0/3) while the
-    // loop task gains one pass: −2 passes over the objective set, beyond the bound of 1.
+  describe('a loss off the slice, with the slice too small to test', () => {
+    // The slice is the loop task alone; the off-slice wiki task collapses (3/3 → 0/3). With the
+    // loop baseline at 0/3 the slice's minimum p is 1/20, not below alpha: underpowered.
     const split: PolicyTask[] = FIRST.map((t) => (t.id === LOOP ? { ...t, skills: [SHARED] } : t));
-    const d = gate(both(world(3, 3, 3, 2)), both(world(3, 3, 0, 3)), { tasks: split });
-    expect(d.decision).toBe('reject');
-    expect(codes(d)).toContain('capability-regression');
-    // The slice itself was too small to test: reported, but the rejection stands without it.
-    expect(d.reasons).toContainEqual(
-      expect.objectContaining({ code: 'underpowered', severity: 'info' }),
-    );
+
+    it('algorithm 3: the collapse is a regression (p = 1/20) when the slice does not move', () => {
+      const d = gate(both(world(3, 3, 3, 0)), both(world(3, 3, 0, 0)), { tasks: split });
+      expect(d.decision).toBe('reject');
+      expect(codes(d)).toContain('capability-regression');
+      // The slice itself was too small to test: reported, but the rejection stands without it.
+      expect(d.reasons).toContainEqual(
+        expect.objectContaining({ code: 'underpowered', severity: 'info' }),
+      );
+    });
+
+    it('algorithm 3: the statistic is the pass total, so one pass gained on the slice offsets it', () => {
+      // −3 on the wiki task, +1 on the loop task: Σ −2, p = 0.275. Not a regression; the cell is
+      // left with the underpowered slice, so there is no decision.
+      const d = gate(both(world(3, 3, 3, 0)), both(world(3, 3, 0, 1)), { tasks: split });
+      expect(codes(d)).not.toContain('capability-regression');
+      expect(d.decision).toBe('underpowered');
+    });
+
+    it('LEGACY (algorithm 2): a gain on the slice does not excuse a loss on the rest of the bench', () => {
+      // −2 passes over the objective set, beyond the bound of 1.
+      const d = gate(both(world(3, 3, 3, 2)), both(world(3, 3, 0, 3)), {
+        tasks: split,
+        algorithm: 2,
+      });
+      expect(d.decision).toBe('reject');
+      expect(codes(d)).toContain('capability-regression');
+      expect(d.reasons).toContainEqual(
+        expect.objectContaining({ code: 'underpowered', severity: 'info' }),
+      );
+    });
+  });
+
+  describe('the shipped shape, 4 objective tasks × 5 runs, baseline 5, 5, 5, 0 (calibration 2026-11-20)', () => {
+    const R = gateConfig.runs;
+    const world4 = (wiki: number, wiki2: number, loop: number, route: number): World => ({
+      [KEEPALIVE]: R,
+      [IDLE]: R,
+      [WIKI]: wiki,
+      [WIKI_SUPERSEDE]: wiki2,
+      [LOOP]: loop,
+      [LOOP_ROUTE]: route,
+    });
+    const base = both(world4(5, 5, 5, 0));
+    // The neutral path holds every model to non-regression and nothing else.
+    const neutral = (cand: World, over: Partial<GateContext> = {}) =>
+      gate(base, both(cand), {
+        tasks: ALL,
+        skill: 'deploy-verify-promote',
+        path: 'neutral',
+        neutralReason: 'no behaviour change intended',
+        config: gateConfig,
+        ...over,
+      });
+    const regressions = (d: ReturnType<typeof gate>) =>
+      d.reasons.filter((r) => r.code === 'capability-regression');
+
+    it('(a) −3 passes spread over three tasks: not rejected under algorithm 3, rejected under 2', () => {
+      const spread = world4(4, 4, 4, 0);
+      const now = neutral(spread);
+      expect(now.algorithm).toBe(3);
+      expect(now.gateInput?.algorithm).toBe(3);
+      expect(now.decision).toBe('accept'); // p = 1/8
+      expect(regressions(now)).toEqual([]);
+      expect(now.results.every((r) => r.decision === 'pass')).toBe(true);
+
+      const legacy = neutral(spread, { algorithm: 2 });
+      expect(legacy.gateInput?.algorithm).toBe(2);
+      expect(legacy.decision).toBe('reject');
+      expect(regressions(legacy).map((r) => r.detail)).toEqual([
+        'Δ -3 passes over 4 tasks × 5 runs; at most 2 may be lost',
+        'Δ -3 passes over 4 tasks × 5 runs; at most 2 may be lost',
+      ]);
+    });
+
+    it('(a) the same on the standard path: the small model at medium radius', () => {
+      // `frontier` gains 0/5 → 5/5 on its slice; `small` loses 3 passes with no gain.
+      const cand: Worlds = { [F]: world4(5, 5, 5, 5), [S]: world4(4, 4, 4, 0) };
+      const ctx = { tasks: ALL, skill: 'deploy-verify-promote', config: gateConfig };
+      expect(gate(base, cand, ctx).decision).toBe('accept');
+      const legacy = gate(base, cand, { ...ctx, algorithm: 2 });
+      expect(legacy.decision).toBe('reject');
+      expect(regressions(legacy).map((r) => r.model)).toEqual([S]);
+    });
+
+    it('(b) a significant loss is rejected under algorithm 3, with counts, delta and p', () => {
+      // −4 passes as two on each of two tasks: p = (56/252)² ≈ 0.0494.
+      const d = neutral(world4(3, 3, 5, 0));
+      expect(d.decision).toBe('reject');
+      expect(regressions(d)).toEqual(
+        [F, S].map((model) => ({
+          code: 'capability-regression',
+          severity: 'fail',
+          model,
+          mode: 'isolation',
+          detail:
+            'baseline 15/20, candidate 11/20: Δ -4 passes over 4 tasks × 5 runs; one-sided exact p 0.0494 ≤ alpha 0.05',
+        })),
+      );
+      expect(d.ledgerEvent?.stage).toBe('candidate-rejected');
+      expect(d.ledgerEvent?.reason).toMatch(/rejected: capability-regression/);
+      // One task collapsing is rejected too (p = 1/252); −3 on one task is not (p = 1/12).
+      expect(neutral(world4(0, 5, 5, 0)).decision).toBe('reject');
+      expect(neutral(world4(2, 5, 5, 0)).decision).toBe('accept');
+    });
+
+    it('(c) a version-2 gate input still decides by the fixed count, and recomputes as recorded', () => {
+      const spread = both(world4(4, 4, 4, 0));
+      const records = [
+        record('base', base, ALL, 'prop-1', R),
+        record('cand', spread, ALL, 'prop-1', R),
+      ];
+      const legacy = neutral(spread[F] as World, { algorithm: 2 });
+      const now = neutral(spread[F] as World);
+      if (!legacy.gateInput || !now.gateInput) throw new Error('no gate input');
+      // The stored record, as `bench gate --recompute` reads it from disk.
+      const stored2 = JSON.parse(JSON.stringify(legacy.gateInput));
+      const stored3 = JSON.parse(JSON.stringify(now.gateInput));
+      expect(stored2.algorithm).toBe(2);
+      expect(stored3.algorithm).toBe(3);
+      expect(stored2.hash).not.toBe(stored3.hash);
+      const again2 = recompute(stored2, records);
+      expect(again2.decision).toBe('reject');
+      expect(again2.algorithm).toBe(2);
+      expect(JSON.stringify(again2)).toBe(JSON.stringify(legacy));
+      expect(sameDecision(legacy.ledgerEvent as LedgerEvent, again2)).toBe(true);
+      const again3 = recompute(stored3, records);
+      expect(again3.decision).toBe('accept');
+      expect(JSON.stringify(again3)).toBe(JSON.stringify(now));
+      // A version-2 record is never matched by the version-3 decision on the same evidence.
+      expect(sameDecision(legacy.ledgerEvent as LedgerEvent, again3)).toBe(false);
+    });
+
+    it('refuses an algorithm this build does not implement', () => {
+      expect(() => neutral(world4(5, 5, 5, 0), { algorithm: 1 })).toThrow(/not implemented/);
+      expect(() => neutral(world4(5, 5, 5, 0), { algorithm: 4 })).toThrow(/not implemented/);
+    });
   });
 });

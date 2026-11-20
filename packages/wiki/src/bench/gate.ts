@@ -24,7 +24,7 @@ import {
   earlyStop,
   releasePolicy,
 } from './policy';
-import { GATE_ALGORITHM, type GateMode } from './stats';
+import { GATE_ALGORITHM, type GateMode, SUPPORTED_GATE_ALGORITHMS } from './stats';
 
 /**
  * The gate (vision 06 §5.1–§5.8, roadmap M1-08): checks the identity of every record, applies the
@@ -41,7 +41,10 @@ export const GateConfigSchema = z.object({
   alpha: z.number().gt(0).lt(1).default(0.05),
   runs: z.number().int().min(1).default(3),
   acceptShorterOnTie: z.boolean().default(false),
-  /** 06 §5.4: a model may lose at most max(1, ⌊fraction × objective rollouts⌋) passes. */
+  /** Used only by gate algorithm versions ≤ 2 (06 §5.4, §5.8): a model may lose at most
+   * max(1, ⌊fraction × objective rollouts⌋) passes. From version 3 non-regression is the exact
+   * one-sided test at `alpha` and this key is ignored. It stays accepted, and recorded in every
+   * gate input, so older gate.json files and older records still parse and recompute. */
   nonRegressionFraction: z.number().gt(0).lt(1).default(DEFAULT_NON_REGRESSION_FRACTION),
   /** 06 §1.5 / §5.1: a baseline older than this at the gate's ts is re-run, never compared. */
   maxBaselineAgeDays: z.number().int().min(1).default(30),
@@ -63,14 +66,15 @@ export class GateHarnessError extends Error {
   }
 }
 
-/** `recompute` was given a gate input made with another decision algorithm (06 §5.2, §5.8). */
+/** `recompute` was given a gate input made with a decision algorithm this build does not implement
+ * (06 §5.2, §5.8): version 1, or one newer than `GATE_ALGORITHM`. */
 export class GateAlgorithmError extends GateHarnessError {
   constructor(
     readonly gateInput: string,
     readonly algorithm: number,
   ) {
     super(
-      `gate input ${gateInput} was made with ${algorithm < GATE_ALGORITHM ? 'an older' : 'a newer'} decision algorithm (${algorithm}; this build implements ${GATE_ALGORITHM}): its decision stands as recorded and is not re-derived here`,
+      `gate input ${gateInput} was made with ${algorithm < GATE_ALGORITHM ? 'an older' : 'a newer'} decision algorithm (${algorithm}; this build implements ${SUPPORTED_GATE_ALGORITHMS.join(', ')}): its decision stands as recorded and is not re-derived here`,
       ['algorithm'],
     );
     this.name = 'GateAlgorithmError';
@@ -97,6 +101,10 @@ export interface GateContext {
    */
   modes?: readonly GateMode[];
   config?: Partial<GateConfig>;
+  /** The decision algorithm (stats.ts). Omit it for a new gate: `GATE_ALGORITHM`. `recompute`
+   * passes the version stored in the gate input, so a record is decided by the rules it was made
+   * with (06 §5.8); only `SUPPORTED_GATE_ALGORITHMS` are accepted. */
+  algorithm?: number;
   safetyFixTargets?: readonly string[];
   neutralReason?: string;
   neutralPendingForSkill?: boolean;
@@ -121,7 +129,7 @@ export interface GateDecision {
   /** Every reason with its stable code (policy.ts REASON_CODES); see `rejectedForReplayRegression`. */
   reasons: PolicyReason[];
   tieBreak: boolean;
-  /** The decision algorithm (`GATE_ALGORITHM`, 06 §5.2). */
+  /** The decision algorithm this decision was made with (06 §5.2, §5.8). */
   algorithm: number;
   /** Record hashes per evaluated mode, in mode order. */
   candidateRecords: string[];
@@ -395,6 +403,13 @@ export function decide(
   ctx: GateContext,
 ): GateDecision {
   const config = loadGateConfig(ctx.config ?? {});
+  const algorithm = ctx.algorithm ?? GATE_ALGORITHM;
+  if (!SUPPORTED_GATE_ALGORITHMS.includes(algorithm)) {
+    throw new GateHarnessError(
+      `gate algorithm ${algorithm} is not implemented by this build (${SUPPORTED_GATE_ALGORITHMS.join(', ')})`,
+      ['algorithm'],
+    );
+  }
   const baselines = asList(baselineRecord).map(validated);
   const candidates = asList(candidateRecord).map(validated);
   const proposalIds = [...new Set(candidates.map((r) => r.proposalId))];
@@ -443,6 +458,8 @@ export function decide(
     runs: config.runs,
     alpha: config.alpha,
     skill: ctx.skill,
+    // Versions ≤ 2 decide non-regression by the fixed count; 3 by the exact test (policy.ts).
+    algorithm,
     nonRegressionFraction: config.nonRegressionFraction,
     safetyFixTargets,
     neutralReason: ctx.neutralReason,
@@ -457,7 +474,7 @@ export function decide(
     gateInput = sealGateInput({
       kind: 'gate-input',
       proposalId,
-      algorithm: GATE_ALGORITHM,
+      algorithm,
       ts: ctx.ts,
       outlet,
       radius: ctx.radius,
@@ -537,7 +554,7 @@ export function decide(
     results: policy.results,
     reasons: policy.reasons,
     tieBreak: policy.tieBreak,
-    algorithm: GATE_ALGORITHM,
+    algorithm,
     candidateRecords,
     baselineRecords,
     gateInput,
@@ -556,6 +573,7 @@ export function contextFromGateInput(g: GateInputRecord): GateContext {
     acceptedSkillSetHash: g.acceptedSkillSetHash,
     modes: g.modesDeclared ? g.modes : undefined,
     config: g.config,
+    algorithm: g.algorithm ?? 1,
     safetyFixTargets: g.safetyFixTargets,
     neutralReason: g.neutralReason,
     neutralPendingForSkill: g.neutralPendingForSkill,
@@ -575,10 +593,12 @@ export function contextFromGateInput(g: GateInputRecord): GateContext {
  * the input lists are read. Throws when the input record is invalid or tampered, when a listed
  * record is missing or tampered, or when the rebuilt input does not hash to the given one.
  *
- * A record is re-derived only with the algorithm it was made with (`algorithm`, 06 §5.2). This
- * build implements `GATE_ALGORITHM` alone: a record of another version is refused with
- * `GateAlgorithmError`, which names the version, and is never silently re-decided under different
- * statistics. Recompute it with a build that implements its algorithm.
+ * A record is re-derived only with the algorithm it was made with (`algorithm`, 06 §5.2): the
+ * stored version is passed to `decide`, so a version-2 record is decided by the fixed-count
+ * non-regression rule and a version-3 record by the exact test. This build implements
+ * `SUPPORTED_GATE_ALGORITHMS`; a record of any other version (1, the paired bootstrap, or a newer
+ * one) is refused with `GateAlgorithmError`, which names the version, and is never silently
+ * re-decided under different statistics.
  */
 export function recompute(
   gateInput: GateInputRecord,
@@ -593,7 +613,7 @@ export function recompute(
   }
   const g = parsed.data;
   const made = g.algorithm ?? 1;
-  if (made !== GATE_ALGORITHM) {
+  if (!SUPPORTED_GATE_ALGORITHMS.includes(made)) {
     throw new GateAlgorithmError(g.hash, made);
   }
   const find = (hash: string): EvaluationRecord => {

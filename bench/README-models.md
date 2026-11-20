@@ -221,10 +221,26 @@ What this shows, with one pair and so with wide error bars:
   safety-fix target counts as failing (fewer than 4 of 5) depends on the draw, and at high blast
   radius the same task blocks the gate as flaky.
 
-Open decision for the owner, not taken here: replace the fixed count with a one-sided exact test
-at the gate's alpha (the capability check already works that way), or keep the count and raise
-runs per task so that 2 passes is a smaller fraction of the spread. Either changes what the gate
-accepts, so it should not be chosen in the same breath as a rejection one would like overturned.
+**Decision (2026-11-20): non-regression is a one-sided exact test at alpha, algorithm 3.** The
+owner replaced the fixed count with the test the capability check already uses, run in the other
+direction: for each role, over the same non-replay tasks, the gate computes the exact stratified
+permutation p-value for "the candidate is worse than the baseline" and rejects with
+`capability-regression` when it is at most `alpha` (0.05 in `bench/gate.json`). The reason is the
+calibration above: the count of 2 was about one standard deviation of the difference between two
+baselines of the same skills, and the exact test holds the false-rejection rate of an unchanged
+candidate at or below alpha per role without a tuned constant. `nonRegressionFraction` is read
+only by algorithm 2 and earlier. Gate inputs already in the ledger were made with algorithm 2 and
+`bench gate --recompute` still decides them by the fixed count, so every recorded decision
+reproduces (06 §5.8).
+
+Iteration 5's recorded rejection is one of those and stands. It should not be read as confirmed
+by the new rule, though. The "about 3%" above is the chance of losing 4 or more passes if the
+pooled pass rates were the truth; the exact test conditions on each task's observed total and
+asks a different question. On the stored evidence the small role went 4, 5, 5, 0 to 3, 3, 3, 1
+(14 to 10 of 20), and the one-sided exact p for that is 0.124, above alpha, so algorithm 3 would
+not report a regression there, and on the safety-fix path with every other rule holding it would
+accept. A decision under algorithm 3 needs a new gate for that candidate; the ledger entry is not
+re-decided.
 
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite

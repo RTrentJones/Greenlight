@@ -119,8 +119,8 @@ describe('decide', () => {
   it('accepts and builds a sealed candidate-accepted event with one result per model × mode', () => {
     const d = decide([baseIso, baseProd], [candIso, candProd], ctx);
     expect(d.decision).toBe('accept');
-    expect(d.algorithm).toBe(2);
-    expect(d.gateInput).toMatchObject({ algorithm: 2, skill: 'deploy-verify-promote' });
+    expect(d.algorithm).toBe(3);
+    expect(d.gateInput).toMatchObject({ algorithm: 3, skill: 'deploy-verify-promote' });
     expect(d.gateInput).not.toHaveProperty('seed');
     const e = d.ledgerEvent;
     if (!e || !d.gateInput) throw new Error('no event');
@@ -475,7 +475,43 @@ describe('recompute (06 §5.8, 13 §2.7)', () => {
     expect(JSON.stringify(again)).toBe(JSON.stringify(original));
     expect(again.ledgerEvent?.eventId).toBe(original.ledgerEvent.eventId);
     expect(sameDecision(original.ledgerEvent, again)).toBe(true);
-    expect(again.gateInput).toMatchObject({ algorithm: 2, radius: 'high' });
+    expect(again.gateInput).toMatchObject({ algorithm: 3, radius: 'high' });
+  });
+
+  it('decides a stored record with the algorithm it was made with (06 §5.8)', () => {
+    // The small model gains nothing and loses cap/c1 outright (3/3 → 0/3): −3 of 30 passes,
+    // exact p = 1/20. Algorithm 2 allowed it (the fixed count was 3 passes); algorithm 3 rejects
+    // it (p ≤ alpha).
+    const loss = record('cand', 'isolation', (w, m) => {
+      if (m !== S) return;
+      Object.assign(w, cleanCell('isolation').base);
+      w['cap/c1'] = 0;
+    });
+    const records = [baseIso, loss];
+    const v2 = decide(baseIso, loss, { ...isoCtx, algorithm: 2 });
+    const v3 = decide(baseIso, loss, isoCtx);
+    if (!v2.gateInput || !v2.ledgerEvent || !v3.gateInput || !v3.ledgerEvent) {
+      throw new Error('no event');
+    }
+    expect([v2.decision, v2.gateInput.algorithm]).toEqual(['accept', 2]);
+    expect([v3.decision, v3.gateInput.algorithm]).toEqual(['reject', 3]);
+    expect(v3.reasons).toContainEqual(
+      expect.objectContaining({
+        code: 'capability-regression',
+        model: S,
+        detail:
+          'baseline 15/30, candidate 12/30: Δ -3 passes over 10 tasks × 3 runs; one-sided exact p 0.05 ≤ alpha 0.05',
+      }),
+    );
+    const again2 = recompute(JSON.parse(JSON.stringify(v2.gateInput)), records);
+    expect(JSON.stringify(again2)).toBe(JSON.stringify(v2));
+    expect(sameDecision(v2.ledgerEvent, again2)).toBe(true);
+    const again3 = recompute(JSON.parse(JSON.stringify(v3.gateInput)), records);
+    expect(JSON.stringify(again3)).toBe(JSON.stringify(v3));
+    expect(sameDecision(v2.ledgerEvent, again3)).toBe(false);
+    // The version is part of the sealed record: it cannot be changed without changing the hash.
+    const forged = { ...v2.gateInput, algorithm: 3 };
+    expect(() => recompute(forged, records)).toThrow(GateHarnessError);
   });
 
   it('refuses a gate input made with an older algorithm, naming it (06 §5.8)', () => {
@@ -495,7 +531,7 @@ describe('recompute (06 §5.8, 13 §2.7)', () => {
     const err = harnessError(() => recompute(old, pool));
     expect(err).toBeInstanceOf(GateAlgorithmError);
     expect(err.message).toMatch(
-      /made with an older decision algorithm \(1; this build implements 2\)/,
+      /made with an older decision algorithm \(1; this build implements 2, 3\)/,
     );
     expect(err.message).toMatch(/stands as recorded/);
   });

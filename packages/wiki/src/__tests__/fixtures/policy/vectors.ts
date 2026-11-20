@@ -13,11 +13,18 @@ import { type IdentityTask, identityTasks } from '../../../schema/bench';
  *   B = blocked (a flaky baseline replay task at high radius: no decision, 06 §5.4)
  *
  * The clean world: 2 replay tasks at 3/3; 10 capability tasks, baseline c1–c5 at 3/3 and c6–c10 at
- * 0/3 (30 objective rollouts per arm, so the non-regression bound is max(1, ⌊0.1 × 30⌋) = 3
- * passes, the "one task-mean" these vectors were written for); isolation candidate lifts c6–c9 to
- * 3/3 (+12 passes, exact p = 20⁻⁴); production candidate equals the baseline. Every task
- * exercises the patched skill, so the slice is every objective task. Every vector also carries a pending and a
- * quarantined replay task whose candidate would regress (0/3) — they must be excluded.
+ * 0/3 (30 objective rollouts per arm); isolation candidate lifts c6–c9 to 3/3 (+12 passes, exact
+ * p = 20⁻⁴); production candidate equals the baseline. Every task exercises the patched skill, so
+ * the slice is every objective task. Every vector also carries a pending and a quarantined replay
+ * task whose candidate would regress (0/3) — they must be excluded.
+ *
+ * Non-regression (06 §5.4) has two sets of vectors. The `capability-loss-*` and
+ * `neutral-loss-*` vectors run the current algorithm (3): the exact one-sided test, rejecting at
+ * p ≤ alpha. Their losses are exact by hand: c1 3/3 → 0/3 alone is p = 1/20 = alpha (the edge);
+ * c1 → 1/3 with c2 → 2/3 is p = 4/20 × 1/2 = 0.1 (the nearest value above the edge at −3 passes).
+ * The `*-one-task-mean` vectors are LEGACY: they pin `algorithm: 2`, whose bound is the fixed
+ * count max(1, ⌊0.1 × 30⌋) = 3 passes (the "one task-mean" they were written for), and keep the
+ * outcomes that algorithm gave, which `recompute` must go on reproducing.
  *
  * The shipped bench shape (2 objective tasks, 2 replay, 3 runs) has its own tests in
  * `bench/__tests__/shipped-shape.test.ts`: these vectors pin the threshold edges, not the power.
@@ -160,10 +167,47 @@ export const VECTORS: Vector[] = [
     rejectCode: 'not-significant',
   },
   {
-    // Δ = −3 passes, exactly the non-regression bound at 30 rollouts: non-regression holds;
-    // strict improvement does not.
+    // Algorithm 3. Δ = −3 passes on one task (c1 3/3 → 0/3): one-sided exact p = 1/20, exactly
+    // alpha, and the rule is p ≤ alpha: a regression wherever non-regression is checked (every
+    // cell at high and medium; `frontier` only at low).
+    id: 'capability-loss-p-at-alpha',
+    path: 'standard',
+    target: (w) => {
+      noGain(w);
+      w.cand['cap/c1'] = 0;
+    },
+    expect: { high: 'RRRR', medium: 'RRRR', low: 'RRAA' },
+  },
+  {
+    // Algorithm 3. The same Δ = −3 passes spread over two tasks (c1 → 1/3, c2 → 2/3): p = 0.1,
+    // above alpha, so non-regression holds; strict improvement does not.
+    id: 'capability-loss-p-above-alpha',
+    path: 'standard',
+    target: (w) => {
+      noGain(w);
+      w.cand['cap/c1'] = 1;
+      w.cand['cap/c2'] = 2;
+    },
+    expect: { high: 'RARA', medium: 'RAAA', low: 'RAAA' },
+    rejectCode: 'no-strict-improvement',
+  },
+  {
+    // Algorithm 3. Δ = −4 passes (c1 → 0/3, c2 → 2/3): p = 1/20 × 1/2 = 0.025.
+    id: 'capability-loss-significant',
+    path: 'standard',
+    target: (w) => {
+      noGain(w);
+      w.cand['cap/c1'] = 0;
+      w.cand['cap/c2'] = 2;
+    },
+    expect: { high: 'RRRR', medium: 'RRRR', low: 'RRAA' },
+  },
+  {
+    // LEGACY (algorithm 2). Δ = −3 passes, exactly the fixed-count bound at 30 rollouts:
+    // non-regression holds; strict improvement does not.
     id: 'capability-drop-exactly-one-task-mean',
     path: 'standard',
+    extra: { algorithm: 2 },
     target: (w) => {
       noGain(w);
       w.cand['cap/c1'] = 0;
@@ -172,9 +216,10 @@ export const VECTORS: Vector[] = [
     rejectCode: 'no-strict-improvement',
   },
   {
-    // Δ = −4 passes: one pass beyond the bound.
+    // LEGACY (algorithm 2). Δ = −4 passes: one pass beyond the fixed-count bound.
     id: 'capability-drop-beyond-one-task-mean',
     path: 'standard',
+    extra: { algorithm: 2 },
     target: (w) => {
       noGain(w);
       w.cand['cap/c1'] = 0;
@@ -248,8 +293,9 @@ export const VECTORS: Vector[] = [
     rejectCode: 'safety-fix-target-not-fixed',
   },
   {
-    // safety-fix replaces efficacy, never non-regression: one run beyond a task-mean rejects in
-    // every cell (alternative paths check every model and mode).
+    // safety-fix replaces efficacy, never non-regression: a significant loss (Δ = −4 passes,
+    // p = 0.025; also one pass beyond the legacy bound) rejects in every cell (alternative paths
+    // check every model and mode).
     id: 'safety-fix-capability-drop-beyond',
     path: 'safety-fix',
     extra: { safetyFixTargets: ['replay/t'] },
@@ -279,9 +325,34 @@ export const VECTORS: Vector[] = [
     rejectCode: 'neutral-needs-reason',
   },
   {
-    id: 'neutral-production-drop-exactly-one-task-mean',
+    // Algorithm 3. c1 3/3 → 0/3 in the target cell: p = 1/20 = alpha, a regression in every cell
+    // (alternative paths check every model and mode).
+    id: 'neutral-loss-p-at-alpha',
     path: 'neutral',
     extra: { neutralReason: 'prerequisite for proposal P' },
+    all: (w) => noGain(w),
+    target: (w) => {
+      w.cand['cap/c1'] = 0;
+    },
+    expect: { high: 'RRRR', medium: 'RRRR', low: 'RRRR' },
+  },
+  {
+    // Algorithm 3. Δ = −3 passes over two tasks: p = 0.1, not a regression.
+    id: 'neutral-loss-p-above-alpha',
+    path: 'neutral',
+    extra: { neutralReason: 'prerequisite for proposal P' },
+    all: (w) => noGain(w),
+    target: (w) => {
+      w.cand['cap/c1'] = 1;
+      w.cand['cap/c2'] = 2;
+    },
+    expect: { high: 'AAAA', medium: 'AAAA', low: 'AAAA' },
+  },
+  {
+    // LEGACY (algorithm 2). Δ = −3 passes, exactly the fixed-count bound.
+    id: 'neutral-production-drop-exactly-one-task-mean',
+    path: 'neutral',
+    extra: { neutralReason: 'prerequisite for proposal P', algorithm: 2 },
     all: (w) => noGain(w),
     target: (w) => {
       w.cand['cap/c1'] = 0;

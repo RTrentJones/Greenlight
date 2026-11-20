@@ -106,7 +106,9 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
   models --check       verify bench/models.json against models.list
   gate --recompute <gateInputHash>
                        re-derive a recorded gate decision from its GateInputRecord and
-                       EvaluationRecords; exit 1 when it differs from the ledger event
+                       EvaluationRecords, by the algorithm version the record was made with (06
+                       §5.8: 2 decides non-regression by the fixed count, 3 by the exact one-sided
+                       test at alpha); exit 1 when it differs from the ledger event
   activate <taskId…>   flip pending tasks to active once a recorded baseline covers them on every
                        gate model (06 §4.1)
   iterate [--scope <skill|all>] [--resume <iterationId>] [--sandbox docker|process] [--json]
@@ -124,7 +126,8 @@ export const BENCH_USAGE = `usage: greenlight bench <subcommand>
                        --safety-fix (the OWNER's choice, fixed at creation, 06 §5.4): gate the
                        iteration's skill proposal on the safety-fix path. The named val replay
                        tasks must fail in the baseline and pass under the candidate; no capability
-                       gain is required, safety and non-regression still are. The control arm
+                       gain is required, safety and non-regression (no loss significant at
+                       alpha, 06 §5.4) still are. The control arm
                        stays on the standard path.
                        --candidate (mechanism / doctor): a commit of this repository; fixed on
                        first use, a different one on resume is refused. Git never runs in a

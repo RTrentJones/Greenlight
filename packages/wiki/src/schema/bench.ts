@@ -427,9 +427,10 @@ export const GateInputRecordSchema = z
     hash: Sha256,
     kind: z.literal('gate-input'),
     proposalId: z.string().min(1),
-    /** The decision algorithm (`GATE_ALGORITHM`, 06 §5.2). Absent: 1, the paired bootstrap over
-     * task means. `--recompute` re-derives only records of the algorithm it implements, and
-     * reports any other as made with an older (or newer) algorithm. */
+    /** The decision algorithm the record was made with (06 §5.2, §5.8; new records carry
+     * `GATE_ALGORITHM`). Absent: 1, the paired bootstrap over task means. `--recompute` decides a
+     * record by its own version when the build implements it (2 and 3), and reports any other as
+     * made with an older (or newer) algorithm. */
     algorithm: z.number().int().min(1).optional(),
     /** The ledger event's ts; it seeds the eventId and the baseline-age check. */
     ts: IsoDateTime,
@@ -447,7 +448,8 @@ export const GateInputRecordSchema = z
         resamples: z.number().int().min(1).optional(),
         acceptShorterOnTie: z.boolean(),
         maxBaselineAgeDays: z.number().int().min(1),
-        /** Algorithm ≥ 2: the non-regression bound's fraction (06 §5.4). */
+        /** Recorded from algorithm 2 on; read only by algorithm 2, whose non-regression bound is
+         * this fraction of the objective rollouts (06 §5.4). Algorithm 3 ignores it. */
         nonRegressionFraction: z.number().gt(0).lt(1).optional(),
       })
       .strict(),

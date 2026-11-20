@@ -817,13 +817,16 @@ interface GateInputRecord {
   kind: 'gate-input';
   proposalId: string;
   algorithm?: number;                  // the decision algorithm (06 §5.2, §5.8). Absent = 1 (paired bootstrap);
-                                       // 2 = exact stratified permutation test on the skill's slice
+                                       // 2 = exact stratified permutation test on the skill's slice, non-regression
+                                       // as a fixed count; 3 = the same with non-regression as the exact
+                                       // one-sided test at alpha. Recompute decides by the stored version.
   ts: string;                          // the ledger event's ts: seeds the eventId and the baseline-age check
   outlet: 'skill' | 'template';
   radius: 'high' | 'medium' | 'low';
   path: 'standard' | 'safety-fix' | 'neutral';
   config: { alpha: number; runs: number; acceptShorterOnTie: boolean; maxBaselineAgeDays: number;
-            nonRegressionFraction: number };   // bench/gate.json, defaults resolved (0.1: the bound, 06 §5.4)
+            nonRegressionFraction: number };   // bench/gate.json, defaults resolved (0.1). Read by algorithm ≤ 2
+                                               // only (06 §5.4); recorded by every version
   models: { frontier: string; small: string };
   modes: ('isolation' | 'production')[];    // evaluated, in isolation, production order
   modesDeclared: boolean;              // true for an explicit narrower posture (M1/M2 isolation only)
@@ -852,7 +855,7 @@ An algorithm-1 record differs: it has no `algorithm`, carries `seed` (the bootst
 `config.resamples`, has no `config.nonRegressionFraction` and no task `skills`, and may carry
 `skillLines: { before, after }` (caller-supplied line counts) instead of `skillText`. The schema
 still reads it, so `--recompute` can report it as made with the older algorithm (06 §5.8); it is
-never re-decided. A version-2 record carrying `seed`, `resamples` or `skillLines`, or lacking
+never re-decided. A version-2 or version-3 record carrying `seed`, `resamples` or `skillLines`, or lacking
 `skill` (skill outlet), the fraction or any task's `skills`, is invalid. `bench/gate.json` no
 longer carries `resamples`; a file that still does is read, and the key is ignored.
 
