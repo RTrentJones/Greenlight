@@ -193,6 +193,39 @@ rejected the candidate all the same: the small role lost 4 passes over the other
 differ, so the next measurement to take is a baseline-against-baseline run at 5 runs per task.
 Until then a safety fix for one task can be vetoed by noise in the others.
 
+**Calibration (2026-11-20): a second baseline of the same skills.** `bench run --split val --role
+baseline --force` at 5 runs per task gave a baseline-against-baseline pair with iteration 5's.
+Passes out of 5, first baseline then second:
+
+| val task | frontier | small |
+|---|---|---|
+| `loop/fixture-preview-before-push-val` | 5, 5 | 4, 5 |
+| `loop/new-route-joins-verify-val` | 5, 5 | 5, 4 |
+| `wiki/contradicted-root-cause-val` | 5, 4 | 5, 4 |
+| `wiki/probe-layer-incidents-val` | 1, 0 | 0, 1 |
+| `replay/idle-probe-leaves-store-asleep-val` | 3, 5 | 2, 3 |
+
+What this shows, with one pair and so with wide error bars:
+
+- Over the four non-replay tasks the totals were 16 then 14 on the frontier role and 14 then 14 on
+  the small one, so two baselines of identical skills differed by 2 and by 0 passes out of 20.
+  Single tasks moved by one pass in six of the eight cells.
+- The bound of 2 lost passes is therefore about one standard deviation of that difference. Taking
+  the pooled pass rates as the truth (0.9, 0.9, 0.9, 0.1), an unchanged candidate loses 3 or more
+  passes about 9% of the time per role, so with two roles roughly one gate in six rejects a
+  harmless change on this check alone.
+- Iteration 5's loss of 4 on the small role is larger than either observed difference and has a
+  probability of about 3% under the same assumption. Variance is a possible explanation but not the
+  likely one, and the earlier note above overstated it. The rejection stands on the evidence.
+- The replay task is unstable in the baseline itself (3 then 5 on the frontier role), so whether a
+  safety-fix target counts as failing (fewer than 4 of 5) depends on the draw, and at high blast
+  radius the same task blocks the gate as flaky.
+
+Open decision for the owner, not taken here: replace the fixed count with a one-sided exact test
+at the gate's alpha (the capability check already works that way), or keep the count and raise
+runs per task so that 2 passes is a smaller fraction of the spread. Either changes what the gate
+accepts, so it should not be chosen in the same breath as a rejection one would like overturned.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading
