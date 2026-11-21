@@ -286,6 +286,16 @@ given the slice's power limit and returned a `no_action`, which saved an evaluat
 that could only have come back `underpowered`. The M2 drill record, `wiki/drills/m2-2026-11-21.md`,
 lists the two criteria still open: the graded maintainer pass and the cost report.
 
+**Reading the failing maintainer runs of that baseline found a grader defect.** Of the eight
+failing runs on `wiki/probe-layer-incidents-val`, three failed only the "no overgeneral rule"
+check, and each on a sentence that reports what a failing replay did, for example "declared a
+`HEALTHCHECK` every 30 s against `/health`, and `/health` queries the database". The check read
+"every 30 s" as a universal and the report as a rule. It now skips observations (`bench/README.md`,
+the maintainer grader section). The other five runs failed for a reason that stands: the rule did
+not cite both incidents, or lacked one liveness branch. The eval judge was skipped in all eight,
+so the three runs are not known to pass; the grader set has changed, and the next baseline
+measures the task again.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading

@@ -167,6 +167,18 @@ within its claim. `references/wiki/<task>/alternatives/` holds correct paraphras
 and the `traffic-*`/`silence-*`/`overgeneral-*` mutants inverted or overgeneral ones that must fail;
 widen the reading only together with both.
 
+A report of what one recorded run or incident did is evidence and not a rule, so check 6 skips it
+(`isObservation`): the sentence opens with the replay, run, incident, grader, agent or raw ref,
+reports with a concrete past-tense action, and draws no lesson (no `must` / `should` / `always` /
+`never`, no "showed that", no "so"). "every 30 s" is read as an interval and not as the universal
+of the overgeneral rule. Before 2026-11-21 neither held, and the check failed outputs that
+compiled a failing replay into a page, such as "a failing train replay declared a `HEALTHCHECK`
+every 30 s against `/health`, and `/health` queries the database". In the baseline of that date
+this was the only failed check in one of the frontier model's three failing runs on
+`wiki/probe-layer-incidents-val` and in two of the small model's five. The
+`replay-evidence-narrated` alternative now holds such an output for both splits, and
+`bench.test.ts` holds the real sentences and the disguised rules that must still fail.
+
 Check 7, the eval judge (06 §4.6), runs only when a job sets `GraderJob.useJudge` (every runner
 rollout: train is graded exactly like val, or a train pass the judge would have failed tells the
 proposer a skill works when the gate will say it does not) and only after checks 1-6 pass, so the deterministic check is a prefilter and a judge

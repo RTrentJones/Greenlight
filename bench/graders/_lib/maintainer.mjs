@@ -180,6 +180,9 @@ export function claimsOf(oldBody, newBody) {
 // - "unnecessary / not needed / not required / optional / overkill / pointless" in a phrase flips
 //   that phrase's stance ("reaching the store is unnecessary" is avoid; "staying off the store
 //   is unnecessary" is reach).
+// - An OBSERVATION (a past-tense report of what one recorded run or incident did, drawing no
+//   lesson; `isObservation`) is evidence, not a rule, and RUBRIC 6 skips it. "every 30 s" is an
+//   interval, not the universal of check A.
 // - Models: a statement names the models it mentions; a statement naming none INHERITS the
 //   models of the previous statement of the same claim ("For `needs-traffic` tools, X; Y" is
 //   about needs-traffic throughout). Overgeneral checks A/B use only a statement's OWN models.
@@ -220,6 +223,30 @@ const SUFFICIENT = /\b(?:enough|suffices?|sufficient|is\s+fine|is\s+all\s+it\s+t
 const NON_STORE_ANSWER =
   /\b(?:cache[ds]?|cached|caching|schema\s+root|api\s+root|static|app(?:lication)?\s+layer|edge)\b/i;
 const UNIVERSAL_RE = /\b(every|all|always|any)\b/i;
+// "every 30 s", "every five minutes", "every other sweep": an interval, not a quantifier.
+const INTERVAL_G =
+  /\bevery\s+(?:\d+(?:\.\d+)?|few|other|couple|one|two|three|four|five|six|ten|fifteen|thirty|sixty)\b/gi;
+const universal = (s) => UNIVERSAL_RE.test(s.replace(INTERVAL_G, ''));
+
+// An OBSERVATION reports what one recorded run or incident did: "A failing train replay declared
+// a HEALTHCHECK every 30 s against /health, and /health queries the database." Compiling such a
+// run into a page is the maintainer's job, and the sentence prescribes nothing, so RUBRIC 6 does
+// not read it as a rule. Three conditions, all required:
+// - its SUBJECT is the recorded thing: it opens with a replay, rollout, run, incident, grader,
+//   agent or raw ref (after an optional "In / During" and a few modifiers), and it does not open
+//   with a subordinator ("As the incident recorded, every healthcheck …" states a rule);
+// - it REPORTS with a concrete past-tense action (declared, recorded, measured, kept, …);
+// - it draws no LESSON: no modal or universal adverb (must, should, always, never, …) and no
+//   inference from the run to a rule ("showed that …", "proves", "the lesson", "so / therefore").
+// "The incident showed that every healthcheck queries the database" is therefore still a rule.
+const OBSERVED_SUBJECT =
+  /^\s*(?!(?:as|since|because|when|while|although|though|if|given|after|once|whenever)\b)(?:(?:in|during|for|per)\s+)?(?:(?:the|a|an|this|that|one|its|their)\s+)?(?:[\w-]+\s+){0,4}?(?:replays?|rollouts?|runs?|incidents?|graders?|agents?|raw:\S+)(?=[\s,:(]|$)/i;
+const REPORTED_RE =
+  /\b(?:declared|recorded|measured|counted|kept|queried|returned|answered|failed|passed|reproduce[sd]|pointed|stayed|ran|logged|sent|made)\b/i;
+const LESSON_RE =
+  /\b(?:must|should|shall|ought|has\s+to|have\s+to|needs?\s+to|always|never|cannot|show(?:s|ed|n)?|prove[sd]?|proof|demonstrate[sd]?|impl(?:y|ies|ied)|means?|meant|lessons?|rules?|therefore|hence|thus|so)\b/i;
+export const isObservation = (s) =>
+  OBSERVED_SUBJECT.test(s) && REPORTED_RE.test(s) && !LESSON_RE.test(s);
 const PRESCRIPTIVE_RE =
   /\b(every|all|always|any|never|must|should|shall|cannot|only|has to|have to|needs? to|keep|stay|avoid|point|aim|use)\b/i;
 const PROBE_RE = /\b(health ?checks?|probes?|keepalives?|liveness)\b/i;
@@ -342,8 +369,9 @@ export function silenceBranch(p) {
  */
 export function overgeneral(claim) {
   for (const p of readClaim(claim)) {
+    if (isObservation(p.text)) continue;
     if (p.own.size === 0 && PROBE_RE.test(p.text) && p.store) {
-      if (p.stance === 'reach' && UNIVERSAL_RE.test(p.text)) return 'A';
+      if (p.stance === 'reach' && universal(p.text)) return 'A';
       if (p.stance === 'avoid' && PRESCRIPTIVE_RE.test(p.text) && p.models.size === 0) return 'B';
     }
     // A stance needs the store named, except "a cached answer is enough" / "stops at the app".

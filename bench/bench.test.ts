@@ -7,7 +7,13 @@ import { findSecrets } from '../packages/shared/src/redact';
 import { loadTasks, materialize } from '../packages/wiki/src/bench/check-graders';
 import { runGraderJob } from '../packages/wiki/src/bench/grader-api';
 import { checkFixtures } from './fixtures/sync.mjs';
-import { applyOps, blocks, overgeneral, refsIn } from './graders/_lib/maintainer.mjs';
+import {
+  applyOps,
+  blocks,
+  isObservation,
+  overgeneral,
+  refsIn,
+} from './graders/_lib/maintainer.mjs';
 import { parseCmd, parseHealthcheck } from './graders/_lib/neon-idle.mjs';
 import {
   CHANGE_CHECK,
@@ -271,6 +277,34 @@ describe('grader helpers', () => {
     expect(overgeneral('For `needs-silence`, probes never touch the database.')).toBeNull();
     expect(overgeneral('For `needs-traffic`, every keepalive queries the store.')).toBeNull();
     expect(overgeneral('Split liveness from readiness.')).toBeNull();
+  });
+
+  it('does not read a report of what a recorded run did as a rule', () => {
+    // Sentences real rollouts wrote, each rejected as overgeneral before 2026-11-21 although it
+    // only compiles a failing replay into the page.
+    const observed = [
+      'A failing train replay for a container tool declared a Dockerfile `HEALTHCHECK` every 30 s against `/health` and a keepalive `probePath` of `/health`, and `/health` queries the database. raw:20261101T091500Z-5e6f7a8b',
+      'The train-split replay raw:20261101T090000Z-1a2b3c4d reproduces the probe-path choice: the agent kept the REST root (/rest/v1/) as the probe, and the grader failed the checks that the target names a probeTable, that the store stays unpaused, and that every sweep queries the store.',
+      'A replay counts store queries over an idle window and requires zero. In the training replay raw:20261101T091500Z-5e6f7a8b, a containerized app whose /health healthcheck queried the database recorded 20 healthcheck queries and one keepalive query in a 600 s idle window, and its store stayed awake for all 600 s.',
+      'A bench agent declared a container healthcheck of `/health` every 30 s and a keepalive `probePath` of `/health` for an oci tool whose `/health` queries the database. [raw:20261101T091500Z-5e6f7a8b]',
+    ];
+    for (const s of observed) expect(overgeneral(s), s).toBeNull();
+    expect(isObservation(observed[0] as string)).toBe(true);
+  });
+
+  it('still flags a rule that is dressed as a report, or drawn from one', () => {
+    for (const s of [
+      'The incident showed that every healthcheck queries the database.',
+      'The replay failed, so every healthcheck must query the database.',
+      'In the replay the agent kept /health; the lesson is that every probe queries the database.',
+      'As the incident recorded, every healthcheck and keepalive queries the database.',
+      'Every healthcheck queries the database every 30 s.',
+    ])
+      expect(overgeneral(s), s).toBe('A');
+    expect(overgeneral('The replay passed, so probes never touch the database.')).toBe('B');
+    expect(isObservation('The replay failed, so every healthcheck must query the database.')).toBe(
+      false,
+    );
   });
 });
 
