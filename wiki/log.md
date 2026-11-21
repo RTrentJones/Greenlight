@@ -82,3 +82,9 @@ bench iterate iter-20261121T080307Z-01496bdb: candidate-rejected (skill, provide
 No page changes: the evidence is already compiled in pattern/probe-touches-wrong-layer (liveness-model rule naming incident/2026-08-keepalive-green-database-paused and incident/2026-09-idle-app-neon-never-sleeps), pattern/neon-never-sleeps and pattern/keepalive-probe-misses-postgres.
 raw:20261121T170826Z-4a6dded9 (passing supabase keepalive replay: probeTable named, every sweep queried the store, paused store read as failing) repeats pattern/keepalive-probe-misses-postgres; raw:20261121T170826Z-1e78b117 is the failing counterpart (no supabase target, no probeTable, store paused after 21 simulated days, paused store read ok=true 200), the same proxy-check shape already recorded.
 raw:20261121T170826Z-f57e612a and raw:20261121T170826Z-b5e7e0cb (maintainer failures on probe-layer-incidents) ran against a fixture wiki without the liveness-model rule that probe-touches-wrong-layer now carries. raw:20261121T170826Z-c170647d passed and raw:20261121T170826Z-781c6af4 failed (uncited claim) on a supersede task for a fixture wiki not in this bundle. raw:20261121T170826Z-3e9eb45b and raw:20261121T170826Z-71521870 (preview must precede push, new route must join the verify config) concern the deploy loop, not a wiki pattern. No status change: all evidence is bench replay, not a deployed red-to-green run. No instruction-like text found in the bundle.
+
+## 2026-11-21T17:43:44.247Z — harness — candidate-rejected prop-9583e28bc30b
+bench iterate iter-20261121T170617Z-2cc4cd02: candidate-rejected (skill, greenlight-wiki); ledger event 12c878ad2bd3a8309432bd9ff699a070f88cbd5089ff5504592d8a5c6943c426
+
+## 2026-11-21T17:43:44.247Z — harness — control candidate-rejected control-probe-layer-overgeneral-2cc4cd02
+bench iterate iter-20261121T170617Z-2cc4cd02: candidate-rejected (skill, provider-neon); ledger event 215beec6b83e7da6386d205e03b0f5e5a0cf6bd0bf9f13abc3005c67d64afed4
