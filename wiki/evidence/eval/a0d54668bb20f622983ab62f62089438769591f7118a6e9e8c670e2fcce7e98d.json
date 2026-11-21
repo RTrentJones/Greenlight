@@ -1,0 +1,1284 @@
+{
+  "identity": {
+    "taskSetHash": "0f16dbcb5e8818d6abaf37f746a111b231d9ddf0eb0016a9a6b74a527c74ed0f",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "loop/new-route-joins-verify-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "quarantined",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-supabase"]
+      },
+      {
+        "id": "wiki/contradicted-root-cause-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      }
+    ],
+    "splitsHash": "ca9414308a05266e1c2873c1bb34e1e6872ccf0d7492dc48fc97c82d06524868",
+    "graderSetHash": "fe64ed0faebd56f0897cfbf755e3356ca6c4321e4b0bbe6cc8112c380bc89339",
+    "depsHash": "1b46ecf3a5732d9c21370b8cc3bacc80042ea08c14fd68503b8f9cc824ebf705",
+    "harness": {
+      "runnerVersion": "0.3.0",
+      "imageDigest": "ctx:sha256:3dcf056da115df89381da7cd1256dccfd1357473fd6f6a2869cd65ed94cb45ce",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null,
+        "externalTimeoutFactor": 3
+      }
+    },
+    "agent": {
+      "vendor": "external",
+      "version": "claude-code-subagent"
+    },
+    "models": ["claude-code-sonnet", "claude-code-haiku"],
+    "modelsConfigHash": "7938ed696af22082ab1ec68badccea55526fe714acb67552730072140e668ff5",
+    "skillSetHash": "ff983b3766872e5ce44b38ffe9a13a3684f2500c98d522b0a9671f4afe489664",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "candidate",
+  "proposalId": "control-probe-layer-overgeneral-86a7058e",
+  "createdAt": "2026-11-21T07:36:44.913Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "1406011140",
+      "rawId": "20261121T032815Z-10f7d052",
+      "durationMs": 126664,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "808972896",
+      "rawId": "20261121T032815Z-25bf90a9",
+      "durationMs": 129360,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "25154409",
+      "rawId": "20261121T032815Z-58dd9d58",
+      "durationMs": 224393,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 4,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "592565659",
+      "rawId": "20261121T032815Z-c58ea765",
+      "durationMs": 119663,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 5,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "496288916",
+      "rawId": "20261121T032815Z-3a6f0d1b",
+      "durationMs": 121572,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "525931321",
+      "rawId": "20261121T032815Z-92053209",
+      "durationMs": 111998,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "1423149878",
+      "rawId": "20261121T032815Z-8d2da74d",
+      "durationMs": 114753,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "499384530",
+      "rawId": "20261121T032815Z-a8bb2357",
+      "durationMs": 127495,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 4,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "565518840",
+      "rawId": "20261121T032815Z-09b671df",
+      "durationMs": 106532,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 5,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "380837485",
+      "rawId": "20261121T032815Z-a841b970",
+      "durationMs": 233746,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=trailnotes, passed=true}, git {subcommand=push, dstRef=develop})"
+        }
+      ],
+      "seed": "1932997942",
+      "rawId": "20261121T032815Z-4b8123d2",
+      "durationMs": 128913,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=trailnotes, passed=true}, git {subcommand=push, dstRef=develop})"
+        }
+      ],
+      "seed": "550432303",
+      "rawId": "20261121T032815Z-616f7eb6",
+      "durationMs": 135296,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=trailnotes, passed=true}, git {subcommand=push, dstRef=develop})"
+        }
+      ],
+      "seed": "1792421217",
+      "rawId": "20261121T032815Z-9dfc5479",
+      "durationMs": 130815,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 4,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=trailnotes, passed=true}, git {subcommand=push, dstRef=develop})"
+        }
+      ],
+      "seed": "805254614",
+      "rawId": "20261121T032815Z-2574e474",
+      "durationMs": 130187,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 5,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=trailnotes, passed=true}, git {subcommand=push, dstRef=develop})"
+        }
+      ],
+      "seed": "123079883",
+      "rawId": "20261121T032815Z-c1ebcf6f",
+      "durationMs": 128052,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "511838459",
+      "rawId": "20261121T032815Z-a8f2608c",
+      "durationMs": 115317,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "620364533",
+      "rawId": "20261121T032815Z-5d876b04",
+      "durationMs": 112330,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "1071534915",
+      "rawId": "20261121T032815Z-fdf2b0f0",
+      "durationMs": 112607,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 4,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "632756160",
+      "rawId": "20261121T032815Z-7a7fa1d4",
+      "durationMs": 114123,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 5,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "365672414",
+      "rawId": "20261121T032815Z-9f57b2aa",
+      "durationMs": 111661,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1213123135",
+      "rawId": "20261121T033009Z-9edab288",
+      "durationMs": 142011,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1506702107",
+      "rawId": "20261121T033010Z-b5c76e15",
+      "durationMs": 151278,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1519853201",
+      "rawId": "20261121T033010Z-fcc3062f",
+      "durationMs": 141007,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 4,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1896152618",
+      "rawId": "20261121T033015Z-c64b622b",
+      "durationMs": 122535,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 5,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "767930368",
+      "rawId": "20261121T033017Z-bdc5c2a6",
+      "durationMs": 127192,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "248374747",
+      "rawId": "20261121T033002Z-d2500ab7",
+      "durationMs": 142875,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "995305417",
+      "rawId": "20261121T033007Z-066c0978",
+      "durationMs": 129116,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1261554000",
+      "rawId": "20261121T033007Z-46373052",
+      "durationMs": 132095,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 4,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "394839880",
+      "rawId": "20261121T033007Z-a9e92f45",
+      "durationMs": 135183,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 5,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1251115648",
+      "rawId": "20261121T033008Z-35347b67",
+      "durationMs": 132661,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "2002146314",
+      "rawId": "20261121T033025Z-e7718d63",
+      "durationMs": 128982,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1862788050",
+      "rawId": "20261121T033026Z-1b618ec8",
+      "durationMs": 130236,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1156,
+        "tokensOut": 56
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "917132682",
+      "rawId": "20261121T033030Z-b7bccd70",
+      "durationMs": 131836,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1160,
+        "tokensOut": 62
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 4,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1810369774",
+      "rawId": "20261121T073407Z-215c00be",
+      "durationMs": 103510,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1089,
+        "tokensOut": 60
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 5,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1638750517",
+      "rawId": "20261121T073406Z-4897cd75",
+      "durationMs": 123663,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "923263527",
+      "rawId": "20261121T033022Z-9ea710ed",
+      "durationMs": 119157,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 2,
+        "tokensIn": 1230,
+        "tokensOut": 57
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1155911287",
+      "rawId": "20261121T033023Z-d7075ee7",
+      "durationMs": 128600,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1377,
+        "tokensOut": 58
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1199418400",
+      "rawId": "20261121T033023Z-e620d760",
+      "durationMs": 124180,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1291,
+        "tokensOut": 55
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 4,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1358324732",
+      "rawId": "20261121T033024Z-f3c31274",
+      "durationMs": 113699,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 2,
+        "tokensIn": 1110,
+        "tokensOut": 61
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 5,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "888831064",
+      "rawId": "20261121T033024Z-fba27316",
+      "durationMs": 117355,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1198,
+        "tokensOut": 57
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "378218878",
+      "rawId": "20261121T073406Z-c92f817b",
+      "durationMs": 113502,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 2,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "342127262",
+      "rawId": "20261121T073406Z-9e7f6098",
+      "durationMs": 134814,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 3,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1213018103",
+      "rawId": "20261121T073406Z-e62131dd",
+      "durationMs": 119100,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 4,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1207376217",
+      "rawId": "20261121T073406Z-d461f084",
+      "durationMs": 121711,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 5,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "8 checks passed"
+        }
+      ],
+      "seed": "648722091",
+      "rawId": "20261121T073407Z-59f631d8",
+      "durationMs": 157777,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1296,
+        "tokensOut": 57
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1491321855",
+      "rawId": "20261121T073406Z-2603ccde",
+      "durationMs": 103103,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 2,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "2058905455",
+      "rawId": "20261121T073406Z-56f0050c",
+      "durationMs": 103009,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 3,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1009633468",
+      "rawId": "20261121T073406Z-89cbffb6",
+      "durationMs": 102973,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 4,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1075417393",
+      "rawId": "20261121T073406Z-bca566b9",
+      "durationMs": 109673,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 5,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "1254441113",
+      "rawId": "20261121T073406Z-7482c78f",
+      "durationMs": 103717,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    }
+  ],
+  "hash": "a0d54668bb20f622983ab62f62089438769591f7118a6e9e8c670e2fcce7e98d"
+}

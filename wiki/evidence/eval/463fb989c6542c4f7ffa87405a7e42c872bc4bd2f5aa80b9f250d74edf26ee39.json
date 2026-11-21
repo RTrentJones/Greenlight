@@ -1,0 +1,78 @@
+{
+  "kind": "gate-input",
+  "proposalId": "control-probe-layer-overgeneral-86a7058e",
+  "algorithm": 3,
+  "ts": "2026-11-21T03:28:14.789Z",
+  "outlet": "skill",
+  "radius": "high",
+  "path": "standard",
+  "config": {
+    "alpha": 0.05,
+    "runs": 5,
+    "acceptShorterOnTie": false,
+    "nonRegressionFraction": 0.1,
+    "maxBaselineAgeDays": 30
+  },
+  "models": {
+    "frontier": "claude-code-sonnet",
+    "small": "claude-code-haiku"
+  },
+  "modes": ["isolation"],
+  "modesDeclared": true,
+  "acceptedSkillSetHash": "a82fde2f7231349edd2aca30982f35cd31480a9385efc7f486878715651a8de6",
+  "candidateSkillSetHash": "ff983b3766872e5ce44b38ffe9a13a3684f2500c98d522b0a9671f4afe489664",
+  "tasks": [
+    {
+      "id": "loop/fixture-preview-before-push-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "loop/new-route-joins-verify-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "replay/idle-probe-leaves-store-asleep-val",
+      "kind": "replay",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+    },
+    {
+      "id": "replay/keepalive-probe-reaches-store-val",
+      "kind": "replay",
+      "state": "quarantined",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-supabase"]
+    },
+    {
+      "id": "wiki/contradicted-root-cause-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    },
+    {
+      "id": "wiki/probe-layer-incidents-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    }
+  ],
+  "baselineRecords": ["d4549c55ef4d9176743cc6f7baf3fc985e84fed729b1b78eb6de1f55ec583088"],
+  "candidateRecords": ["a0d54668bb20f622983ab62f62089438769591f7118a6e9e8c670e2fcce7e98d"],
+  "skill": "deploy-verify-promote",
+  "pattern": [
+    "pattern/probe-touches-wrong-layer",
+    "pattern/keepalive-probe-misses-postgres",
+    "pattern/neon-never-sleeps"
+  ],
+  "control": true,
+  "hash": "463fb989c6542c4f7ffa87405a7e42c872bc4bd2f5aa80b9f250d74edf26ee39"
+}

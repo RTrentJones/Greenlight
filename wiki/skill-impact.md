@@ -15,4 +15,6 @@
 
 ## Controls
 
-_No control proposals._
+| date | proposal | skill / outlet | patterns | path | latest stage | evidence |
+|---|---|---|---|---|---|---|
+| 2026-11-21 | control-probe-layer-overgeneral-86a7058e | deploy-verify-promote (skill) | pattern/probe-touches-wrong-layer, pattern/keepalive-probe-misses-postgres, pattern/neon-never-sleeps | standard | candidate-rejected | candidate-rejected: claude-code-sonnet isolation/val: capability 1.00→1.00 (+0.00, p=1), replay 1/1 → fail<br>candidate-rejected: claude-code-haiku isolation/val: capability 0.50→0.50 (+0.00, p=0.75), replay 1/1 → fail<br>owner review 2026-11-21: reject (by Claude Code session, delegated by the owner) |
