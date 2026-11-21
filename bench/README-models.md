@@ -253,6 +253,29 @@ not recur. The control arm stayed undecidable in this iteration, because the bas
 to 0/5 on both models, which the gate can only call a regression once the accepted rule is the
 baseline.
 
+**Iteration 7 (2026-11-21) ran on that baseline, and the control still did not meet its exit
+condition.** The rule was merged by pull request #40 and recorded with `bench merged`, and the next
+baseline passed the replay 5/5 on both models, so the control arm was decidable for the first time.
+The gate rejected the control (`candidate-rejected`, gate input `463fb989…`): no strict improvement
+and p 0.75 on the small model. It did not reject it for `replay-regression`, which is what 06 §10.3
+requires, because the replay did not regress: it passed 5/5 on both models with the over-general
+rule installed. In iteration 6 the same control text took that replay to 0/5 on both models, when
+no skill said otherwise. The specific rule in `provider-neon` now outweighs the conflicting general
+one in `deploy-verify-promote`, so this control no longer exercises replay safety against the
+accepted skill set. The result is `not-met` by the letter of §10.3, and what it shows is a control
+that has gone stale, not a gate that let a regression through: there was no regression to catch.
+A replacement control has to break a baseline-passing replay on the current skills, for example by
+patching the specific skill's rule itself.
+
+The real candidate of iteration 7 (`prop-c55a4346166a`, two sentences added to the maintainer
+checklist in `greenlight-wiki`) got no decision. Its slice is two wiki tasks, and on the frontier
+model the baseline scored 5/5 and 2/5, so the smallest p any candidate could reach was 0.083 and
+the gate reported `underpowered` without writing a ledger row. The observed counts were 7/10 to
+6/10 on the frontier model and 4/10 to 6/10 on the small one. The proposer's first draft cited
+grader checks by name; it was sent back once and the gated text states the rule and its reason
+for a wiki reader. One baseline rollout agent stopped mid-task after two off-contract commands
+were denied and was told to continue through the rollout client only; it then finished and passed.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading
