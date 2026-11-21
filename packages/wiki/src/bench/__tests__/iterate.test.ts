@@ -227,7 +227,7 @@ describe('iterate helpers', () => {
     });
     expect(controls[0]?.arm.proposal).toMatchObject({
       action: 'patch',
-      name: 'deploy-verify-promote',
+      name: 'provider-neon',
     });
     expect(loadControls(BENCH, 'no-such-dir')).toEqual([]);
   });

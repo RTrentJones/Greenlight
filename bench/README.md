@@ -265,11 +265,18 @@ Proposals for the human-applied outlets are evaluated by `evaluateOutlet`
   fail on the faulty artifact and pass on the fixed one.
 - **template** is `invalid` until M4.
 
-`controls/probe-layer-overgeneral.json` is the first iteration's control arm (06 §10.2 step 4): a
-skill patch on `deploy-verify-promote` stating the overgeneral rule of `pairs/probe-layer-val`
-`overgeneral-a`. `controls/controls.test.ts` shows it is a well-formed proposal and that an app
-following it fails `replay/idle-probe-leaves-store-asleep-val`, so the gate must reject it with
-`replay-regression`.
+`controls/probe-layer-overgeneral.json` is the control arm (06 §10.2 step 4): a skill patch on
+`provider-neon` that replaces its accepted liveness rule with the overgeneral rule of
+`pairs/probe-layer-val` `overgeneral-a` (probes must query the database). `controls/controls.test.ts`
+shows it is a well-formed proposal, that its replace target is a rule in the accepted skill set, and
+that an app following it fails `replay/idle-probe-leaves-store-asleep-val`, so the gate must reject it
+with `replay-regression`.
+
+A control has to take away something the baseline relies on. The first version added the same rule
+to `deploy-verify-promote`; once `provider-neon` carried the specific rule (pull request #40), agents
+followed the specific rule and the replay passed 5/5 with the control installed, so the gate could
+only reject it for no improvement (iteration 7). Because the control's replace target is the accepted
+text, the test fails when that rule changes, and the control has to be rewritten with it.
 
 ## Running the maintainer and proposer with an external agent
 

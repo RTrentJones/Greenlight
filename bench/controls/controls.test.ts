@@ -49,11 +49,26 @@ describe('control arm: probe-layer-overgeneral', () => {
     const applied = applyFilePatches(root, p.edits);
     if (!applied.ok) throw new Error(applied.errors.join('; '));
     const skill = applied.changeset.writes.find((w) => w.path === 'SKILL.md')?.content ?? '';
-    expect(skill).toContain('must always query the database');
-    // The patch adds exactly the overgeneral rule; nothing else in the skill changes.
+    expect(skill).toContain('must run a real query against the database');
+    // The patch swaps exactly one rule; nothing else in the skill changes.
     const before = readFileSync(join(root, 'SKILL.md'), 'utf8');
-    expect(skill.length).toBeGreaterThan(before.length);
-    expect(skill.replace(p.edits[0]?.text ?? '', '')).toBe(before);
+    expect(p.edits).toHaveLength(1);
+    const edit = p.edits[0] as { op: string; target: string; text: string };
+    expect(edit.op).toBe('replace');
+    expect(skill).toBe(before.replace(edit.target, edit.text));
+  });
+
+  it('reverses a rule of the accepted skill set, so it can only regress', () => {
+    // The control must take away something the baseline relies on. Its replace target is the
+    // accepted provider-neon liveness rule; when that rule changes, this fails and the control
+    // has to be rewritten against the new text (a control that edits nothing the baseline uses
+    // cannot show the gate refusing a regression: iteration 7, 06 §10.3).
+    if (p.action !== 'patch') throw new Error('not a patch');
+    const edit = p.edits[0] as { target: string; text: string };
+    const before = readFileSync(join(SKILLS, p.name, 'SKILL.md'), 'utf8');
+    expect(before).toContain(edit.target);
+    expect(edit.target).toContain('Liveness stays off the database');
+    expect(edit.text).not.toContain('stays off the database');
   });
 
   it('cites probe-layer patterns that exist in the framework wiki', () => {
@@ -63,18 +78,17 @@ describe('control arm: probe-layer-overgeneral', () => {
     expect(p.patterns).toContain('pattern/probe-touches-wrong-layer');
   });
 
-  it('targets a skill loaded by both paired val replays, and names the pair rule it encodes', () => {
+  it('targets a skill the replay it must regress loads, and names the pair rule it encodes', () => {
     if (p.action !== 'patch') throw new Error('not a patch');
     const pair = PairSpecSchema.parse(
       JSON.parse(readFileSync(join(BENCH, 'pairs', arm.pair.id, 'pair.json'), 'utf8')),
     );
     const rule = pair.rules.find((r) => r.id === arm.pair.rule);
     expect(rule?.mustFail).toBe(arm.expect.task);
+    expect(pair.tasks).toContain(arm.expect.task);
     const { tasks } = loadTasks(BENCH);
-    for (const tid of pair.tasks) {
-      const t = tasks.find((x) => x.id === tid);
-      expect(t?.spec.skills, tid).toContain(p.name);
-    }
+    const t = tasks.find((x) => x.id === arm.expect.task);
+    expect(t?.spec.skills, arm.expect.task).toContain(p.name);
   });
 });
 
