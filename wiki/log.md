@@ -58,3 +58,8 @@ The liveness-model rule on pattern/probe-touches-wrong-layer already splits need
 
 ## 2026-11-21T03:00:10.900Z — harness — candidate-accepted prop-4c6ab46f720c
 bench iterate iter-20261120T193108Z-2d20ca09: candidate-accepted (skill, provider-neon); ledger event 6bebbdd34ad1195fba2918176218c2bcf90a9375b841359fd5e5ed7d282b82e0
+
+## 2026-11-21T03:12:35.576Z — maintainer:claude-code/sonnet — ingest
+No page changes: the evidence is already compiled in pattern/probe-touches-wrong-layer and pattern/neon-never-sleeps.
+raw:20261121T030935Z-9c471a14 (passing replay on a mcp/oci app with Neon: healthcheck and keepalive on /live, 0 queries, store awake 240 s of 600 s, 200 with the database stopped, /health still reporting the database) repeats the store-free pass already recorded twice; raw:20261121T030935Z-06d6726c (passing supabase keepalive replay: probeTable named, every sweep queried the store, paused store read as failing) repeats pattern/keepalive-probe-misses-postgres.
+The maintainer failures raw:20261121T030935Z-13028a60 and raw:20261121T030935Z-ad358b21 ran against a fixture wiki lacking the liveness-model rule that pattern/probe-touches-wrong-layer now carries, naming incident/2026-08-keepalive-green-database-paused and incident/2026-09-idle-app-neon-never-sleeps. raw:20261121T030934Z-3b6550b6 and raw:20261121T030934Z-bde7060b (new route must join the verify config) concern the deploy loop, not a wiki pattern. No status change: all evidence is bench replay, not a deployed red-to-green run.
