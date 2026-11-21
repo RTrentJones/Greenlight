@@ -393,6 +393,11 @@ pnpm greenlight bench run --split train \
 #   that has a shell on this machine inside its sandbox: an agent that ignores it can touch the
 #   checkout it was started from. Start agents outside this repository, with no credentials,
 #   and prefer a launcher that denies every command not beginning with the client.
+#   From Claude Code, dispatch each handle to the `bench-rollout` agent type
+#   (.claude/agents/bench-rollout.md): it has the shell and no other tool, so it cannot write a
+#   host file with a file tool or call a session tool. A general agent given only the
+#   instruction did both in iteration 9 (one host file written; session calls were denied).
+#   The shell itself is still confined by the instruction alone.
 jq -r '.rollouts[] | select(.state == "open") | .command' "$M"
 
 # Exit 0: sealed. Exit 1 (deferred): some rollouts were not claimed in time; open only those:
