@@ -589,6 +589,33 @@ describe('bench iterate (M2-01, M2-04)', () => {
         expect(code, out.join('\n')).toBe(0);
       }
 
+      // `bench report` derives the same facts from the ledger and the sealed records alone.
+      {
+        const out: string[] = [];
+        const code = await benchCommand(['report', '--json', '--root', env.wiki], {
+          cwd: env.root,
+          env: {},
+          out: (x) => out.push(x),
+          err: (x) => out.push(x),
+        });
+        expect(code, out.join('\n')).toBe(0);
+        const report = JSON.parse(out.join('\n'));
+        expect(report.iterations.rows).toHaveLength(1);
+        expect(report.iterations.rows[0]).toMatchObject({
+          proposalId: s.proposer.proposalId,
+          reproduces: 'yes',
+          review: { decision: 'accept' },
+        });
+        expect(report.discrimination.rows).toHaveLength(1);
+        expect(report.discrimination.rows[0]).toMatchObject({
+          proposalId: ctl?.proposalId,
+          shows: 'replay-regression',
+          regressed: [IDLE_VAL],
+          reproduces: 'yes',
+        });
+        expect(report.cost.records.length).toBeGreaterThan(0);
+      }
+
       // Hand-off: a PR with the diff, ledger event, gate input, recompute command, per-model×mode.
       const md = readFileSync(join(dir, 'handoff.md'), 'utf8');
       const gi = s.evaluate.candidate?.gateInput?.hash as string;

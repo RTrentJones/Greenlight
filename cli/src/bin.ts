@@ -52,6 +52,8 @@ const HELP = `greenlight <command>
   bench check-graders [taskId…] [--verbose]     every grader passes its reference, fails its mutants
   bench models --check                          verify bench/models.json against models.list
   bench gate --recompute <gateInputHash>        re-derive a recorded gate decision
+  bench report [--metric m] [--proposal <id>] [--json]
+                                                iterations, control discrimination and cost, from the ledger
   bench activate <taskId…>                      activate pending tasks that have a baseline
   bench iterate [--scope s] [--resume <id>] [--dry-run] [--handoff-only] [--json]
                 [--maintainer-output <f> | --proposal <f>] [--agent <id>]

@@ -90,7 +90,8 @@ table at its top; 06 the loop, 07 the CLI, 08 the schemas); the operator's guide
 
 Commands: `pnpm greenlight wiki lint --strict`; `pnpm bench:check-graders`; `pnpm greenlight bench
 iterate [--resume <id>]`; `bench review <iterationId> --decision accept|reject --reason "…" --reviewer
-"<who>"`; `bench merged`; `bench gate --recompute <gateInputHash>`; `pnpm greenlight bench help` and
+"<who>"`; `bench merged`; `bench gate --recompute <gateInputHash>`; `bench report` (iterations, control
+discrimination and cost, read from the ledger); `pnpm greenlight bench help` and
 `wiki help` list every flag.
 
 ## Specs & background

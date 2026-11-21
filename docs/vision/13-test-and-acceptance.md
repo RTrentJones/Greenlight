@@ -522,7 +522,11 @@ Under trust model B, the same suite runs, and its report states which items fail
 | Free-tier fidelity | `fact.verified` | LR-17 count | M3 |
 
 `greenlight wiki stats` and `greenlight bench report` are read-only reporting commands specified in
-07. Until a milestone ships them, the drill log records each metric by hand.
+07. Until a milestone ships them, the drill log records each metric by hand. `bench report` is
+built for the three M2 metrics. It reads only the ledger and the sealed records, so it shows what
+the harness observed: an external rollout agent reports no usage, and the cost of its rollouts is
+given as a rollout count and rollout wall-clock time, with requests, tokens and dollars marked
+unmeasured.
 
 ## 6. Definition of done per milestone
 

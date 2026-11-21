@@ -36,6 +36,8 @@ export * from './bench/outlets';
 // M2-01 / M2-04: the ITERATE state machine and the review hand-off.
 export * from './bench/iterate';
 export * from './bench/merge';
+// 13 §5: the read-only M2 metrics (iterations, discrimination, cost).
+export * from './bench/report';
 export * from './ids';
 export * from './parse';
 export * from './load';

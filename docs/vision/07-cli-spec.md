@@ -53,10 +53,11 @@ completes the milestone that needs it.
 help` for the exact flags, which are authoritative where this document differs):
 `wiki lint`, `wiki render`, `wiki read`, `wiki traces`, `wiki ingest`, `wiki propose`;
 `bench run`, `bench rollout`, `bench check-graders` (alias `mutants`), `bench models`,
-`bench activate`, `bench iterate`, `bench review`, `bench merged`, `bench gate --recompute`.
+`bench activate`, `bench iterate`, `bench review`, `bench merged`, `bench gate --recompute`,
+`bench report`.
 Everything else in the table below is specification that has not been built, including
 `wiki capture`, `wiki remediate`, `bench gate <proposalId>` (the iteration runs the gate today),
-`bench report`, `bench monitor`, and the version bump on acceptance: a merge is recorded with
+`bench monitor`, and the version bump on acceptance: a merge is recorded with
 `bench merged`, and the accepted skill set is identified by its hash in the ledger.
 
 | command | status | milestone | serves |
@@ -814,7 +815,7 @@ greenlight bench iterate [--scope <skill|all>] [--resume <iterationId>] [--sandb
 greenlight bench review <iterationId> --decision accept|reject --reason "<text>" --reviewer "<who>"
 greenlight bench merged <proposalId> --ref <commit sha | pull request URL> [--json]
 greenlight bench monitor [--since <date>]
-greenlight bench report [--proposal <id>] [--json]
+greenlight bench report [--metric iterations|discrimination|cost] [--proposal <id>] [--json]
 ```
 
 - **`run`** executes the selected tasks (08 §10). The run proceeds as follows:

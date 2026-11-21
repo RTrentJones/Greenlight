@@ -527,6 +527,27 @@ evaluation and gate-input records under `wiki/evidence/eval/` are committed. `.g
 gitignored, so the raw rollout records (`.greenlight/raw/`), the per-rollout transcripts and trees,
 the iteration state and the hand-off stay on the machine that ran the iteration.
 
+## What has the loop done so far (`greenlight bench report`)
+
+`pnpm greenlight bench report` answers three questions from the committed evidence alone, so it
+gives the same answer on any checkout of the same commit (13 §5):
+
+- **Iterations.** Every real proposal with its outcome, its review and reviewer, its merge
+  reference, and whether its gate decision recomputes from the stored gate input and records.
+- **Discrimination.** Every control arm with a ledger row and what its rejection shows:
+  `replay-regression` with the replay task it broke, which is the result 06 §10.3 asks for;
+  `rejected-other`, a rejection an overgeneral patch can earn whatever it breaks; or `accepted`,
+  the failure a control exists to find. A control whose gate ended `underpowered` or `blocked` has
+  no ledger row and does not appear.
+- **Cost.** Every sealed evaluation record with its rollouts and rollout wall-clock time, and the
+  harness's own `spend` events per model. Requests, tokens and dollars are known only where the
+  harness called the model. An external rollout agent reports no usage, so those columns read
+  `unmeasured` for its records, never zero.
+
+`--metric iterations|discrimination|cost` prints one section, `--proposal <id>` narrows every
+section to one proposal, and `--json` prints the data. The command exits 1 when a recorded gate
+decision does not reproduce, so it also serves as a check over the whole ledger.
+
 ## Runner (`bench/runner/`, `greenlight bench run`)
 
 `greenlight bench run` (packages/wiki/src/bench/runner.ts) runs each rollout in a throwaway sandbox

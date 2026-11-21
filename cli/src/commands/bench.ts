@@ -13,15 +13,19 @@ import {
   LedgerReadError,
   ModelsConfigSchema,
   PrerequisiteError,
+  REPORT_METRICS,
   ROLLOUT_CLIENT_FILE,
   ROLLOUT_CLIENT_SOURCE,
+  type ReportMetric,
   type RunResult,
   type RunnerAssets,
   activateTasks,
+  buildBenchReport,
   checkGraders,
   checkModels,
   dockerAvailable,
   evalEvidencePath,
+  formatBenchReport,
   formatReport,
   iterate,
   loadEvaluationRecords,
@@ -184,6 +188,15 @@ checkout with a bench/ directory.
                        is a no-op (exit 0). Commit wiki/ledger.jsonl and wiki/skill-impact.md
                        afterwards.
 
+  report [--metric iterations|discrimination|cost] [--proposal <id>] [--json]
+                       the M2 metrics (13 §5), read only from the ledger and the sealed records
+                       under wiki/evidence/eval: every real proposal with its outcome, review and
+                       merge, and whether its gate decision recomputes; every control arm and
+                       what its rejection shows; and what each evaluation record cost. An
+                       external rollout agent reports no usage, so its requests, tokens and
+                       dollars read "unmeasured", never zero. Exit 1 when a recorded gate
+                       decision does not reproduce.
+
 common: --bench <dir> (default bench), --root <wiki dir> (default wiki),
         --skills <dir> (default .claude/skills).
 The model key is read by the host process only (GEMINI_API_KEY, or injected by an egress proxy:
@@ -212,6 +225,8 @@ export async function benchCommand(args: string[], io: BenchIo = defaultIo()): P
         return await iterateCmd(rest, io);
       case 'review':
         return reviewCmd(rest, io);
+      case 'report':
+        return reportCmd(rest, io);
       case 'merged':
         return mergedCmd(rest, io);
       case undefined:
@@ -514,6 +529,51 @@ function gateCmd(args: string[], io: BenchIo): number {
       : `✘ differs from the ledger event ${recorded.eventId} (${recorded.stage})`,
   );
   return same ? 0 : 1;
+}
+
+function reportCmd(args: string[], io: BenchIo): number {
+  const a = parseFlags('bench report', args, {
+    value: [...COMMON, '--metric', '--proposal'],
+    boolean: ['--json'],
+  });
+  maxPositionals('bench report', a, 0);
+  const metric = a.values['--metric'];
+  if (metric !== undefined && !(REPORT_METRICS as readonly string[]).includes(metric)) {
+    throw new UsageError(
+      `\`greenlight bench report\`: --metric is one of ${REPORT_METRICS.join(', ')} (got "${metric}")`,
+    );
+  }
+  const p = paths(io, a.values);
+  let events: LedgerEvent[];
+  try {
+    events = readLedgerEvents(p.wiki);
+  } catch (e) {
+    if (e instanceof LedgerReadError) throw new PrerequisiteError(e.message);
+    throw e;
+  }
+  const report = buildBenchReport({
+    events,
+    records: loadEvaluationRecords(p.wiki),
+    gateInput: (hash) => {
+      const file = join(p.wiki, evalEvidencePath(hash));
+      if (!existsSync(file)) return undefined;
+      const parsed = GateInputRecordSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
+      return parsed.success ? parsed.data : undefined;
+    },
+    proposalId: a.values['--proposal'],
+  });
+  const metrics = metric ? [metric as ReportMetric] : REPORT_METRICS;
+  if (a.flags.has('--json')) {
+    io.out(JSON.stringify(metric ? { [metric]: report[metric as ReportMetric] } : report, null, 2));
+  } else {
+    io.out(formatBenchReport(report, metrics));
+  }
+  const broken = [...report.iterations.rows, ...report.discrimination.rows].filter(
+    (r) => r.reproduces === 'no',
+  );
+  for (const r of broken)
+    io.err(`✘ ${r.proposalId}: the recorded gate decision does not reproduce`);
+  return broken.length > 0 ? 1 : 0;
 }
 
 function activateCmd(args: string[], io: BenchIo): number {
