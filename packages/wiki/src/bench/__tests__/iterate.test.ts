@@ -33,6 +33,7 @@ import {
   buildHandoff,
   gatePathFor,
   loadControls,
+  maintainerGrades,
   materializeCandidate,
   pinTree,
   rowDecision,
@@ -497,6 +498,42 @@ describe('the hand-off says when the gate made no decision (06 §5.2, §5.4, §1
     expect(h.body).toContain('**No decision: the gate is underpowered here.**');
     expect(h.body).toContain('attainable minimum p 0.05 ≥ 0.05');
     expect(h.body).toContain('Nothing was written to the ledger');
+  });
+});
+
+describe('graded maintainer tasks (06 §10.2 step 2)', () => {
+  const record = (outcomes: { task: string; model: string; score: number }[]) =>
+    ({
+      identity: {
+        tasks: [
+          { id: 'wiki/a-val', graders: ['maintainer'] },
+          { id: 'wiki/b-val', graders: ['maintainer'] },
+          { id: 'replay/c-val', graders: ['app'] },
+        ],
+      },
+      outcomes,
+    }) as never;
+  const runs = (task: string, model: string, scores: number[]) =>
+    scores.map((score) => ({ task, model, score }));
+
+  it('counts passes per maintainer task and model, and applies the gate bar of ⌈2R/3⌉', () => {
+    const g = maintainerGrades(
+      record([
+        ...runs('wiki/a-val', 'f', [1, 1, 1, 1, 0]),
+        ...runs('wiki/a-val', 's', [1, 1, 1, 0, 0]),
+        ...runs('wiki/b-val', 'f', [1, 1, 0, 0, 0]),
+        ...runs('replay/c-val', 'f', [1, 1, 1, 1, 1]),
+      ]),
+    );
+    expect(g).toEqual([
+      { task: 'wiki/a-val', model: 'f', passed: 4, runs: 5, passing: true },
+      { task: 'wiki/a-val', model: 's', passed: 3, runs: 5, passing: false },
+      { task: 'wiki/b-val', model: 'f', passed: 2, runs: 5, passing: false },
+    ]);
+  });
+
+  it('is empty for an evaluation with no maintainer task', () => {
+    expect(maintainerGrades(record(runs('replay/c-val', 'f', [1])))).toEqual([]);
   });
 });
 

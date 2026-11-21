@@ -2,7 +2,13 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { redact } from '../../redact';
 import type { GateResult, LedgerEvent, MaintainerOutput } from '../../schema';
+import {
+  type EvaluationRecord,
+  EvaluationRecordSchema,
+  evalEvidencePath,
+} from '../../schema/bench';
 import { loadTasks } from '../check-graders';
+import { twoThirds } from '../policy';
 import { treeDiff } from '../sandbox';
 import { type Ctx, type StepOutcome, ledgerEvents, readSplits } from './context';
 import { iterationDir, loadIterationState } from './state';
@@ -49,6 +55,96 @@ const failReasons = (d: DecisionSummary | undefined): string[] =>
       (r) =>
         `- \`${r.code}\`${[r.model, r.mode, r.task].filter(Boolean).length ? ` (${[r.model, r.mode, r.task].filter(Boolean).join(' / ')})` : ''}${r.detail ? `: ${r.detail}` : ''}`,
     );
+
+/** One maintainer-graded task on one model in an evaluation record. */
+export interface MaintainerGrade {
+  task: string;
+  model: string;
+  passed: number;
+  runs: number;
+  /** At least ⌈2R/3⌉ of R, the gate's own bar for a task a baseline passes (06 §5.4). */
+  passing: boolean;
+}
+
+/**
+ * How the maintainer role scored on the bench's maintainer-graded tasks in one evaluation (06
+ * §10.2 step 2). The iteration's own maintainer pass runs on the real wiki, which has no reference
+ * output and so cannot be graded; these tasks give the same role and skills the fixed inputs a
+ * grader can judge, among them the 06 §10.1 wiki state.
+ */
+export function maintainerGrades(record: EvaluationRecord): MaintainerGrade[] {
+  const graded = new Set(
+    record.identity.tasks.filter((t) => t.graders.includes('maintainer')).map((t) => t.id),
+  );
+  const by = new Map<string, MaintainerGrade>();
+  for (const o of record.outcomes) {
+    if (!graded.has(o.task)) continue;
+    const k = `${o.task}\u0000${o.model}`;
+    const g = by.get(k) ?? { task: o.task, model: o.model, passed: 0, runs: 0, passing: false };
+    g.runs += 1;
+    g.passed += o.score;
+    by.set(k, g);
+  }
+  return [...by.values()]
+    .map((g) => ({ ...g, passing: g.passed >= twoThirds(g.runs) }))
+    .sort((a, b) => a.task.localeCompare(b.task) || a.model.localeCompare(b.model));
+}
+
+function readRecord(wikiRoot: string, hash: string | undefined): EvaluationRecord | undefined {
+  if (!hash) return undefined;
+  const file = join(wikiRoot, evalEvidencePath(hash));
+  if (!existsSync(file)) return undefined;
+  try {
+    const r = EvaluationRecordSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
+    return r.success ? r.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The graded-maintainer lines of the hand-off. A held-out task is never named (06 §1.4): its
+ * results are given per model, as totals and as a count of tasks the baseline passes. */
+function maintainerGradeLines(
+  s: IterationState,
+  c: HandoffCtx,
+  heldOut: ReadonlyMap<string, string>,
+): string[] {
+  const rows: string[] = [];
+  for (const [label, hash] of [
+    ['train', s.train.record],
+    ['baseline', s.baseline.record],
+  ] as const) {
+    const record = readRecord(c.wikiRoot, hash);
+    if (!record) continue;
+    const grades = maintainerGrades(record);
+    const open = grades.filter((g) => !heldOut.has(g.task));
+    for (const task of [...new Set(open.map((g) => g.task))]) {
+      rows.push(
+        `  - ${label}, \`${task}\`: ${open
+          .filter((g) => g.task === task)
+          .map((g) => `${g.model} ${g.passed}/${g.runs}`)
+          .join(', ')}`,
+      );
+    }
+    const held = grades.filter((g) => heldOut.has(g.task));
+    const tasks = [...new Set(held.map((g) => g.task))];
+    if (tasks.length === 0) continue;
+    rows.push(
+      `  - ${label}, ${countTasks(tasks, heldOut)}: ${[...new Set(held.map((g) => g.model))]
+        .map((model) => {
+          const own = held.filter((g) => g.model === model);
+          const sum = (f: (g: MaintainerGrade) => number) => own.reduce((n, g) => n + f(g), 0);
+          return `${model} ${sum((g) => g.passed)}/${sum((g) => g.runs)} (${own.filter((g) => g.passing).length} of ${own.length} task(s) passing)`;
+        })
+        .join(', ')}`,
+    );
+  }
+  if (rows.length === 0) return [];
+  return [
+    "- graded: the pass above runs on the real wiki, which has no reference output, so it is not graded. The same role and skills are graded on the bench's maintainer tasks (06 §10.2 step 2); a task is passing at ⌈2R/3⌉ of R runs:",
+    ...rows,
+  ];
+}
 
 /** The iteration's spend from the ledger: every spend event of its evaluations and LLM roles. */
 export function iterationCost(
@@ -301,6 +397,7 @@ export function buildHandoff(s: IterationState, hc: HandoffCtx): Handoff {
     lines.push(`- produced by: external agent \`${m.agent ?? '(not handed in yet)'}\``);
   if (m.indexCorrections?.length)
     lines.push(`- index corrections: ${m.indexCorrections.join('; ')}`);
+  lines.push(...maintainerGradeLines(s, c, heldOut));
   if (m.outputFile && existsSync(m.outputFile)) {
     try {
       const out = JSON.parse(readFileSync(m.outputFile, 'utf8')) as MaintainerOutput;

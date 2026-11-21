@@ -334,8 +334,10 @@ ones. The drills for M0 to M2 are local and credential-free.
 - **Script.** Run one `ITERATE` (06 §1.3) end to end: train rollouts, maintainer, proposer,
   outlet evaluation and ledger. Run the control arm. Then the owner reviews.
 - **Pass criteria.**
-  1. The maintainer output passes the `wiki/probe-layer-incidents` grader. It contains a pattern
-     conditional on the liveness model that cites evidence from both incidents.
+  1. The maintainer role passes the `wiki/probe-layer-incidents` grader, which requires a pattern
+     conditional on the liveness model that cites evidence from both incidents: the val task is
+     baseline-passing on the frontier model in the iteration's baseline (06 §10.2 step 2, §10.3).
+     The maintainer's pass on the real wiki is not graded, because it has no reference output.
   2. A valid proposal, or a `no_action` with a reason, exists. It was produced from a bundle
      containing no val or test material (§2.7).
   3. The proposal was evaluated by its outlet's rule (06 §5.6).

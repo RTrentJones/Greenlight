@@ -603,9 +603,11 @@ describe('bench iterate (M2-01, M2-04)', () => {
         expect(report.iterations.rows).toHaveLength(1);
         expect(report.iterations.rows[0]).toMatchObject({
           proposalId: s.proposer.proposalId,
+          outcome: 'candidate-accepted',
           reproduces: 'yes',
-          review: { decision: 'accept' },
         });
+        // The review is recorded further down, so the row has none yet.
+        expect(report.iterations.reviewed).toBe(0);
         expect(report.discrimination.rows).toHaveLength(1);
         expect(report.discrimination.rows[0]).toMatchObject({
           proposalId: ctl?.proposalId,
@@ -630,6 +632,9 @@ describe('bench iterate (M2-01, M2-04)', () => {
       expect(md).toContain(`| ${SMALL} | isolation | val |`);
       expect(md).toContain(`+${CANDIDATE_MARKER}`);
       expect(md).toContain('rejected for a replay regression: yes, on 1 val replay task');
+      // The maintainer role's graded results sit beside the ungraded real-wiki pass.
+      expect(md).toContain('- graded: the pass above runs on the real wiki');
+      expect(md).toMatch(/ {2}- baseline, \d+ val wiki tasks?: /);
       expect(md).toContain('**met**');
       // 06 §1.4: the public hand-off names no val task.
       expect(md).not.toContain(IDLE_VAL);

@@ -84,6 +84,7 @@ export { materializeCandidate, pinTree, loadControls, gatePathFor } from './iter
 export {
   type Handoff,
   iterationCost,
+  maintainerGrades,
   buildHandoff,
   benchHeldOut,
   renderHandoffMarkdown,

@@ -1510,8 +1510,14 @@ today, so it is the likely target.
 1. **Baseline training rollouts.** Run the train split under the current skills, in isolation mode,
    on both models. The two replay tasks sit in train and val as separate fixture variants, a
    Supabase-shaped tool and a Neon-shaped tool, so that the val instances are unseen.
-2. **Maintainer pass.** The maintainer works over the incidents and the failing training traces.
-   Its output is graded by `wiki/probe-layer-incidents`.
+2. **Maintainer pass.** The maintainer works over the incidents and the failing training traces,
+   on the real wiki. That pass has no reference output, so it is not graded: once an iteration
+   has compiled the conditional rule, the right output on the real wiki is "no page changes",
+   which a grader written for the §10.1 state would fail. The role is graded instead by
+   `wiki/probe-layer-incidents`, whose fixture holds the §10.1 wiki state and incidents. It runs
+   in the train rollouts and in the val baseline, under the same skills as the maintainer pass,
+   and the hand-off prints those results next to the pass (`maintainerGrades`,
+   `packages/wiki/src/bench/iterate/handoff.ts`).
 3. **Proposer.** The proposer emits one change. The expected outlets, in rank order:
    - `mechanism`: the manifest `liveness` field and a probe-target validation;
    - `doctor`: DR-21 and DR-22;
@@ -1531,7 +1537,9 @@ today, so it is the likely target.
 
 The first iteration succeeds when:
 
-- the maintainer output passes its grader;
+- the maintainer role passes its grader: `wiki/probe-layer-incidents-val` is baseline-passing
+  (§5.4, at least ⌈2R/3⌉ of R runs) on the frontier model in the iteration's baseline (§10.2
+  step 2);
 - the proposal or `no_action` is valid;
 - the control is rejected **because the Neon replay regresses**: the exit check asserts that the
   decision's reasons include `replay-regression` on `replay/idle-probe-leaves-store-asleep-val`
