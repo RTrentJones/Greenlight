@@ -296,6 +296,40 @@ not cite both incidents, or lacked one liveness branch. The eval judge was skipp
 so the three runs are not known to pass; the grader set has changed, and the next baseline
 measures the task again.
 
+**Iteration 9 (2026-11-21) was the first with a decidable `greenlight-wiki` slice, and the gate
+said no.** The baseline on the fixed grader scored the frontier model 0/5 on
+`wiki/probe-layer-incidents-val` (it was 2/5) and 4/5 on the other wiki task, so the smallest
+reachable p was 0.002 and the power check let the candidate run. All five frontier failures were
+the same and were real: a correct two-branch rule that named both incidents by page id, as the
+merged checklist asks, and cited only replay records, where the grader requires an evidence ref
+from each incident's own list. The grader was left alone; that is a gap in the skill. The
+proposer's first draft tightened "name every incident by id", which one of its own train traces
+contradicts (that run names both ids and is still marked uncited), and it was sent back once with
+that contradiction and nothing from val. The gated text adds one sentence: end the rule's sentences
+with refs from each incident's `evidence` list. Result: 0/5 to 3/5 on that task for the frontier
+model and 1/5 to 2/5 for the small one, nothing lost anywhere (17 against 14 of 20 objective passes,
+and 14 against 11), and p 0.157 on the frontier slice. Rejected as `not-significant`
+(`prop-9583e28bc30b`, gate input `3a28b4cf…`); not merged. The control was rejected for
+`replay-regression` on both models again (5/5 to 0/5, gate input `c32d8b6f…`).
+
+Two things follow. A real gain of three passes in five on one task is not detectable at 5 runs when
+the slice's other task is near its ceiling: the gate is decidable there, and still weak. And the
+spec has no rule for gating the same text twice. Running an unchanged candidate again until it
+passes would raise the false-acceptance rate above alpha, so a second look at this text has to be
+one evaluation at a larger `runs` fixed beforehand, with the earlier rollouts not reused, and
+06 §5 should say so before it is done.
+
+The maintainer step of this iteration first refused its bundle for a "generic-shaped secret" in a
+raw record that held only fixture data. The scan read the record as serialized JSON, where line
+breaks are escaped, and ran on from a Terraform token variable into the next file's text. Bundle
+JSON is now scanned as its decoded strings (`secretFindings`, `packages/wiki/src/bundle.ts`).
+Rollout agents made a few off-contract tool calls across the three evaluations. Calls that change
+something (send a message, interrupt or create a session) were denied; read-only ones (a session
+listing, documentation reads) went through; and one small-model agent wrote a file on the host
+outside its sandbox with a file tool, which the dispatch prompt forbids and nothing stopped. The
+confinement of rollout agents is by instruction and permission mode, as stated above, and that
+write is the first observed case of it failing.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading
