@@ -276,6 +276,16 @@ grader checks by name; it was sent back once and the gated text states the rule 
 for a wiki reader. One baseline rollout agent stopped mid-task after two off-contract commands
 were denied and was told to continue through the rollout client only; it then finished and passed.
 
+**Iteration 8 (2026-11-21) met the control condition.** The control now replaces the accepted
+`provider-neon` rule ("liveness stays off the database") with its reverse, so it can only break the
+skill the replay loads. With train and baseline reused from iteration 7 (only `bench/controls`
+changed, which is an iteration pin and not part of the evaluation identity), the gate rejected it
+for `replay-regression` on both models, baseline 5/5 against candidate 0/5, while the other four
+objective tasks held at 17/20 and 9/20 (gate input `57952075…`, recomputable). The proposer was
+given the slice's power limit and returned a `no_action`, which saved an evaluation of 50 rollouts
+that could only have come back `underpowered`. The M2 drill record, `wiki/drills/m2-2026-11-21.md`,
+lists the two criteria still open: the graded maintainer pass and the cost report.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading
