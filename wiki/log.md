@@ -49,3 +49,9 @@ The three wiki-task records (raw:20261119T233853Z-23d117ff, raw:20261119T233853Z
 
 ## 2026-11-20T05:12:54.326Z — harness — candidate-rejected prop-8961760898c6
 bench iterate iter-20261119T233852Z-f760f38b: candidate-rejected (skill, provider-neon); ledger event 2a82273e5a27a68d1dc492fe58b5a03f699e5e63a22c55861a1f23058765de1f
+
+## 2026-11-20T19:33:43.410Z — maintainer:claude-code/sonnet — ingest
+No page changes: the evidence is already compiled in pattern/probe-touches-wrong-layer and pattern/neon-never-sleeps.
+raw:20261120T193109Z-367780bc (failing replay: healthcheck and keepalive on /health, 20 healthcheck queries, 1 keepalive query, store awake 600 s of 600 s, both probes 503 with the database stopped) repeats the failure those pages already record twice, with the same figures.
+raw:20261120T193109Z-7656daae (passing replay: both probes on /livez, 0 queries, store awake 240 s of 600 s, 200 with the database stopped, /health still reporting the database) repeats the already-recorded store-free pass.
+The liveness-model rule on pattern/probe-touches-wrong-layer already splits needs-traffic from needs-silence/needs-heal and names incident/2026-08-keepalive-green-database-paused and incident/2026-09-idle-app-neon-never-sleeps, so the maintainer failures raw:20261120T193109Z-6e053572 and raw:20261120T193109Z-fb153f5e (their fixture wiki lacked that rule) are covered; raw:20261120T193109Z-da808645 and raw:20261120T193109Z-55970fb1 are passing runs about other patterns with nothing to add. No status change: all evidence is bench replay, not a deployed red-to-green run.
