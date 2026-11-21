@@ -97,6 +97,7 @@ export const REASON_CODES = [
   'efficacy-slice',
   'safety-vacuous',
   'replay-baseline-failing',
+  'non-regression-set',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -629,6 +630,16 @@ function noWorse(c: CellStats, rule: NonRegression): boolean {
 const shownP = (p: number | null): string =>
   p === null ? 'not computed' : `${Number(p.toPrecision(3))}`;
 
+/** What non-regression was tested on in one cell: the totals over every objective task. */
+function nonRegressionDetail(c: CellStats, rule: NonRegression): string {
+  const total = c.objective.length * c.runs;
+  const passes = (k: 'basePasses' | 'candPasses') => c.objective.reduce((s, o) => s + o[k], 0);
+  const counts = `baseline ${passes('basePasses')}/${total}, candidate ${passes('candPasses')}/${total} over ${c.objective.length} objective task(s)`;
+  return rule.exact
+    ? `${counts}; one-sided exact p for a loss ${shownP(c.lossP)}`
+    : `${counts}; at most ${lossBound(total, rule.fraction)} may be lost`;
+}
+
 function lossDetail(c: CellStats, rule: NonRegression): string {
   const shape = `Δ ${c.diffUnits} passes over ${c.objective.length} tasks × ${c.runs} runs`;
   if (!rule.exact) {
@@ -991,6 +1002,19 @@ export function applyPolicy(input: PolicyInput): PolicyOutput {
     decision: cellPasses(c) || (tieBreak && c.safety.reasons.length === 0) ? 'pass' : 'fail',
   }));
   for (const c of cells) reasons.push(...c.safety.info);
+  // The non-regression set is every gated objective task, not the patched skill's slice, so the
+  // `capability` figures of a result (the slice) do not show it. Stated per cell, so a reader of a
+  // hand-off whose slice is empty can see that non-regression was tested and on what.
+  for (const c of cells) {
+    if (c.stats.objective.length === 0) continue;
+    reasons.push({
+      code: 'non-regression-set',
+      severity: 'info',
+      model: c.stats.model,
+      mode: c.stats.mode,
+      detail: nonRegressionDetail(c.stats, rule),
+    });
+  }
   const blocked = cells.flatMap((c) => c.safety.blocked);
   if (blocked.length > 0) {
     // A flaky baseline task (high radius) is a property of the baseline: no decision is made, and

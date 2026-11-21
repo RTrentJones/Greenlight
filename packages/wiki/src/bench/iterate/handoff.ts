@@ -113,6 +113,14 @@ function candidateSection(
           ? '> **No decision: the baseline is not gateable.** A replay task is flaky in the baseline at high blast radius (06 §5.4). This says nothing about the candidate: fix or quarantine the task named below, re-baseline, and gate again. Nothing was written to the ledger.'
           : "> **No decision: the gate is underpowered here.** No candidate outcome could reach the significance level on this skill's bench slice (06 §5.2), so neither an accept nor a rejection would mean anything. Add objective tasks that exercise the skill (or runs), then gate again. Nothing was written to the ledger.",
       );
+    const nonRegression = cand.decision.reasons.filter((r) => r.code === 'non-regression-set');
+    if (nonRegression.length > 0)
+      out.push(
+        '',
+        "Non-regression is tested over every objective task of the split, which the capability columns below (the patched skill's own tasks) do not show:",
+        '',
+        ...nonRegression.map((r) => `- ${r.model} / ${r.mode}: ${r.detail}`),
+      );
     const vacuous = cand.decision.reasons.filter((r) => r.code === 'safety-vacuous');
     if (vacuous.length > 0)
       out.push(

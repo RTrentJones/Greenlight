@@ -1024,6 +1024,14 @@ replay task is baseline-passing for a model and mode, the whole constraint is va
 ledger event's `reason` carries it, and the hand-off shows it. `GateResult.replay.baselinePassing`
 is 0 in that case.
 
+**The non-regression set is stated too.** Non-regression is tested over every gated objective task,
+while `GateResult.capability` is the mean over the patched skill's own slice, so a skill that no
+objective task lists shows 0.00 → 0.00 there although non-regression was tested on the whole split.
+The decision therefore carries one info reason per model and mode (`non-regression-set`) with the
+baseline and candidate totals over the objective tasks and the one-sided p for a loss, and the
+hand-off prints them above the results table. It is a reason, not a result field, so events
+recorded before it existed recompute to the same evidence.
+
 **Two alternative paths replace efficacy, never safety.** Both are human-reviewed and labelled in
 the ledger.
 

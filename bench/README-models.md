@@ -242,6 +242,17 @@ not report a regression there, and on the safety-fix path with every other rule 
 accept. A decision under algorithm 3 needs a new gate for that candidate; the ledger entry is not
 re-decided.
 
+**Iteration 6 (2026-11-21) was that new gate.** The same rule was proposed again against a fresh
+baseline and fresh candidate rollouts (`iter-20261120T193108Z-2d20ca09`, proposal
+`prop-4c6ab46f720c`, gate input `b9e68965…`). The safety-fix target went from 2/5 (frontier) and 3/5
+(small) to 5/5 on both, and the gate accepted. Non-regression is tested over every objective task of
+the split, not over the patched skill's own tasks: on those four tasks the candidate scored 17/20
+against 16/20 on the frontier model and 10/20 against 9/20 on the small one, and per task and model
+it matched or beat the baseline on all eight cells, so the small model's loss in iteration 5 did
+not recur. The control arm stayed undecidable in this iteration, because the baseline still failed the replay it is meant to regress; its candidate drove that replay
+to 0/5 on both models, which the gate can only call a regression once the accepted rule is the
+baseline.
+
 The ReAct `maxSteps` for the inference agent is **25** (`DEFAULT_MAX_STEPS`). It was 15 until
 2026-11-12, when the first activation baseline on the val split (8 rollouts, both Flash-Lite
 models) showed 6 of the 8 rollouts stopped by the cap without calling `finish`, still reading

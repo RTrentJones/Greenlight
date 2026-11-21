@@ -349,6 +349,8 @@ describe('applyPolicy details', () => {
       minP: null,
     });
     expect(out.reasons.map((r) => r.code)).toContain('no-objective-tasks');
+    // With no objective task there is no non-regression set to report.
+    expect(out.reasons.map((r) => r.code)).not.toContain('non-regression-set');
     expect(out.reasons).toContainEqual(
       expect.objectContaining({ code: 'no-slice', severity: 'blocked', model: F }),
     );
@@ -549,5 +551,19 @@ describe('releasePolicy (06 §5.7)', () => {
     });
     expect(releasePolicy(input).decision).toBe('pass');
     expect(releasePolicy({ ...input, radius: 'high' }).decision).toBe('blocked');
+  });
+});
+
+describe('the non-regression set is stated for every cell', () => {
+  it('reports the totals over every objective task as an info reason', () => {
+    const out = applyPolicy(clean());
+    const notes = out.reasons.filter((r) => r.code === 'non-regression-set');
+    expect(notes).toHaveLength(out.results.length);
+    for (const n of notes) {
+      expect(n.severity).toBe('info');
+      expect(n.detail).toMatch(
+        /^baseline \d+\/\d+, candidate \d+\/\d+ over \d+ objective task\(s\)/,
+      );
+    }
   });
 });
