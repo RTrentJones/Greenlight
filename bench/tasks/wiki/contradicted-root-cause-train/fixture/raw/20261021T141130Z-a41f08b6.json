@@ -1,0 +1,31 @@
+{
+  "tool": "menuboard",
+  "env": "beta",
+  "sourceRepo": "fixture-org/menuboard",
+  "gitSha": "5d0c3a9e41b7f2086c9d1a3e5f7b2c4d6e8f0a1b",
+  "dirty": false,
+  "wrapperRev": {
+    "sha": null,
+    "verifyConfigHash": null
+  },
+  "runId": "7861391150",
+  "attempt": 1,
+  "skills": {
+    "installed": {},
+    "used": "unknown"
+  },
+  "rawId": "20261021T141130Z-a41f08b6",
+  "kind": "verify",
+  "passed": true,
+  "startedAt": "2026-10-21T14:11:30Z",
+  "durationMs": 420,
+  "refs": ["run:fixture-org/menuboard/7861391150"],
+  "retained": {
+    "verdict": "passed",
+    "excerpt": "verify menuboard --env beta (verify only; no deploy since 14:02:11Z): PASS (3/3 checks)\n  ok   live          GET /health/live → 200 (29 ms)\n  ok   menu-current  GET / → 200 (37 ms)\n  ok   home-renders  GET / → 200 (34 ms)\n  info GET /__version → {\"sha\":\"5d0c3a9\"} (30 ms)\nrequest timeout 30000 ms, retries 2; slowest request 37 ms",
+    "hashes": {
+      "excerpt": "aa351ba8e4cde41d8420e7a4f9ae16df78d9b67f5662129bccde7ec94e2c9b77"
+    },
+    "fetchedAt": "2026-10-21T14:11:30Z"
+  }
+}

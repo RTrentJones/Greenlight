@@ -1,0 +1,7 @@
+{
+  "incidents": [
+    "incident/2026-08-keepalive-green-database-paused",
+    "incident/2026-09-polyphony-neon-never-sleeps"
+  ],
+  "ruleHomes": ["pattern/probe-touches-wrong-layer"]
+}

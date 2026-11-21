@@ -1,0 +1,16 @@
+{
+  "supersede": {
+    "old": "pattern/verify-fails-on-cold-start",
+    "contradictedBy": ["incident/2026-10-menuboard-verify-red-with-long-timeout"],
+    "rootCause": "\\b(previous|prior|old|older|earlier|stale|outdated|former|last)\\b[^.\\n]{0,60}\\b(version|release|artifact|build|sha|commit|deploy\\w*|page|worker|bundle)\\b|\\b(version|release|deployment|artifact|build|worker|bundle)\\b[^.\\n]{0,40}\\b(deployed|live|serving|shipped)\\s+(before|earlier|previously)\\b|__version|not\\s+(yet\\s+)?(serving|live|propagated|switched)|identity\\s+mismatch",
+    "overgeneral": [
+      "\\b(every|all|any|each)\\s+(post-deploy\\s+|such\\s+|beta\\s+|failed\\s+|failing\\s+|red\\s+)?(verify|verification)(\\s+(failure|failures|run|runs))?\\b[^.]{0,80}\\b(is|are|means?|comes?)\\b",
+      "\\b(verify|verification)\\s+(failure|failures)\\b[^.]{0,80}\\b(always|never)\\b",
+      "\\bcold[- ]starts?\\b[^.]{0,40}\\b(never|cannot|can not|do not|does not)\\s+(happen|occur|cause|fail|matter)"
+    ],
+    "judge": {
+      "oldCause": "post-deploy verify failed because the freshly deployed Worker was cold and its first request exceeded the verify request timeout (fix: a longer timeout and retries).",
+      "newCause": "no request was slow (about 40 ms each, with a 30 s timeout in place); verify began one second after the deploy command returned and was answered by the PREVIOUS version, which kept serving the route for another 38 s (/__version reported the old commit). The cause is that verify ran before the new deploy was live, an artifact-identity failure, so a longer timeout does nothing."
+    }
+  }
+}

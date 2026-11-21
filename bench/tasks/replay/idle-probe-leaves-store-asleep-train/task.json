@@ -1,0 +1,81 @@
+{
+  "id": "replay/idle-probe-leaves-store-asleep-train",
+  "kind": "replay",
+  "graders": ["app"],
+  "cell": "mcp/*/*",
+  "skills": ["provider-neon", "provider-oci", "provider-docker", "deploy-verify-promote"],
+  "fidelity": "runtime",
+  "pattern": "pattern/neon-never-sleeps",
+  "split": "train",
+  "state": "pending",
+  "timeoutMin": 20,
+  "modes": ["isolation", "production"],
+  "mutants": [
+    {
+      "id": "historical-healthcheck",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a container HEALTHCHECK and keepalive target on the database-checking /health from a store-free liveness probe"
+    },
+    {
+      "id": "historical-poll-loop",
+      "grader": "app",
+      "kind": "tree",
+      "description": "an idle app that polls its queue against the store every 2 seconds from one that wakes on enqueue"
+    },
+    {
+      "id": "overgeneral-a",
+      "grader": "app",
+      "kind": "tree",
+      "description": "\"every healthcheck and keepalive queries the database\" (a liveness route that runs SELECT 1) from a probe that leaves the store asleep"
+    },
+    {
+      "id": "missing-keepalive-target",
+      "grader": "app",
+      "kind": "tree",
+      "description": "container liveness without a keepalive target from the full liveness setup"
+    },
+    {
+      "id": "poll-30s",
+      "grader": "app",
+      "kind": "tree",
+      "description": "an idle app that polls the store every 30 seconds (twenty queries in the window, invisible when the window is compressed in real time) from one that wakes on enqueue"
+    },
+    {
+      "id": "fetch-monkeypatch",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a keepalive Worker that replaces fetch at import and reports ok without probing, together with the store-querying /health healthcheck, from a store-free liveness setup"
+    },
+    {
+      "id": "poll-perf-now-guard",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a 1-second tick polling when performance.now() says 30 s passed from an app that never polls when idle"
+    },
+    {
+      "id": "poll-abort-signal-timeout",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a poll loop on AbortSignal.timeout(30_000) from an app that never polls when idle"
+    },
+    {
+      "id": "poll-worker-thread",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a 30-second poll in a worker_threads Worker from an app that never polls when idle"
+    },
+    {
+      "id": "poll-child-process",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a 30-second poll in a child process spawned with its own env (no NODE_OPTIONS) from an app that never polls when idle"
+    },
+    {
+      "id": "healthcheck-unreadable-port",
+      "grader": "app",
+      "kind": "tree",
+      "description": "a HEALTHCHECK on the database-checking /health whose port is an expression the grader cannot read (previously graded as a probe of \"/\") from a store-free liveness probe at a readable URL"
+    }
+  ]
+}

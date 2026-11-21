@@ -1,0 +1,178 @@
+{
+  "identity": {
+    "taskSetHash": "d2ca941b824381e7241fb43989471fbb3fc61dfa5e0ee5aa32b87585faa7bef9",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "loop/new-route-joins-verify-val",
+        "kind": "loop",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-supabase"]
+      },
+      {
+        "id": "wiki/contradicted-root-cause-val",
+        "kind": "wiki",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      }
+    ],
+    "splitsHash": "71f2e6beefab36609e488abbdfcf7d58e51190f87f7d264d093ce4832ea48a63",
+    "graderSetHash": "2f2e5fdd1bee537474639996101a95330c75d0b052f640edfe2ca6d3a1f1fca1",
+    "depsHash": "246cc4146ff982e08dbe38fd2b92eef9d730ecbd434c970a02642c1340f9c3a9",
+    "harness": {
+      "runnerVersion": "0.3.0",
+      "imageDigest": "ctx:sha256:3dcf056da115df89381da7cd1256dccfd1357473fd6f6a2869cd65ed94cb45ce",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null
+      }
+    },
+    "agent": {
+      "vendor": "greenlight-harness",
+      "version": "0.2.0"
+    },
+    "models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+    "modelsConfigHash": "7182fceab82464bda532536bdd66b5ebc997c020a7987bcdd5d85cbec4d23985",
+    "skillSetHash": "9711d1991e567db7885178608a08ff6c7c939dca476eb9a2330d00ac3c3063ae",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "baseline",
+  "createdAt": "2026-11-15T18:58:19.857Z",
+  "outcomes": [
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "2022833756",
+      "rawId": "20261115T185043Z-cd610194",
+      "durationMs": 174570,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 15,
+        "tokensIn": 43793,
+        "tokensOut": 1169
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "1474077992",
+      "rawId": "20261115T185557Z-05ab58b6",
+      "durationMs": 123099,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 21,
+        "tokensIn": 122415,
+        "tokensOut": 1216
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1613629139",
+      "rawId": "20261115T185337Z-71bdb49b",
+      "durationMs": 139460,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 50649,
+        "tokensOut": 1331
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); the contradicted pattern is superseded by a pattern this output creates; the superseded pattern keeps its original claim; the new pattern states the root cause the new evidence shows; no overgeneral rule"
+        }
+      ],
+      "seed": "443017641",
+      "rawId": "20261115T185800Z-f8db7c1c",
+      "durationMs": 19578,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 7,
+        "tokensIn": 30680,
+        "tokensOut": 2452
+      }
+    }
+  ],
+  "hash": "b0933d04f3b62b495db1d7ac34dfb98da5230edb95ecf7f9533b3c74a0239be8"
+}

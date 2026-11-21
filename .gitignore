@@ -30,3 +30,9 @@ greenlight.config.ts
 
 # packed tarballs (pnpm pack / inspection)
 *.tgz
+
+# Sub-agent git worktrees (local orchestration only)
+.claude/worktrees/
+
+# Repo-local scratch of tests (a fresh tmpfs in the outlet sandbox; outlets.ts checkOutputDirs)
+.vitest-tmp/

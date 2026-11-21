@@ -7,11 +7,26 @@ import {
   type Target,
   loadConfig,
 } from '@rtrentjones/greenlight-shared';
-import type { VerifySpec } from '@rtrentjones/greenlight-verify';
+import {
+  CHECK_ID_RE,
+  type VerifyConfigMeta,
+  type VerifyCoverage,
+  type VerifySpec,
+  declaredIds,
+} from '@rtrentjones/greenlight-verify';
 import { createJiti } from 'jiti';
 
+/** Manifest file names, in precedence order. The `.mjs`/`.js` forms are plain-object manifests (no
+ * package import), as the bench fixtures use so a sandbox needs no dependency install. */
+export const MANIFEST_FILES = [
+  'greenlight.config.ts',
+  'greenlight.config.example.ts',
+  'greenlight.config.mjs',
+  'greenlight.config.js',
+] as const;
+
 export function findManifestPath(cwd = process.cwd()): string | null {
-  for (const name of ['greenlight.config.ts', 'greenlight.config.example.ts']) {
+  for (const name of MANIFEST_FILES) {
     const p = resolve(cwd, name);
     if (existsSync(p)) return p;
   }
@@ -134,20 +149,18 @@ function asSpec(relPath: string, spec: { mode?: unknown }): VerifySpec {
   return spec as VerifySpec;
 }
 
-/** Load a verify spec — or an ARRAY of specs (to combine modes, e.g. `[test, api]`) — from
- * a specific file (default export), or null if it doesn't exist. The default export may also be
- * a FUNCTION `(ctx: VerifyConfigContext) => spec | spec[]` (sync or async) — the explicit
- * alternative to reading GREENLIGHT_* env vars at module-eval time. */
-export async function loadVerifySpecAt(
-  relPath: string,
-  ctx?: VerifyConfigContext,
-): Promise<VerifySpec | VerifySpec[] | null> {
+/** A loaded verify config: the specs for one context, plus its named `meta` export (vision 08 §6). */
+export interface LoadedVerifyConfig {
+  specs: VerifySpec | VerifySpec[];
+  meta: VerifyConfigMeta;
+}
+
+async function importConfig(relPath: string): Promise<Record<string, unknown> | null> {
   const path = resolve(process.cwd(), relPath);
   if (!existsSync(path)) return null;
   const jiti = createJiti(import.meta.url);
-  let mod: Record<string, unknown>;
   try {
-    mod = (await jiti.import(path)) as Record<string, unknown>;
+    return (await jiti.import(path)) as Record<string, unknown>;
   } catch (e) {
     // The file exists but failed to evaluate (syntax/import error) — name it rather than throwing a
     // raw stack with no file context (missing-file already returns null above).
@@ -155,10 +168,36 @@ export async function loadVerifySpecAt(
       `Could not load verify spec ${relPath}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+}
+
+/** Validate the named `meta` export strictly, like a spec: an unknown key or a malformed id must
+ * fail loudly rather than silently drop an invariant (C7). */
+function readMeta(relPath: string, mod: Record<string, unknown>): VerifyConfigMeta {
+  if (!('meta' in mod) || mod.meta === undefined) return {};
+  const meta = mod.meta;
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
+    throw new Error(`${relPath}: export "meta" must be an object`);
+  }
+  for (const k of Object.keys(meta)) {
+    if (k !== 'invariant') throw new Error(`${relPath}: meta has unsupported field "${k}"`);
+  }
+  const inv = (meta as { invariant?: unknown }).invariant;
+  if (inv === undefined) return {};
+  if (!Array.isArray(inv) || !inv.every((x) => typeof x === 'string' && CHECK_ID_RE.test(x))) {
+    throw new Error(`${relPath}: meta.invariant must be an array of kebab-case check ids`);
+  }
+  return { invariant: [...inv] as string[] };
+}
+
+async function evaluateDefault(
+  relPath: string,
+  mod: Record<string, unknown>,
+  ctx: VerifyConfigContext,
+): Promise<VerifySpec | VerifySpec[]> {
   let def = 'default' in mod ? mod.default : mod;
   if (typeof def === 'function') {
     try {
-      def = await (def as (c: VerifyConfigContext) => unknown)(ctx ?? ctxFromEnv());
+      def = await (def as (c: VerifyConfigContext) => unknown)(ctx);
     } catch (e) {
       throw new Error(
         `Verify config function ${relPath} threw: ${e instanceof Error ? e.message : String(e)}`,
@@ -169,12 +208,75 @@ export async function loadVerifySpecAt(
   return asSpec(relPath, def as { mode?: unknown });
 }
 
-/** Load a local tool's `<dir>/verify.config.ts` if present. */
+/** Load a verify config with its named exports preserved (vision 08 §6): the specs for `ctx`, and
+ * the validated `meta`. Null when the file does not exist. */
+export async function loadVerifyConfigAt(
+  relPath: string,
+  ctx?: VerifyConfigContext,
+): Promise<LoadedVerifyConfig | null> {
+  const mod = await importConfig(relPath);
+  if (!mod) return null;
+  return {
+    specs: await evaluateDefault(relPath, mod, ctx ?? ctxFromEnv()),
+    meta: readMeta(relPath, mod),
+  };
+}
+
+/** Load a verify spec — or an ARRAY of specs (to combine modes, e.g. `[test, api]`) — from
+ * a specific file (default export), or null if it doesn't exist. The default export may also be
+ * a FUNCTION `(ctx: VerifyConfigContext) => spec | spec[]` (sync or async) — the explicit
+ * alternative to reading GREENLIGHT_* env vars at module-eval time. */
+export async function loadVerifySpecAt(
+  relPath: string,
+  ctx?: VerifyConfigContext,
+): Promise<VerifySpec | VerifySpec[] | null> {
+  return (await loadVerifyConfigAt(relPath, ctx))?.specs ?? null;
+}
+
+const COVERAGE_CTXS: ReadonlyArray<VerifyConfigContext> = [
+  { env: 'preview', preview: true },
+  { env: 'beta', preview: false },
+  { env: 'prod', preview: false },
+];
+
+/** Per-environment coverage of a config's check ids (vision 08 §6, C7). The default export is
+ * evaluated once per context; a context whose evaluation throws counts as zero coverage there.
+ * `missing` lists each `meta.invariant` id absent from an env. Null when the file does not exist. */
+export async function verifyCoverageAt(relPath: string): Promise<VerifyCoverage | null> {
+  const mod = await importConfig(relPath);
+  if (!mod) return null;
+  const meta = readMeta(relPath, mod);
+  const invariant = meta.invariant ?? [];
+  const byEnv = { preview: [], beta: [], prod: [] } as VerifyCoverage['byEnv'];
+  for (const ctx of COVERAGE_CTXS) {
+    let ids: string[] = [];
+    try {
+      const specs = await evaluateDefault(relPath, mod, ctx);
+      ids = (Array.isArray(specs) ? specs : [specs]).flatMap((sp) => declaredIds(sp));
+    } catch {
+      ids = [];
+    }
+    byEnv[ctx.env] = [...new Set(ids)];
+  }
+  const missing = COVERAGE_CTXS.flatMap((ctx) =>
+    invariant.filter((id) => !byEnv[ctx.env].includes(id)).map((id) => ({ env: ctx.env, id })),
+  );
+  return { invariant, byEnv, missing };
+}
+
+/** Verify config file names for a local tool, in precedence order (`.ts`, then the plain-JS forms
+ * a dependency-free fixture uses). */
+export const VERIFY_CONFIG_FILES = ['verify.config.ts', 'verify.config.mjs', 'verify.config.js'];
+
+/** Load a local tool's `<dir>/verify.config.{ts,mjs,js}` if present (the first that exists). */
 export function loadVerifySpec(
   dir: string,
   ctx?: VerifyConfigContext,
 ): Promise<VerifySpec | VerifySpec[] | null> {
-  return loadVerifySpecAt(`${dir}/verify.config.ts`, ctx);
+  const name =
+    VERIFY_CONFIG_FILES.find((f) => existsSync(resolve(process.cwd(), dir, f))) ??
+    VERIFY_CONFIG_FILES[0];
+  return loadVerifySpecAt(`${dir}/${name}`, ctx);
 }
 
 /** Load an external (registry) tool's spec, which lives in the wrapper at

@@ -1,0 +1,17 @@
+[
+  {
+    "name": "mapmaker",
+    "env": "prod",
+    "url": "https://mapmaker.example.test",
+    "kind": "oci",
+    "probePath": "/health/live",
+    "remediate": true
+  },
+  {
+    "name": "quizpad",
+    "env": "prod",
+    "url": "https://quizpad.example.test",
+    "kind": "oci",
+    "probePath": "/api/health/live"
+  }
+]

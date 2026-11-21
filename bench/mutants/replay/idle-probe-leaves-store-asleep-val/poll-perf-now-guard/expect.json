@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "zero store queries over the idle window",
+    "store suspended at the end of the idle window"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "incidents": [
+    "incident/2026-07-tripnote-keepalive-green-store-paused",
+    "incident/2026-08-ledgerline-store-never-suspends"
+  ],
+  "ruleHomes": ["pattern/probe-touches-wrong-layer"]
+}

@@ -3,6 +3,7 @@ import { describeMatrix } from '@rtrentjones/greenlight-shared';
 import { addCommand } from './commands/add';
 import { adoptCommand } from './commands/adopt';
 import { agentCommand } from './commands/agent';
+import { benchCommand } from './commands/bench';
 import { bumpCommand } from './commands/bump';
 import { configCommand } from './commands/config';
 import { deployCommand } from './commands/deploy';
@@ -15,6 +16,7 @@ import { secretsCommand } from './commands/secrets';
 import { shipCommand } from './commands/ship';
 import { statusCommand } from './commands/status';
 import { verifyCommand } from './commands/verify';
+import { wikiCommand } from './commands/wiki';
 
 const HELP = `greenlight <command>
 
@@ -38,6 +40,26 @@ const HELP = `greenlight <command>
   migrations scan [<dir>] [--strict]            dangerous-SQL gate for migrations (pre-apply)
   bump                                          re-pin a consumer's infra ?ref + dep to the installed version
   doctor [--live] [--strict]                    consistency checks (--live: probes; --strict: fail on warnings)
+  wiki lint [--strict] [--fix] [--root <dir>]   lint the wiki (LR rules); --fix regenerates index + skill-impact
+  wiki ingest [--sample a:b] [--incident <id>] [--seed <s>] [--out <dir>]
+                                                write a maintainer bundle; --apply <file> applies its output
+  wiki propose [--skill <name>]                 write a proposer bundle; --apply <file> validates the proposal
+  wiki read <page-id|raw:<id>|skill:<name>>     read-only access (val/test bench records refused)
+  wiki traces --skill <name> --failed [--limit n]  list visible raw records, newest first
+  bench run [--split s] [--tasks g] [--models frontier,small] [--runs n] [--sandbox docker|process]
+            [--role train|baseline] [--resume <id>] [--force] [--max-requests n]
+                                                isolated rollouts → raw records + EvaluationRecord
+  bench check-graders [taskId…] [--verbose]     every grader passes its reference, fails its mutants
+  bench models --check                          verify bench/models.json against models.list
+  bench gate --recompute <gateInputHash>        re-derive a recorded gate decision
+  bench report [--metric m] [--proposal <id>] [--json]
+                                                iterations, control discrimination and cost, from the ledger
+  bench activate <taskId…>                      activate pending tasks that have a baseline
+  bench iterate [--scope s] [--resume <id>] [--dry-run] [--handoff-only] [--json]
+                [--maintainer-output <f> | --proposal <f>] [--agent <id>]
+                                                one resumable WikiSkill iteration → ledger + hand-off
+  bench review <id> --decision accept|reject --reason "<text>"
+                                                record the owner's review of an iteration
   help                                          show this message
 
 Real cloud deploys need the target's creds (e.g. CLOUDFLARE_API_TOKEN); see docs/archive/greenlight-v1.md §16.`;
@@ -87,6 +109,10 @@ async function main(): Promise<number> {
       return bumpCommand(args);
     case 'doctor':
       return doctorCommand(args);
+    case 'wiki':
+      return wikiCommand(args);
+    case 'bench':
+      return benchCommand(args);
     default:
       throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
   }

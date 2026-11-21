@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["output validates against MaintainerOutput"]
+}

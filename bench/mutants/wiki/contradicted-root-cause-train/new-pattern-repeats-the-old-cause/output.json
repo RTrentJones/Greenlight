@@ -1,0 +1,31 @@
+{
+  "create_pages": [
+    {
+      "id": "pattern/verify-needs-a-longer-timeout",
+      "content": "---\nid: pattern/verify-needs-a-longer-timeout\ntype: pattern\ntitle: Post-deploy verify fails because the new Worker needs more than 30 s to warm up\nupdated: 2026-11-01\nstatus: hypothesis\nkind: failure\nclass: free-tier-physics\natRisk: the first requests to a freshly deployed Worker\nprobed: the home page content, inside the verify request timeout\ncells: [\"astro/workers/none\"]\naffects: \"*\"\nrelevance: both\nevidence:\n  - issue:fixture-org/menuboard#41\n  - run:fixture-org/menuboard/7861204418\n  - run:fixture-org/menuboard/7861391150\n  - raw:20261021T140212Z-3c9d2e71\n  - raw:20261021T141130Z-a41f08b6\nremediation:\n  - { outlet: verify, ref: \"verify request timeout 30 s to 120 s, five retries\", verified: false }\nskills: [deploy-verify-promote]\n---\n## Symptom\n`verify` fails on a content check right after a deploy and passes minutes later with nothing redeployed (run:fixture-org/menuboard/7861204418, run:fixture-org/menuboard/7861391150).\n\n## Root cause\nThe freshly deployed Worker is cold for longer than expected. The 30 s timeout and two retries were not enough for it to warm up, so the content check failed again (run:fixture-org/menuboard/7861204418). The re-run minutes later passed because the Worker was warm by then (run:fixture-org/menuboard/7861391150).\n\n## Fix / workaround\nRaise the verify request timeout to 120 s and retry five times (issue:fixture-org/menuboard#41).\n\n## How it is caught\nIt is not. The failure disappears on a re-run (raw:20261021T141130Z-a41f08b6).\n"
+    }
+  ],
+  "update_pages": [
+    {
+      "id": "pattern/verify-fails-on-cold-start",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/verify-needs-a-longer-timeout\n"
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-menuboard-verify-red-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/verify-needs-a-longer-timeout"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/verify-runs-before-deploy-is-live (hypothesis) from incident/2026-10-menuboard-verify-red-with-long-timeout and the two verify runs in raw/: the failing requests were fast and served the previous version. Set pattern/verify-fails-on-cold-start to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run of the identity gate exists."
+}

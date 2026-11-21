@@ -21,6 +21,26 @@ module.exports = {
       from: { path: '^(cli|packages)/' },
       to: { path: '^(tools|apps)/' },
     },
+    {
+      name: 'gate-never-depends-on-knowledge',
+      severity: 'error',
+      comment:
+        'The deploy gate must not depend on the knowledge plane, so a broken wiki can never break a ' +
+        'deploy (vision 03 §3). Only cli/ wires wiki to verify/loop.',
+      from: { path: '^packages/(verify|loop|adapters|shared)/' },
+      to: { path: '(^packages/wiki/|greenlight-wiki)' },
+    },
+    {
+      name: 'wiki-imports-only-shared',
+      severity: 'error',
+      comment:
+        'packages/wiki consumes verify/loop output as data, never as code (vision 03 §3): it may ' +
+        'import packages/shared only.',
+      from: { path: '^packages/wiki/' },
+      to: {
+        path: '(^packages/(verify|loop|adapters)/|^cli/|greenlight-(verify|loop|adapters)$|@rtrentjones/greenlight$)',
+      },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

@@ -1,0 +1,87 @@
+{
+  "ctx": {
+    "branch": "develop",
+    "upstreams": {
+      "develop": {
+        "remote": "origin",
+        "ref": "develop"
+      },
+      "feat/x": {
+        "remote": "origin",
+        "ref": "develop"
+      }
+    }
+  },
+  "events": [
+    {
+      "transcript": "read_file",
+      "argv": ["README.md"]
+    },
+    {
+      "transcript": "read_file",
+      "argv": ["tools/changelog/server.mjs"]
+    },
+    {
+      "transcript": "read_file",
+      "argv": ["tools/changelog/verify.config.mjs"]
+    },
+    {
+      "transcript": "write_file",
+      "argv": ["tools/changelog/server.mjs"]
+    },
+    {
+      "transcript": "write_file",
+      "argv": ["tools/changelog/verify.config.mjs"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["switch", "-c", "feat/releases-json"],
+      "ctx": {
+        "branch": "main"
+      }
+    },
+    {
+      "cmd": "greenlight",
+      "argv": ["preview", "changelog"],
+      "ctx": {
+        "branch": "feat/releases-json"
+      }
+    },
+    {
+      "cmd": "git",
+      "argv": ["add", "tools/changelog/server.mjs", "tools/changelog/verify.config.mjs"],
+      "ctx": {
+        "branch": "feat/releases-json"
+      }
+    },
+    {
+      "cmd": "git",
+      "argv": ["commit", "-m", "changelog: add /releases.json"],
+      "ctx": {
+        "branch": "feat/releases-json"
+      }
+    },
+    {
+      "cmd": "git",
+      "argv": ["switch", "develop"],
+      "ctx": {
+        "branch": "feat/releases-json"
+      }
+    },
+    {
+      "cmd": "git",
+      "argv": ["merge", "--ff-only", "feat/releases-json"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["push", "origin", "develop"],
+      "ctx": {
+        "remoteMoved": true
+      }
+    },
+    {
+      "cmd": "greenlight",
+      "argv": ["verify", "changelog", "--env", "beta"]
+    }
+  ]
+}

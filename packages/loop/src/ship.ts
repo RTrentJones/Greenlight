@@ -30,6 +30,15 @@ export interface StageEvent {
   /** The deploy-verify-promote skill version driving this run, when known — lets skill-text
    * changes be A/B'd against gate outcomes. */
   skillVersion?: string;
+  /** The raw record this event belongs to (vision 08 §5.2, §7), when one is being captured. */
+  rawId?: string;
+  /** Managed skills in effect (vision 08 §5.1): every installed skill with version + content hash,
+   * and `used` — only what an observer reported, else 'unknown'. Optional: absent on events from
+   * callers that predate evidence identity. */
+  skills?: {
+    installed: Record<string, { version: string; contentHash: string }>;
+    used: Record<string, { version: string; contentHash: string }> | 'unknown';
+  };
 }
 
 export interface ShipInput {

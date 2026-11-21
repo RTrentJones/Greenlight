@@ -1,0 +1,17 @@
+[
+  {
+    "name": "pollhub",
+    "env": "prod",
+    "url": "https://plhb-fixture-ref.supabase.co",
+    "anonKey": "sb_publishable_pollhub_fixture_anon",
+    "probeTable": "heartbeat",
+    "probeSelect": "id"
+  },
+  {
+    "name": "ledgerline",
+    "env": "prod",
+    "url": "https://ledgerline.example.test",
+    "kind": "oci",
+    "probePath": "/health"
+  }
+]

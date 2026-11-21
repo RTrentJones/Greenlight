@@ -10,9 +10,11 @@
  *
  * Exit non-zero on any hit. Run via `pnpm check-seam`.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { type SeamTerms, lint } from '../packages/wiki/src/lint';
+import { loadWiki } from '../packages/wiki/src/load';
 
 const ROOT = process.cwd();
 
@@ -44,6 +46,27 @@ const FORBIDDEN: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /rtrentjones@gmail\.com/i, label: 'personal email' },
 ];
 
+/**
+ * The owner's personal values for the framework wiki (LR-19, vision 04 §5). Wiki pages are
+ * markdown, which the line scan above skips, and their `evidence` refs may legitimately name the
+ * owner's repositories and blog — so `wiki/` is checked with the LR-19 rule itself, which exempts
+ * exactly the evidence fields. This file is the one place allowed to name these values.
+ */
+export const OWNER_SEAM_TERMS: SeamTerms = {
+  domains: ['rtrentjones.dev'],
+  emails: ['rtrentjones@gmail.com'],
+  toolNames: ['heistmind', 'bamcp', 'polyphony', 'tracer', 'muse', 'pg_kafka', 'pg-kafka'],
+};
+
+/** LR-19 findings on the framework wiki at `<root>/wiki`, as printable lines. */
+export function wikiSeamViolations(root: string): string[] {
+  const dir = resolve(root, 'wiki');
+  if (!existsSync(dir)) return [];
+  return lint(loadWiki(dir), { kind: 'framework', seam: OWNER_SEAM_TERMS })
+    .filter((f) => f.rule === 'LR-19')
+    .map((f) => `  wiki/${f.page}  ${f.message} (LR-19)`);
+}
+
 const TEXT_EXT = /\.(ts|tsx|js|mjs|cjs|json|jsonc|yml|yaml|tf|tfvars|toml|sh|env|txt)$/;
 
 function walk(path: string, out: string[]): void {
@@ -63,30 +86,36 @@ function walk(path: string, out: string[]): void {
   }
 }
 
-const files: string[] = [];
-for (const p of FRAMEWORK_PATHS) walk(join(ROOT, p), files);
+function main(): void {
+  const files: string[] = [];
+  for (const p of FRAMEWORK_PATHS) walk(join(ROOT, p), files);
 
-const violations: string[] = [];
-for (const file of files) {
-  const lines = readFileSync(file, 'utf8').split('\n');
-  lines.forEach((line, i) => {
-    for (const { pattern, label } of FORBIDDEN) {
-      if (pattern.test(line)) {
-        violations.push(`  ${relative(ROOT, file)}:${i + 1}  ${label}\n    > ${line.trim()}`);
+  const violations: string[] = wikiSeamViolations(ROOT);
+  for (const file of files) {
+    const lines = readFileSync(file, 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      for (const { pattern, label } of FORBIDDEN) {
+        if (pattern.test(line)) {
+          violations.push(`  ${relative(ROOT, file)}:${i + 1}  ${label}\n    > ${line.trim()}`);
+        }
       }
-    }
-  });
+    });
+  }
+
+  if (violations.length > 0) {
+    console.error(
+      `✘ Seam check failed — personal data found in ${violations.length} framework location(s):\n`,
+    );
+    console.error(violations.join('\n\n'));
+    console.error(
+      '\nFramework files must read personal values from the manifest, not hardcode them (rule 15.2.1).',
+    );
+    process.exit(1);
+  }
+
+  console.log(
+    `✔ Seam check passed — scanned ${files.length} framework files and the framework wiki, no personal data.`,
+  );
 }
 
-if (violations.length > 0) {
-  console.error(
-    `✘ Seam check failed — personal data found in ${violations.length} framework location(s):\n`,
-  );
-  console.error(violations.join('\n\n'));
-  console.error(
-    '\nFramework files must read personal values from the manifest, not hardcode them (rule 15.2.1).',
-  );
-  process.exit(1);
-}
-
-console.log(`✔ Seam check passed — scanned ${files.length} framework files, no personal data.`);
+if (process.argv[1] && resolve(process.argv[1]) === SELF) main();

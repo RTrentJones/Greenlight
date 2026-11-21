@@ -1,0 +1,30 @@
+{
+  "create_pages": [],
+  "update_pages": [
+    {
+      "id": "pattern/probe-touches-wrong-layer",
+      "ops": [
+        {
+          "op": "insert_after",
+          "target": "evidence:\n",
+          "text": "  - issue:fixture-org/tripnote#12\n  - commit:fixture-org/ledgerline@4b9e1d27c0a3f58e6d1b2c7a9f0e3d4c5b6a7980\n"
+        },
+        {
+          "op": "append",
+          "text": "\n## Rule by liveness model\nWhich layer a probe must touch depends on the tool's liveness model:\n\n- `needs-traffic` (a store that pauses after idle time, as Supabase does): a keepalive answered by a cache leaves the idle timer running, so the probe has to run a real query against a table (issue:fixture-org/tripnote#12, run:fixture-org/tripnote/9182736455; trace raw:20261101T090000Z-1a2b3c4d).\n- `needs-silence` (a scale-to-zero store, as Neon is) and `needs-heal` (a reclaimable container): the probe stops at the application, on a store-free `/health/live`, and container healthchecks and keepalives never query the store, so an idle app lets it suspend (commit:fixture-org/ledgerline@4b9e1d27c0a3f58e6d1b2c7a9f0e3d4c5b6a7980, issue:fixture-org/ledgerline#7; trace raw:20261101T091500Z-5e6f7a8b).\n- Readiness that does check the store stays on `/health`, which only verify calls at deploy time (commit:fixture-org/ledgerline@4b9e1d27c0a3f58e6d1b2c7a9f0e3d4c5b6a7980).\n"
+        }
+      ]
+    },
+    {
+      "id": "pattern/neon-never-sleeps",
+      "ops": [
+        {
+          "op": "append",
+          "text": "\n## Related\nThe probe half of this failure is the `needs-silence` branch of pattern/probe-touches-wrong-layer: a healthcheck or keepalive aimed at a store-querying route kept the compute awake (commit:fixture-org/ledgerline@4b9e1d27c0a3f58e6d1b2c7a9f0e3d4c5b6a7980).\n"
+        }
+      ]
+    }
+  ],
+  "update_index": "# Wiki index\n\n## Patterns\n- [keepalive-probe-misses-postgres](patterns/keepalive-probe-misses-postgres.md) — hypothesis — a Supabase keepalive that never reaches Postgres.\n- [neon-never-sleeps](patterns/neon-never-sleeps.md) — hypothesis — idle-time polling keeps a scale-to-zero compute awake.\n- [probe-touches-wrong-layer](patterns/probe-touches-wrong-layer.md) — hypothesis — a probe must touch the layer its liveness model manages: the store for needs-traffic, the application for needs-silence and needs-heal.\n",
+  "append_log": "Updated pattern/probe-touches-wrong-layer with a rule conditional on the liveness model, from incident/2026-07-tripnote-keepalive-green-store-paused (needs-traffic: reach the store) and incident/2026-08-ledgerline-store-never-suspends (needs-silence: stop at the application). Linked pattern/neon-never-sleeps to it. Statuses unchanged: no deployed red-to-green evidence for the needs-silence side yet."
+}

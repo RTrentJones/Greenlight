@@ -1,0 +1,10 @@
+{
+  "installed": "0.10.1",
+  "cells": ["next/vercel/neon"],
+  "verifyCheckIds": ["home-renders", "archive-lists-issues", "live"],
+  "skills": {
+    "deploy-verify-promote": "3",
+    "provider-neon": "2",
+    "provider-vercel": "2"
+  }
+}

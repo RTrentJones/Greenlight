@@ -1,0 +1,13 @@
+services:
+  ledgerline:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      STORE_URL: ${STORE_URL}
+    restart: unless-stopped
+    # C2: the healthcheck asks the process only, so Neon is left asleep.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 3s

@@ -6,6 +6,15 @@
  * command with different semantics than the caller asked for — the worst failure mode for
  * a gate CLI, where "verify passed" must mean the verify the caller configured.
  */
+/** The caller got the command line wrong (exit 2 everywhere). Thrown by `parseFlags`; commands
+ * throw it for their own argument errors so the exit code never depends on a message's wording. */
+export class UsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UsageError';
+  }
+}
+
 export interface FlagSpec {
   /** Flags that take a value (`--env prod`). */
   value?: readonly string[];
@@ -35,7 +44,7 @@ export function parseFlags(command: string, args: string[], spec: FlagSpec = {})
     if (valueFlags.has(arg)) {
       const value = args[++i];
       if (value === undefined) {
-        throw new Error(`\`greenlight ${command}\`: ${arg} needs a value`);
+        throw new UsageError(`\`greenlight ${command}\`: ${arg} needs a value`);
       }
       out.values[arg] = value;
       continue;
@@ -45,7 +54,23 @@ export function parseFlags(command: string, args: string[], spec: FlagSpec = {})
       continue;
     }
     const known = [...valueFlags, ...booleanFlags].sort().join(' ') || '(none)';
-    throw new Error(`\`greenlight ${command}\`: unknown flag "${arg}" (known flags: ${known})`);
+    throw new UsageError(
+      `\`greenlight ${command}\`: unknown flag "${arg}" (known flags: ${known})`,
+    );
   }
   return out;
+}
+
+/** Refuses stray positional arguments on a command that takes at most `max` of them: a typo such
+ * as a flag value without its flag must not run the command with different semantics. */
+export function maxPositionals(command: string, a: ParsedArgs, max: number): void {
+  if (a.positional.length > max) {
+    const extra = a.positional
+      .slice(max)
+      .map((x) => `"${x}"`)
+      .join(', ');
+    throw new UsageError(
+      `\`greenlight ${command}\`: unexpected argument ${extra} (${max === 0 ? 'this command takes flags only' : `at most ${max} positional argument(s)`})`,
+    );
+  }
 }

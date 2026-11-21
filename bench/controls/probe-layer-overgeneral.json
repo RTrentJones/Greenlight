@@ -1,0 +1,33 @@
+{
+  "control": true,
+  "id": "probe-layer-overgeneral",
+  "description": "The control arm (vision 06 §10.2 step 4, roadmap M2-03): a hand-written, plausible but wrong skill patch that learns only the Supabase lesson and applies it to Neon. It replaces the accepted provider-neon liveness rule with its overgeneral opposite (the pair's overgeneral-a rule). The harness evaluates it beside the real proposal, labels its ledger events control: true, and never merges it. The cycle passes its own check only if the gate rejects it with replay-regression on the Neon val replay (06 §10.3, rejectedForReplayRegression). It targets the skill that governs that replay because a conflicting rule in a general skill (the first version of this control, on deploy-verify-promote) is outweighed once provider-neon states the specific rule (iteration 7: the replay passed 5/5 with it installed).",
+  "statement": "health checks and keepalive probes for a Neon-backed tool must query the database",
+  "pair": {
+    "id": "probe-layer-val",
+    "rule": "overgeneral-a"
+  },
+  "expect": {
+    "decision": "reject",
+    "reason": "replay-regression",
+    "task": "replay/idle-probe-leaves-store-asleep-val"
+  },
+  "proposal": {
+    "action": "patch",
+    "outlet": "skill",
+    "name": "provider-neon",
+    "edits": [
+      {
+        "op": "replace",
+        "file": "SKILL.md",
+        "target": "- **Liveness stays off the database.** Neon suspends only after about five quiet minutes, so any\n  timer that queries it keeps the compute awake. A container `HEALTHCHECK` (or compose `healthcheck:`)\n  and any keepalive target for a Neon-backed tool must use a process-only route such as `/health/live`,\n  `/live` or `/`, never a route that runs a query like a `/health` that checks the database. A run that\n  pointed both at `/health` kept the store awake 600 s of 600 s with 21 store queries, and returned 503\n  for both probes when the database was stopped, so a store outage read as a dead container\n  (raw:20261120T193109Z-367780bc). Runs that pointed both at `/livez` or `/live` made 0 store queries,\n  let the store suspend, and answered 200 with the database stopped (raw:20261120T193109Z-7656daae,\n  raw:20261119T233853Z-462b6aff). Keep `/health` as the readiness route that verify calls at deploy\n  time. This is the rule for a store that resumes on connect; it is the reverse for a store that pauses\n  without traffic (Supabase), whose keepalive must run a real query against the store, see\n  provider-supabase (raw:20261120T193109Z-905a52f0).\n",
+        "text": "- **Liveness must prove the database is awake.** A probe that stops short of the store (a cached or\n  process-only answer) reports green while the database is suspended, as the Supabase keepalive did.\n  A container `HEALTHCHECK` (or compose `healthcheck:`) and any keepalive target for a Neon-backed tool\n  must run a real query against the database (for example `SELECT 1` behind `/health/live`), so a green\n  probe always proves the compute is up. Keep `/health` as the readiness route that verify calls at\n  deploy time.\n"
+      }
+    ],
+    "patterns": [
+      "pattern/probe-touches-wrong-layer",
+      "pattern/keepalive-probe-misses-postgres",
+      "pattern/neon-never-sleeps"
+    ]
+  }
+}

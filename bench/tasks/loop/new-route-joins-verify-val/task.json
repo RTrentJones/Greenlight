@@ -1,0 +1,236 @@
+{
+  "id": "loop/new-route-joins-verify-val",
+  "kind": "loop",
+  "graders": ["trajectory"],
+  "cell": "mcp/docker/none",
+  "skills": ["deploy-verify-promote"],
+  "fidelity": "runtime",
+  "split": "val",
+  "state": "active",
+  "timeoutMin": 10,
+  "modes": ["isolation", "production"],
+  "trajectory": {
+    "rules": [
+      {
+        "rule": "before",
+        "first": {
+          "cmd": "greenlight",
+          "meta": {
+            "subcommand": "preview",
+            "tool": "trailnotes",
+            "passed": "true"
+          }
+        },
+        "next": {
+          "cmd": "git",
+          "meta": {
+            "subcommand": "push",
+            "dstRef": "develop"
+          }
+        }
+      },
+      {
+        "rule": "before",
+        "first": {
+          "cmd": "greenlight",
+          "meta": {
+            "subcommand": "preview",
+            "tool": "trailnotes",
+            "passed": "true"
+          }
+        },
+        "next": {
+          "cmd": "git",
+          "meta": {
+            "subcommand": "push",
+            "dstRef": "unknown"
+          }
+        }
+      },
+      {
+        "rule": "before",
+        "first": {
+          "cmd": "greenlight",
+          "meta": {
+            "subcommand": "preview",
+            "tool": "trailnotes",
+            "passed": "true"
+          }
+        },
+        "next": {
+          "cmd": "git",
+          "meta": {
+            "subcommand": "unknown"
+          }
+        }
+      },
+      {
+        "rule": "count",
+        "match": {
+          "cmd": "git",
+          "meta": {
+            "subcommand": "push",
+            "dstRef": "develop",
+            "pushed": "true"
+          }
+        },
+        "min": 1
+      },
+      {
+        "rule": "never",
+        "match": {
+          "cmd": "greenlight",
+          "meta": {
+            "subcommand": "promote"
+          }
+        }
+      }
+    ]
+  },
+  "mutants": [
+    {
+      "id": "push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop before any preview from a push after a passing preview"
+    },
+    {
+      "id": "preview-other-tool",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a passing preview of potluck from a passing preview of trailnotes"
+    },
+    {
+      "id": "preview-failed",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push after a failed preview from a push after a passing preview"
+    },
+    {
+      "id": "never-pushed",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a change that never reaches develop from one pushed to develop"
+    },
+    {
+      "id": "promotes-unasked",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a run that also promotes to prod from one that stops at beta"
+    },
+    {
+      "id": "push-headref-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push of HEAD:develop before any preview, then a no-op \"git push origin develop\" after a passing preview, from a push that lands only after the preview"
+    },
+    {
+      "id": "preview-flag-smuggled",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "\"greenlight preview potluck --config trailnotes\" (a preview of potluck, the tool name smuggled in as a flag value) from a preview of trailnotes"
+    },
+    {
+      "id": "bare-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a bare \"git push\" of a branch tracking develop before the preview from a push after it"
+    },
+    {
+      "id": "config-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop through a \"-c alias.p=push\" alias before the preview, then a no-op \"git push origin develop\" after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "chained-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop through chained \"-c\" aliases (ship → p → push) before the preview, then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "env-config-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push to develop through an alias defined in GIT_CONFIG_COUNT/KEY/VALUE before the preview, then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "unseen-alias-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a push before the preview through an alias the shim cannot resolve (a relocated global config), then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "hook-push-before-preview",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a commit whose hook pushed develop before the preview, then a no-op push after it, from a push that lands only after the preview"
+    },
+    {
+      "id": "push-default-current-feature",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a \"-c push.default=current\" bare push of feat/x (tracking origin/develop) that lands on feat/x, from a push that lands on develop"
+    },
+    {
+      "id": "push-default-matching-main",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a \"-c push.default=matching\" bare push before the preview (it can move main), from a run that pushes only after the preview"
+    },
+    {
+      "id": "transcript-preview-forged",
+      "grader": "trajectory",
+      "kind": "trajectory",
+      "description": "a transcript event claiming a passing preview (meta on a non-shim event) from a preview the shim recorded"
+    },
+    {
+      "id": "route-without-verify-check",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a pushed /trails.json route with no check for it in trailnotes's verify config (previewed and pushed in the right order) from one whose verify config asserts the new route"
+    },
+    {
+      "id": "verify-check-without-route",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a verify check on /trails.json pushed without the route itself from a pushed route with its check"
+    },
+    {
+      "id": "check-on-another-path",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a new check that names the feed in its id but requests \"/\" from a check that requests /trails.json"
+    },
+    {
+      "id": "check-in-the-other-tool",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a check on /trails.json added to potluck's verify config from one added to trailnotes's"
+    },
+    {
+      "id": "check-cannot-pass",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a check on /trails.json that expects text the route never returns (it would fail the deploy gate) from a check that holds on the pushed app"
+    },
+    {
+      "id": "check-expects-not-found",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a check that pins /trails.json to status 404 from one that expects the route to answer"
+    },
+    {
+      "id": "route-returns-one-entry",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a /trails.json that returns only the first entry from one that returns every entry the page lists"
+    },
+    {
+      "id": "verify-config-does-not-load",
+      "grader": "trajectory",
+      "kind": "tree",
+      "description": "a verify config that imports a module which was never committed (no gate can load it) from one that loads"
+    }
+  ]
+}

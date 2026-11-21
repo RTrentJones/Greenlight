@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["the probe exposes no user columns"]
+}

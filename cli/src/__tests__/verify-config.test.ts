@@ -110,3 +110,81 @@ describe('loadVerifySpecAt — config shapes', () => {
     ).rejects.toThrow(/Verify config function .*boom/);
   });
 });
+
+describe('loadVerifyConfigAt / verifyCoverageAt — named meta export (vision 08 §6, C7)', () => {
+  it('preserves the named meta export beside the default', async () => {
+    const { loadVerifyConfigAt } = await import('../manifest');
+    write(
+      'verify.config.ts',
+      `export const meta = { invariant: ['live'] };
+       export default { mode: 'api', checks: [{ id: 'live', path: '/health/live' }] };`,
+    );
+    const cfg = await loadVerifyConfigAt('verify.config.ts');
+    expect(cfg?.meta).toEqual({ invariant: ['live'] });
+    expect(cfg?.specs).toMatchObject({ mode: 'api' });
+  });
+
+  it('returns empty meta when none is exported', async () => {
+    const { loadVerifyConfigAt } = await import('../manifest');
+    write('verify.config.ts', `export default { mode: 'test' };`);
+    expect((await loadVerifyConfigAt('verify.config.ts'))?.meta).toEqual({});
+  });
+
+  it('rejects an unknown meta field and a malformed invariant id', async () => {
+    const { loadVerifyConfigAt } = await import('../manifest');
+    write(
+      'a.config.ts',
+      `export const meta = { invariants: ['live'] }; export default { mode: 'test' };`,
+    );
+    await expect(loadVerifyConfigAt('a.config.ts')).rejects.toThrow(
+      /unsupported field "invariants"/,
+    );
+    write(
+      'b.config.ts',
+      `export const meta = { invariant: ['Live'] }; export default { mode: 'test' };`,
+    );
+    await expect(loadVerifyConfigAt('b.config.ts')).rejects.toThrow(/kebab-case check ids/);
+  });
+
+  it('computes per-environment coverage of a function-form config', async () => {
+    const { verifyCoverageAt } = await import('../manifest');
+    write(
+      'verify.config.ts',
+      `export const meta = { invariant: ['live', 'version'] };
+       export default ({ preview }) => ({
+         mode: 'api',
+         checks: [
+           { id: 'live', path: '/health/live' },
+           ...(preview ? [] : [{ id: 'version', path: '/__version' }]),
+         ],
+       });`,
+    );
+    const cov = await verifyCoverageAt('verify.config.ts');
+    expect(cov?.byEnv).toEqual({
+      preview: ['live'],
+      beta: ['live', 'version'],
+      prod: ['live', 'version'],
+    });
+    expect(cov?.missing).toEqual([{ env: 'preview', id: 'version' }]);
+  });
+
+  it('counts a context whose evaluation throws as zero coverage', async () => {
+    const { verifyCoverageAt } = await import('../manifest');
+    write(
+      'verify.config.ts',
+      `export const meta = { invariant: ['live'] };
+       export default ({ env }) => {
+         if (env === 'prod') throw new Error('no prod');
+         return { mode: 'api', checks: [{ id: 'live', path: '/' }] };
+       };`,
+    );
+    const cov = await verifyCoverageAt('verify.config.ts');
+    expect(cov?.byEnv.prod).toEqual([]);
+    expect(cov?.missing).toEqual([{ env: 'prod', id: 'live' }]);
+  });
+
+  it('returns null when the file does not exist', async () => {
+    const { verifyCoverageAt } = await import('../manifest');
+    expect(await verifyCoverageAt('missing.config.ts')).toBeNull();
+  });
+});

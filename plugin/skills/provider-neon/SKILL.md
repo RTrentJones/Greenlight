@@ -61,5 +61,17 @@ See [migrations.md](https://github.com/RTrentJones/greenlight/blob/main/docs/mig
   `database_url` (pooled) to the app and `direct_url` to migrations; there's no pooler flag to toggle.
 - **No keepalive.** Don't add a Neon tool to `module.keepalive.targets_json` — it resumes on connect,
   and `doctor` intentionally does not flag `data: neon` for keepalive.
+- **Liveness stays off the database.** Neon suspends only after about five quiet minutes, so any
+  timer that queries it keeps the compute awake. A container `HEALTHCHECK` (or compose `healthcheck:`)
+  and any keepalive target for a Neon-backed tool must use a process-only route such as `/health/live`,
+  `/live` or `/`, never a route that runs a query like a `/health` that checks the database. A run that
+  pointed both at `/health` kept the store awake 600 s of 600 s with 21 store queries, and returned 503
+  for both probes when the database was stopped, so a store outage read as a dead container
+  (raw:20261120T193109Z-367780bc). Runs that pointed both at `/livez` or `/live` made 0 store queries,
+  let the store suspend, and answered 200 with the database stopped (raw:20261120T193109Z-7656daae,
+  raw:20261119T233853Z-462b6aff). Keep `/health` as the readiness route that verify calls at deploy
+  time. This is the rule for a store that resumes on connect; it is the reverse for a store that pauses
+  without traffic (Supabase), whose keepalive must run a real query against the store, see
+  provider-supabase (raw:20261120T193109Z-905a52f0).
 - **The blog stays `data: none`.** Neon's auto-resume makes it safe for *tools*, but the apex blog
   uses D1/KV/external only (it must never depend on a store that can pause or error).

@@ -1,0 +1,253 @@
+{
+  "identity": {
+    "taskSetHash": "2abef4685ba5f4dfe490e16df312f1c1df3fdaf81d427fe4158810e7d55161af",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-train",
+        "kind": "loop",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-train",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-train",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-train",
+        "kind": "wiki",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"]
+      }
+    ],
+    "splitsHash": "3b30f4d4d5c34b7e7f39a90f616ef8b2c6adc7236a1700675459952068f58269",
+    "graderSetHash": "54d0bf8382b8818303c827c85e56f3deb0857c096b936d9da2e7a08a932e0c77",
+    "depsHash": "d427abe7fef43159e84a0cc29ac39e1f01a28b3baa8d94ab00f5c39fe2844fba",
+    "harness": {
+      "runnerVersion": "0.2.1",
+      "imageDigest": "ctx:sha256:ac2daeb6600e5b23574d2080476cc800e1cc4b701501781e13f5fa5e653dd4f9",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null
+      }
+    },
+    "agent": {
+      "vendor": "greenlight-harness",
+      "version": "0.1.0"
+    },
+    "models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+    "skillSetHash": "b7cb0e89da058b38bfa6bc19f8d26c2efe71211d95590e0e7bd9a458c8129cc5",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "train",
+  "createdAt": "2026-11-12T08:36:24.512Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-train",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+        }
+      ],
+      "seed": "649479440",
+      "rawId": "20261112T043221Z-9b8f96b8",
+      "durationMs": 76575,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 17,
+        "tokensIn": 57898,
+        "tokensOut": 953
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-train",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+        }
+      ],
+      "seed": "438718664",
+      "rawId": "20261112T044313Z-727a8010",
+      "durationMs": 73320,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 17,
+        "tokensIn": 63873,
+        "tokensOut": 910
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-train",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: container healthcheck declared; keepalive target declared for scenesmith; zero store queries from the healthcheck; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1443631925",
+      "rawId": "20261112T043338Z-0daeb599",
+      "durationMs": 209035,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 18,
+        "tokensIn": 68305,
+        "tokensOut": 577
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-train",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: container healthcheck declared; keepalive target declared for scenesmith; zero store queries from the healthcheck; zero store queries from the keepalive; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "137026127",
+      "rawId": "20261112T082849Z-ed7a43b8",
+      "durationMs": 140509,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 26,
+        "tokensIn": 216294,
+        "tokensOut": 556
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-train",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1176572383",
+      "rawId": "20261112T082155Z-70115deb",
+      "durationMs": 301751,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 20,
+        "tokensIn": 69333,
+        "tokensOut": 533
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-train",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1253139678",
+      "rawId": "20261112T083110Z-207c9718",
+      "durationMs": 136759,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 23,
+        "tokensIn": 114341,
+        "tokensOut": 649
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-train",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule"
+        }
+      ],
+      "seed": "2024463272",
+      "rawId": "20261112T082657Z-e5833d2d",
+      "durationMs": 111939,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 13,
+        "tokensIn": 35929,
+        "tokensOut": 1071
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-train",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule"
+        }
+      ],
+      "seed": "1970474222",
+      "rawId": "20261112T083326Z-e34bb4a1",
+      "durationMs": 177544,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 25,
+        "tokensIn": 110626,
+        "tokensOut": 1990
+      }
+    }
+  ],
+  "hash": "2243c11b4436bf7aa64dff88a8032c98486038fbdb7d8c618e891ba2466b851b"
+}
