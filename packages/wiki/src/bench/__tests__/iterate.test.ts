@@ -35,6 +35,7 @@ import {
   loadControls,
   materializeCandidate,
   pinTree,
+  rowDecision,
 } from '../iterate';
 import type { PolicyReason } from '../policy';
 
@@ -496,5 +497,14 @@ describe('the hand-off says when the gate made no decision (06 §5.2, §5.4, §1
     expect(h.body).toContain('**No decision: the gate is underpowered here.**');
     expect(h.body).toContain('attainable minimum p 0.05 ≥ 0.05');
     expect(h.body).toContain('Nothing was written to the ledger');
+  });
+});
+
+describe('owner review rows', () => {
+  it('records a control row as a rejection whatever the owner decided on the proposal', () => {
+    expect(rowDecision({ control: true }, 'accept')).toBe('reject');
+    expect(rowDecision({ control: true }, 'reject')).toBe('reject');
+    expect(rowDecision({}, 'accept')).toBe('accept');
+    expect(rowDecision({ control: false }, 'reject')).toBe('reject');
   });
 });

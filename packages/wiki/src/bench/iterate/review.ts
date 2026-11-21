@@ -31,6 +31,19 @@ import { IterationError } from './types';
  * all or nothing (`appendEvents`); a retry after a crash appends the same events (same eventIds),
  * so nothing is duplicated. Refuses an iteration with nothing recorded yet, or one already reviewed.
  */
+/**
+ * The decision recorded on one reviewed ledger row. `--decision` is the owner's verdict on the
+ * iteration's real proposal. A control arm (06 §10.2 step 4) is never merged, so its row is always
+ * recorded as a rejection: an owner who accepts a candidate or a justified `no_action` must not
+ * thereby record an acceptance of the plausible but wrong control beside it.
+ */
+export function rowDecision(
+  target: Pick<LedgerEvent, 'control'>,
+  decision: 'accept' | 'reject',
+): 'accept' | 'reject' {
+  return target.control === true ? 'reject' : decision;
+}
+
 export function reviewIteration(o: {
   stateDir: string;
   wikiRoot: string;
@@ -94,8 +107,8 @@ export function reviewIteration(o: {
       return targets.map((target) => {
         const history = proposalHistory(ledger, target.proposalId as string);
         const latest = history.latest;
-        const withdraw =
-          o.decision === 'reject' && latest !== undefined && AFTER_ACCEPT.has(latest);
+        const decision = rowDecision(target, o.decision);
+        const withdraw = decision === 'reject' && latest !== undefined && AFTER_ACCEPT.has(latest);
         // 06 §6.1: withdrawing a MERGED skill change is a new accepted state, named by the
         // installed skill set (the owner reverts the merge first, then records the review).
         const reverts =
@@ -106,9 +119,9 @@ export function reviewIteration(o: {
           stage: withdraw ? 'withdrawn' : 'review',
           ...(reverts ? { skillSetHash: skillSetHashOf(o.skillsDir) } : {}),
           ...(target.control ? { control: true } : {}),
-          reason: `owner review (${o.decision}): ${reason}`,
+          reason: `owner review (${decision}): ${reason}`,
           review: {
-            decision: o.decision,
+            decision,
             iteration: s.iterationId,
             ...(reviewer ? { by: reviewer } : {}),
           },

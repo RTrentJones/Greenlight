@@ -171,7 +171,9 @@ checkout with a bench/ directory.
                        later"; exit 1 with no JSON on stdout is a crash.
   review <iterationId> --decision accept|reject --reason "<text>" --reviewer "<who>" [--break-lock]
                        record the owner's review of an iteration's ledger rows (a review event;
-                       a reject of an accepted candidate is a withdrawn event). --reviewer (or
+                       a reject of an accepted candidate is a withdrawn event). --decision is the
+                       verdict on the proposal; a control arm's row is always recorded as reject,
+                       since a control is never merged. --reviewer (or
                        GREENLIGHT_REVIEWER) names who decided, a person or a delegate, and is
                        recorded on each event; it is free text, not verified.
   merged <proposalId> --ref <commit sha | pull request URL> [--json]

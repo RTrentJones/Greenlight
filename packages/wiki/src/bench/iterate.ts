@@ -90,4 +90,4 @@ export {
   writeHandoff,
 } from './iterate/handoff';
 export { unrecordedMerge, resolveAcceptedSkillSet, iterate, planIteration } from './iterate/driver';
-export { reviewIteration } from './iterate/review';
+export { reviewIteration, rowDecision } from './iterate/review';

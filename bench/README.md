@@ -491,7 +491,12 @@ In order:
    acting for the owner; it is free text, recorded as `review.by` and not verified. The command
    writes a `review` event per recorded proposal of the iteration, which annotates the ledger and
    moves no stage. A `reject` of a proposal that is already accepted or merged writes a `withdrawn`
-   event instead. An iteration is reviewed once.
+   event instead. `--decision` is the verdict on the iteration's own proposal; a control arm's row
+   is always recorded as `reject`, because a control is never merged, so accepting a candidate or
+   a justified `no_action` does not record an acceptance of the control beside it. (Before this
+   rule, iteration 8's `no_action` row was recorded as `reject` together with its control; the
+   ledger is append-only, so that row stands, and its reason text says what was meant.) An
+   iteration is reviewed once.
 3. **Open a pull request that carries only the accepted skill text.** Copy the gated candidate,
    `.greenlight/bench/iterations/<iterationId>/candidates/<proposalId>/skills/<skill>/`, byte for
    byte into `.claude/skills/<skill>/` and its mirror `plugin/skills/<skill>/` (`pnpm

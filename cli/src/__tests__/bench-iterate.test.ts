@@ -67,7 +67,7 @@ const reId = (id: string) => id.replace(/[.]/g, '\\.');
 const DOCKER = dockerAvailable();
 const IDLE_VAL = 'replay/idle-probe-leaves-store-asleep-val';
 const CANDIDATE_MARKER = 'WIKI-MARKER: reconcile probe lessons by liveness model.';
-const CONTROL_MARKER = 'must always query the database';
+const CONTROL_MARKER = 'must run a real query against the database';
 
 const temps: string[] = [];
 /** A copy of the live wiki whose ledger keeps only `spend` events (budget history), so no gate
