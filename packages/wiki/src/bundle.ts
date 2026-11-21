@@ -220,6 +220,53 @@ export function scanBundle(
   return out;
 }
 
+/** Every string in a parsed JSON value, keys included. */
+function jsonStrings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === 'string') out.push(v);
+  else if (Array.isArray(v)) for (const x of v) jsonStrings(x, out);
+  else if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v)) {
+      out.push(k);
+      jsonStrings(x, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Secret-shaped content in one bundle file, as `<file>: line <n>: <kind>-shaped secret` (kind and
+ * line only: echoing the value would leak it into the terminal).
+ *
+ * A JSON file is scanned as its decoded strings, not as its serialized text. Serialized, a
+ * newline inside a string is the two characters `\n` and a quote is `\"`, so a shape that ends at
+ * whitespace or a quote runs on into what a reader sees as the next line, and a rollout excerpt
+ * that prints a Terraform file and then a JSON file was refused for a value no reader of the
+ * record would find there. Decoding loses nothing: a secret inside a JSON string is inside the
+ * decoded string. A file that does not parse is scanned as text.
+ */
+export function secretFindings(path: string, text: string): string[] {
+  const lineAt = (index: number) => text.slice(0, Math.max(0, index)).split('\n').length;
+  if (path.endsWith('.json')) {
+    let parsed: unknown;
+    let ok = true;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      ok = false;
+    }
+    if (ok) {
+      return jsonStrings(parsed).flatMap((str) => {
+        const found = findSecrets(str);
+        if (found.length === 0) return [];
+        // The line of the string in the file, found by its serialized form.
+        const line = lineAt(text.indexOf(JSON.stringify(str).slice(1, -1)));
+        return found.map((f) => `${path}: line ${line}: ${f.kind}-shaped secret`);
+      });
+    }
+  }
+  return findSecrets(text).map((f) => `${path}: line ${lineAt(f.index)}: ${f.kind}-shaped secret`);
+}
+
 function seal(
   manifest: Omit<BundleManifest, 'files'>,
   files: Map<string, string>,
@@ -227,12 +274,7 @@ function seal(
 ): BundleFiles {
   const problems = scanBundle(files, heldOut);
   if (problems.length > 0) throw new BundleLeakError(problems);
-  const secrets = [...files].flatMap(([path, text]) =>
-    findSecrets(text).map(
-      // Kind and line only: echoing the value would leak it into the terminal.
-      (f) => `${path}: line ${text.slice(0, f.index).split('\n').length}: ${f.kind}-shaped secret`,
-    ),
-  );
+  const secrets = [...files].flatMap(([path, text]) => secretFindings(path, text));
   if (secrets.length > 0) throw new BundleSecretError(secrets);
   const full: BundleManifest = { ...manifest, files: [...files.keys(), BUNDLE_MANIFEST].sort() };
   files.set(BUNDLE_MANIFEST, `${JSON.stringify(full, null, 2)}\n`);

@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { findSecrets } from '@rtrentjones/greenlight-shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ACCESS_LOG,
@@ -30,6 +31,7 @@ import {
   readTarget,
   recordAccess,
   renderOutcomes,
+  secretFindings,
   skillSetHash,
   writeBundle,
 } from '../bundle';
@@ -195,6 +197,43 @@ describe('maintainer bundle (06 §2.1)', () => {
       { path: 'log.md', content: `${wiki.log}\nmentions ${VAL_TASK}\n` },
     ]);
     expect(() => build({ wiki: leaky })).toThrow(BundleLeakError);
+  });
+
+  it('scans a JSON file as its decoded strings, not as its escaped text', () => {
+    // A rollout excerpt that printed a Terraform file and then a JSON file. Serialized, the line
+    // breaks are the two characters \\n, and the scan read on from the token variable into the
+    // next file; iteration 9's maintainer bundle was refused for it (2026-11-21).
+    const excerpt = [
+      '7-  github_token      = var.keepalive_github_token',
+      '8-  cron     ',
+      '  [2] bash {"command":"cat keepalive/targets.json"}',
+      '    -> ok exit=0',
+      '[',
+      '  {',
+      '    "name": "mapmaker",',
+      '    "env": "prod",',
+      '    "url": "https://mapmaker.example.test",',
+    ].join('\n');
+    const file = `${JSON.stringify({ retained: { excerpt } }, null, 2)}\n`;
+    expect(findSecrets(file).length).toBeGreaterThan(0); // the old reading
+    expect(findSecrets(excerpt)).toEqual([]);
+    expect(secretFindings('raw/x.json', file)).toEqual([]);
+    expect(() =>
+      build({ records: [rec({ id: 'dddd0002', split: 'train', excerpt })] }),
+    ).not.toThrow();
+
+    // A real secret inside a JSON string is still found, with the line it is on and no value.
+    const token = `ghp_${'A1b2'.repeat(9)}`;
+    const leaky = `${JSON.stringify({ a: 1, retained: { excerpt: `ok\ntoken ${token}` } }, null, 2)}\n`;
+    expect(secretFindings('raw/y.json', leaky)).toEqual([
+      'raw/y.json: line 4: github-shaped secret',
+    ]);
+    // As a key, and in a file that is not valid JSON (scanned as text).
+    expect(secretFindings('z.json', JSON.stringify({ [token]: 1 }))).toHaveLength(1);
+    expect(secretFindings('broken.json', `{ "t": "${token}"`)).toHaveLength(1);
+    expect(secretFindings('page.md', `token ${token}\n`)).toEqual([
+      'page.md: line 1: github-shaped secret',
+    ]);
   });
 
   it('refuses (does not redact) a bundle whose raw sample holds a secret-shaped string', () => {
