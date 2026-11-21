@@ -641,6 +641,79 @@ export function recompute(
   return d;
 }
 
+/** What the baseline alone already settles about a gate, before any candidate rollout. */
+export interface BaselinePrecheck {
+  /** `blocked`: the gate would make no decision whatever the candidate does (a flaky baseline
+   * replay at high radius). `underpowered`: no candidate outcome could be accepted, because the
+   * efficacy test cannot reach alpha on this skill's slice, or the slice is empty; a candidate
+   * could still be rejected for a rule that needs no power (a replay regression). */
+  decision: 'blocked' | 'underpowered';
+  reasons: PolicyReason[];
+  baselineRecords: string[];
+  algorithm: number;
+}
+
+/**
+ * Asks the policy what a gate against this baseline can decide, with no candidate rollouts (06
+ * §5.2 "Power is checked first"). The three findings it looks for are properties of the baseline:
+ * a flaky baseline replay task, an empty slice, and a slice whose attainable minimum p is not
+ * below alpha. The policy is run with the baseline standing in for the candidate, which leaves
+ * those three findings exactly as any real candidate would meet them, and every other finding of
+ * that run is discarded. Returns null when the gate can decide.
+ */
+export function baselinePrecheck(
+  baselineRecord: Records,
+  ctx: Pick<
+    GateContext,
+    | 'radius'
+    | 'path'
+    | 'models'
+    | 'tasks'
+    | 'modes'
+    | 'config'
+    | 'skill'
+    | 'algorithm'
+    | 'outlet'
+    | 'safetyFixTargets'
+  >,
+): BaselinePrecheck | null {
+  const config = loadGateConfig(ctx.config ?? {});
+  const algorithm = ctx.algorithm ?? GATE_ALGORITHM;
+  const baselines = asList(baselineRecord).map(validated);
+  const outcomes = baselines.flatMap((r) => r.outcomes);
+  const policy = applyPolicy({
+    radius: ctx.radius,
+    path: ctx.path,
+    outlet: ctx.outlet ?? 'skill',
+    models: ctx.models,
+    modes: [...new Set(baselines.map((r) => r.identity.mode))],
+    declaredModes: ctx.modes,
+    tasks: recordedTasks(ctx.tasks),
+    baseline: outcomes,
+    candidate: outcomes,
+    runs: config.runs,
+    alpha: config.alpha,
+    skill: ctx.skill,
+    algorithm,
+    nonRegressionFraction: config.nonRegressionFraction,
+    safetyFixTargets:
+      ctx.path === 'safety-fix' && ctx.safetyFixTargets
+        ? sortedUnique(ctx.safetyFixTargets)
+        : undefined,
+  });
+  const base = { baselineRecords: baselines.map((r) => r.hash), algorithm };
+  const flaky = policy.reasons.filter(
+    (r) => r.code === 'flaky-baseline' && r.severity === 'blocked',
+  );
+  if (flaky.length > 0) return { decision: 'blocked', reasons: flaky, ...base };
+  // With the baseline as its own candidate a powered cell fails "no improvement", and the policy
+  // then lists the power findings as information beside that rejection: read them by code.
+  const power = policy.reasons
+    .filter((r) => r.code === 'underpowered' || r.code === 'no-slice')
+    .map((r) => ({ ...r, severity: 'blocked' as const }));
+  return power.length > 0 ? { decision: 'underpowered', reasons: power, ...base } : null;
+}
+
 /** What a control arm whose expected rejection is a replay regression shows (06 §10.3). */
 export type ControlOutcome = 'met' | 'not-met' | 'inconclusive';
 

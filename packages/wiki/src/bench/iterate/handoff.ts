@@ -207,7 +207,15 @@ function candidateSection(
         '',
         cand.decision.decision === 'blocked'
           ? '> **No decision: the baseline is not gateable.** A replay task is flaky in the baseline at high blast radius (06 §5.4). This says nothing about the candidate: fix or quarantine the task named below, re-baseline, and gate again. Nothing was written to the ledger.'
-          : "> **No decision: the gate is underpowered here.** No candidate outcome could reach the significance level on this skill's bench slice (06 §5.2), so neither an accept nor a rejection would mean anything. Add objective tasks that exercise the skill (or runs), then gate again. Nothing was written to the ledger.",
+          : "> **No decision: the gate is underpowered here.** No candidate outcome could reach the significance level on this skill's bench slice (06 §5.2), so the candidate could not have been accepted whatever its rollouts did. Add objective tasks that exercise the skill (or runs), then gate again. Nothing was written to the ledger.",
+      );
+    if (
+      (cand.decision.decision === 'blocked' || cand.decision.decision === 'underpowered') &&
+      cand.decision.candidateRecords.length === 0
+    )
+      out.push(
+        '',
+        '> **No candidate rollout was run.** The baseline alone settles this, so the check was made before the rollouts were spent (06 §5.2). What is not known as a result: whether the candidate would have been rejected for a rule that needs no power, such as a replay regression.',
       );
     const nonRegression = cand.decision.reasons.filter((r) => r.code === 'non-regression-set');
     if (nonRegression.length > 0)

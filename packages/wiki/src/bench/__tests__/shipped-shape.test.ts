@@ -5,6 +5,7 @@ import { type EvaluationRecord, sealRecord } from '../../schema/bench';
 import { type LedgerEvent, LedgerEventSchema } from '../../schema/ledger';
 import {
   type GateContext,
+  baselinePrecheck,
   controlOutcome,
   decide,
   loadGateConfig,
@@ -474,6 +475,79 @@ describe('the sealed baseline pattern: objective 0/3 everywhere, one replay 1/3 
       skill: 'deploy-verify-promote',
     });
     expect(controlOutcome(half, IDLE)).toBe('not-met');
+  });
+});
+
+describe('the baseline precheck (06 §5.2): what the baseline settles before any candidate rollout', () => {
+  type Over = Partial<GateContext> & { tasks?: readonly PolicyTask[] };
+  const precheck = (base: Worlds, over: Over = {}) => {
+    const tasks = over.tasks ?? FIRST;
+    return baselinePrecheck(record('base', base, tasks, 'prop-1', over.config?.runs ?? 3), {
+      radius: 'medium',
+      path: 'standard',
+      models: { frontier: F, small: S },
+      modes: ['isolation'],
+      skill: SHARED,
+      ...over,
+      tasks,
+    });
+  };
+  const zero = both(world(0, 0, 0, 0));
+  const perfect = both(world(3, 3, 3, 3));
+  const blockedOf = (d: { reasons: { severity: string }[] }) =>
+    d.reasons.filter((r) => r.severity === 'blocked');
+
+  it('finds a flaky baseline at high radius, exactly as the gate reports it', () => {
+    const over: Over = { radius: 'high', skill: 'deploy-verify-promote' };
+    const pre = precheck(SEALED, over);
+    expect(pre?.decision).toBe('blocked');
+    for (const cand of [perfect, zero]) {
+      const d = gate(SEALED, cand, over);
+      expect(d.decision).toBe('blocked');
+      expect(pre?.reasons).toEqual(blockedOf(d));
+    }
+  });
+
+  it('finds an underpowered or empty slice, with the reasons the gate would give', () => {
+    const cases: [Worlds, Over][] = [
+      [zero, { skill: 'deploy-verify-promote' }],
+      [zero, { skill: 'greenlight-wiki' }],
+      [zero, { skill: 'provider-neon' }],
+      [both(world(3, 3, 2, 1)), { tasks: TWO_TASK_SLICE }],
+    ];
+    for (const [base, over] of cases) {
+      const pre = precheck(base, over);
+      const d = gate(base, perfect, over);
+      expect(d.decision, JSON.stringify(over.skill)).toBe('underpowered');
+      expect(pre?.decision).toBe('underpowered');
+      expect(pre?.reasons).toEqual(blockedOf(d));
+      expect(pre?.baselineRecords).toEqual(d.baselineRecords);
+    }
+  });
+
+  it('is null when the gate can decide, whether it then accepts or rejects', () => {
+    expect(precheck(SEALED, { tasks: TWO_TASK_SLICE })).toBeNull();
+    expect(gate(SEALED, both(world(0, 0, 3, 3)), { tasks: TWO_TASK_SLICE }).decision).toBe(
+      'accept',
+    );
+    expect(gate(SEALED, zero, { tasks: TWO_TASK_SLICE }).decision).toBe('reject');
+  });
+
+  it('an underpowered slice still leaves a rejection possible, which is why a control runs anyway', () => {
+    // provider-neon has no slice here, and a candidate that breaks a baseline-passing replay is
+    // rejected all the same: the precheck says "cannot be accepted", never "cannot be rejected".
+    const base = both(world(3, 3, 0, 0));
+    expect(precheck(base, { skill: 'provider-neon' })?.decision).toBe('underpowered');
+    const d = gate(base, both(world(0, 3, 3, 3)), { skill: 'provider-neon' });
+    expect(d.decision).toBe('reject');
+    expect(rejectedForReplayRegression(d, KEEPALIVE)).toBe(true);
+  });
+
+  it('the safety-fix path waives efficacy, so power does not stop it', () => {
+    const base = both(world(0, 3, 0, 0));
+    expect(
+      precheck(base, { skill: 'provider-neon', path: 'safety-fix', safetyFixTargets: [KEEPALIVE] }),
+    ).toBeNull();
   });
 });
 

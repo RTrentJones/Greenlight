@@ -4,11 +4,13 @@ import { checkProposalContent } from '../../bundle';
 import { loadWiki } from '../../load';
 import { applyFilePatches, writeChangeset } from '../../patch';
 import { LedgerEventSchema, type ProposerOutput, SKILL_NAME_RE } from '../../schema';
+import type { EvaluationRecord } from '../../schema/bench';
 import { canonicalJson } from '../../schema/common';
 import { loadSkills } from '../../skills';
 import {
   type GateDecision,
   GateHarnessError,
+  baselinePrecheck,
   controlOutcome,
   decide,
   rejectedForReplayRegression,
@@ -23,6 +25,7 @@ import {
   safeGit,
   treeContentHash,
 } from '../outlets';
+import type { BlastRadius } from '../policy';
 import { gateModels, policyTasks } from './baseline';
 import {
   type Ctx,
@@ -127,6 +130,75 @@ async function evaluateCandidate(
     proposal.action === 'patch' ? readIf(join(o.skillsDir, skill, 'PURPOSE.md')) : undefined,
   );
   c.save();
+  const gateCfg = readGateCfg(o.benchDir);
+  const gateCtxFor = (baseline: EvaluationRecord) => ({
+    radius: cand.radius as BlastRadius,
+    // The standard path, unless the OWNER created the iteration with --safety-fix (06 §5.4).
+    // The safety-fix and neutral paths waive efficacy, so the proposer never chooses them
+    // (ProposerOutput, 08 §9.2, has no path field), and a control arm is always held to the
+    // standard path.
+    ...gatePathFor(c.s.settings, meta.control === true),
+    models: gateModels(c.config),
+    tasks: policyTasks(baseline),
+    // The M1/M2 posture (06 §5.1): isolation only, declared explicitly.
+    modes: ['isolation' as const],
+    config: {
+      ...gateCfg,
+      ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
+    },
+    skill,
+    outlet: 'skill' as const,
+  });
+  const boundBaseline = (): { record: EvaluationRecord } | { why: string } => {
+    const record = recordByHash(o.wikiRoot, c.s.baseline.record as string);
+    const why = bindingProblem(c, record, {
+      role: 'baseline',
+      split: 'val',
+      skillSetHash: c.s.acceptedSkillSetHash,
+    });
+    return why
+      ? { why: `the baseline record ${record.hash} is not this iteration's: ${why}` }
+      : { record };
+  };
+  // 06 §5.2: power is checked before the rollouts are spent. What the baseline alone settles is
+  // read first, and only while no candidate rollout exists: an evaluation already under way or
+  // sealed is finished and decided by the gate itself. A baseline that is missing, unbound or
+  // unreadable is not this check's to report; the steps below refuse it in their usual order.
+  if (!cand.record && !cand.evaluationId && c.s.baseline.record) {
+    let pre: ReturnType<typeof baselinePrecheck> = null;
+    let path: GateDecision['path'] = 'standard';
+    try {
+      const b = boundBaseline();
+      if ('record' in b) {
+        const ctx = gateCtxFor(b.record);
+        path = ctx.path;
+        pre = baselinePrecheck(b.record, ctx);
+      }
+    } catch {
+      pre = null;
+    }
+    // A control exists to be rejected for a replay regression, which needs no power, so only a
+    // baseline that blocks every decision stops it.
+    if (pre && (pre.decision === 'blocked' || !meta.control)) {
+      cand.decision = {
+        decision: pre.decision,
+        path,
+        reasons: pre.reasons,
+        results: [],
+        algorithm: pre.algorithm,
+        baselineRecords: pre.baselineRecords,
+        candidateRecords: [],
+      };
+      const why = pre.reasons.map((x) => `${x.code}${x.detail ? ` (${x.detail})` : ''}`).join('; ');
+      cand.decisionStatus = 'done';
+      cand.status = 'done';
+      cand.message = `no decision (${pre.decision}), settled by the baseline before any candidate rollout: ${why}`;
+      const note = `${meta.control ? 'control' : 'proposal'} ${cand.proposalId}: the baseline already rules out a decision (${pre.decision}); no candidate rollout was run and there is no ledger row`;
+      if (!c.s.notes.includes(note)) c.s.notes.push(note);
+      c.save();
+      return { ok: true };
+    }
+  }
   const r = await evaluation(
     c,
     step,
@@ -141,41 +213,22 @@ async function evaluateCandidate(
     { role: 'candidate', split: 'val', proposalId: cand.proposalId, skillSetHash: hash },
   );
   if (!r.ok) return r.out;
-  const baseline = recordByHash(o.wikiRoot, c.s.baseline.record as string);
-  const baseWhy = bindingProblem(c, baseline, {
-    role: 'baseline',
-    split: 'val',
-    skillSetHash: c.s.acceptedSkillSetHash,
-  });
-  if (baseWhy) {
+  const b = boundBaseline();
+  if ('why' in b) {
     cand.status = 'failed';
-    cand.message = `the baseline record ${baseline.hash} is not this iteration's: ${baseWhy}`;
+    cand.message = b.why;
     return stop(c, step, 'failed', `${step}: ${cand.message}`, 4);
   }
-  const gateCfg = readGateCfg(o.benchDir);
+  const baseline = b.record;
+  const gateCtx = gateCtxFor(baseline);
   let d: GateDecision;
   try {
     d = (o.decide ?? decide)(baseline, r.record, {
       ts: cand.ts,
-      radius: cand.radius,
-      // The standard path, unless the OWNER created the iteration with --safety-fix (06 §5.4).
-      // The safety-fix and neutral paths waive efficacy, so the proposer never chooses them
-      // (ProposerOutput, 08 §9.2, has no path field), and a control arm is always held to the
-      // standard path.
-      ...gatePathFor(c.s.settings, meta.control === true),
-      models: gateModels(c.config),
-      tasks: policyTasks(baseline),
+      ...gateCtx,
       acceptedSkillSetHash: c.s.acceptedSkillSetHash,
-      // The M1/M2 posture (06 §5.1): isolation only, declared explicitly.
-      modes: ['isolation'],
-      config: {
-        ...gateCfg,
-        ...(c.s.settings.runs !== undefined ? { runs: c.s.settings.runs } : {}),
-      },
       skillText: { before: skillText(o.skillsDir, skill), after: skillText(dest, skill) },
-      skill,
       ...(meta.pattern ? { pattern: meta.pattern } : {}),
-      outlet: 'skill',
       ...(meta.control ? { control: true } : {}),
     });
   } catch (e) {

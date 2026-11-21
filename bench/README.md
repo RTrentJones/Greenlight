@@ -448,6 +448,26 @@ reused by identity, so step 1 and the baseline of step 2 then open no rollout.
   directory outside this repository and no other context. `evo.yml` has no launcher: external
   rollouts are local-only.
 
+## When the baseline already rules out a decision
+
+Three things a gate can end on depend on the baseline and on nothing the candidate does: a replay
+task that is flaky in the baseline at high blast radius (`blocked`), a skill no objective task
+exercises (`no-slice`), and a slice whose best possible result is still not significant
+(`underpowered`). `bench iterate` checks for them once the baseline is sealed and before it opens
+any candidate rollout. When the proposal could not be accepted, the candidate step ends at once
+with `no decision`, the state holds a decision with no candidate record, and the hand-off says
+that no rollout was run. Iteration 7 spent 50 rollouts to learn this about a `greenlight-wiki`
+candidate; the same check now costs none.
+
+The control arm is treated differently, because a replay regression needs no power: a control is
+still evaluated on an underpowered slice, and is skipped only when the baseline blocks every
+decision. What the early stop gives up is stated in the hand-off: a candidate that was never run
+might also have been rejected for breaking a replay.
+
+To make a skill decidable again, add objective tasks that exercise it and that the frontier
+model does not already pass, or raise `runs` in `bench/gate.json`. Either one changes the
+evaluation identity, so a new baseline is run.
+
 ## A safety-fix iteration (`bench iterate --safety-fix`)
 
 By default `bench iterate` gates its skill proposal on the standard path, which requires a strict

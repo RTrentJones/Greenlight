@@ -901,6 +901,17 @@ instead.
   two objective families per skill (§4.1), so each slice reaches 1/400 once its second task is
   `active`; until that task has a sealed baseline it is `pending`, excluded from the slice, and
   the slice is still underpowered (`shipped-shape.test.ts` asserts both shapes).
+- **Power is checked before the rollouts are spent.** The attainable minimum, an empty slice and
+  a flaky baseline replay task (§5.4) are properties of the baseline alone, so `bench iterate`
+  asks for them when the baseline is sealed and no candidate rollout exists yet
+  (`baselinePrecheck`, `packages/wiki/src/bench/gate.ts`). The policy is run with the baseline
+  standing in for the candidate, which leaves those three findings as any candidate would meet
+  them; `shipped-shape.test.ts` asserts that they equal the gate's own. A proposal that could not
+  be accepted is recorded as `underpowered` with no candidate record, and its hand-off says that
+  no rollout was run. What is given up is the chance of learning that the candidate would have
+  been rejected for a rule that needs no power. A control arm is the opposite case: it exists to
+  be rejected for a replay regression, so only a `blocked` baseline stops it, and an underpowered
+  slice does not.
 
 **Operating characteristics, two slice tasks × 3 runs per arm, one model** (exhaustive
 enumeration of every baseline × candidate table; `stats.test.ts` asserts each figure):

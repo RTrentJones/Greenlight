@@ -390,6 +390,44 @@ describe('bench iterate (M2-01, M2-04)', () => {
   const maybe = DOCKER ? it : it.skip;
 
   maybe(
+    'at the shipped alpha this one-run bench is underpowered: the candidate spends no rollout, the control still runs',
+    async () => {
+      const env = setup(true);
+      // One slice task × 1 run cannot go below p = 1/2, so at alpha 0.05 no candidate could be
+      // accepted. The baseline shows that on its own (06 §5.2).
+      writeFileSync(join(env.bench, 'gate.json'), '{ "runs": 1 }\n');
+      const id = 'iter-test-power';
+      env.fake.exhaust = null;
+      const phases: (IterationStep | null)[] = [];
+      env.fake.onRollout = (phase) => {
+        phases.push(phase);
+      };
+      const r = await iterate(env.options(0, { iterationId: id }));
+      expect(r.status, r.message).toBe('complete');
+      const s = loadIterationState(env.stateDir, id);
+      const cand = s.evaluate.candidate;
+      expect(cand?.decision).toMatchObject({ decision: 'underpowered', candidateRecords: [] });
+      expect(cand?.decision?.baselineRecords).toEqual([s.baseline.record]);
+      expect(cand?.decision?.reasons.map((x) => x.code)).toContain('underpowered');
+      expect(cand?.evaluationId).toBeUndefined();
+      expect(cand?.record).toBeUndefined();
+      expect(cand?.message).toMatch(/settled by the baseline before any candidate rollout/);
+      // No rollout ran for the proposal, and nothing about it reached the ledger.
+      expect(phases).not.toContain('evaluate');
+      expect(ledger(env.wiki).some((e) => e.proposalId === cand?.proposalId)).toBe(false);
+      // The control needs no power to be rejected for a replay regression, so it was evaluated.
+      const ctl = s.control.items[0];
+      expect(ctl?.record).toBeTruthy();
+      expect(phases).toContain('control');
+      expect(ctl?.outcome).toBe('met');
+      const md = readFileSync(join(iterationDir(env.stateDir, id), 'handoff.md'), 'utf8');
+      expect(md).toContain('**No decision: the gate is underpowered here.**');
+      expect(md).toContain('**No candidate rollout was run.**');
+    },
+    240_000,
+  );
+
+  maybe(
     'one full iteration with a deferral at every step: maintainer applied, ≥4 logged reads, candidate gated, control rejected for the Neon replay, ledger, hand-off, review',
     async () => {
       const env = setup(true);
