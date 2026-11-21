@@ -66,3 +66,8 @@ The maintainer failures raw:20261121T030935Z-13028a60 and raw:20261121T030935Z-a
 
 ## 2026-11-21T07:36:47.488Z — harness — control candidate-rejected control-probe-layer-overgeneral-86a7058e
 bench iterate iter-20261121T030933Z-86a7058e: candidate-rejected (skill, deploy-verify-promote); ledger event c331930c6110acf48f9eeecb22467d928a7b6b24652b2001f0f0ec21877d61af
+
+## 2026-11-21T08:04:39.105Z — maintainer:claude-code/sonnet — ingest
+No page changes: the evidence is already compiled in pattern/probe-touches-wrong-layer and pattern/neon-never-sleeps.
+raw:20261121T030935Z-7cf6872f (passing replay on a mcp/oci app with Neon: healthcheck and keepalive on /live, 0 store queries, store awake 240 s of 600 s, 200 with the database stopped, /health still reporting the database) repeats the store-free pass already recorded twice.
+The maintainer failures raw:20261121T030935Z-13028a60 and raw:20261121T030935Z-ad358b21 ran against a fixture wiki lacking the liveness-model rule that pattern/probe-touches-wrong-layer now carries, naming incident/2026-08-keepalive-green-database-paused and incident/2026-09-idle-app-neon-never-sleeps; raw:20261121T030935Z-80b9511c passed (supersede flow). raw:20261121T030934Z-3b6550b6 and raw:20261121T030934Z-bde7060b (new route must join the verify config) concern the deploy loop, not a wiki pattern. No status change: all evidence is bench replay, not a deployed red-to-green run.
