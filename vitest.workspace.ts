@@ -18,10 +18,15 @@ const HOST_PREVIEW = [
   'packages/wiki/src/bench/__tests__/grader-api.test.ts',
 ];
 
+// Gates run inside tests must not write raw records into this checkout's `.greenlight/raw`,
+// which is the field evidence a maintainer bundle samples. Capture tests pass their own env.
+const env = { GREENLIGHT_RAW: 'off' };
+
 export default defineWorkspace([
   {
     test: {
       name: 'unit',
+      env,
       include: ['packages/**/*.test.ts', 'cli/**/*.test.ts', 'bench/**/*.test.ts'],
       exclude: ['**/node_modules/**', '**/dist/**', ...HOST_PREVIEW],
     },
@@ -29,6 +34,7 @@ export default defineWorkspace([
   {
     test: {
       name: 'host-preview',
+      env,
       include: HOST_PREVIEW,
       pool: 'forks',
       poolOptions: { forks: { singleFork: true } },

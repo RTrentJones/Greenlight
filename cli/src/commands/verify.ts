@@ -10,6 +10,7 @@ import {
   verifyAll,
 } from '@rtrentjones/greenlight-verify';
 import { parseFlags } from '../args';
+import { type GateCapture, captureGate } from '../capture';
 import {
   type VerifyConfigContext,
   loadExternalVerifySpec,
@@ -68,7 +69,12 @@ export function printReport(report: VerifyReport, log: (s: string) => void = con
  * GREENLIGHT_VERIFY_JSON=1) prints the standards-shaped export to STDOUT and routes the human
  * report to STDERR, so `verify … --json | jq` is clean; otherwise the human report goes to
  * stdout as before. */
-function emitReports(reports: VerifyReport[], json: boolean, ctx: ExportContext): number {
+function emitReports(
+  reports: VerifyReport[],
+  json: boolean,
+  ctx: ExportContext,
+  capture?: Omit<GateCapture, 'kind' | 'tool' | 'env' | 'reports' | 'wikiHits'>,
+): number {
   const log = json ? console.error : console.log;
   for (const report of reports) printReport(report, log);
   const pass = allPass(reports);
@@ -78,6 +84,17 @@ function emitReports(reports: VerifyReport[], json: boolean, ctx: ExportContext)
   const wikiHits = pass ? [] : printWikiBlock(reports, log);
   if (json) {
     process.stdout.write(`${JSON.stringify(toExportResult(reports, { ...ctx, wikiHits }))}\n`);
+  }
+  if (capture) {
+    captureGate({
+      ...capture,
+      kind: 'verify',
+      tool: ctx.tool,
+      env: ctx.env === 'beta' || ctx.env === 'prod' ? ctx.env : 'preview',
+      reports,
+      gitSha: ctx.gitSha,
+      wikiHits,
+    });
   }
   return pass ? 0 : 1;
 }
@@ -148,7 +165,7 @@ export function attachFailureLogs(
 
 const VERIFY_FLAGS = {
   value: ['--spec', '--url', '--wait', '--tool', '--env', '--expect-sha'],
-  boolean: ['--json'],
+  boolean: ['--json', '--no-capture'],
 };
 
 /** The one verify tail both command paths (and `preview`) share: run the harness, then attach
@@ -181,6 +198,8 @@ export function warnDefaultSpec(name: string, lane: Lane): void {
 export async function verifyCommand(args: string[]): Promise<number> {
   const parsed = parseFlags('verify', args, VERIFY_FLAGS);
   const json = parsed.flags.has('--json') || process.env.GREENLIGHT_VERIFY_JSON === '1';
+  const noCapture = parsed.flags.has('--no-capture');
+  const startedAt = new Date();
 
   // Manifest-free mode: `verify --url <url> --spec <path>` loads the spec directly and skips the
   // manifest entirely. This is how a tool's OWN CI verifies a deployment (e.g. a Vercel tool's
@@ -205,11 +224,12 @@ export async function verifyCommand(args: string[]): Promise<number> {
     });
     // Manifest-free: tool name from --tool, else the spec basename (`<name>.config.ts` → `<name>`).
     const tool = parsed.values['--tool'] ?? basename(specPath).replace(/\.config\.[tj]s$/, '');
-    return emitReports(reports, json, {
-      tool,
-      env: parsed.values['--env'] ?? 'preview',
-      gitSha: gitSha(),
-    });
+    return emitReports(
+      reports,
+      json,
+      { tool, env: parsed.values['--env'] ?? 'preview', gitSha: gitSha() },
+      { specPath, noCapture, startedAt },
+    );
   }
 
   const name = parsed.positional[0];
@@ -274,9 +294,14 @@ export async function verifyCommand(args: string[]): Promise<number> {
     toolDir,
     expectedSha: parsed.values['--expect-sha'],
   });
-  return emitReports(reports, json, {
-    tool: entry.name ?? name,
-    env: override ? 'preview' : (parsed.values['--env'] ?? 'preview'),
-    gitSha: gitSha(),
-  });
+  return emitReports(
+    reports,
+    json,
+    {
+      tool: entry.name ?? name,
+      env: override ? 'preview' : (parsed.values['--env'] ?? 'preview'),
+      gitSha: gitSha(),
+    },
+    { dir: entry.dir, external: entry.external, noCapture, startedAt },
+  );
 }

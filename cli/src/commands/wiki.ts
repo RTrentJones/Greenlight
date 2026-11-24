@@ -7,6 +7,9 @@ import {
   type BundleContext,
   BundleLeakError,
   BundleSecretError,
+  type CaptureEnv,
+  CaptureError,
+  type CaptureKind,
   type Finding,
   type LintContext,
   type OpenBundle,
@@ -19,6 +22,7 @@ import {
   awaitingIterations,
   buildMaintainerBundle,
   buildProposerBundle,
+  captureRecord,
   checkProposal,
   fix,
   introducedErrors,
@@ -33,9 +37,11 @@ import {
   openBundle,
   parseSampleSpec,
   parseSplits,
+  rawOff,
   readGateInput,
   readTarget,
   recordAccess,
+  retainRecord,
   skillSetHash,
   toolContext,
   withWrites,
@@ -92,6 +98,15 @@ change without notice.
   read <page-id | raw:<rawId> | skill:<name>> [--role maintainer|proposer] [--json]
   traces [--skill <name>[@v]] [--failed|--passing] [--tool <n>] [--limit n] [--json]
                        the read-only interface; val/test bench records are never served
+  capture --manual --tool <name> --env <preview|beta|prod> --passed <true|false|unknown>
+          --note <text> [--ref <EvidenceRef>]… [--sha <sha>]
+                       record evidence gathered by hand (a drill, an incident) as a raw record
+                       under .greenlight/raw, redacted, and print its raw id
+  capture --kind <preview|ship|verify|keepalive|alert|session> --tool <name> --env <env>
+          --passed <bool> [--sha <sha>] [--ref <ref>]… [--excerpt-file <path>] [--verify-json <path>]
+                       the same, from files, for CI steps and alerts
+  capture --retain <rawId>
+                       copy a raw record to wiki/evidence/, where it is committed and immutable
   context <name> [--json]
                        what to read before touching a tool: its intent, liveness, the head of its
                        decisions, its manifest entry, the confirmed patterns for its cell and its
@@ -129,6 +144,8 @@ export async function wikiCommand(args: string[], io: WikiIo = defaultIo()): Pro
         return readCmd(rest, io);
       case 'traces':
         return tracesCmd(rest, io);
+      case 'capture':
+        return captureCmd(rest, io);
       case 'context':
         return await contextCmd(rest, io);
       case 'lookup':
@@ -146,6 +163,7 @@ export async function wikiCommand(args: string[], io: WikiIo = defaultIo()): Pro
     const msg = err instanceof Error ? err.message : String(err);
     io.err(msg);
     if (err instanceof Usage || err instanceof UsageError) return 2;
+    if (err instanceof CaptureError) return 3;
     if (err instanceof BundleLeakError || err instanceof BundleSecretError) return 4;
     return withCode(err);
   }
@@ -787,3 +805,104 @@ async function lookupCmd(args: string[], io: WikiIo): Promise<number> {
 
 const rootArgs = (values: Record<string, string>): string[] =>
   ROOT_FLAGS.flatMap((f) => (values[f] === undefined ? [] : [f, values[f] as string]));
+
+// ---- capture (07 §3.5) ------------------------------------------------------------------------
+
+const CAPTURE_KINDS = ['preview', 'ship', 'verify', 'keepalive', 'alert', 'session'] as const;
+const CAPTURE_ENVS = ['preview', 'beta', 'prod'] as const;
+
+function captureCmd(args: string[], io: WikiIo): number {
+  const a = parseFlags('wiki capture', args, {
+    value: [
+      ...ROOT_FLAGS,
+      '--kind',
+      '--tool',
+      '--env',
+      '--passed',
+      '--note',
+      '--sha',
+      '--excerpt-file',
+      '--verify-json',
+      '--retain',
+    ],
+    list: ['--ref'],
+    boolean: ['--manual'],
+  });
+  if (a.positional.length > 0) throw new Usage(`unexpected argument "${a.positional[0]}"`);
+  const p = paths(io, a.values);
+
+  const retain = a.values['--retain'];
+  if (retain !== undefined) {
+    if (a.flags.has('--manual') || a.values['--kind']) {
+      throw new Usage('--retain takes a raw id and no other capture flag');
+    }
+    const r = retainRecord(p.raw, p.root, retain);
+    io.out(r.already ? `${r.path} (already retained)` : r.path);
+    return 0;
+  }
+
+  const manual = a.flags.has('--manual');
+  const kind = manual ? 'session' : a.values['--kind'];
+  if (manual && a.values['--kind']) throw new Usage('--manual records kind "session"; drop --kind');
+  if (!kind) throw new Usage('wiki capture needs --manual, --kind <kind> or --retain <rawId>');
+  if (!(CAPTURE_KINDS as readonly string[]).includes(kind)) {
+    throw new Usage(`--kind must be one of ${CAPTURE_KINDS.join(', ')} (got "${kind}")`);
+  }
+  const need = (flag: string): string => {
+    const v = a.values[flag];
+    if (v === undefined || v === '') throw new Usage(`wiki capture needs ${flag}`);
+    return v;
+  };
+  const tool = need('--tool');
+  const env = need('--env');
+  if (!(CAPTURE_ENVS as readonly string[]).includes(env)) {
+    throw new Usage(`--env must be one of ${CAPTURE_ENVS.join(', ')} (got "${env}")`);
+  }
+  const passedArg = need('--passed');
+  if (!['true', 'false', 'unknown'].includes(passedArg)) {
+    throw new Usage(`--passed must be true, false or unknown (got "${passedArg}")`);
+  }
+  const read = (flag: string): string | undefined => {
+    const file = a.values[flag];
+    if (file === undefined) return undefined;
+    const abs = resolve(io.cwd, file);
+    if (!existsSync(abs)) throw new CaptureError(`${flag}: ${abs} not found`);
+    return readFileSync(abs, 'utf8');
+  };
+  let excerpt: string;
+  if (manual) {
+    if (a.values['--excerpt-file'] || a.values['--verify-json']) {
+      throw new Usage('--manual takes --note, not --excerpt-file or --verify-json');
+    }
+    excerpt = need('--note');
+  } else {
+    if (a.values['--note']) throw new Usage('--note belongs to --manual; use --excerpt-file');
+    excerpt = read('--excerpt-file') ?? '';
+  }
+  const verifyText = read('--verify-json');
+  let verify: unknown;
+  if (verifyText !== undefined) {
+    try {
+      verify = JSON.parse(verifyText);
+    } catch {
+      throw new CaptureError('--verify-json: the file is not valid JSON');
+    }
+  }
+  // Checked after the command line, so a wrong invocation is still reported when capture is off.
+  if (rawOff(io.env)) return 0;
+  const record = captureRecord({
+    cwd: io.cwd,
+    rawDir: p.raw,
+    tool,
+    env: env as CaptureEnv,
+    kind: kind as CaptureKind,
+    passed: passedArg === 'unknown' ? undefined : passedArg === 'true',
+    excerpt,
+    refs: a.lists['--ref'] ?? [],
+    gitSha: a.values['--sha'],
+    verify,
+    processEnv: io.env,
+  });
+  io.out(record.rawId);
+  return 0;
+}

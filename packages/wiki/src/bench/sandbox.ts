@@ -848,6 +848,8 @@ export async function createProcessSandbox(
     TZ: 'UTC',
     GIT_CONFIG_NOSYSTEM: '1',
     GREENLIGHT_WIKI: 'off',
+    // A rollout's gates must not write raw records into the tree a grader diffs (07 §0).
+    GREENLIGHT_RAW: 'off',
     ...setup.env,
   };
   const groups = new Set<number>();

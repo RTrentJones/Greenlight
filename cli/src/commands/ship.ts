@@ -4,6 +4,7 @@ import { buildSha, createAdapter } from '@rtrentjones/greenlight-adapters';
 import { type StageEvent, runShip } from '@rtrentjones/greenlight-loop';
 import type { DeployEnv } from '@rtrentjones/greenlight-shared';
 import { parseFlags } from '../args';
+import { captureGate } from '../capture';
 import {
   type VerifyConfigContext,
   loadExternalVerifySpec,
@@ -97,7 +98,7 @@ export function stageEventSink(eventsFile?: string): (e: StageEvent) => Promise<
 export async function shipCommand(args: string[]): Promise<number> {
   const parsed = parseFlags('ship', args, {
     value: ['--env', '--expect-sha', '--events'],
-    boolean: ['--no-rollback'],
+    boolean: ['--no-rollback', '--no-capture'],
   });
   const name = parsed.positional[0];
   if (!name) {
@@ -135,6 +136,7 @@ export async function shipCommand(args: string[]): Promise<number> {
   console.log(
     `ship ${name} (${entry.lane}/${entry.target}) → ${env}${gitSha ? ` @ ${gitSha.slice(0, 7)}` : ''}`,
   );
+  const startedAt = new Date();
   const result = await runShip({
     adapter,
     toolDir,
@@ -154,7 +156,20 @@ export async function shipCommand(args: string[]): Promise<number> {
   });
 
   for (const report of result.reports) printReport(report);
-  if (result.reports.some((r) => !r.pass)) printWikiBlock(result.reports);
+  const wikiHits = result.reports.some((r) => !r.pass) ? printWikiBlock(result.reports) : [];
+  captureGate({
+    kind: 'ship',
+    tool: name,
+    env,
+    reports: result.reports,
+    dir: entry.dir,
+    external: entry.external,
+    gitSha,
+    startedAt,
+    wikiHits,
+    stages: result.stages as unknown as Record<string, unknown>[],
+    noCapture: parsed.flags.has('--no-capture'),
+  });
   if (result.rollback) {
     console.log(
       `${result.rollback.ok ? '↩ rolled back' : '⚠ rollback unavailable'} — ${result.rollback.detail}`,

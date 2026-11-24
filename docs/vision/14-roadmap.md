@@ -322,6 +322,9 @@ FR-WIKI-10)
   - a minimal redacted capture from `preview` and `verify` with the identity of 08 §5.1.
 
   Automatic sinks (Tracer, the ingest POST) wait for M6.
+- As built (2026-11-24): `--manual`, `--kind` and `--retain`; a redacted record from `preview`,
+  `verify` and `ship`; bench sandboxes run with `GREENLIGHT_RAW=off`. Not built: `--export`,
+  `--from-issue`, `--from-run`.
 - Tests: the planted-secret test (13 §2.6) and the identity cases (13 §2.9).
 
 **M3-05 — The temporary human-reviewed skill-version path.** (FR-SKILL-03)

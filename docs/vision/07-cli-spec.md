@@ -570,6 +570,10 @@ greenlight wiki capture --export <dir>
 - **`--export <dir>`** writes all retained evidence plus the ledger as a tarball, with a manifest of
   hashes (08 §5.3).
 
+**As built (2026-11-24):** `--manual`, the `--kind` form and `--retain`, and a record from every
+`preview`, `verify` and `ship` (`--no-capture` skips it). `--passed` also takes `unknown`. Not
+built: `--from-issue`, `--from-run`, `--export`, and the Tracer copy.
+
 `--from-issue` and `--from-run` build the record from GitHub through `gh`. For an issue, `kind` is
 `alert` when the issue carries the alert label and `session` otherwise. `passed` is false while the
 issue is open. The excerpt is the redacted body plus the last 5 comments. For a run, `kind` is

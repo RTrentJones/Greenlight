@@ -13,6 +13,14 @@
 - **A failing `verify`, `preview` or `ship` names the known fix.** The report ends with a `wiki:`
   block listing up to three confirmed patterns whose check signature matches a failing check, and
   the `--json` export carries their ids as `wiki_hits`.
+- **Every `preview`, `verify` and `ship` leaves a raw record** under `.greenlight/raw/`, pass or
+  fail: the run's identity (tool commit, dirty-tree hash, verify config hash, run and attempt, the
+  installed skills), the verify document and a redacted excerpt of the failing checks and the log
+  tail. `--no-capture` or `GREENLIGHT_RAW=off` skips it, and a capture failure never changes a
+  gate's result.
+- **`greenlight wiki capture`** records evidence by hand (`--manual --note`), or from files for a
+  CI step or an alert (`--kind`), and `--retain <rawId>` copies a record into `wiki/evidence/`,
+  where it is committed and immutable.
 - **The framework wiki ships in the package** and is read from there. `wiki read <id>` falls back
   to it when the project wiki has no such page. `GREENLIGHT_WIKI=off` turns all of this off.
 

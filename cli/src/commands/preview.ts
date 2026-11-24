@@ -3,8 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Lane } from '@rtrentjones/greenlight-shared';
-import { allPass } from '@rtrentjones/greenlight-verify';
+import { type VerifyReport, allPass } from '@rtrentjones/greenlight-verify';
 import { parseFlags } from '../args';
+import { captureGate } from '../capture';
 import {
   type ResolvedEntry,
   loadExternalVerifySpec,
@@ -74,6 +75,9 @@ async function loadSpecs(entry: ResolvedEntry, url: string) {
   return Array.isArray(resolved) ? resolved : [resolved];
 }
 
+/** What the last `verifyLocal` saw, for the raw record `previewCommand` writes afterwards. */
+let lastVerify: { reports: VerifyReport[]; wikiHits: string[] } = { reports: [], wikiHits: [] };
+
 /** Run verify against a local URL, printing each report; returns the aggregate pass. */
 async function verifyLocal(entry: ResolvedEntry, url: string): Promise<boolean> {
   // Back-compat for OBJECT configs that still read these at module-eval time (jiti) — function
@@ -84,7 +88,8 @@ async function verifyLocal(entry: ResolvedEntry, url: string): Promise<boolean> 
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
   const reports = await runVerify(specs, url, { toolDir, reachableTimeoutMs: 0 });
   for (const report of reports) printReport(report);
-  if (!allPass(reports)) printWikiBlock(reports);
+  const wikiHits = allPass(reports) ? [] : printWikiBlock(reports);
+  lastVerify = { reports, wikiHits };
   return allPass(reports);
 }
 
@@ -222,7 +227,10 @@ async function recordPreviewOutcome(
 }
 
 export async function previewCommand(args: string[]): Promise<number> {
-  const parsed = parseFlags('preview', args, { value: ['--port'], boolean: ['--no-build'] });
+  const parsed = parseFlags('preview', args, {
+    value: ['--port'],
+    boolean: ['--no-build', '--no-capture'],
+  });
   const name = parsed.positional[0];
   if (!name) {
     throw new Error('usage: greenlight preview <name> [--port <n>] [--no-build]');
@@ -251,5 +259,15 @@ export async function previewCommand(args: string[]): Promise<number> {
     pass = await previewViaBuiltIn(entry, name, port, parsed.flags.has('--no-build'));
   }
   await recordPreviewOutcome(name, pass, Date.now() - started);
+  captureGate({
+    kind: 'preview',
+    tool: entry.name ?? name,
+    env: 'preview',
+    ...lastVerify,
+    dir: entry.dir,
+    external: entry.external,
+    startedAt: new Date(started),
+    noCapture: parsed.flags.has('--no-capture'),
+  });
   return pass ? 0 : 1;
 }
