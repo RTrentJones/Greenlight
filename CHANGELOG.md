@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The keepalive cron defaults to every 4 hours instead of every 3 days.** v0.10.1 made the probe
+  reach Postgres, and it did: `keepalive_probe` returned 200 on 2026-11-16, 11-19 and 11-22. Supabase
+  sent its pause warning on 11-21 and paused heistmind-db on 11-22 anyway, about an hour after the
+  last successful probe. Supabase pauses on *insufficient* database activity over a week ("a few
+  user requests to the database each day", per its project-pausing docs), so two or three queries a
+  week was never enough. Six a day is. OCI targets in the same Worker are now probed, and
+  remediated when down, on the same 4-hour cadence.
+
 ## v0.10.1
 
 The keepalive-reaches-Postgres-again patch.

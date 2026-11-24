@@ -41,6 +41,13 @@ alerted correctly once the project was already down, but had never done anything
 query still executed. Add `probeSchema` when the table lives outside `public` (schema-per-env), and
 `probeSelect` to keep row data off the wire.
 
+**Cadence matters as much as the query.** Supabase pauses a project that shows *too little*
+database activity over a rolling week, not only one with none; its docs say "a few user requests to
+the database each day" keeps a project up. The module's cron therefore defaults to every 4 hours.
+The earlier every-3-days default sent real, 200-returning queries and heistmind-db still paused on
+2026-11-22, an hour after one of them. Don't override the cron to anything sparser than a few hours
+while a supabase target is in `targets_json`.
+
 Only a **2xx** counts as alive for supabase targets: a 401/403/404 means the key is dead or the
 table is wrong, i.e. no query ran, so it alerts instead of passing silently. (`oci` targets keep the
 lenient rule — a 401 from an auth-gated endpoint still proves the service is serving.)
