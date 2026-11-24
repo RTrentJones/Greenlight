@@ -13,6 +13,7 @@ import {
   resolveEntry,
 } from '../manifest';
 import { BUILTIN_READY_MS, DESCRIPTOR_READY_MS, readyTimeout } from '../timeouts';
+import { printWikiBlock } from '../wiki-hits';
 import { skillVersion, stageEventSink } from './ship';
 import { defaultSpec, printReport, runVerify, warnDefaultSpec } from './verify';
 
@@ -83,6 +84,7 @@ async function verifyLocal(entry: ResolvedEntry, url: string): Promise<boolean> 
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
   const reports = await runVerify(specs, url, { toolDir, reachableTimeoutMs: 0 });
   for (const report of reports) printReport(report);
+  if (!allPass(reports)) printWikiBlock(reports);
   return allPass(reports);
 }
 

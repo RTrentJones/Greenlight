@@ -197,7 +197,9 @@ a `preview` stage event. The additions:
    (08 §7).
 2. On failure, the human report ends with a `wiki:` block: up to three `confirmed` patterns whose
    `catches.checkSignature` matches a failing check id or name (§3.6). Each line carries the
-   pattern's title and its path in `.greenlight/wiki/framework/` or `wiki/`.
+   pattern's id and title, and where to read it: the path under `wiki/` for a project page, or
+   `greenlight wiki read <id>` for a framework page. The `--json` export carries the same ids as
+   `wiki_hits`. Built for `verify`, `preview` and `ship`.
 3. `--events` is accepted with the same semantics as `ship`.
 
 ### 2.5 `ship`
@@ -341,10 +343,11 @@ to `CLAUDE.md`. The additions:
 1. **Every managed skill is copied with its `PURPOSE.md`** (05 §2). The skill set is chosen from
    the catalogue (05 §4): always the loop, kickoff, build, portfolio and wiki skills, plus each
    applicable provider skill.
-2. **The framework wiki** is materialized from the installed package into
-   `.greenlight/wiki/framework/`. Any previous copy is replaced, a `VERSION` file holding the CLI
-   version is written, and the directory is made read-only (chmod a-w). `.greenlight/` is already
-   gitignored.
+2. **The framework wiki is not copied.** As built, `wiki lookup`, `wiki context`, `wiki read` and
+   the failure block read it in place from the installed package (`assets/wiki`: patterns, facts,
+   decisions, contract pages and the index, and never incidents, evidence or the ledger). A copy
+   under `.greenlight/wiki/framework/` could drift from the CLI that reads it, and reading in
+   place cannot, so DR-12 has nothing to check (ADR-04, amended 2026-11-24).
 3. **The `CLAUDE.md` block** gains one line: `Project knowledge: wiki/ (read
    wiki/tools/<name>/intent.md and liveness.md before changing a tool).`
 4. **With `<name>` for an adopted tool**, it also writes the pointer block into the submodule's
@@ -615,7 +618,10 @@ greenlight wiki lookup --role maintainer|proposer [--skill <name>] [--json]
 `maintainer` returns the paths of the full wiki, including incidents, plus the latest ingest bundle.
 `proposer` returns `index.md`, `skill-impact.md`, the outcome summary from `wiki stats`, and the
 target skill's files (06 §2, §3). These are the only invocations that may return incident pages.
-They are used by the `greenlight-wiki` skill and never by building skills.
+They are used by the `greenlight-wiki` skill and never by building skills. **As built, the
+`--role` form is refused (exit 4):** the two roles get their reading sets from the harness-issued
+bundles of `wiki ingest` and `wiki propose`, where every read is logged, and a second way in would
+be a way around that log.
 
 ### 3.6a `wiki context` (M3) — the on-start hook
 
@@ -630,10 +636,13 @@ This prints the bundle that every managed skill's `on-start` hook loads (05 §3)
 - `liveness.md`, in full;
 - the first 40 lines of `decisions.md`;
 - the tool's manifest entry;
-- the open alert issues for the tool, titles only.
+- the `confirmed` patterns from both wikis whose `cells` match the tool's cell and that `affects`
+  and `relevance` keep (04 §6), as one line each;
+- the open alert issues for the tool, titles only. They are read with `gh`; without it the bundle
+  says the alerts were not checked, and never says there are none.
 
 It never includes incidents. With `--json` the output is
-`{ intent, liveness, decisions, manifest, alerts }`. If the tool has no pages yet, it prints the
+`{ intent, liveness, decisions, manifest, patterns, alerts }`. If the tool has no pages yet, it prints the
 manifest entry and `no project wiki for <name>: run greenlight wiki lint --fix to stub it`, and
 exits 0, so that a hook never blocks work.
 
@@ -643,8 +652,8 @@ exits 0, so that a hook never blocks work.
 greenlight wiki read <page-id> [--json]
 ```
 
-This prints one page from the project wiki, or from the materialized framework wiki when the id
-is not found locally. A `superseded` id is followed to its replacement, with a notice. A
+This prints one page from the project wiki, or from the framework wiki in the installed package
+when the id is not found locally. A `superseded` id is followed to its replacement, with a notice. A
 `hypothesis` page is printed with a banner reading `HYPOTHESIS — not guidance`. Incident ids are
 refused (exit 4) unless `--role maintainer` is also given.
 

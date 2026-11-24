@@ -20,6 +20,8 @@ export interface FlagSpec {
   value?: readonly string[];
   /** Boolean flags (`--json`). */
   boolean?: readonly string[];
+  /** Value flags that may be repeated (`--check a --check b`); collected in order. */
+  list?: readonly string[];
 }
 
 export interface ParsedArgs {
@@ -29,12 +31,15 @@ export interface ParsedArgs {
   values: Record<string, string>;
   /** Boolean flags that were present. */
   flags: Set<string>;
+  /** Repeatable value flags, keyed by flag name; a flag that was not given has no key. */
+  lists: Record<string, string[]>;
 }
 
 export function parseFlags(command: string, args: string[], spec: FlagSpec = {}): ParsedArgs {
   const valueFlags = new Set(spec.value ?? []);
   const booleanFlags = new Set(spec.boolean ?? []);
-  const out: ParsedArgs = { positional: [], values: {}, flags: new Set() };
+  const listFlags = new Set(spec.list ?? []);
+  const out: ParsedArgs = { positional: [], values: {}, flags: new Set(), lists: {} };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] as string;
     if (!arg.startsWith('-')) {
@@ -49,11 +54,19 @@ export function parseFlags(command: string, args: string[], spec: FlagSpec = {})
       out.values[arg] = value;
       continue;
     }
+    if (listFlags.has(arg)) {
+      const value = args[++i];
+      if (value === undefined) {
+        throw new UsageError(`\`greenlight ${command}\`: ${arg} needs a value`);
+      }
+      out.lists[arg] = [...(out.lists[arg] ?? []), value];
+      continue;
+    }
     if (booleanFlags.has(arg)) {
       out.flags.add(arg);
       continue;
     }
-    const known = [...valueFlags, ...booleanFlags].sort().join(' ') || '(none)';
+    const known = [...valueFlags, ...listFlags, ...booleanFlags].sort().join(' ') || '(none)';
     throw new UsageError(
       `\`greenlight ${command}\`: unknown flag "${arg}" (known flags: ${known})`,
     );

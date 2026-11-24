@@ -12,6 +12,7 @@ import {
   resolveEntry,
 } from '../manifest';
 import { REMOTE_REACHABLE_MS, readyTimeout } from '../timeouts';
+import { printWikiBlock } from '../wiki-hits';
 import { guardProduction } from './release';
 import { defaultSpec, printReport, runVerify, warnDefaultSpec } from './verify';
 
@@ -153,6 +154,7 @@ export async function shipCommand(args: string[]): Promise<number> {
   });
 
   for (const report of result.reports) printReport(report);
+  if (result.reports.some((r) => !r.pass)) printWikiBlock(result.reports);
   if (result.rollback) {
     console.log(
       `${result.rollback.ok ? '↩ rolled back' : '⚠ rollback unavailable'} — ${result.rollback.detail}`,

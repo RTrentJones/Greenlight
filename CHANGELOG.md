@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **`greenlight wiki context <name>`** prints what to read before changing a tool: its intent and
+  liveness pages, the head of its decisions, its manifest entry, the confirmed patterns for its
+  lane, target and data store, and its open alert issues. It exits 0 when the tool has no pages
+  yet, so it can run as a hook.
+- **`greenlight wiki lookup`** returns the confirmed patterns for a failing check (`--check`,
+  repeatable), a class or a cell, best match first, each with its fix.
+- **A failing `verify`, `preview` or `ship` names the known fix.** The report ends with a `wiki:`
+  block listing up to three confirmed patterns whose check signature matches a failing check, and
+  the `--json` export carries their ids as `wiki_hits`.
+- **The framework wiki ships in the package** and is read from there. `wiki read <id>` falls back
+  to it when the project wiki has no such page. `GREENLIGHT_WIKI=off` turns all of this off.
+
 ## v0.11.0
 
 Release authority, and the first, experimental release of the wiki, bench and gate. Nothing an

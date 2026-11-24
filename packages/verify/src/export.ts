@@ -43,12 +43,16 @@ export interface VerifyExportResult {
     'gen_ai.response.cost'?: number;
   };
   checks: VerifyExportCheck[];
+  /** Ids of the confirmed wiki patterns that catch a failing check (vision FR-LOOP-08). Additive:
+   * present only on a failing run with at least one match. */
+  wiki_hits?: string[];
 }
 
 export interface ExportContext {
   tool: string;
   env: string;
   gitSha?: string | null;
+  wikiHits?: readonly string[];
 }
 
 const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
@@ -111,5 +115,6 @@ export function toExportResult(reports: VerifyReport[], ctx: ExportContext): Ver
     duration_ms: durationMs ?? null,
     ...(Object.keys(attributes).length ? { attributes } : {}),
     checks,
+    ...(ctx.wikiHits?.length ? { wiki_hits: [...ctx.wikiHits] } : {}),
   };
 }

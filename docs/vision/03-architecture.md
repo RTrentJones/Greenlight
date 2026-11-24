@@ -241,7 +241,7 @@ agent: hand owner the beta URL
 ```
 verify/preview/ship fails
   CLI: for each failing VerifyCheck c: lookup(wiki, {checkId: c.id, name: c.name, cell})
-  CLI: append to report:  "see: .greenlight/wiki/framework/patterns/<slug>.md (confirmed)"
+  CLI: append to report:  "see: pattern/<slug> — <title> (wiki/patterns/<slug>.md | greenlight wiki read <id>)"
   CLI: writeRaw(..., wikiHits=[ids])
 agent: reads only the linked confirmed patterns (never incidents, never hypotheses)
 agent: fixes; re-runs the same gate

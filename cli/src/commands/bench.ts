@@ -73,7 +73,7 @@ const defaultIo = (): BenchIo => ({
 
 export const BENCH_USAGE = `usage: greenlight bench <subcommand>
 
-EXPERIMENTAL: the bench, the gate and the evolution loop are unreleased (Greenlight 2.0). Flags,
+EXPERIMENTAL: the bench, the gate and the evolution loop are new in 0.11 (Greenlight 2.0). Flags,
 exit codes and file formats may change without notice, and the commands expect a framework
 checkout with a bench/ directory.
 

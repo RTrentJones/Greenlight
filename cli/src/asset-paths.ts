@@ -23,3 +23,12 @@ export function skillAssetDir(name = 'deploy-verify-promote'): string {
   // dev: repo root (cwd-independent, so adopt/agent sync work from any directory)
   return resolve(packageRoot, '..', '.claude', 'skills', name);
 }
+
+/** The framework wiki the CLI carries (patterns, facts, decisions, contract pages and the index;
+ * never incidents, evidence or the ledger). In a checkout this is the repo's own `wiki/`. */
+export function frameworkWikiDir(): string | undefined {
+  const packaged = resolve(packageRoot, 'assets', 'wiki');
+  if (existsSync(packaged)) return packaged;
+  const dev = resolve(packageRoot, '..', 'wiki');
+  return existsSync(dev) ? dev : undefined;
+}

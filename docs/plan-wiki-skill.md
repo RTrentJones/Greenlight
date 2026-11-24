@@ -2,7 +2,7 @@
 
 Status: **superseded working draft.** The vision pack in [docs/vision/](vision/README.md) replaces
 this plan and is the specification to build from. Part of what the plan describes (the wiki engine,
-the bench, the gate and the evolution loop) is built on the `2.0` branch and not released; the
+the bench, the gate and the evolution loop) is built and shipped as experimental in v0.11.0; the
 current state is the table at the top of [docs/vision/README.md](vision/README.md). The text below
 is kept unchanged as the draft the pack grew from: where it says something is to be built, check the
 pack. The rationale is in [wiki-skill-design.md](wiki-skill-design.md); between these two drafts,

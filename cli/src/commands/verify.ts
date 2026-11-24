@@ -19,6 +19,7 @@ import {
   resolveEntry,
 } from '../manifest';
 import { REMOTE_REACHABLE_MS, readyTimeout } from '../timeouts';
+import { printWikiBlock } from '../wiki-hits';
 
 /** Default smoke spec by lane. Real per-tool specs come from a verify.config (Phase 9 adopt). */
 export function defaultSpec(lane: Lane): VerifySpec {
@@ -72,7 +73,12 @@ function emitReports(reports: VerifyReport[], json: boolean, ctx: ExportContext)
   for (const report of reports) printReport(report, log);
   const pass = allPass(reports);
   if (reports.length > 1) log(`\n${pass ? '✔ ALL PASS' : '✘ FAIL'} (${reports.length} specs)`);
-  if (json) process.stdout.write(`${JSON.stringify(toExportResult(reports, ctx))}\n`);
+  // The on-failure hook: confirmed patterns that catch a failing check, in the same output and
+  // in the export (FR-LOOP-02, FR-LOOP-08).
+  const wikiHits = pass ? [] : printWikiBlock(reports, log);
+  if (json) {
+    process.stdout.write(`${JSON.stringify(toExportResult(reports, { ...ctx, wikiHits }))}\n`);
+  }
   return pass ? 0 : 1;
 }
 

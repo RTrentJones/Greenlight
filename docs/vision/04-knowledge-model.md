@@ -26,7 +26,7 @@ of how the framework works. Section 7 defines the boundary between them.
 | holds | `pattern`, `fact`, `decision`, `incident`, `contract` true for any user | `intent`, `liveness`, `tool-decisions` per tool; project `pattern`/`incident`/`decision` |
 | written by | maintainer pass + human PR review | the owner's agents, through skills; maintainer pass |
 | ships | inside the npm package, version-locked to the CLI (ADR-04) | committed in the wrapper |
-| materialized | `agent sync` → `.greenlight/wiki/framework/` (read-only, gitignored) | in place |
+| read from | the installed package, in place (no copy in the wrapper; ADR-04 as amended) | in place |
 | ledger | yes — framework skills | yes — project skills, if any |
 
 Both wikis use the page schemas in 08 §3, the index and log formats in 08 §4, and the lint rules in
@@ -208,7 +208,8 @@ when that package was published. It cannot know about a fix released later. Two 
   "advisories: not checked", never "none". `doctor --advisories` includes the result. This is how
   the caret-range trap that left a Supabase-backed tool on 0.8 would have surfaced (15 §2.1).
 
-DR-12 fails when `.greenlight/wiki/framework/VERSION` differs from the installed CLI version.
+DR-12 was to fail when a materialized copy's `VERSION` differed from the installed CLI. As built
+there is no copy: the CLI reads the wiki from its own package, so the two cannot differ.
 
 ## 7. One home per statement
 

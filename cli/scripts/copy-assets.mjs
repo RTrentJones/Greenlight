@@ -1,7 +1,7 @@
 // Copy the lane templates + the agent skill INTO the CLI package so a published/installed
 // CLI can scaffold tools (`greenlight add`) and materialize the skill (`greenlight agent sync`)
 // without the repo present. Runs before tsup (see cli `build` script). Outputs are gitignored.
-import { cpSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,4 +38,15 @@ for (const entry of readdirSync(skillsSrc)) {
   cpSync(join(skillsSrc, entry), join(pluginSkills, entry), { recursive: true });
 }
 
-console.log('cli: copied templates + skill assets + plugin mirror');
+// 4) Framework wiki: the pages `wiki lookup`, `wiki context` and a failing gate's `wiki:` block
+// read (vision 04 §6, M3-09). Guidance only: incidents, evidence, drills, the ledger and the log
+// stay in the repository (ADR-10), so nothing an agent may not read ships in the package.
+const wikiSrc = join(repoRoot, 'wiki');
+const wikiOut = join(cliDir, 'assets', 'wiki');
+mkdirSync(wikiOut, { recursive: true });
+for (const entry of ['patterns', 'facts', 'decisions', 'contract', 'index.md']) {
+  const from = join(wikiSrc, entry);
+  if (existsSync(from)) cpSync(from, join(wikiOut, entry), { recursive: true });
+}
+
+console.log('cli: copied templates + skill assets + framework wiki + plugin mirror');

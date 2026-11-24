@@ -61,7 +61,7 @@ BAMCP etc.), the skill ships as the Greenlight Claude Code **plugin**; mechanics
 
 ## 2.0 layer (wiki, bench, gate)
 
-Built on the `2.0` branch (draft PR #38), **not released**. It adds the evolution loop: a wiki that
+Merged to `main` as v0.11.0 (PR #38) and **experimental**; new work continues on `2.0`. It adds the evolution loop: a wiki that
 compiles evidence into patterns, a bench that runs and grades agent rollouts, and a gate that decides
 whether a proposed skill change is accepted. The spec is [docs/vision/](docs/vision/README.md) (state
 table at its top; 06 the loop, 07 the CLI, 08 the schemas); the operator's guide is

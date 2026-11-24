@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { newRawId } from '@rtrentjones/greenlight-shared';
@@ -24,9 +25,11 @@ import {
   lint,
   lintExitCode,
   listTraces,
+  livenessSummary,
   loadRawStore,
   loadSkills,
   loadWiki,
+  lookupPatterns,
   openBundle,
   parseSampleSpec,
   parseSplits,
@@ -34,13 +37,16 @@ import {
   readTarget,
   recordAccess,
   skillSetHash,
+  toolContext,
   withWrites,
   writeBundle,
   writeChangeset,
 } from '@rtrentjones/greenlight-wiki';
 import { UsageError, parseFlags } from '../args';
-import { findManifestPath, loadManifest } from '../manifest';
+import { frameworkWikiDir } from '../asset-paths';
+import { findManifestPath, loadManifest, resolveEntry } from '../manifest';
 import { MODULE_REF } from '../version';
+import { INSTALLED_VERSION, hitLocation, lookupSources, wikiOff } from '../wiki-hits';
 
 /**
  * `greenlight wiki …` (vision 07 §3.4, §3.6b, §3.6d, §3.7, §3.8). Thin wiring over
@@ -65,7 +71,7 @@ const defaultIo = (): WikiIo => ({
 
 const USAGE = `usage: greenlight wiki <subcommand>
 
-EXPERIMENTAL: the wiki is unreleased (Greenlight 2.0). Commands, page formats and exit codes may
+EXPERIMENTAL: the wiki is new in 0.11 (Greenlight 2.0). Commands, page formats and exit codes may
 change without notice.
 
 
@@ -86,6 +92,18 @@ change without notice.
   read <page-id | raw:<rawId> | skill:<name>> [--role maintainer|proposer] [--json]
   traces [--skill <name>[@v]] [--failed|--passing] [--tool <n>] [--limit n] [--json]
                        the read-only interface; val/test bench records are never served
+  context <name> [--json]
+                       what to read before touching a tool: its intent, liveness, the head of its
+                       decisions, its manifest entry, the confirmed patterns for its cell and its
+                       open alert issues. Never blocks: exits 0 when the tool has no pages yet
+  lookup [--check <id|name>]… [--class <c>] [--cell <lane/target/data>] [--tool <name>]
+         [--start] [--include-hypothesis] [--json]
+                       confirmed patterns for a failing check, a class or a cell, best match
+                       first, each with its fix. --tool takes the cell from the manifest;
+                       --tool <name> --start is the same as context <name>
+
+context, lookup and read also search the framework wiki the installed CLI carries. Incident pages
+are never returned by context or lookup. GREENLIGHT_WIKI=off makes both print nothing and exit 0.
 
 common: --root <wiki dir> (default wiki), --raw <raw dir> (default .greenlight/raw).
 Inside a bundle, set GREENLIGHT_BUNDLE=<bundle dir> (or pass --bundle) so reads are logged.
@@ -111,6 +129,10 @@ export async function wikiCommand(args: string[], io: WikiIo = defaultIo()): Pro
         return readCmd(rest, io);
       case 'traces':
         return tracesCmd(rest, io);
+      case 'context':
+        return await contextCmd(rest, io);
+      case 'lookup':
+        return await lookupCmd(rest, io);
       case undefined:
       case 'help':
       case '--help':
@@ -493,12 +515,22 @@ function readCmd(args: string[], io: WikiIo): number {
     throw new Usage('usage: greenlight wiki read <page-id|raw:<id>|skill:<name>>');
   const p = paths(io, a.values);
   const { role, bundle } = roleOf(io, a.values, p);
-  const result = readTarget(ref, role, {
-    wiki: existsSync(p.root) ? loadWiki(p.root) : undefined,
+  const sources = {
     records: ref.startsWith('raw:') ? loadRawStore(p.raw).records : [],
     skillsDir: p.skills,
     splits: ref.startsWith('raw:') ? loadSplits(io.cwd) : undefined,
+  };
+  let result = readTarget(ref, role, {
+    ...sources,
+    wiki: existsSync(p.root) ? loadWiki(p.root) : undefined,
   });
+  // 07 §3.6b: a page the project wiki does not have is read from the framework wiki.
+  const framework = frameworkWikiDir();
+  const isPage = !ref.startsWith('raw:') && !ref.startsWith('skill:');
+  if (!result.ok && result.code === 3 && isPage && framework && resolve(framework) !== p.root) {
+    const fallback = readTarget(ref, role, { ...sources, wiki: loadWiki(framework) });
+    if (fallback.ok || fallback.code !== 3) result = fallback;
+  }
   if (bundle) {
     recordAccess(bundle, {
       ts: new Date().toISOString(),
@@ -562,3 +594,196 @@ function tracesCmd(args: string[], io: WikiIo): number {
   }
   return 0;
 }
+
+// ---- context and lookup (07 §3.6, §3.6a) ------------------------------------------------------
+
+interface ToolEntry {
+  name: string;
+  cell: string;
+  manifest: Record<string, unknown>;
+}
+
+/** The manifest entry for `name`, or nothing when there is no manifest or no such entry. */
+async function toolEntry(io: WikiIo, name: string): Promise<ToolEntry | undefined> {
+  if (!findManifestPath(io.cwd)) return undefined;
+  try {
+    const { config } = await loadManifest(io.cwd);
+    const entry = resolveEntry(config, name);
+    const raw = name === 'blog' ? config.blog : config.tools.find((t) => t.name === name);
+    return {
+      name,
+      cell: `${entry.lane}/${entry.target}/${entry.data ?? 'none'}`,
+      manifest: { name, ...(raw as Record<string, unknown>) },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Titles of the open keepalive alert issues that name the tool. Best effort: `gh` may be absent
+ * or unauthenticated, and then the bundle says the alerts are unknown instead of failing. */
+function openAlerts(io: WikiIo, name: string): { titles: string[]; note?: string } {
+  if (io.env.GREENLIGHT_NO_GH === '1') return { titles: [], note: 'alerts not checked' };
+  try {
+    const out = execFileSync(
+      'gh',
+      [
+        'issue',
+        'list',
+        '--state',
+        'open',
+        '--label',
+        'keepalive',
+        '--json',
+        'title',
+        '--limit',
+        '100',
+      ],
+      { cwd: io.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
+    );
+    const titles = (JSON.parse(out) as { title: string }[])
+      .map((i) => i.title)
+      .filter((t) => t.toLowerCase().includes(name.toLowerCase()));
+    return { titles };
+  } catch {
+    return { titles: [], note: 'alerts not checked (gh unavailable)' };
+  }
+}
+
+async function contextCmd(args: string[], io: WikiIo): Promise<number> {
+  const a = parseFlags('wiki context', args, { value: [...ROOT_FLAGS], boolean: ['--json'] });
+  const name = a.positional[0];
+  if (!name || a.positional.length > 1) throw new Usage('usage: greenlight wiki context <name>');
+  if (wikiOff(io.env)) return 0;
+  const p = paths(io, a.values);
+  const sources = lookupSources(io.cwd, p.root);
+  const project = sources.find((s) => s.origin === 'project')?.wiki;
+  const framework = sources.find((s) => s.origin === 'framework')?.wiki;
+  const entry = await toolEntry(io, name);
+  const ctx = toolContext(project, framework ?? project, name, {
+    cell: entry?.cell,
+    installed: INSTALLED_VERSION,
+  });
+  const alerts = openAlerts(io, name);
+
+  if (a.flags.has('--json')) {
+    io.out(
+      JSON.stringify({
+        intent: ctx.intent ?? null,
+        liveness: ctx.liveness ?? null,
+        decisions: ctx.decisions ?? null,
+        manifest: entry?.manifest ?? null,
+        patterns: ctx.patterns,
+        alerts: alerts.titles,
+        ...(alerts.note ? { alertsNote: alerts.note } : {}),
+      }),
+    );
+    return 0;
+  }
+  const section = (title: string, body: string | undefined) => {
+    if (body !== undefined) io.out(`## ${title}\n\n${body.trim()}\n`);
+  };
+  io.out(`# ${name}: read before changing it\n`);
+  section(`tools/${name}/intent.md`, ctx.intent);
+  section(`tools/${name}/liveness.md`, ctx.liveness);
+  section(`tools/${name}/decisions.md (first lines)`, ctx.decisions);
+  section(
+    'manifest entry',
+    entry ? JSON.stringify(entry.manifest, null, 2) : `no entry "${name}" in a manifest here`,
+  );
+  if (ctx.patterns.length > 0) {
+    const lines = ctx.patterns.map(
+      (h) =>
+        `- ${h.id} — ${h.title} (${h.origin === 'project' ? 'project wiki' : `greenlight wiki read ${h.id}`})${h.note ? ` [${h.note}]` : ''}`,
+    );
+    section(`confirmed patterns for ${entry?.cell ?? 'every cell'}`, lines.join('\n'));
+  }
+  section(
+    'open alerts',
+    alerts.note ?? (alerts.titles.length ? alerts.titles.map((t) => `- ${t}`).join('\n') : 'none'),
+  );
+  if (!ctx.hasPages) {
+    io.out(`no project wiki for ${name}: run greenlight wiki lint --fix to stub it`);
+  }
+  return 0;
+}
+
+async function lookupCmd(args: string[], io: WikiIo): Promise<number> {
+  const a = parseFlags('wiki lookup', args, {
+    value: [...ROOT_FLAGS, '--class', '--cell', '--tool', '--role', '--skill'],
+    list: ['--check'],
+    boolean: ['--start', '--include-hypothesis', '--json'],
+  });
+  if (a.positional.length > 0) throw new Usage(`unexpected argument "${a.positional[0]}"`);
+  if (a.values['--role'] !== undefined) {
+    throw Object.assign(
+      new Error(
+        'wiki lookup --role is not built: the maintainer and proposer reading sets come from `wiki ingest` and `wiki propose` bundles',
+      ),
+      { code: 4 },
+    );
+  }
+  const tool = a.values['--tool'];
+  if (a.flags.has('--start')) {
+    if (!tool) throw new Usage('--start needs --tool <name>');
+    return contextCmd(
+      [tool, ...(a.flags.has('--json') ? ['--json'] : []), ...rootArgs(a.values)],
+      io,
+    );
+  }
+  if (wikiOff(io.env)) return 0;
+  const checks = a.lists['--check'] ?? [];
+  const entry = tool ? await toolEntry(io, tool) : undefined;
+  const cell = a.values['--cell'] ?? entry?.cell;
+  if (cell !== undefined && !/^[a-z*]+\/[a-z*]+\/[a-z*]+$/.test(cell)) {
+    throw new Usage(`--cell must be "lane/target/data" (got "${cell}")`);
+  }
+  if (checks.length === 0 && !a.values['--class'] && !cell) {
+    throw new Usage('wiki lookup needs --check, --class, --cell or --tool');
+  }
+  const p = paths(io, a.values);
+  const sources = lookupSources(io.cwd, p.root);
+  const hits = lookupPatterns(sources, {
+    checks,
+    class: a.values['--class'],
+    cell,
+    installed: INSTALLED_VERSION,
+    includeHypothesis: a.flags.has('--include-hypothesis'),
+  });
+  const project = sources.find((s) => s.origin === 'project')?.wiki;
+  const liveness = tool ? livenessSummary(project, tool) : undefined;
+  if (a.flags.has('--json')) {
+    io.out(
+      JSON.stringify({
+        hits: hits.map((h) => ({
+          id: h.id,
+          score: h.score,
+          path: h.origin === 'project' ? `wiki/${h.path}` : h.path,
+          origin: h.origin,
+          title: h.title,
+          fix: h.fix,
+          ...(h.note ? { note: h.note } : {}),
+          ...(h.status === 'hypothesis' ? { status: h.status } : {}),
+        })),
+        ...(liveness ? { liveness } : {}),
+      }),
+    );
+    return 0;
+  }
+  if (liveness) io.out(`${liveness}\n`);
+  if (hits.length === 0) {
+    io.out('no confirmed pattern matches');
+    return 0;
+  }
+  for (const h of hits) {
+    const flag = h.status === 'hypothesis' ? ' HYPOTHESIS — not guidance' : '';
+    io.out(`${h.title}${flag}\n  ${h.id} (score ${h.score}) — ${hitLocation(h)}`);
+    if (h.note) io.out(`  ${h.note}`);
+    if (h.replaces) io.out(`  replaces ${h.replaces}`);
+    if (h.fix) io.out(`\n${h.fix.replace(/^/gm, '  ')}\n`);
+  }
+  return 0;
+}
+
+const rootArgs = (values: Record<string, string>): string[] =>
+  ROOT_FLAGS.flatMap((f) => (values[f] === undefined ? [] : [f, values[f] as string]));

@@ -41,6 +41,7 @@ export * from './bench/report';
 export * from './ids';
 export * from './parse';
 export * from './load';
+export * from './lookup';
 export * from './index-gen';
 export * from './patch';
 export * from './ledger';

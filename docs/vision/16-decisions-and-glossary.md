@@ -75,7 +75,12 @@ The possible statuses are **Accepted**, **Proposed** (awaiting the owner) and **
   `docs/architecture.md`.
 - **Alternatives considered.** An independent plugin channel with advisory `applies`: rejected,
   because stale consumers would read patterns about versions they do not run.
-- **Status.** Accepted.
+- **Amendment, 2026-11-24.** The wiki is not materialized into a wrapper. The CLI reads the
+  guidance pages (patterns, facts, decisions, contract, index) in place from its own package, so
+  the wiki a command reads is always the wiki of the CLI that runs it, and DR-12 is not needed.
+  Incidents, evidence, drills and the ledger are not packaged. Skills are still materialized by
+  `agent sync`, because the agent host reads them from the repository.
+- **Status.** Accepted, as amended.
 
 ### ADR-05 — Field data monitors; the bench gates
 
