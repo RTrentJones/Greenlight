@@ -1,0 +1,31 @@
+{
+  "tool": "inkwell",
+  "env": "prod",
+  "sourceRepo": "fixture-org/inkwell",
+  "gitSha": "c41e7a02b95d3f186e0a7c2d4b6f8091a3e5d7c9",
+  "dirty": false,
+  "wrapperRev": {
+    "sha": null,
+    "verifyConfigHash": null
+  },
+  "runId": "6790233104",
+  "attempt": 1,
+  "skills": {
+    "installed": {},
+    "used": "unknown"
+  },
+  "rawId": "20261012T020004Z-7be2c905",
+  "kind": "alert",
+  "passed": false,
+  "startedAt": "2026-10-12T02:00:04Z",
+  "durationMs": 640,
+  "refs": ["run:fixture-org/inkwell/6790233104"],
+  "retained": {
+    "verdict": "failed",
+    "excerpt": "alert inkwell prod: scheduled job \"digest\" failed (exit 1) at 02:00:04Z\n  step connect   FAIL after 212 ms: authentication failed for role \"digest_job\" (server code 28P01)\n  step query     not run\n  step send      not run\njob client: connect timeout 30000 ms (not reached), 1 attempt\nstore activity: compute active since 01:58:11Z (web app requests); 0 suspensions since 01:58Z\nstore events:   01:30:02Z weekly branch reset finished; role logins reissued\njob secret:     last synced 2026-10-05T08:12Z",
+    "hashes": {
+      "excerpt": "0389e1e78f025c6f0f0edb54935f44a34ffea3a05df6cc459e5c13def526387b"
+    },
+    "fetchedAt": "2026-10-12T02:00:04Z"
+  }
+}

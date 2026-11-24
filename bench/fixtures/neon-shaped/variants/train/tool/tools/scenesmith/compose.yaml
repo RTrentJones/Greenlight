@@ -1,0 +1,8 @@
+services:
+  scenesmith:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    restart: always

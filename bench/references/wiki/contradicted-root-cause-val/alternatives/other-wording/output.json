@@ -1,0 +1,31 @@
+{
+  "create_pages": [
+    {
+      "id": "patterns/branch-reset-invalidates-job-login",
+      "content": "---\nid: pattern/branch-reset-invalidates-job-login\ntype: pattern\ntitle: The weekly branch reset invalidates the login a scheduled job still uses\nupdated: 2026-11-01\nstatus: hypothesis\nkind: failure\nclass: env-drift\natRisk: whether the job's stored login still matches the store\ncells: [\"next/vercel/neon\"]\naffects: \"*\"\nrelevance: app-code\nevidence:\n  - issue:fixture-org/inkwell#27\n  - run:fixture-org/inkwell/6790233104\n  - raw:20261012T020004Z-7be2c905\ncatches:\n  description: after every branch reset, a verify check opens a connection as the job's role and fails on an authentication error\nremediation:\n  - { outlet: verify, ref: \"post-reset check: connect as the job's role\", verified: false }\nskills: [provider-neon]\n---\n## Symptom\nThe 02:00Z digest run dies on its first query; a manual run later the same morning works (run:fixture-org/inkwell/6790233104).\n\n## Root cause\nThe reset at 01:30Z gave the job's role a new login, and nothing pushed it to the job, which kept using credentials that were out of date (issue:fixture-org/inkwell#27). The database answered within 212 ms and rejected the login; it had been serving the web app since 01:58Z (raw:20261012T020004Z-7be2c905).\n\n## Fix / workaround\nMake the secret sync part of the reset (issue:fixture-org/inkwell#27).\n\n## How it is caught\nThe rejected login is in the alert itself (raw:20261012T020004Z-7be2c905).\n"
+    }
+  ],
+  "update_pages": [
+    {
+      "id": "pattern/nightly-job-fails-while-store-wakes",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: patterns/branch-reset-invalidates-job-login\n"
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-inkwell-digest-job-failed-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - patterns/branch-reset-invalidates-job-login"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/job-secret-stale-after-branch-reset (hypothesis) from incident/2026-10-inkwell-digest-job-failed-with-long-timeout and the two records in raw/: the connection was refused in 212 ms on an authentication failure while the store was awake. Set pattern/nightly-job-fails-while-store-wakes to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run exists."
+}

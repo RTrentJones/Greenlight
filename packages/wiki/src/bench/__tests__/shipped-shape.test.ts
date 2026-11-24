@@ -1,0 +1,748 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import { expand, identityTasksFor } from '../../__tests__/fixtures/policy/vectors';
+import { type EvaluationRecord, sealRecord } from '../../schema/bench';
+import { type LedgerEvent, LedgerEventSchema } from '../../schema/ledger';
+import {
+  type GateContext,
+  baselinePrecheck,
+  controlOutcome,
+  decide,
+  loadGateConfig,
+  recompute,
+  rejectedForReplayRegression,
+  sameDecision,
+} from '../gate';
+import { type BlastRadius, type PolicyTask, applyPolicy, lossBound } from '../policy';
+import { choose } from '../stats';
+
+/**
+ * The gate on the bench AS SHIPPED (06 §5.2), with `bench/gate.json`'s runs (5 since 2026-11-19; it
+ * was 3, and a real 0/6 → 3/6 gain then came out at p 0.1) on 2 models. The FIRST-shape and slice-rule
+ * vectors below keep their own 3-run worlds and the default config. The boundary vectors (10
+ * capability tasks, injected p-values) never exercised these shapes. Two of them are tested:
+ *
+ * - FIRST: the four val tasks of the first sealed baseline, two replay (the safety constraint)
+ *   and two objective, ONE per skill. Every slice has one task, so every proposal is
+ *   `underpowered`. This is also the shape of the gate while the two later families are still
+ *   `pending` (a pending task is in no slice, 06 §4.1).
+ * - ALL: every val task in `bench/splits.json`, active: the same four plus a second objective
+ *   family per skill (`loop/new-route-joins-verify`, `wiki/contradicted-root-cause`). Every
+ *   slice has two tasks and an attainable minimum p of 1/400.
+ */
+
+const F = 'model-frontier';
+const S = 'model-small';
+const H = (c: string) => c.repeat(64);
+const KEEPALIVE = 'replay/keepalive-probe-reaches-store-val';
+const IDLE = 'replay/idle-probe-leaves-store-asleep-val';
+const WIKI = 'wiki/probe-layer-incidents-val';
+const LOOP = 'loop/fixture-preview-before-push-val';
+
+const splits = JSON.parse(
+  readFileSync(new URL('../../../../../bench/splits.json', import.meta.url), 'utf8'),
+) as Record<string, string>;
+const VAL = Object.keys(splits).filter((id) => splits[id] === 'val');
+
+const LOOP_ROUTE = 'loop/new-route-joins-verify-val';
+const WIKI_SUPERSEDE = 'wiki/contradicted-root-cause-val';
+
+/** Every committed val task spec, active (as a sealed baseline that covers it runs it). */
+const ALL: PolicyTask[] = VAL.map((id) => {
+  const spec = JSON.parse(
+    readFileSync(new URL(`../../../../../bench/tasks/${id}/task.json`, import.meta.url), 'utf8'),
+  );
+  return { id: spec.id, kind: spec.kind, state: 'active', modes: spec.modes, skills: spec.skills };
+});
+/** The four tasks of the first sealed baseline: one objective task per skill. */
+const FIRST: PolicyTask[] = ALL.filter((t) => [KEEPALIVE, IDLE, WIKI, LOOP].includes(t.id));
+const gateConfig = loadGateConfig(
+  JSON.parse(readFileSync(new URL('../../../../../bench/gate.json', import.meta.url), 'utf8')),
+);
+/** The same shape with one skill that both objective tasks exercise: a two-task slice. */
+const SHARED = 'shared-skill';
+const TWO_TASK_SLICE: PolicyTask[] = FIRST.map((t) =>
+  t.kind === 'replay' ? t : { ...t, skills: [...(t.skills ?? []), SHARED] },
+);
+
+type World = Record<string, number>;
+type Worlds = { [model: string]: World };
+const world = (keepalive: number, idle: number, wiki: number, loop: number): World => ({
+  [KEEPALIVE]: keepalive,
+  [IDLE]: idle,
+  [WIKI]: wiki,
+  [LOOP]: loop,
+});
+/** The sealed M2 baseline (record 8b78a1ea…): every objective cell 0/3, both replays failing, one
+ * of them 1/3 on the frontier model. */
+const SEALED: Worlds = { [F]: world(1, 0, 0, 0), [S]: world(0, 0, 0, 0) };
+const both = (w: World): Worlds => ({ [F]: w, [S]: w });
+
+function record(
+  side: 'base' | 'cand',
+  worlds: Worlds,
+  tasks: readonly PolicyTask[],
+  proposalId = 'prop-1',
+  runs = 3,
+): EvaluationRecord {
+  return sealRecord({
+    identity: {
+      taskSetHash: H('1'),
+      tasks: identityTasksFor(tasks),
+      splitsHash: H('2'),
+      graderSetHash: H('3'),
+      depsHash: H('4'),
+      harness: {
+        runnerVersion: '1.0.0',
+        imageDigest: 'sha256:abc',
+        limits: { maxSteps: 15, requestsPerRollout: 17, timeoutMin: null },
+      },
+      agent: { vendor: 'greenlight-harness', version: '0.1.0' },
+      models: [F, S],
+      modelsConfigHash: H('9'),
+      skillSetHash: side === 'base' ? H('a') : H('b'),
+      mode: 'isolation',
+      wikiSnapshotHash: null,
+      proxyPolicyHash: null,
+    },
+    role: side === 'base' ? 'baseline' : 'candidate',
+    proposalId: side === 'cand' ? proposalId : undefined,
+    createdAt: '2026-10-30T12:00:00.000Z',
+    outcomes: [F, S].flatMap((m) => expand(worlds[m] as World, m, 'isolation', runs)),
+  });
+}
+
+function gate(
+  base: Worlds,
+  cand: Worlds,
+  over: Partial<GateContext> & { tasks?: readonly PolicyTask[] } = {},
+) {
+  const tasks = over.tasks ?? FIRST;
+  const ctx: GateContext = {
+    ts: '2026-11-01T12:00:00.000Z',
+    radius: 'medium',
+    path: 'standard',
+    models: { frontier: F, small: S },
+    acceptedSkillSetHash: H('a'),
+    modes: ['isolation'],
+    skill: SHARED,
+    ...over,
+    tasks,
+  };
+  const runs = over.config?.runs ?? 3;
+  return decide(
+    record('base', base, tasks, 'prop-1', runs),
+    record('cand', cand, tasks, 'prop-1', runs),
+    ctx,
+  );
+}
+
+const codes = (d: { reasons: { code: string }[] }) => d.reasons.map((r) => r.code);
+
+describe('the first sealed baseline: four val tasks', () => {
+  it('is 2 objective tasks and 2 replay tasks, and no skill has more than one objective task', () => {
+    expect(FIRST.map((t) => t.kind).sort()).toEqual(['loop', 'replay', 'replay', 'wiki']);
+    const objective = FIRST.filter((t) => t.kind !== 'replay');
+    const skills = [...new Set(FIRST.flatMap((t) => [...(t.skills ?? [])]))];
+    for (const skill of skills) {
+      expect(objective.filter((t) => t.skills?.includes(skill)).length).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe('the shipped val split, once every task is active', () => {
+  const objective = ALL.filter((t) => t.kind !== 'replay');
+  /** Skills that have an objective task: the ones a gate can test at all. */
+  const skills = [...new Set(objective.flatMap((t) => [...(t.skills ?? [])]))].sort();
+  const R = gateConfig.runs;
+  /** Replay tasks pass `replay` of R, objective tasks `obj(task)` of R. */
+  const six = (replay: number, obj: (id: string) => number): World =>
+    Object.fromEntries(ALL.map((t) => [t.id, t.kind === 'replay' ? replay : obj(t.id)]));
+  const zero = both(six(R, () => 0));
+  /** Exact one-sided p of a 0/R → k/R move on one task: all k passes landed on the candidate. */
+  const tail = (k: number) => Number(choose(R, k)) / Number(choose(2 * R, k));
+
+  it('is 4 objective tasks and 2 replay tasks, and each gateable skill has exactly two', () => {
+    expect(ALL.map((t) => t.kind).sort()).toEqual([
+      'loop',
+      'loop',
+      'replay',
+      'replay',
+      'wiki',
+      'wiki',
+    ]);
+    expect(skills).toEqual(['deploy-verify-promote', 'greenlight-wiki']);
+    expect(
+      objective.filter((t) => t.skills?.includes('deploy-verify-promote')).map((t) => t.id),
+    ).toEqual([LOOP, LOOP_ROUTE]);
+    expect(objective.filter((t) => t.skills?.includes('greenlight-wiki')).map((t) => t.id)).toEqual(
+      [WIKI_SUPERSEDE, WIKI],
+    );
+    // 4 objective tasks × 5 runs. The legacy (algorithm ≤ 2) fixed count let a model lose two
+    // passes, no more; from algorithm 3 a loss is tested exactly (06 §5.4).
+    expect(R).toBe(5);
+    expect(lossBound(objective.length * R)).toBe(2);
+  });
+
+  it("every skill's slice has an attainable minimum p below alpha (1/252² at 5 runs)", () => {
+    for (const skill of skills) {
+      const slice = objective.filter((t) => t.skills?.includes(skill));
+      const inSlice = (id: string) => slice.some((t) => t.id === id);
+      // 0/R → R/R on the slice, nothing else moves; high radius so both models are tested.
+      const d = gate(zero, both(six(R, (id) => (inSlice(id) ? R : 0))), {
+        tasks: ALL,
+        skill,
+        radius: 'high',
+        config: gateConfig,
+      });
+      expect(d.reasons.find((r) => r.code === 'efficacy-slice')?.detail, skill).toBe(
+        `${skill}: ${slice.map((t) => t.id).join(', ')}`,
+      );
+      expect(d.results, skill).toHaveLength(2);
+      for (const r of d.results) {
+        expect(r.capability.minP as number, skill).toBeCloseTo(tail(R) ** 2, 12);
+        expect(r.capability.minP as number).toBeLessThan(gateConfig.alpha);
+      }
+      expect(codes(d)).not.toContain('underpowered');
+      expect(d.decision, skill).toBe('accept');
+    }
+  });
+
+  it('a half-rate slice gain (3/5 and 2/5) is accepted; 2/5 and 1/5 is not', () => {
+    // At 3 runs the shape 2/3 and 1/3 came out at p 0.1 and was rejected (iteration
+    // 20261119T072753Z); the same rates over 5 runs are significant.
+    for (const skill of skills) {
+      const slice = objective.filter((t) => t.skills?.includes(skill)).map((t) => t.id);
+      const gain = (passes: number[]) =>
+        gate(zero, both(six(R, (id) => passes[slice.indexOf(id)] ?? 0)), {
+          tasks: ALL,
+          skill,
+          config: gateConfig,
+        });
+      const half = gain([3, 2]);
+      expect(half.results[0]?.capability.pValue as number).toBeCloseTo(tail(3) * tail(2), 12);
+      expect(half.decision, skill).toBe('accept'); // p ≈ 0.019
+      const small = gain([2, 1]); // p = 2/9 × 1/2 ≈ 0.11: not below alpha
+      expect(small.decision, skill).toBe('reject');
+      expect(codes(small)).toContain('not-significant');
+    }
+  });
+
+  it('with the second family still pending, a one-task slice is powered at 5 runs', () => {
+    // A pending task is not in the gate's task list (06 §4.1): the FIRST shape. At 3 runs its
+    // minimum p was 1/20 (underpowered); at 5 it is 1/252.
+    for (const skill of skills) {
+      const d = gate(both(world(R, R, 0, 0)), both(world(R, R, R, R)), {
+        skill,
+        config: gateConfig,
+      });
+      expect(d.results[0]?.capability.minP as number).toBeCloseTo(tail(R), 12);
+      expect(d.decision, skill).toBe('accept');
+    }
+  });
+});
+
+describe('the slice rule (06 §5.2, §5.6)', () => {
+  const perfect = both(world(3, 3, 3, 3));
+  const zero = both(world(3, 3, 0, 0));
+
+  it('only objective tasks that exercise the patched skill count toward efficacy', () => {
+    // The loop task goes 0/3 → 3/3 on both models; the wiki task does not move. Patching
+    // deploy-verify-promote (the loop task's skill), that is the whole slice.
+    const d = gate(zero, both(world(3, 3, 0, 3)), { skill: 'deploy-verify-promote' });
+    expect(d.reasons.find((r) => r.code === 'efficacy-slice')?.detail).toBe(
+      `deploy-verify-promote: ${LOOP}`,
+    );
+    for (const r of d.results) {
+      expect(r.capability).toMatchObject({ before: 0, after: 1, delta: 1 });
+      expect(r.capability.pValue).toBe(1 / 20);
+    }
+    // The same outcomes, attributed to the wiki task's skill: the slice did not move at all.
+    const w = gate(zero, both(world(3, 3, 0, 3)), { skill: 'greenlight-wiki' });
+    expect(w.reasons.find((r) => r.code === 'efficacy-slice')?.detail).toBe(
+      `greenlight-wiki: ${WIKI}`,
+    );
+    for (const r of w.results) expect(r.capability).toMatchObject({ before: 0, after: 0 });
+  });
+
+  it('a one-task slice × 3 runs is underpowered: no decision, however good the candidate', () => {
+    for (const skill of ['deploy-verify-promote', 'greenlight-wiki']) {
+      const d = gate(zero, perfect, { skill });
+      expect(d.decision, skill).toBe('underpowered');
+      expect(d.ledgerEvent).toBeNull();
+      expect(d.gateInput).toBeNull();
+      expect(d.reasons.some((r) => r.severity === 'fail')).toBe(false);
+      const why = d.reasons.filter((r) => r.code === 'underpowered');
+      // medium radius: the strict test is on frontier only
+      expect(why).toHaveLength(1);
+      expect(why[0]).toMatchObject({ severity: 'blocked', model: F, mode: 'isolation' });
+      expect(why[0]?.detail).toMatch(
+        /attainable minimum p 0\.05 ≥ 0\.05: 1 slice task\(s\) × 3 runs/,
+      );
+      expect(d.results[0]?.capability.minP).toBe(1 / 20);
+    }
+    // One task, one extra pass: the bootstrap gave p = 0 and accepted this.
+    const one = gate(zero, both(world(3, 3, 0, 1)), { skill: 'deploy-verify-promote' });
+    expect(one.decision).toBe('underpowered');
+  });
+
+  it('a skill no objective task exercises has no slice: underpowered (no-slice)', () => {
+    const d = gate(zero, perfect, { skill: 'provider-neon' });
+    expect(d.decision).toBe('underpowered');
+    expect(d.reasons).toContainEqual(
+      expect.objectContaining({ code: 'no-slice', severity: 'blocked', model: F }),
+    );
+    expect(d.results[0]?.capability).toMatchObject({ pValue: null, minP: null });
+  });
+
+  it('replay safety still uses EVERY replay task, whatever the slice', () => {
+    // provider-neon's slice is empty, and the regressing replay does not list greenlight-wiki
+    // either: the regression still rejects.
+    for (const skill of ['provider-neon', 'greenlight-wiki']) {
+      const d = gate(zero, both(world(0, 3, 3, 3)), { skill });
+      expect(d.decision, skill).toBe('reject');
+      expect(rejectedForReplayRegression(d, KEEPALIVE)).toBe(true);
+      expect(d.results.every((r) => r.replay.total === 2)).toBe(true);
+      // the cell that could not be tested is reported, as information
+      expect(d.reasons.some((r) => r.severity === 'blocked')).toBe(false);
+    }
+  });
+
+  it('a saturated baseline is underpowered too: nothing could improve on it', () => {
+    // Two-task slice, baseline 2/3 and 1/3: the best candidate gives p = 0.1.
+    const d = gate(both(world(3, 3, 2, 1)), both(world(3, 3, 3, 3)), { tasks: TWO_TASK_SLICE });
+    expect(d.decision).toBe('underpowered');
+    expect(d.results[0]?.capability.minP).toBeCloseTo(0.1, 12);
+  });
+});
+
+describe('a two-task slice × 3 runs: the smallest shape that can decide', () => {
+  const tasks = TWO_TASK_SLICE;
+  const base = both(world(3, 3, 0, 0));
+
+  it('the attainable minimum is 1/400, reached by 0/3 → 3/3 on both tasks', () => {
+    const d = gate(base, both(world(3, 3, 3, 3)), { tasks, radius: 'high' });
+    expect(d.decision).toBe('accept');
+    for (const r of d.results) {
+      expect(r.capability.pValue).toBe(1 / 400);
+      expect(r.capability.minP).toBe(1 / 400);
+    }
+    LedgerEventSchema.parse(d.ledgerEvent);
+    expect(d.gateInput?.algorithm).toBe(3);
+  });
+
+  it('decides on rollouts, not on the sign of two task means', () => {
+    // Both task means improve (the bootstrap: p = 0, accept). Exactly: p = 1/4.
+    const weak = gate(base, both(world(3, 3, 1, 1)), { tasks });
+    expect(weak.decision).toBe('reject');
+    expect(weak.results[0]?.capability.pValue).toBe(0.25);
+    expect(codes(weak)).toContain('not-significant');
+    expect(codes(weak)).not.toContain('no-strict-improvement');
+    // 2/3 on both: p = 0.04.
+    expect(gate(base, both(world(3, 3, 2, 2)), { tasks }).decision).toBe('accept');
+    // 3/3 on one task only: p = 0.05, not below alpha.
+    const oneTask = gate(base, both(world(3, 3, 3, 0)), { tasks });
+    expect(oneTask.decision).toBe('reject');
+    expect(oneTask.results[0]?.capability.pValue).toBe(0.05);
+  });
+
+  /** P(accept) for identical arms at pass rate θ: every baseline × candidate pass-count table of
+   * the frontier model's two slice tasks, weighted by its binomial probability. */
+  function typeOne(theta: number, radius: BlastRadius): number {
+    const w = (k: number) => Number(choose(3, k)) * theta ** k * (1 - theta) ** (3 - k);
+    let accepted = 0;
+    for (let b1 = 0; b1 <= 3; b1++)
+      for (let b2 = 0; b2 <= 3; b2++)
+        for (let c1 = 0; c1 <= 3; c1++)
+          for (let c2 = 0; c2 <= 3; c2++) {
+            const pr = w(b1) * w(b2) * w(c1) * w(c2);
+            if (pr === 0) continue;
+            const baseW = world(3, 3, b1, b2);
+            const candW = world(3, 3, c1, c2);
+            const out = applyPolicy({
+              radius,
+              path: 'standard',
+              models: { frontier: F, small: S },
+              modes: ['isolation'],
+              declaredModes: ['isolation'],
+              tasks,
+              skill: SHARED,
+              // the small model mirrors the frontier's tables, so at high radius it agrees
+              baseline: [F, S].flatMap((m) => expand(baseW, m, 'isolation')),
+              candidate: [F, S].flatMap((m) => expand(candW, m, 'isolation')),
+            });
+            if (out.decision === 'accept') accepted += pr;
+          }
+    return accepted;
+  }
+
+  it('type-I rate with identical arms stays below alpha at every pass rate (max 1.93%)', () => {
+    const rates = [0.1, 0.3, 0.5, 0.7, 0.9].map((t) => typeOne(t, 'medium'));
+    expect(rates[0]).toBeCloseTo(0.0007, 4);
+    expect(rates[1]).toBeCloseTo(0.0118, 4);
+    expect(rates[2]).toBeCloseTo(0.0193, 4);
+    expect(rates[3]).toBeCloseTo(0.0118, 4);
+    expect(rates[4]).toBeCloseTo(0.0007, 4);
+    for (const r of rates) expect(r).toBeLessThan(0.05);
+    // identical arms that never pass, or always pass, are never accepted
+    expect(typeOne(0, 'high')).toBe(0);
+    expect(typeOne(1, 'high')).toBe(0);
+  });
+});
+
+describe('the sealed baseline pattern: objective 0/3 everywhere, one replay 1/3 on frontier', () => {
+  it('high radius: a flaky baseline replay task blocks the gate; it is not a rejection', () => {
+    // A perfect candidate and a terrible one get the same answer: the baseline is not gateable.
+    for (const cand of [both(world(3, 3, 3, 3)), both(world(0, 0, 0, 0))]) {
+      const d = gate(SEALED, cand, { radius: 'high', skill: 'deploy-verify-promote' });
+      expect(d.decision).toBe('blocked');
+      expect(d.ledgerEvent).toBeNull();
+      expect(d.gateInput).toBeNull();
+      expect(d.reasons.some((r) => r.severity === 'fail')).toBe(false);
+      const why = d.reasons.filter((r) => r.severity === 'blocked');
+      expect(why).toEqual([
+        {
+          code: 'flaky-baseline',
+          severity: 'blocked',
+          model: F,
+          mode: 'isolation',
+          task: KEEPALIVE,
+          detail: `baseline 1/3: fix or quarantine ${KEEPALIVE}, then re-baseline; this says nothing about the candidate`,
+        },
+      ]);
+    }
+  });
+
+  it('below high radius: safety is vacuous, and the decision says so', () => {
+    const d = gate(SEALED, both(world(0, 0, 3, 3)), { tasks: TWO_TASK_SLICE });
+    // No replay task is baseline-passing on either model, so "no regression" proves nothing:
+    // the candidate fails both replays in every run and is still accepted on efficacy.
+    expect(d.decision).toBe('accept');
+    const vacuous = d.reasons.filter((r) => r.code === 'safety-vacuous');
+    expect(vacuous.map((r) => `${r.model}/${r.mode}`)).toEqual([
+      `${F}/isolation`,
+      `${S}/isolation`,
+    ]);
+    expect(vacuous[0]?.detail).toBe(
+      '0 of 2 replay task(s) baseline-passing: the replay constraint cannot fail here',
+    );
+    expect(d.results.every((r) => r.replay.baselinePassing === 0)).toBe(true);
+    // ... in the ledger row itself, not only in the reasons
+    expect(d.ledgerEvent?.reason).toBe(
+      `replay safety vacuous (no baseline-passing replay task) on ${F}/isolation, ${S}/isolation`,
+    );
+    // each replay task that cannot regress is named
+    expect(
+      d.reasons.filter((r) => r.code === 'replay-baseline-failing').map((r) => r.task),
+    ).toEqual([IDLE, KEEPALIVE, IDLE, KEEPALIVE]);
+    // With a baseline-passing replay there is nothing to surface.
+    const real = gate(both(world(3, 3, 0, 0)), both(world(3, 3, 3, 3)), { tasks: TWO_TASK_SLICE });
+    expect(codes(real)).not.toContain('safety-vacuous');
+    expect(real.ledgerEvent?.reason).toBeUndefined();
+  });
+
+  it('the control arm is inconclusive, not failed: its replay cannot regress from 0/3', () => {
+    // The overgeneral control makes the idle probe query the store: the Neon replay fails.
+    const control = both(world(0, 0, 0, 0));
+    // As shipped (high radius): blocked by the flaky baseline, so no safety verdict at all.
+    const high = gate(SEALED, control, { radius: 'high', skill: 'deploy-verify-promote' });
+    expect(rejectedForReplayRegression(high, IDLE)).toBe(false);
+    expect(controlOutcome(high, IDLE)).toBe('inconclusive');
+    // With the flaky task settled at 0/3: still nothing baseline-passing, so still inconclusive.
+    const zero = both(world(0, 0, 0, 0));
+    const vacuous = gate(zero, both(world(0, 0, 0, 1)), {
+      radius: 'high',
+      skill: 'deploy-verify-promote',
+    });
+    expect(vacuous.decision).toBe('underpowered');
+    expect(controlOutcome(vacuous, IDLE)).toBe('inconclusive');
+    // Once the baseline passes the replay, the control is decided: met when it regresses ...
+    const passing = both(world(3, 3, 0, 0));
+    const met = gate(passing, both(world(3, 0, 0, 0)), {
+      radius: 'high',
+      skill: 'deploy-verify-promote',
+    });
+    expect(met.decision).toBe('reject');
+    expect(controlOutcome(met, IDLE)).toBe('met');
+    // ... and NOT met when the gate lets it through for that reason.
+    const missed = gate(passing, both(world(3, 3, 0, 0)), {
+      radius: 'high',
+      skill: 'deploy-verify-promote',
+    });
+    expect(controlOutcome(missed, IDLE)).toBe('not-met');
+    // Baseline-passing on one model only is enough for the control to be decidable.
+    const half = gate({ [F]: world(3, 3, 0, 0), [S]: world(3, 0, 0, 0) }, both(world(3, 3, 0, 0)), {
+      skill: 'deploy-verify-promote',
+    });
+    expect(controlOutcome(half, IDLE)).toBe('not-met');
+  });
+});
+
+describe('the baseline precheck (06 §5.2): what the baseline settles before any candidate rollout', () => {
+  type Over = Partial<GateContext> & { tasks?: readonly PolicyTask[] };
+  const precheck = (base: Worlds, over: Over = {}) => {
+    const tasks = over.tasks ?? FIRST;
+    return baselinePrecheck(record('base', base, tasks, 'prop-1', over.config?.runs ?? 3), {
+      radius: 'medium',
+      path: 'standard',
+      models: { frontier: F, small: S },
+      modes: ['isolation'],
+      skill: SHARED,
+      ...over,
+      tasks,
+    });
+  };
+  const zero = both(world(0, 0, 0, 0));
+  const perfect = both(world(3, 3, 3, 3));
+  const blockedOf = (d: { reasons: { severity: string }[] }) =>
+    d.reasons.filter((r) => r.severity === 'blocked');
+
+  it('finds a flaky baseline at high radius, exactly as the gate reports it', () => {
+    const over: Over = { radius: 'high', skill: 'deploy-verify-promote' };
+    const pre = precheck(SEALED, over);
+    expect(pre?.decision).toBe('blocked');
+    for (const cand of [perfect, zero]) {
+      const d = gate(SEALED, cand, over);
+      expect(d.decision).toBe('blocked');
+      expect(pre?.reasons).toEqual(blockedOf(d));
+    }
+  });
+
+  it('finds an underpowered or empty slice, with the reasons the gate would give', () => {
+    const cases: [Worlds, Over][] = [
+      [zero, { skill: 'deploy-verify-promote' }],
+      [zero, { skill: 'greenlight-wiki' }],
+      [zero, { skill: 'provider-neon' }],
+      [both(world(3, 3, 2, 1)), { tasks: TWO_TASK_SLICE }],
+    ];
+    for (const [base, over] of cases) {
+      const pre = precheck(base, over);
+      const d = gate(base, perfect, over);
+      expect(d.decision, JSON.stringify(over.skill)).toBe('underpowered');
+      expect(pre?.decision).toBe('underpowered');
+      expect(pre?.reasons).toEqual(blockedOf(d));
+      expect(pre?.baselineRecords).toEqual(d.baselineRecords);
+    }
+  });
+
+  it('is null when the gate can decide, whether it then accepts or rejects', () => {
+    expect(precheck(SEALED, { tasks: TWO_TASK_SLICE })).toBeNull();
+    expect(gate(SEALED, both(world(0, 0, 3, 3)), { tasks: TWO_TASK_SLICE }).decision).toBe(
+      'accept',
+    );
+    expect(gate(SEALED, zero, { tasks: TWO_TASK_SLICE }).decision).toBe('reject');
+  });
+
+  it('an underpowered slice still leaves a rejection possible, which is why a control runs anyway', () => {
+    // provider-neon has no slice here, and a candidate that breaks a baseline-passing replay is
+    // rejected all the same: the precheck says "cannot be accepted", never "cannot be rejected".
+    const base = both(world(3, 3, 0, 0));
+    expect(precheck(base, { skill: 'provider-neon' })?.decision).toBe('underpowered');
+    const d = gate(base, both(world(0, 3, 3, 3)), { skill: 'provider-neon' });
+    expect(d.decision).toBe('reject');
+    expect(rejectedForReplayRegression(d, KEEPALIVE)).toBe(true);
+  });
+
+  it('the safety-fix path waives efficacy, so power does not stop it', () => {
+    const base = both(world(0, 3, 0, 0));
+    expect(
+      precheck(base, { skill: 'provider-neon', path: 'safety-fix', safetyFixTargets: [KEEPALIVE] }),
+    ).toBeNull();
+  });
+});
+
+describe('non-regression (06 §5.4): the exact test from algorithm 3, the fixed count before', () => {
+  it('LEGACY (algorithm ≤ 2): the bound is max(1 pass, 10% of the objective rollouts)', () => {
+    expect(lossBound(6)).toBe(1); // the first baseline: 2 objective tasks × 3 runs
+    expect(lossBound(12)).toBe(1); // the shipped split, all active: 4 objective tasks × 3 runs
+    expect(lossBound(9)).toBe(1);
+    expect(lossBound(20)).toBe(2);
+    expect(lossBound(30)).toBe(3); // 10 tasks × 3 runs: the old "one task-mean"
+    expect(lossBound(60)).toBe(6);
+  });
+
+  describe('medium radius, 2 objective tasks × 3 runs: the small model is held to non-regression only', () => {
+    const base: Worlds = { [F]: world(3, 3, 0, 0), [S]: world(3, 3, 3, 3) };
+    const cand = (wiki: number, loop: number): Worlds => ({
+      [F]: world(3, 3, 3, 3),
+      [S]: world(3, 3, wiki, loop),
+    });
+    const tasks = TWO_TASK_SLICE;
+
+    it('algorithm 3: a loss is a regression when its exact p is ≤ alpha', () => {
+      expect(gate(base, cand(3, 2), { tasks }).decision).toBe('accept'); // −1 pass, p = 1/2
+      expect(gate(base, cand(2, 2), { tasks }).decision).toBe('accept'); // −2 passes, p = 1/4
+      expect(gate(base, cand(3, 1), { tasks }).decision).toBe('accept'); // −2 passes, p = 1/5
+      // −3 passes on one task, 1.0 → 0.5 on the small model: p = 1/20 = alpha.
+      const half = gate(base, cand(3, 0), { tasks });
+      expect(half.decision).toBe('reject');
+      expect(half.reasons).toContainEqual(
+        expect.objectContaining({
+          code: 'capability-regression',
+          model: S,
+          detail:
+            'baseline 6/6, candidate 3/6: Δ -3 passes over 2 tasks × 3 runs; one-sided exact p 0.05 ≤ alpha 0.05',
+        }),
+      );
+    });
+
+    it('LEGACY (algorithm 2): the small model may lose one pass of six', () => {
+      const legacy = { tasks, algorithm: 2 };
+      expect(gate(base, cand(3, 2), legacy).decision).toBe('accept'); // −1 pass
+      // −3 passes: 1.0 → 0.5 on the small model. "One task-mean" (3 passes at N = 2) accepted this.
+      const half = gate(base, cand(3, 0), legacy);
+      expect(half.decision).toBe('reject');
+      expect(half.reasons).toContainEqual(
+        expect.objectContaining({
+          code: 'capability-regression',
+          model: S,
+          detail: 'Δ -3 passes over 2 tasks × 3 runs; at most 1 may be lost',
+        }),
+      );
+      expect(gate(base, cand(2, 2), legacy).decision).toBe('reject'); // −2 passes
+    });
+  });
+
+  describe('a loss off the slice, with the slice too small to test', () => {
+    // The slice is the loop task alone; the off-slice wiki task collapses (3/3 → 0/3). With the
+    // loop baseline at 0/3 the slice's minimum p is 1/20, not below alpha: underpowered.
+    const split: PolicyTask[] = FIRST.map((t) => (t.id === LOOP ? { ...t, skills: [SHARED] } : t));
+
+    it('algorithm 3: the collapse is a regression (p = 1/20) when the slice does not move', () => {
+      const d = gate(both(world(3, 3, 3, 0)), both(world(3, 3, 0, 0)), { tasks: split });
+      expect(d.decision).toBe('reject');
+      expect(codes(d)).toContain('capability-regression');
+      // The slice itself was too small to test: reported, but the rejection stands without it.
+      expect(d.reasons).toContainEqual(
+        expect.objectContaining({ code: 'underpowered', severity: 'info' }),
+      );
+    });
+
+    it('algorithm 3: the statistic is the pass total, so one pass gained on the slice offsets it', () => {
+      // −3 on the wiki task, +1 on the loop task: Σ −2, p = 0.275. Not a regression; the cell is
+      // left with the underpowered slice, so there is no decision.
+      const d = gate(both(world(3, 3, 3, 0)), both(world(3, 3, 0, 1)), { tasks: split });
+      expect(codes(d)).not.toContain('capability-regression');
+      expect(d.decision).toBe('underpowered');
+    });
+
+    it('LEGACY (algorithm 2): a gain on the slice does not excuse a loss on the rest of the bench', () => {
+      // −2 passes over the objective set, beyond the bound of 1.
+      const d = gate(both(world(3, 3, 3, 2)), both(world(3, 3, 0, 3)), {
+        tasks: split,
+        algorithm: 2,
+      });
+      expect(d.decision).toBe('reject');
+      expect(codes(d)).toContain('capability-regression');
+      expect(d.reasons).toContainEqual(
+        expect.objectContaining({ code: 'underpowered', severity: 'info' }),
+      );
+    });
+  });
+
+  describe('the shipped shape, 4 objective tasks × 5 runs, baseline 5, 5, 5, 0 (calibration 2026-11-20)', () => {
+    const R = gateConfig.runs;
+    const world4 = (wiki: number, wiki2: number, loop: number, route: number): World => ({
+      [KEEPALIVE]: R,
+      [IDLE]: R,
+      [WIKI]: wiki,
+      [WIKI_SUPERSEDE]: wiki2,
+      [LOOP]: loop,
+      [LOOP_ROUTE]: route,
+    });
+    const base = both(world4(5, 5, 5, 0));
+    // The neutral path holds every model to non-regression and nothing else.
+    const neutral = (cand: World, over: Partial<GateContext> = {}) =>
+      gate(base, both(cand), {
+        tasks: ALL,
+        skill: 'deploy-verify-promote',
+        path: 'neutral',
+        neutralReason: 'no behaviour change intended',
+        config: gateConfig,
+        ...over,
+      });
+    const regressions = (d: ReturnType<typeof gate>) =>
+      d.reasons.filter((r) => r.code === 'capability-regression');
+
+    it('(a) −3 passes spread over three tasks: not rejected under algorithm 3, rejected under 2', () => {
+      const spread = world4(4, 4, 4, 0);
+      const now = neutral(spread);
+      expect(now.algorithm).toBe(3);
+      expect(now.gateInput?.algorithm).toBe(3);
+      expect(now.decision).toBe('accept'); // p = 1/8
+      expect(regressions(now)).toEqual([]);
+      expect(now.results.every((r) => r.decision === 'pass')).toBe(true);
+
+      const legacy = neutral(spread, { algorithm: 2 });
+      expect(legacy.gateInput?.algorithm).toBe(2);
+      expect(legacy.decision).toBe('reject');
+      expect(regressions(legacy).map((r) => r.detail)).toEqual([
+        'Δ -3 passes over 4 tasks × 5 runs; at most 2 may be lost',
+        'Δ -3 passes over 4 tasks × 5 runs; at most 2 may be lost',
+      ]);
+    });
+
+    it('(a) the same on the standard path: the small model at medium radius', () => {
+      // `frontier` gains 0/5 → 5/5 on its slice; `small` loses 3 passes with no gain.
+      const cand: Worlds = { [F]: world4(5, 5, 5, 5), [S]: world4(4, 4, 4, 0) };
+      const ctx = { tasks: ALL, skill: 'deploy-verify-promote', config: gateConfig };
+      expect(gate(base, cand, ctx).decision).toBe('accept');
+      const legacy = gate(base, cand, { ...ctx, algorithm: 2 });
+      expect(legacy.decision).toBe('reject');
+      expect(regressions(legacy).map((r) => r.model)).toEqual([S]);
+    });
+
+    it('(b) a significant loss is rejected under algorithm 3, with counts, delta and p', () => {
+      // −4 passes as two on each of two tasks: p = (56/252)² ≈ 0.0494.
+      const d = neutral(world4(3, 3, 5, 0));
+      expect(d.decision).toBe('reject');
+      expect(regressions(d)).toEqual(
+        [F, S].map((model) => ({
+          code: 'capability-regression',
+          severity: 'fail',
+          model,
+          mode: 'isolation',
+          detail:
+            'baseline 15/20, candidate 11/20: Δ -4 passes over 4 tasks × 5 runs; one-sided exact p 0.0494 ≤ alpha 0.05',
+        })),
+      );
+      expect(d.ledgerEvent?.stage).toBe('candidate-rejected');
+      expect(d.ledgerEvent?.reason).toMatch(/rejected: capability-regression/);
+      // One task collapsing is rejected too (p = 1/252); −3 on one task is not (p = 1/12).
+      expect(neutral(world4(0, 5, 5, 0)).decision).toBe('reject');
+      expect(neutral(world4(2, 5, 5, 0)).decision).toBe('accept');
+    });
+
+    it('(c) a version-2 gate input still decides by the fixed count, and recomputes as recorded', () => {
+      const spread = both(world4(4, 4, 4, 0));
+      const records = [
+        record('base', base, ALL, 'prop-1', R),
+        record('cand', spread, ALL, 'prop-1', R),
+      ];
+      const legacy = neutral(spread[F] as World, { algorithm: 2 });
+      const now = neutral(spread[F] as World);
+      if (!legacy.gateInput || !now.gateInput) throw new Error('no gate input');
+      // The stored record, as `bench gate --recompute` reads it from disk.
+      const stored2 = JSON.parse(JSON.stringify(legacy.gateInput));
+      const stored3 = JSON.parse(JSON.stringify(now.gateInput));
+      expect(stored2.algorithm).toBe(2);
+      expect(stored3.algorithm).toBe(3);
+      expect(stored2.hash).not.toBe(stored3.hash);
+      const again2 = recompute(stored2, records);
+      expect(again2.decision).toBe('reject');
+      expect(again2.algorithm).toBe(2);
+      expect(JSON.stringify(again2)).toBe(JSON.stringify(legacy));
+      expect(sameDecision(legacy.ledgerEvent as LedgerEvent, again2)).toBe(true);
+      const again3 = recompute(stored3, records);
+      expect(again3.decision).toBe('accept');
+      expect(JSON.stringify(again3)).toBe(JSON.stringify(now));
+      // A version-2 record is never matched by the version-3 decision on the same evidence.
+      expect(sameDecision(legacy.ledgerEvent as LedgerEvent, again3)).toBe(false);
+    });
+
+    it('refuses an algorithm this build does not implement', () => {
+      expect(() => neutral(world4(5, 5, 5, 0), { algorithm: 1 })).toThrow(/not implemented/);
+      expect(() => neutral(world4(5, 5, 5, 0), { algorithm: 4 })).toThrow(/not implemented/);
+    });
+  });
+});

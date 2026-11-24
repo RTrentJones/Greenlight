@@ -1,0 +1,57 @@
+{
+  "ctx": {
+    "branch": "develop",
+    "upstreams": {
+      "develop": {
+        "remote": "origin",
+        "ref": "develop"
+      },
+      "feat/x": {
+        "remote": "origin",
+        "ref": "develop"
+      }
+    }
+  },
+  "events": [
+    {
+      "transcript": "read_file",
+      "argv": ["tools/guestbook/server.mjs"]
+    },
+    {
+      "transcript": "write_file",
+      "argv": ["tools/guestbook/server.mjs"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["switch", "develop"]
+    },
+    {
+      "transcript": "greenlight",
+      "argv": ["preview", "guestbook"],
+      "meta": {
+        "subcommand": "preview",
+        "tool": "guestbook",
+        "passed": "true"
+      }
+    },
+    {
+      "cmd": "git",
+      "argv": ["add", "tools/guestbook/server.mjs"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["commit", "-m", "guestbook: update copy"]
+    },
+    {
+      "cmd": "git",
+      "argv": ["push", "origin", "develop"],
+      "ctx": {
+        "remoteMoved": true
+      }
+    },
+    {
+      "cmd": "greenlight",
+      "argv": ["verify", "guestbook", "--env", "beta"]
+    }
+  ]
+}

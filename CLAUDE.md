@@ -36,6 +36,7 @@ CLI surface (`pnpm greenlight …`, or `npx @rtrentjones/greenlight` in a consum
 - `adopt <name> --repo <url|path> --lane --target [--standalone]` — poly-repo onboarding: wrapper-centric (`tools/<name>` submodule + infra in the wrapper) or `--standalone` (self-contained consumer). App code untouched. See [greenlight-v2.md](greenlight-v2.md) + [docs/architecture.md](docs/architecture.md).
 - `agent sync [<name>]` — materialize the agentic dev loop kit (deploy-verify-promote skill + per-provider skills + `.mcp.json` + CLAUDE.md block) into a repo. Cross-repo via the Claude Code plugin: `/plugin marketplace add RTrentJones/greenlight`.
 - `ship <name> --env <beta|prod>` — **one loop turn**: build → deploy → **SHA-gated verify** (`/__version` must match the shipped commit) → **rollback on failure**; emits per-stage events (stderr JSON / `--events <file>` / best-effort ingest POST). The workflows' paved road — `deploy`+`verify` remain as the debugging decomposition.
+- `approve <name> --sha <sha>` / `release verify <name>` / `release steps <name>` — **release authority** ([docs/release-authority.md](docs/release-authority.md)): the owner signs a tag for one tool at one commit, and a production job verifies it first. Off until the manifest sets `release: { approval: 'signed-tag' }`; then `deploy`/`ship --env prod` refuse without it and `doctor` fails ungated production jobs (DR-34). `approve` never signs.
 - `preview [--no-build] | verify [--expect-sha] | promote [--commit <sha>] | status | deploy | migrations scan | doctor [--live] [--strict] | config` — the rest of the loop. `promote --commit` pins the FF to the verified sha (closes the verify→promote race).
 
 ## Development loop (deploy → verify → promote)
@@ -57,6 +58,42 @@ status <name>` (the ship/deploy/verify run chain across repos); `pnpm greenlight
 drift, or an unguarded migrations dir; `--strict` fails on warnings for CI). Cross-repo (adopted
 BAMCP etc.), the skill ships as the Greenlight Claude Code **plugin**; mechanics ride the
 `@rtrentjones/greenlight*` npm deps.
+
+## 2.0 layer (wiki, bench, gate)
+
+Built on the `2.0` branch (draft PR #38), **not released**. It adds the evolution loop: a wiki that
+compiles evidence into patterns, a bench that runs and grades agent rollouts, and a gate that decides
+whether a proposed skill change is accepted. The spec is [docs/vision/](docs/vision/README.md) (state
+table at its top; 06 the loop, 07 the CLI, 08 the schemas); the operator's guide is
+[bench/README.md](bench/README.md).
+
+- **Where:** `packages/wiki` (wiki engine, bench runner, gate, iterate), `cli/src/commands/wiki.ts`,
+  `cli/src/commands/bench.ts`, `bench/` (tasks, hidden graders/references/mutants, `models.json`,
+  `gate.json`, `budget.json`), `wiki/` (pages, `ledger.jsonl`, `evidence/eval/` sealed records).
+- **Skill text changes only through the gate.** Do not edit `.claude/skills/**` or its
+  `plugin/skills/**` mirror by hand. An accepted candidate is copied in by a PR that carries only
+  that text, then recorded with `greenlight bench merged <proposalId> --ref <PR URL>`. Until the
+  `merged` event exists, `bench iterate` refuses to start (exit 4). A merge does not bump the skill's
+  `version` frontmatter; the accepted skill set is its hash in the ledger.
+- **Never hand-edit `wiki/ledger.jsonl` or `wiki/skill-impact.md`.** The harness appends the ledger
+  and `greenlight wiki render` writes the other. `bench iterate`, `run`, `merged` and
+  `gate --recompute` stop (exit 3) on a ledger line that is not a valid event.
+- **Code changes invalidate an in-flight evaluation.** The lockfile and the built CLI bundle are
+  hashed into an evaluation's identity, and the skills and the bench inputs (tasks, graders,
+  `models.json`, `gate.json`, `splits.json`) are pinned, so a change to any of them refuses the
+  resume. Land code changes before starting an iteration, and check
+  `.greenlight/bench/iterations/*/state.json` for one that is `running` before touching them.
+- **Gate rollouts need a docker daemon.** `--sandbox process` is local development only and is
+  refused for baseline and candidate evaluations.
+- **Local only today.** `bench/models.json` declares external rollout models and roles, which
+  `evo.yml` refuses; that workflow has never run. `.greenlight/` (raw records, iteration state) is
+  gitignored.
+
+Commands: `pnpm greenlight wiki lint --strict`; `pnpm bench:check-graders`; `pnpm greenlight bench
+iterate [--resume <id>]`; `bench review <iterationId> --decision accept|reject --reason "…" --reviewer
+"<who>"`; `bench merged`; `bench gate --recompute <gateInputHash>`; `bench report` (iterations, control
+discrimination and cost, read from the ledger); `pnpm greenlight bench help` and
+`wiki help` list every flag.
 
 ## Specs & background
 

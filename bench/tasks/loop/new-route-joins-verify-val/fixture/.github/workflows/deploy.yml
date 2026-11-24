@@ -1,0 +1,23 @@
+# Branch -> environment. A push is the deploy: CI ships whatever lands on the branch.
+#   develop -> beta
+#   main    -> prod   (reached only through `greenlight promote`, never a direct push)
+name: deploy
+on:
+  push:
+    branches: [develop, main]
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tool: [potluck, trailnotes]
+    env:
+      TARGET_ENV: ${{ github.ref_name == 'main' && 'prod' || 'beta' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx greenlight ship ${{ matrix.tool }} --env "$TARGET_ENV"
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

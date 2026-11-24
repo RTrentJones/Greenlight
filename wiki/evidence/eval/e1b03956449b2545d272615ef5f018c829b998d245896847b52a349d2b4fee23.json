@@ -1,0 +1,371 @@
+{
+  "identity": {
+    "taskSetHash": "63ee496011c399ac9cdb8b9a33e0fca23b3767324deac79767988ddcccd7dcd1",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-train",
+        "kind": "loop",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "loop/new-route-joins-verify-train",
+        "kind": "loop",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-train",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-train",
+        "kind": "replay",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-supabase"]
+      },
+      {
+        "id": "wiki/contradicted-root-cause-train",
+        "kind": "wiki",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-train",
+        "kind": "wiki",
+        "state": "pending",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      }
+    ],
+    "splitsHash": "a88196e8456a40da410b746b97bcc7e4f7083c1dcedaec81fe94ac80ab516172",
+    "graderSetHash": "3a60c9513b51e86f8e8cfd81d47965262a4b58282aa9556ff531d8ad26381c26",
+    "depsHash": "1b46ecf3a5732d9c21370b8cc3bacc80042ea08c14fd68503b8f9cc824ebf705",
+    "harness": {
+      "runnerVersion": "0.3.0",
+      "imageDigest": "ctx:sha256:3dcf056da115df89381da7cd1256dccfd1357473fd6f6a2869cd65ed94cb45ce",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null,
+        "externalTimeoutFactor": 3
+      }
+    },
+    "agent": {
+      "vendor": "external",
+      "version": "claude-code-subagent"
+    },
+    "models": ["claude-code-sonnet", "claude-code-haiku"],
+    "modelsConfigHash": "7938ed696af22082ab1ec68badccea55526fe714acb67552730072140e668ff5",
+    "skillSetHash": "a82fde2f7231349edd2aca30982f35cd31480a9385efc7f486878715651a8de6",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "train",
+  "createdAt": "2026-11-21T03:11:55.079Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-train",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "1668573520",
+      "rawId": "20261121T030934Z-83bcfc03",
+      "durationMs": 123721,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-train",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "7 checks passed"
+        }
+      ],
+      "seed": "375357450",
+      "rawId": "20261121T030934Z-660858a1",
+      "durationMs": 112320,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-train",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: before(greenlight {subcommand=preview, tool=changelog, passed=true}, git {subcommand=push, dstRef=develop}); the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "812466512",
+      "rawId": "20261121T030934Z-3b6550b6",
+      "durationMs": 108926,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-train",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": true,
+          "detail": "9 checks passed"
+        }
+      ],
+      "seed": "602518437",
+      "rawId": "20261121T030934Z-bde7060b",
+      "durationMs": 109040,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-train",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1710380343",
+      "rawId": "20261121T030935Z-7cf6872f",
+      "durationMs": 113686,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-train",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "11 checks passed"
+        }
+      ],
+      "seed": "1460084987",
+      "rawId": "20261121T030935Z-9c471a14",
+      "durationMs": 104406,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-train",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "120541306",
+      "rawId": "20261121T030935Z-06d6726c",
+      "durationMs": 97281,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-train",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1252566508",
+      "rawId": "20261121T030935Z-854a4e76",
+      "durationMs": 91346,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-train",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "866682432",
+      "rawId": "20261121T030935Z-7eca1367",
+      "durationMs": 126797,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1084,
+        "tokensOut": 64
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-train",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1516437554",
+      "rawId": "20261121T030935Z-80b9511c",
+      "durationMs": 108192,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 1,
+        "tokensIn": 1233,
+        "tokensOut": 59
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-train",
+      "run": 1,
+      "model": "claude-code-haiku",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "379600703",
+      "rawId": "20261121T030935Z-13028a60",
+      "durationMs": 140008,
+      "servedBy": "claude-code-haiku",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-train",
+      "run": 1,
+      "model": "claude-code-sonnet",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "488846870",
+      "rawId": "20261121T030935Z-ad358b21",
+      "durationMs": 104594,
+      "servedBy": "claude-code-sonnet",
+      "cost": {
+        "usd": 0,
+        "requests": 0,
+        "tokensIn": 0,
+        "tokensOut": 0
+      }
+    }
+  ],
+  "hash": "e1b03956449b2545d272615ef5f018c829b998d245896847b52a349d2b4fee23"
+}

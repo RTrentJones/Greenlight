@@ -1,0 +1,5 @@
+{
+  "failingChecks": [
+    "before(greenlight {subcommand=preview, tool=changelog, passed=true}, git {subcommand=push, dstRef=unknown})"
+  ]
+}

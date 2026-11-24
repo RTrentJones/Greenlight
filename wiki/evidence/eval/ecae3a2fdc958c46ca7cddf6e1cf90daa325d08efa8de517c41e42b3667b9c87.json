@@ -1,0 +1,258 @@
+{
+  "identity": {
+    "taskSetHash": "e0731dd0792bbda0eecbcb0a0def404174b83af0c4f801e1182e225816f23289",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-supabase"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      }
+    ],
+    "splitsHash": "5cb242d586848be1a2a44b32a1ecc41b8d207fba39a41705517f4b4058e9ef40",
+    "graderSetHash": "e4b0a465c1d10be863046ad1979f7d1c2a0de344ce9823b30bbc219c0ac0f86a",
+    "depsHash": "246cc4146ff982e08dbe38fd2b92eef9d730ecbd434c970a02642c1340f9c3a9",
+    "harness": {
+      "runnerVersion": "0.3.0",
+      "imageDigest": "ctx:sha256:3dcf056da115df89381da7cd1256dccfd1357473fd6f6a2869cd65ed94cb45ce",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null
+      }
+    },
+    "agent": {
+      "vendor": "greenlight-harness",
+      "version": "0.2.0"
+    },
+    "models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+    "modelsConfigHash": "7182fceab82464bda532536bdd66b5ebc997c020a7987bcdd5d85cbec4d23985",
+    "skillSetHash": "9711d1991e567db7885178608a08ff6c7c939dca476eb9a2330d00ac3c3063ae",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "baseline",
+  "createdAt": "2026-11-15T18:13:57.700Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "1356827611",
+      "rawId": "20261115T180241Z-45962603",
+      "durationMs": 62890,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 39266,
+        "tokensOut": 820
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "1214773703",
+      "rawId": "20261115T180741Z-02087676",
+      "durationMs": 124579,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 22,
+        "tokensIn": 81171,
+        "tokensOut": 972
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries over the idle window; store suspended at the end of the idle window; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1186048785",
+      "rawId": "20261115T180343Z-156b781a",
+      "durationMs": 61032,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 10,
+        "tokensIn": 71022,
+        "tokensOut": 520
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries from the keepalive; zero store queries over the idle window; store suspended at the end of the idle window; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "26537575",
+      "rawId": "20261115T180946Z-03dd828a",
+      "durationMs": 121362,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 20,
+        "tokensIn": 171293,
+        "tokensOut": 789
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "1649237414",
+      "rawId": "20261115T180445Z-08350dec",
+      "durationMs": 104559,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 14,
+        "tokensIn": 57442,
+        "tokensOut": 499
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1761483037",
+      "rawId": "20261115T181147Z-43c7939e",
+      "durationMs": 82128,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 17,
+        "tokensIn": 83866,
+        "tokensOut": 537
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "809085710",
+      "rawId": "20261115T180629Z-64e0a793",
+      "durationMs": 72098,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 51825,
+        "tokensOut": 1134
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "2018048246",
+      "rawId": "20261115T181309Z-3358e679",
+      "durationMs": 47824,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 7,
+        "tokensIn": 31265,
+        "tokensOut": 1254
+      }
+    }
+  ],
+  "hash": "ecae3a2fdc958c46ca7cddf6e1cf90daa325d08efa8de517c41e42b3667b9c87"
+}

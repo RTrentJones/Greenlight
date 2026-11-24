@@ -1,0 +1,9 @@
+[
+  {
+    "name": "ledgerline",
+    "env": "prod",
+    "url": "https://ledgerline.example.test",
+    "kind": "oci",
+    "probePath": "/health/live"
+  }
+]

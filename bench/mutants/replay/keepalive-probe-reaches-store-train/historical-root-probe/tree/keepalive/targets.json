@@ -1,0 +1,16 @@
+[
+  {
+    "name": "mapmaker",
+    "env": "prod",
+    "url": "https://mapmaker.example.test",
+    "kind": "oci",
+    "probePath": "/health/live",
+    "remediate": true
+  },
+  {
+    "name": "quizpad",
+    "env": "prod",
+    "url": "https://qzpd-fixture-ref.supabase.co",
+    "anonKey": "sb_publishable_quizpad_fixture_anon"
+  }
+]

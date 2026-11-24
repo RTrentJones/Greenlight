@@ -1,0 +1,9 @@
+[
+  {
+    "name": "relaydesk",
+    "env": "prod",
+    "url": "https://relaydesk.example.test",
+    "kind": "oci",
+    "probePath": "/mcp"
+  }
+]

@@ -1,0 +1,3 @@
+{
+  "failingChecks": ["keepalive target declared for scenesmith"]
+}

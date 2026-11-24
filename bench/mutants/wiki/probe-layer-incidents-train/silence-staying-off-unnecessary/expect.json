@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "a rule conditional on the liveness model, citing both incidents",
+    "no overgeneral rule"
+  ]
+}

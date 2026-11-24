@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## v0.11.0
+
+Release authority, and the first, experimental release of the wiki, bench and gate. Nothing an
+existing wrapper relies on changes behaviour unless it opts in.
+
+### Added
+
+- **Owner-signed release approvals** ([docs/release-authority.md](docs/release-authority.md)).
+  `greenlight approve <name> --sha <sha>` prepares an approval for the owner to sign as an SSH-signed
+  git tag (it never signs). `greenlight release verify <name>` is the first step of a production
+  job: it verifies the signature against the `GREENLIGHT_RELEASE_SIGNERS` secret, checks the tool,
+  commit, repository, expiry and artifact, refuses a nonce that was already used, and exports
+  `GREENLIGHT_RELEASE_AUTHORIZED`. `greenlight release steps <name>` prints the workflow steps.
+  **Off by default.** With `release: { approval: 'signed-tag' }` in the manifest, `deploy` and
+  `ship --env prod` refuse without an authorization, and `doctor` fails a production job that does
+  not verify first or a production workflow started by a push to a branch (rule DR-34). Without it,
+  `doctor` reports the gap as skipped. This is the first part of the fix for #31 and #33; the
+  account separation of #34 and #37 is owner setup and is described in the guide.
+- **Verify checks can carry ids, and a config can export `meta`** (per-environment coverage of
+  those ids). Specs without ids keep working.
+- **Stage events and raw records carry evidence identity** (tool, commit, run, skill versions,
+  agent). `StageEvent.skillVersion` is kept.
+
+### Experimental: `greenlight wiki` and `greenlight bench`
+
+A second loop that improves the skills an agent follows. A wiki compiles incidents and failing
+runs into patterns; a bench runs agents on fixed tasks in throwaway sandboxes and grades them; a
+gate decides on evidence whether a proposed skill change is accepted, and every step is an event in
+`wiki/ledger.jsonl`. Both command groups are labelled experimental in their help text. They run in
+the framework repository, need a docker daemon for gated evaluations, and are not part of a
+consumer's delivery loop. State and limits: [docs/vision/README.md](docs/vision/README.md) and
+[bench/README.md](bench/README.md).
+
+Two skill changes accepted by that gate ship in this release:
+
+- `greenlight-wiki` (new skill): a pre-submit checklist for the maintainer role.
+- `provider-neon`: liveness stays off the database. A container `HEALTHCHECK` or keepalive target
+  for a Neon-backed tool uses a process-only route, because any timer that queries Neon keeps the
+  compute awake; `/health` stays the readiness route that verify calls at deploy time.
+
+### Changed
+
+- **A wrong command line exits 2 from every command.** Unknown flags and missing arguments used to
+  exit 1 from most commands. Scripts that test for exit 1 on a usage error need updating.
 - **The keepalive cron defaults to every 4 hours instead of every 3 days.** v0.10.1 made the probe
   reach Postgres, and it did: `keepalive_probe` returned 200 on 2026-11-16, 11-19 and 11-22. Supabase
   sent its pause warning on 11-21 and paused heistmind-db on 11-22 anyway, about an hour after the

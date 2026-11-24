@@ -1,0 +1,52 @@
+{
+  "eventId": "b32c66d887dacd4e02b51a9ee92ec75047f45782a05e1a9bb0eb4e7400146c48",
+  "evidence": {
+    "evaluationRecords": [
+      "6925e3b837aa086fccd9baeb3f19abc4bef8e9f63928c5375e3354aea03d4416",
+      "d873002ac33fb36c1f96350d2fd14c3447cf8067f65a8b0a15e51b503a6bba20"
+    ],
+    "gateInput": "460791c5b496f10103f516d2ef148874c43391ee46cd9892940f0e2371062f3f",
+    "kind": "bench",
+    "results": [
+      {
+        "capability": {
+          "after": 0.7,
+          "before": 0,
+          "delta": 0.7,
+          "minP": 0.000015747039556563,
+          "pValue": 0.000881834215167548
+        },
+        "decision": "pass",
+        "mode": "isolation",
+        "model": "claude-code-sonnet",
+        "replay": { "baselinePassing": 0, "candidatePassing": 0, "regressions": [], "total": 0 },
+        "runs": 5,
+        "split": "val"
+      },
+      {
+        "capability": {
+          "after": 0.5,
+          "before": 0,
+          "delta": 0.5,
+          "minP": 0.000015747039556563,
+          "pValue": 0.011904761904761904
+        },
+        "decision": "pass",
+        "mode": "isolation",
+        "model": "claude-code-haiku",
+        "replay": { "baselinePassing": 0, "candidatePassing": 0, "regressions": [], "total": 0 },
+        "runs": 5,
+        "split": "val"
+      }
+    ]
+  },
+  "outlet": "skill",
+  "path": "standard",
+  "pattern": ["pattern/probe-touches-wrong-layer"],
+  "proposalId": "prop-9c74a7769477",
+  "reason": "replay safety vacuous (no baseline-passing replay task) on claude-code-sonnet/isolation, claude-code-haiku/isolation",
+  "skill": "greenlight-wiki",
+  "stage": "candidate-accepted",
+  "ts": "2026-11-19T21:35:49.700Z",
+  "writer": "harness"
+}

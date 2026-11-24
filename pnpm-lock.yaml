@@ -69,6 +69,9 @@ importers:
       jiti:
         specifier: ^2.4.2
         version: 2.7.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -85,6 +88,9 @@ importers:
       '@rtrentjones/greenlight-verify':
         specifier: workspace:*
         version: link:../packages/verify
+      '@rtrentjones/greenlight-wiki':
+        specifier: workspace:*
+        version: link:../packages/wiki
     optionalDependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.69.0
@@ -137,6 +143,18 @@ importers:
       playwright:
         specifier: ^1.49.0
         version: 1.60.0
+
+  packages/wiki:
+    dependencies:
+      '@rtrentjones/greenlight-shared':
+        specifier: workspace:*
+        version: link:../shared
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   tools/ping-mcp:
     dependencies:
@@ -3486,6 +3504,7 @@ packages:
   tsconfck@3.1.6:
     resolution: {integrity: sha512-ks6Vjr/jEw0P1gmOVwutM3B7fWxoWBL2KRDb1JfqGVawBmO5UsvmWOQFGHBPl5yxYz4eERr19E6L7NMv+Fej4w==}
     engines: {node: ^18 || >=20}
+    deprecated: unmaintained
     hasBin: true
     peerDependencies:
       typescript: ^5.0.0

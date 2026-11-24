@@ -19,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # bench-iterate.test.ts pins an outlet candidate to HEAD~1, so the checkout needs the
+          # parent commit (the default depth of 1 has none).
+          fetch-depth: 2
 
       # Installs node + pnpm from mise.toml — single source of truth with local dev.
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
@@ -50,6 +54,16 @@ jobs:
 
       - name: Boundary check (consumer -> framework only)
         run: pnpm check-boundaries
+
+      - name: Plugin mirror check (plugin/skills == .claude/skills)
+        run: pnpm check-plugin-sync
+
+      - name: Roadmap prerequisite check (no drill needs a later milestone)
+        run: pnpm check-roadmap
+
+      # Every bench grader must pass its reference and fail every mutant (vision 07 §3.10).
+      - name: Bench graders
+        run: pnpm bench:check-graders
 
   infra:
     runs-on: ubuntu-latest
@@ -85,3 +99,7 @@ jobs:
         with:
           working_directory: infra
           soft_fail: true
+          # The action looks up the latest tfsec release through the GitHub API. Unauthenticated,
+          # that call is rate-limited per runner IP and a 403 fails the job even though the scan
+          # itself is advisory.
+          github_token: ${{ github.token }}

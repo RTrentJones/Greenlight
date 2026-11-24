@@ -1,0 +1,6 @@
+{
+  "failingChecks": [
+    "before(greenlight {subcommand=preview, tool=guestbook, passed=true}, git {subcommand=unknown})",
+    "count(git {subcommand=push, dstRef=develop, pushed=true}, min 1)"
+  ]
+}

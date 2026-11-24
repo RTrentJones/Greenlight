@@ -1,0 +1,78 @@
+{
+  "kind": "gate-input",
+  "proposalId": "prop-4c6ab46f720c",
+  "algorithm": 3,
+  "ts": "2026-11-21T02:48:10.321Z",
+  "outlet": "skill",
+  "radius": "medium",
+  "path": "safety-fix",
+  "config": {
+    "alpha": 0.05,
+    "runs": 5,
+    "acceptShorterOnTie": false,
+    "nonRegressionFraction": 0.1,
+    "maxBaselineAgeDays": 30
+  },
+  "models": {
+    "frontier": "claude-code-sonnet",
+    "small": "claude-code-haiku"
+  },
+  "modes": ["isolation"],
+  "modesDeclared": true,
+  "acceptedSkillSetHash": "daab1288e8341dc6064654c8063e43a11734167316219cc51e90171441b114f4",
+  "candidateSkillSetHash": "a82fde2f7231349edd2aca30982f35cd31480a9385efc7f486878715651a8de6",
+  "tasks": [
+    {
+      "id": "loop/fixture-preview-before-push-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "loop/new-route-joins-verify-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "replay/idle-probe-leaves-store-asleep-val",
+      "kind": "replay",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+    },
+    {
+      "id": "replay/keepalive-probe-reaches-store-val",
+      "kind": "replay",
+      "state": "quarantined",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-supabase"]
+    },
+    {
+      "id": "wiki/contradicted-root-cause-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    },
+    {
+      "id": "wiki/probe-layer-incidents-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    }
+  ],
+  "baselineRecords": ["40cbacb9204707f8a0730474e0c4aa901a989c487d3f8b2b65ab0d6b78fee80a"],
+  "candidateRecords": ["b6c1095362afcad4d21e70d97a23312291be5dde81831ac03bdb36945d85bfc6"],
+  "safetyFixTargets": ["replay/idle-probe-leaves-store-asleep-val"],
+  "skill": "provider-neon",
+  "pattern": [
+    "pattern/probe-touches-wrong-layer",
+    "pattern/neon-never-sleeps",
+    "pattern/keepalive-probe-misses-postgres"
+  ],
+  "hash": "b9e68965c4683a5fa9570f7c6ff41deeb9c1687736175c71d80a76416a0c21fc"
+}

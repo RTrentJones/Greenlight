@@ -1,0 +1,20 @@
+{
+  "id": "probe-layer-train",
+  "description": "The first iteration's paired replay tasks (vision 06 §10, 15 §8.3), train variants: each overgeneral rule, applied to both fixtures, must fail exactly one of them.",
+  "tasks": [
+    "replay/keepalive-probe-reaches-store-train",
+    "replay/idle-probe-leaves-store-asleep-train"
+  ],
+  "rules": [
+    {
+      "id": "overgeneral-a",
+      "statement": "every healthcheck and keepalive queries the database",
+      "mustFail": "replay/idle-probe-leaves-store-asleep-train"
+    },
+    {
+      "id": "overgeneral-b",
+      "statement": "probes never touch the database",
+      "mustFail": "replay/keepalive-probe-reaches-store-train"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "kind": "gate-input",
+  "proposalId": "prop-9583e28bc30b",
+  "algorithm": 3,
+  "ts": "2026-11-21T17:33:56.659Z",
+  "outlet": "skill",
+  "radius": "medium",
+  "path": "standard",
+  "config": {
+    "alpha": 0.05,
+    "runs": 5,
+    "acceptShorterOnTie": false,
+    "nonRegressionFraction": 0.1,
+    "maxBaselineAgeDays": 30
+  },
+  "models": {
+    "frontier": "claude-code-sonnet",
+    "small": "claude-code-haiku"
+  },
+  "modes": ["isolation"],
+  "modesDeclared": true,
+  "acceptedSkillSetHash": "a82fde2f7231349edd2aca30982f35cd31480a9385efc7f486878715651a8de6",
+  "candidateSkillSetHash": "a399e4e2098555ca23ac400fd02315480a842ebeb2d9b6d97b733fe6dcc2607a",
+  "tasks": [
+    {
+      "id": "loop/fixture-preview-before-push-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "loop/new-route-joins-verify-val",
+      "kind": "loop",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote"]
+    },
+    {
+      "id": "replay/idle-probe-leaves-store-asleep-val",
+      "kind": "replay",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+    },
+    {
+      "id": "replay/keepalive-probe-reaches-store-val",
+      "kind": "replay",
+      "state": "quarantined",
+      "modes": ["isolation", "production"],
+      "skills": ["deploy-verify-promote", "provider-supabase"]
+    },
+    {
+      "id": "wiki/contradicted-root-cause-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    },
+    {
+      "id": "wiki/probe-layer-incidents-val",
+      "kind": "wiki",
+      "state": "active",
+      "modes": ["isolation", "production"],
+      "skills": ["greenlight-wiki"]
+    }
+  ],
+  "baselineRecords": ["92370ef69dbd48c454600379c9463d34640d5e7d495f83e919bb643ec5c9f0b6"],
+  "candidateRecords": ["521551b5a9d9e2a6a73757345b8674d5f1a2da541d65a279a38054d539e8f479"],
+  "skill": "greenlight-wiki",
+  "pattern": [
+    "pattern/probe-touches-wrong-layer",
+    "pattern/neon-never-sleeps",
+    "pattern/keepalive-probe-misses-postgres"
+  ],
+  "hash": "3a28b4cf890ffb35c911b0162b4a3cad1c4ff05a9c4824562d4dd06841dcf5ae"
+}

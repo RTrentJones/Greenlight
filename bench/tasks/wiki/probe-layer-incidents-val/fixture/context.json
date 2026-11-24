@@ -1,0 +1,11 @@
+{
+  "installed": "0.10.1",
+  "cells": ["next/vercel/supabase", "mcp/docker/none"],
+  "verifyCheckIds": ["service-info", "store-reachable"],
+  "skills": {
+    "deploy-verify-promote": "3",
+    "provider-supabase": "2",
+    "provider-neon": "2",
+    "provider-docker": "1"
+  }
+}

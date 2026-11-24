@@ -1,0 +1,31 @@
+{
+  "create_pages": [
+    {
+      "id": "pattern/nightly-job-needs-a-longer-connect-timeout",
+      "content": "---\nid: pattern/nightly-job-needs-a-longer-connect-timeout\ntype: pattern\ntitle: A scheduled job fails because the store needs more than 30 s to resume\nupdated: 2026-11-01\nstatus: hypothesis\nkind: failure\nclass: free-tier-physics\natRisk: the first connection of the night to a suspended store\ncells: [\"next/vercel/neon\"]\naffects: \"*\"\nrelevance: app-code\nevidence:\n  - issue:fixture-org/inkwell#27\n  - run:fixture-org/inkwell/6790233104\n  - run:fixture-org/inkwell/6790561877\n  - raw:20261012T020004Z-7be2c905\n  - raw:20261012T084612Z-d0431f6a\nremediation:\n  - { outlet: template, ref: \"job database client: connect timeout 30 s to 120 s\", verified: false }\nskills: [provider-neon]\n---\n## Symptom\nThe nightly digest job fails at its first query and succeeds when it is run later in the morning (run:fixture-org/inkwell/6790233104, run:fixture-org/inkwell/6790561877).\n\n## Root cause\nThe store was still resuming when the job connected. The 30 s connect timeout was not enough for the compute to come up, so the first connection failed again (run:fixture-org/inkwell/6790233104). The manual run in the morning succeeded because the store was awake by then (run:fixture-org/inkwell/6790561877).\n\n## Fix / workaround\nRaise the connect timeout to 120 s and connect three times (issue:fixture-org/inkwell#27).\n\n## How it is caught\nIt is not. The job succeeds when it is run again (raw:20261012T084612Z-d0431f6a).\n"
+    }
+  ],
+  "update_pages": [
+    {
+      "id": "pattern/nightly-job-fails-while-store-wakes",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "status: hypothesis\n",
+          "text": "status: superseded\nsupersededBy: pattern/nightly-job-needs-a-longer-connect-timeout\n"
+        }
+      ]
+    },
+    {
+      "id": "incident/2026-10-inkwell-digest-job-failed-with-long-timeout",
+      "ops": [
+        {
+          "op": "replace",
+          "target": "patterns: []",
+          "text": "patterns:\n  - pattern/nightly-job-needs-a-longer-connect-timeout"
+        }
+      ]
+    }
+  ],
+  "append_log": "Created pattern/job-secret-stale-after-branch-reset (hypothesis) from incident/2026-10-inkwell-digest-job-failed-with-long-timeout and the two records in raw/: the connection was refused in 212 ms on an authentication failure while the store was awake. Set pattern/nightly-job-fails-while-store-wakes to superseded by it; its text is unchanged. Linked the incident to the new pattern. Nothing is confirmed: no deployed red-to-green run exists."
+}

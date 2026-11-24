@@ -1,0 +1,946 @@
+{
+  "identity": {
+    "taskSetHash": "a1f62872fe517f6c4619b622987ff7ecf975e3e66b267796d5bbd60bf5497d86",
+    "tasks": [
+      {
+        "id": "loop/fixture-preview-before-push-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "loop/new-route-joins-verify-val",
+        "kind": "loop",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["trajectory"],
+        "skills": ["deploy-verify-promote"]
+      },
+      {
+        "id": "replay/idle-probe-leaves-store-asleep-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-docker", "provider-neon", "provider-oci"]
+      },
+      {
+        "id": "replay/keepalive-probe-reaches-store-val",
+        "kind": "replay",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["app"],
+        "skills": ["deploy-verify-promote", "provider-supabase"]
+      },
+      {
+        "id": "wiki/contradicted-root-cause-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      },
+      {
+        "id": "wiki/probe-layer-incidents-val",
+        "kind": "wiki",
+        "state": "active",
+        "modes": ["isolation", "production"],
+        "graders": ["maintainer"],
+        "skills": ["greenlight-wiki"]
+      }
+    ],
+    "splitsHash": "658f5e5c38bf39f6a2bd573ad242af2e1960ea96c7e0f7fcfee24d97c2d4c36b",
+    "graderSetHash": "2f2e5fdd1bee537474639996101a95330c75d0b052f640edfe2ca6d3a1f1fca1",
+    "depsHash": "246cc4146ff982e08dbe38fd2b92eef9d730ecbd434c970a02642c1340f9c3a9",
+    "harness": {
+      "runnerVersion": "0.3.0",
+      "imageDigest": "ctx:sha256:3dcf056da115df89381da7cd1256dccfd1357473fd6f6a2869cd65ed94cb45ce",
+      "limits": {
+        "maxSteps": 25,
+        "requestsPerRollout": 27,
+        "timeoutMin": null
+      }
+    },
+    "agent": {
+      "vendor": "greenlight-harness",
+      "version": "0.2.0"
+    },
+    "models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+    "modelsConfigHash": "7182fceab82464bda532536bdd66b5ebc997c020a7987bcdd5d85cbec4d23985",
+    "skillSetHash": "9711d1991e567db7885178608a08ff6c7c939dca476eb9a2330d00ac3c3063ae",
+    "mode": "isolation",
+    "wikiSnapshotHash": null,
+    "proxyPolicyHash": null
+  },
+  "role": "baseline",
+  "createdAt": "2026-11-17T08:33:10.283Z",
+  "outcomes": [
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "1356827611",
+      "rawId": "20261116T082143Z-c90838b9",
+      "durationMs": 19980,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 10,
+        "tokensIn": 34803,
+        "tokensOut": 793
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 2,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "1838407790",
+      "rawId": "20261116T082203Z-30d5ff1b",
+      "durationMs": 105755,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 13,
+        "tokensIn": 39306,
+        "tokensOut": 900
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 3,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "1271800385",
+      "rawId": "20261116T082349Z-e3f26700",
+      "durationMs": 70957,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 13,
+        "tokensIn": 49457,
+        "tokensOut": 1054
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "1214773703",
+      "rawId": "20261116T082840Z-c166de9b",
+      "durationMs": 70659,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 17,
+        "tokensIn": 70183,
+        "tokensOut": 1028
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 2,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); never(greenlight {subcommand=promote}); the requested change is in what was pushed"
+        }
+      ],
+      "seed": "2051757007",
+      "rawId": "20261116T083154Z-cfdd391e",
+      "durationMs": 172859,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 22,
+        "tokensIn": 126664,
+        "tokensOut": 1034
+      }
+    },
+    {
+      "task": "loop/fixture-preview-before-push-val",
+      "run": 3,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: never(greenlight {subcommand=promote})"
+        }
+      ],
+      "seed": "2045809051",
+      "rawId": "20261116T083601Z-31c945b7",
+      "durationMs": 125888,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 23,
+        "tokensIn": 105886,
+        "tokensOut": 1035
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "2022833756",
+      "rawId": "20261116T082500Z-8af4e767",
+      "durationMs": 66343,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 43780,
+        "tokensOut": 1183
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 2,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "1454467748",
+      "rawId": "20261116T082606Z-7c82e2b3",
+      "durationMs": 62883,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 43746,
+        "tokensOut": 1170
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 3,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "728559206",
+      "rawId": "20261116T082709Z-63ee0442",
+      "durationMs": 90965,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 43752,
+        "tokensOut": 1152
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "1474077992",
+      "rawId": "20261116T084013Z-a016f20a",
+      "durationMs": 163878,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 73931,
+        "tokensOut": 1089
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 2,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "294931383",
+      "rawId": "20261116T084507Z-54871149",
+      "durationMs": 170586,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 21,
+        "tokensIn": 109791,
+        "tokensOut": 1281
+      }
+    },
+    {
+      "task": "loop/new-route-joins-verify-val",
+      "run": 3,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "trajectory",
+          "passed": false,
+          "detail": "failed: count(git {subcommand=push, dstRef=develop, pushed=true}, min 1); the new route is served by what was pushed; the pushed verify config checks the new route; the new check holds on what was pushed"
+        }
+      ],
+      "seed": "806079140",
+      "rawId": "20261116T084904Z-a428955c",
+      "durationMs": 65255,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 12,
+        "tokensIn": 49398,
+        "tokensOut": 993
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries over the idle window; store suspended at the end of the idle window; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1186048785",
+      "rawId": "20261116T082951Z-76f01906",
+      "durationMs": 63453,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 71022,
+        "tokensOut": 520
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 2,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries over the idle window; store suspended at the end of the idle window; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "1910156333",
+      "rawId": "20261116T083054Z-9f65d187",
+      "durationMs": 60109,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 10,
+        "tokensIn": 71022,
+        "tokensOut": 517
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 3,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries over the idle window; store suspended at the end of the idle window; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "476470586",
+      "rawId": "20261116T083447Z-cbbe8408",
+      "durationMs": 14356,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 10,
+        "tokensIn": 71073,
+        "tokensOut": 497
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries over the idle window; store suspended at the end of the idle window; healthcheck and keepalive answer 200 while the store is up; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "26537575",
+      "rawId": "20261116T085119Z-f1406cdf",
+      "durationMs": 75772,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 20,
+        "tokensIn": 168574,
+        "tokensOut": 741
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 2,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries from the keepalive; zero store queries over the idle window; store suspended at the end of the idle window; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "320038",
+      "rawId": "20261116T085442Z-abc03b9d",
+      "durationMs": 125299,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 22,
+        "tokensIn": 188332,
+        "tokensOut": 817
+      }
+    },
+    {
+      "task": "replay/idle-probe-leaves-store-asleep-val",
+      "run": 3,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: zero store queries from the healthcheck; zero store queries from the keepalive; zero store queries over the idle window; store suspended at the end of the idle window; liveness answers 200 while the database is stopped"
+        }
+      ],
+      "seed": "662090896",
+      "rawId": "20261116T085648Z-dec821a8",
+      "durationMs": 127563,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 23,
+        "tokensIn": 224813,
+        "tokensOut": 856
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1649237414",
+      "rawId": "20261116T083502Z-181ce1d2",
+      "durationMs": 59669,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 10,
+        "tokensIn": 42337,
+        "tokensOut": 417
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 2,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "394651348",
+      "rawId": "20261116T083807Z-f2039eca",
+      "durationMs": 63584,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 12,
+        "tokensIn": 55972,
+        "tokensOut": 469
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 3,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "244615278",
+      "rawId": "20261116T083911Z-4fb60053",
+      "durationMs": 62510,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 47266,
+        "tokensOut": 450
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": false,
+          "detail": "failed: the target probes the tool's Supabase project; the target names a probeTable; store not paused after 21 simulated days; every sweep ran a query on the store; lastQueryAt advanced to the last sweep; probe queries read the declared probeTable; a paused store reads as failing"
+        }
+      ],
+      "seed": "1761483037",
+      "rawId": "20261117T082321Z-aeeb2582",
+      "durationMs": 82877,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 16,
+        "tokensIn": 83866,
+        "tokensOut": 537
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 2,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "152961284",
+      "rawId": "20261117T082444Z-fc301180",
+      "durationMs": 125780,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 24,
+        "tokensIn": 150769,
+        "tokensOut": 701
+      }
+    },
+    {
+      "task": "replay/keepalive-probe-reaches-store-val",
+      "run": 3,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 1,
+      "graders": [
+        {
+          "kind": "app",
+          "passed": true,
+          "detail": "10 checks passed"
+        }
+      ],
+      "seed": "818849123",
+      "rawId": "20261117T082649Z-ff3c5ad0",
+      "durationMs": 120972,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 17,
+        "tokensIn": 85305,
+        "tokensOut": 544
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1613629139",
+      "rawId": "20261116T084257Z-d8476025",
+      "durationMs": 66848,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 12,
+        "tokensIn": 58307,
+        "tokensOut": 1941
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 2,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; the new pattern states the root cause the new evidence shows; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1181532033",
+      "rawId": "20261116T084404Z-69a0878c",
+      "durationMs": 63246,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 50615,
+        "tokensOut": 1226
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 3,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; the contradicted pattern is superseded by a pattern this output creates; the superseded pattern keeps its original claim; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1015909110",
+      "rawId": "20261116T084758Z-a897d936",
+      "durationMs": 65817,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 50536,
+        "tokensOut": 1693
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: output validates against MaintainerOutput; pages and patch targets resolve; every new or changed claim cites evidence present in the bundle; no existing evidence ref is removed; status changes follow the lifecycle (04 §4); the contradicted pattern is superseded by a pattern this output creates; the superseded pattern keeps its original claim; the new pattern states the root cause the new evidence shows; no overgeneral rule"
+        }
+      ],
+      "seed": "443017641",
+      "rawId": "20261117T082850Z-820a6071",
+      "durationMs": 47224,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 6,
+        "tokensIn": 30680,
+        "tokensOut": 2452
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 2,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "834116421",
+      "rawId": "20261117T082938Z-f2d275c1",
+      "durationMs": 23088,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 6,
+        "tokensIn": 30200,
+        "tokensOut": 1883
+      }
+    },
+    {
+      "task": "wiki/contradicted-root-cause-val",
+      "run": 3,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; eval judge: a new pattern states the root cause the evidence shows"
+        }
+      ],
+      "seed": "1438367240",
+      "rawId": "20261117T083001Z-d808fa20",
+      "durationMs": 64887,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 49059,
+        "tokensOut": 1974
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "809085710",
+      "rawId": "20261116T085009Z-0769de48",
+      "durationMs": 69561,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 13,
+        "tokensIn": 69434,
+        "tokensOut": 806
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 2,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "945124597",
+      "rawId": "20261116T085234Z-7793f680",
+      "durationMs": 63359,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 11,
+        "tokensIn": 52739,
+        "tokensOut": 1116
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 3,
+      "model": "gemini-3.1-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "282080165",
+      "rawId": "20261116T085338Z-c8d9c3af",
+      "durationMs": 64689,
+      "servedBy": "gemini-3.1-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 13,
+        "tokensIn": 69434,
+        "tokensOut": 678
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 1,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: status changes follow the lifecycle (04 §4); a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "2018048246",
+      "rawId": "20261117T083106Z-c9b1ac5b",
+      "durationMs": 53943,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 7,
+        "tokensIn": 31265,
+        "tokensOut": 1254
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 2,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: a rule conditional on the liveness model, citing both incidents; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "323487647",
+      "rawId": "20261117T083159Z-3d0d0e44",
+      "durationMs": 41222,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 7,
+        "tokensIn": 40816,
+        "tokensOut": 1410
+      }
+    },
+    {
+      "task": "wiki/probe-layer-incidents-val",
+      "run": 3,
+      "model": "gemini-3.5-flash-lite",
+      "mode": "isolation",
+      "score": 0,
+      "graders": [
+        {
+          "kind": "maintainer",
+          "passed": false,
+          "detail": "failed: every new or changed claim cites evidence present in the bundle; a rule conditional on the liveness model, citing both incidents; no overgeneral rule; eval judge: probe exactly the layer at risk, conditional on the liveness model"
+        }
+      ],
+      "seed": "726498951",
+      "rawId": "20261117T083241Z-29a78510",
+      "durationMs": 29057,
+      "servedBy": "gemini-3.5-flash-lite",
+      "cost": {
+        "usd": 0,
+        "requests": 6,
+        "tokensIn": 35005,
+        "tokensOut": 2178
+      }
+    }
+  ],
+  "hash": "3dad25251ca7fc0e2fffc0a63b82d2608492f68e6b3493b27fd757fddef58371"
+}

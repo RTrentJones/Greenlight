@@ -1,0 +1,11 @@
+{
+  "tool": "ledgerline",
+  "toolDir": "tools/ledgerline",
+  "dbEnv": "STORE_URL",
+  "suspendAfterMs": 300000,
+  "idleWindowMs": 600000,
+  "tables": {
+    "entries": ["id", "account", "amount_cents", "booked_on"],
+    "outbox": ["id", "topic", "payload", "sent_at"]
+  }
+}
