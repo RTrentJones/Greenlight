@@ -6,6 +6,7 @@ import { type GreenlightConfig, type ToolConfig, resolveUrl } from '@rtrentjones
 import { parseFlags } from '../args';
 import { loadManifest } from '../manifest';
 import { infraRefs, installedVersion } from '../refs';
+import { releaseWorkflowFindings } from '../release-workflows';
 import { resolveMigrationsDir } from './migrations';
 
 export interface DoctorCheck {
@@ -253,6 +254,35 @@ export function submoduleDriftCheck(root: string): DoctorCheck {
 }
 
 /** Pure consistency checks (no network). Cred-dependent checks are reported as skipped. */
+/**
+ * DR-34 (vision 18): with `release.approval: 'signed-tag'`, every production job verifies the
+ * owner-signed approval before its first production operation, and no production workflow starts
+ * from a push to a branch. Without the opt-in the gap is reported as skipped, not as a warning: an
+ * existing wrapper keeps its green `doctor --strict` until its owner turns enforcement on.
+ */
+export function releaseAuthorityChecks(config: GreenlightConfig, root: string): DoctorCheck[] {
+  const name = 'release authority (DR-34)';
+  if (config.release?.approval !== 'signed-tag') {
+    return [
+      {
+        name,
+        status: 'skip',
+        detail:
+          "not enforced: production deploys are not owner-gated. Set release.approval: 'signed-tag' once a signing key and GREENLIGHT_RELEASE_SIGNERS exist (docs/release-authority.md)",
+      },
+    ];
+  }
+  const findings = releaseWorkflowFindings(root);
+  if (findings.length === 0) {
+    return [{ name, status: 'ok', detail: 'every production job verifies an approval first' }];
+  }
+  return findings.map((f) => ({
+    name,
+    status: f.severity,
+    detail: `${f.file}${f.job ? ` › ${f.job}` : ''}: ${f.problem}`,
+  }));
+}
+
 export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   if (config.blog) checks.push(dirCheck('blog', join(root, 'apps/blog')));
@@ -308,6 +338,7 @@ export function runDoctor(config: GreenlightConfig, root: string): DoctorCheck[]
 
   // Local consistency (no creds): lockstep + submodule drift + workflow/manifest sync + the
   // local-gate nudge.
+  checks.push(...releaseAuthorityChecks(config, root));
   checks.push(versionDriftCheck(root));
   checks.push(submoduleDriftCheck(root));
   checks.push(previewReceiptCheck(root));

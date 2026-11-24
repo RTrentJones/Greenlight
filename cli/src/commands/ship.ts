@@ -12,6 +12,7 @@ import {
   resolveEntry,
 } from '../manifest';
 import { REMOTE_REACHABLE_MS, readyTimeout } from '../timeouts';
+import { guardProduction } from './release';
 import { defaultSpec, printReport, runVerify, warnDefaultSpec } from './verify';
 
 /**
@@ -113,6 +114,7 @@ export async function shipCommand(args: string[]): Promise<number> {
   if (entry.external && entry.target !== 'oci' && entry.target !== 'docker') {
     throw new Error(`"${name}" is external (registry pointer) — ship it from its own repo`);
   }
+  if (env === 'prod') guardProduction(config, name, process.cwd());
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });
   const toolDir = resolve(process.cwd(), entry.dir ?? '.');
 

@@ -167,6 +167,14 @@ export const ConfigSchema = z
     // Optional: a tool-only repo (a poly-repo consumer) has no blog.
     blog: BlogSchema.optional(),
     tools: z.array(ToolSchema).default([]),
+    /** Release authority (vision 18 §3). `approval: 'signed-tag'` makes every production operation
+     * require an owner-signed approval tag, verified by `greenlight release verify` as the first
+     * step of the production job. Absent: not enforced, as before. Turning it on is the owner's
+     * step, taken once a signing key and the `GREENLIGHT_RELEASE_SIGNERS` secret exist. */
+    release: z
+      .object({ approval: z.enum(['signed-tag']).optional() })
+      .strict()
+      .optional(),
   })
   .superRefine((config, ctx) => {
     // Shared data store (multiple services on one Neon DB): a tool's `dataShareWith` must name another

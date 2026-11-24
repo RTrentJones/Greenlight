@@ -54,7 +54,8 @@ help` for the exact flags, which are authoritative where this document differs):
 `wiki lint`, `wiki render`, `wiki read`, `wiki traces`, `wiki ingest`, `wiki propose`;
 `bench run`, `bench rollout`, `bench check-graders` (alias `mutants`), `bench models`,
 `bench activate`, `bench iterate`, `bench review`, `bench merged`, `bench gate --recompute`,
-`bench report`.
+`bench report`; and, from M5, `approve` (without the beta-gate and policy-change checks of §2.7a),
+`release verify` and `release steps` (docs/release-authority.md).
 Everything else in the table below is specification that has not been built, including
 `wiki capture`, `wiki remediate`, `bench gate <proposalId>` (the iteration runs the gate today),
 `bench monitor`, and the version bump on acceptance: a merge is recorded with

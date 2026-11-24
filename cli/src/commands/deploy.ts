@@ -2,6 +2,7 @@ import { createAdapter } from '@rtrentjones/greenlight-adapters';
 import type { DeployEnv } from '@rtrentjones/greenlight-shared';
 import { parseFlags } from '../args';
 import { loadManifest, resolveEntry } from '../manifest';
+import { guardProduction } from './release';
 
 /**
  * Build + deploy a manifest entry to an env via its target adapter, printing the
@@ -28,6 +29,7 @@ export async function deployCommand(args: string[]): Promise<number> {
   if (entry.external && entry.target !== 'oci' && entry.target !== 'docker') {
     throw new Error(`"${name}" is external (registry pointer) — deploy it from its own repo`);
   }
+  if (env === 'prod') guardProduction(config, name, process.cwd());
   const adapter = createAdapter(entry.target, { domain: config.domain, name: entry.name });
 
   // Git-integration targets (vercel) deploy on push to THEIR repo — branch on the contract's
