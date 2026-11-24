@@ -1,6 +1,6 @@
 {
   "name": "@rtrentjones/greenlight-wiki",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "private": true,
   "description": "Greenlight knowledge plane: wiki page, ledger, bench and evolution-loop schemas (vision 03 section 3).",
   "license": "MIT",
