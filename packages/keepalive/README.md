@@ -22,7 +22,10 @@ The Worker is deployed by Terraform — `infra/modules/keepalive` (`cloudflare_w
 - `targets_json` = `KEEPALIVE_TARGETS`, one `{ name, env, url, kind?, anonKey?, probePath? }` per
   `data:supabase` / `target:oci` tool (the wrapper builds this from the supabase module outputs).
 - `alert_github_repo` + an optional `github_token` secret for the issue sink.
-- `cron` (default every 3 days at 06:00 UTC — inside the 7-day window).
+- `cron` (default every 4 hours). Supabase pauses on too little database activity across a week,
+  and its docs put the bar at "a few user requests to the database each day", so a cadence of days
+  is not enough even when every probe succeeds (heistmind-db paused on 2026-11-22 under the old
+  every-3-days default, an hour after a 200).
 
 The Cloudflare token used for `apply` needs **Workers Scripts: Edit** (which includes cron
 triggers).

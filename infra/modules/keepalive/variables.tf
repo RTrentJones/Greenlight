@@ -54,6 +54,12 @@ variable "dispatch_github_repo" {
 
 variable "cron" {
   type        = string
-  default     = "0 6 */3 * *"
-  description = "Cron schedule (default: every 3 days, inside Supabase's 7-day window)."
+  default     = "0 */4 * * *"
+  description = <<-EOT
+    Cron schedule (default: every 4 hours, six probes a day). Supabase pauses a free project for
+    too LITTLE database activity over a rolling week, not for one fully idle week: its docs say "a
+    few user requests to the database each day" is what keeps a project up. The old every-3-days
+    default sent two or three queries a week, and heistmind-db paused on 2026-11-22 an hour after a
+    probe that returned 200. Do not stretch this past a few hours for supabase targets.
+  EOT
 }
