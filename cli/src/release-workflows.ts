@@ -158,3 +158,76 @@ export function releaseVerifySteps(name: string, artifactExpr?: string): string 
           GITHUB_TOKEN: \${{ github.token }}
         run: pnpm exec greenlight release verify ${name}${artifactExpr ? ` --artifact "${artifactExpr}"` : ''}`;
 }
+
+const TARGET_SECRETS: Readonly<Record<string, readonly string[]>> = {
+  workers: ['CLOUDFLARE_API_TOKEN'],
+  vercel: ['VERCEL_API_TOKEN'],
+};
+
+export interface ReleaseWorkflowOptions {
+  target: string;
+  /** The tool has a beta: verify it at the approved commit, then fast-forward `main` to it. */
+  beta: boolean;
+}
+
+/**
+ * A complete production workflow for one tool under release authority: started by the owner's
+ * approval tag, it verifies the approval first, then (with a beta) verifies beta at the approved
+ * commit and fast-forwards `main` to it, then ships production at that commit. It is what
+ * `greenlight release workflow <name>` prints, and it passes DR-34 as written.
+ */
+export function releaseWorkflowYml(name: string, o: ReleaseWorkflowOptions): string {
+  const SUF = name.toUpperCase().replace(/-/g, '_');
+  const secrets =
+    o.target === 'docker'
+      ? ['HOST', 'USER', 'KEY', 'PORT'].map(
+          (k) => `          DOCKER_SSH_${k}: \${{ secrets.DOCKER_SSH_${k}_${SUF} }}`,
+        )
+      : (TARGET_SECRETS[o.target] ?? []).map((k) => `          ${k}: \${{ secrets.${k} }}`);
+  const env = secrets.length > 0 ? `        env:\n${secrets.join('\n')}\n` : '';
+  const ociNote =
+    o.target === 'oci'
+      ? '      # An oci tool resolves its container instance before it ships: keep the OCI CLI setup and\n      # the instance lookup from your deploy listener here, between verification and this step.\n'
+      : '';
+  const betaSteps = o.beta
+    ? `      - name: Verify beta at the approved commit
+${env}        run: pnpm exec greenlight verify ${name} --env beta --expect-sha "\${{ github.sha }}"
+      - name: Fast-forward main to the approved commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags origin main develop
+          pnpm exec greenlight promote ${name} --perform --push --commit "\${{ github.sha }}"
+`
+    : '';
+  return `name: release-${name}
+
+# Production for ${name}, under release authority (docs/release-authority.md). It starts when the
+# owner pushes a signed approval tag, release/${name}/<sha12>-<nonce>, and at no other time: a push
+# to a branch never reaches production. The first thing the job does is verify that approval.
+on:
+  push:
+    tags: ['release/${name}/*']
+
+permissions:
+  contents: ${o.beta ? 'write # the fast-forward of main' : 'read'}
+  deployments: write # records the approval as used
+
+concurrency:
+  group: release-${name}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      - run: pnpm install --frozen-lockfile
+${releaseVerifySteps(name)}
+${betaSteps}${ociNote}      - name: Ship production (build -> deploy -> SHA-gated verify -> rollback on failure)
+${env}        run: pnpm exec greenlight ship ${name} --env prod --expect-sha "\${{ github.sha }}"
+`;
+}

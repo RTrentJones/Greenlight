@@ -301,8 +301,8 @@ refuted by the cycle:
 **M3-01 — `wiki context` and `wiki lookup`.** (FR-LOOP-01, FR-LOOP-02, FR-WIKI-05, FR-LOOP-08)
 - Change: the on-start bundle and the failure lookup keyed to check ids, with failure-report links.
 - As built (2026-11-24): `wiki context`, `wiki lookup`, and the `wiki:` block and `wiki_hits` on a
-  failing `verify`, `preview` or `ship`. Not built: `wikiHits` on a raw record, which waits for
-  capture (M3-04), and the `repro` evaluation of the mechanism.
+  failing `verify`, `preview` or `ship`. `wikiHits` is on the raw record a gate writes. Not built:
+  the `repro` evaluation of the mechanism.
 - Outlet evaluated: `mechanism`, by a `repro` on a fixture with a failing check.
 
 **M3-02 — Criteria tooling and project wikis for the six live tools.** (FR-BUILD-04, FR-WIKI-03,

@@ -21,6 +21,8 @@
 - **`greenlight wiki capture`** records evidence by hand (`--manual --note`), or from files for a
   CI step or an alert (`--kind`), and `--retain <rawId>` copies a record into `wiki/evidence/`,
   where it is committed and immutable.
+- **`greenlight release workflow <name>`** prints a complete production workflow for a tool under
+  release authority, started by the owner's approval tag. It passes doctor rule DR-34 as written.
 - **The framework wiki ships in the package** and is read from there. `wiki read <id>` falls back
   to it when the project wiki has no such page. `GREENLIGHT_WIKI=off` turns all of this off.
 

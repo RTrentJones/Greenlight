@@ -13,7 +13,7 @@ import {
 import type { GreenlightConfig } from '@rtrentjones/greenlight-shared';
 import { UsageError, parseFlags } from '../args';
 import { loadManifest, resolveEntry } from '../manifest';
-import { releaseVerifySteps } from '../release-workflows';
+import { releaseVerifySteps, releaseWorkflowYml } from '../release-workflows';
 
 /**
  * Release authority (vision 18 §3): the owner approves ONE production operation by signing a git
@@ -28,6 +28,9 @@ import { releaseVerifySteps } from '../release-workflows';
  *       the first step of a production job. Verifies an owner-signed approval for this tool at the
  *       checked-out commit, consumes its nonce, and exports GREENLIGHT_RELEASE_AUTHORIZED for the
  *       job's remaining steps.
+ *
+ *   greenlight release workflow <name>
+ *       prints a complete tag-triggered production workflow for the tool.
  *
  *   greenlight release steps <name>
  *       prints the workflow steps that run the verification, to paste into a production job.
@@ -140,9 +143,26 @@ export async function releaseCommand(args: string[]): Promise<number> {
     console.log(releaseVerifySteps(name, a.values['--artifact']));
     return 0;
   }
+  if (sub === 'workflow') {
+    const a = parseFlags('release workflow', args.slice(1));
+    const name = a.positional[0];
+    if (!name || a.positional.length > 1) {
+      throw new UsageError('usage: greenlight release workflow <name>');
+    }
+    const { config } = await loadManifest(process.cwd());
+    const entry = resolveEntry(config, name);
+    const envs =
+      name === 'blog' ? ['beta', 'prod'] : (config.tools.find((t) => t.name === name)?.envs ?? []);
+    // The workflow goes to stdout alone, so it can be redirected into .github/workflows/.
+    console.error(`# save as .github/workflows/release-${name}.yml`);
+    process.stdout.write(
+      releaseWorkflowYml(name, { target: entry.target, beta: envs.includes('beta') }),
+    );
+    return 0;
+  }
   if (sub !== 'verify') {
     throw new UsageError(
-      'usage: greenlight release verify <name> [--sha <sha>] [--artifact <id>] [--repo o/r] [--dry-run] [--json]\n       greenlight release steps <name> [--artifact <expression>]',
+      'usage: greenlight release verify <name> [--sha <sha>] [--artifact <id>] [--repo o/r] [--dry-run] [--json]\n       greenlight release steps <name> [--artifact <expression>]\n       greenlight release workflow <name>',
     );
   }
   const a = parseFlags('release verify', args.slice(1), {

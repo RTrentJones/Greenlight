@@ -3,8 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConfigSchema } from '@rtrentjones/greenlight-shared';
 import { afterAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { releaseAuthorityChecks } from '../commands/doctor';
-import { productionWorkflowFindings, releaseVerifySteps } from '../release-workflows';
+import {
+  productionWorkflowFindings,
+  releaseVerifySteps,
+  releaseWorkflowYml,
+} from '../release-workflows';
 
 const problems = (yml: string, file = 'x.yml') =>
   productionWorkflowFindings(file, yml).map(
@@ -149,5 +154,46 @@ describe('doctor: release authority', () => {
         release: { approvals: 'signed-tag' },
       }),
     ).toThrow();
+  });
+});
+
+describe('release workflow: the generated production workflow', () => {
+  const steps = (yml: string): string[] =>
+    (parse(yml).jobs.release.steps as { name?: string; run?: string; uses?: string }[]).map(
+      (s) => s.name ?? s.run ?? s.uses ?? '',
+    );
+
+  it('passes DR-34 as written, for every target, with and without a beta', () => {
+    for (const target of ['workers', 'vercel', 'oci', 'docker']) {
+      for (const beta of [true, false]) {
+        const yml = releaseWorkflowYml('pinboard', { target, beta });
+        expect(productionWorkflowFindings('release-pinboard.yml', yml)).toEqual([]);
+      }
+    }
+  });
+
+  it('starts only from the tool’s approval tag and verifies before anything else it does', () => {
+    const yml = releaseWorkflowYml('pinboard', { target: 'workers', beta: true });
+    const doc = parse(yml);
+    expect(doc.on).toEqual({ push: { tags: ['release/pinboard/*'] } });
+    expect(doc.permissions).toEqual({ contents: 'write', deployments: 'write' });
+    const order = steps(yml);
+    const at = (needle: string) => order.findIndex((s) => s.includes(needle));
+    expect(at('Verify the owner-signed release approval')).toBeGreaterThan(-1);
+    expect(at('Verify the owner-signed release approval')).toBeLessThan(at('Verify beta'));
+    expect(at('Verify beta')).toBeLessThan(at('Fast-forward main'));
+    expect(at('Fast-forward main')).toBeLessThan(at('Ship production'));
+    expect(yml).toContain('greenlight ship pinboard --env prod --expect-sha "${{ github.sha }}"');
+    expect(yml).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');
+  });
+
+  it('ships directly, read-only, for a tool with no beta', () => {
+    const yml = releaseWorkflowYml('my-box', { target: 'docker', beta: false });
+    expect(parse(yml).permissions).toEqual({ contents: 'read', deployments: 'write' });
+    expect(steps(yml).some((s) => s.includes('Fast-forward main'))).toBe(false);
+    expect(yml).toContain('DOCKER_SSH_KEY: ${{ secrets.DOCKER_SSH_KEY_MY_BOX }}');
+    expect(releaseWorkflowYml('box', { target: 'oci', beta: false })).toContain(
+      'An oci tool resolves its container instance',
+    );
   });
 });

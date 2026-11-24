@@ -37,6 +37,7 @@ const HELP = `greenlight <command>
   status <name>                                 last ship/deploy/verify run for a tool (via gh)
   approve <name> --sha <sha> [--artifact id]    prepare a production approval for the OWNER to sign (never signs)
   release verify <name> [--artifact id]         first step of a production job: verify the signed approval
+  release workflow <name>                       print a tag-triggered production workflow that verifies first
   secrets gather <name> [--repo o/r] [--env e]  guided, link-first token prompts -> GitHub secrets (no disk/logs)
   secrets check [<name>] [--repo o/r]           list the GitHub secrets a tool's deploy needs + flag missing
   agent sync [<name>]                           write the loop kit (named → tool-aware, into its dir)

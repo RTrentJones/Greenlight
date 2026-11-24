@@ -34,8 +34,12 @@ exits 0, and production operations are not guarded.
 
    `greenlight secrets gather` does not prompt for it; set it in the repository's settings.
 
-3. **Gate the production jobs.** `greenlight release steps <name>` prints the steps a production
-   job starts with (after checkout and install). The job needs
+3. **Gate the production jobs.** `greenlight release workflow <name>` prints a complete
+   production workflow for the tool, started by its approval tag: it verifies the approval, checks
+   beta at the approved commit and fast-forwards `main` to it when the tool has a beta, then ships
+   production at that commit. Save it as `.github/workflows/release-<name>.yml` and remove the
+   production path from the workflows it replaces. To gate a job you keep instead,
+   `greenlight release steps <name>` prints the steps it starts with (after checkout and install). The job needs
    `permissions: { contents: read, deployments: write }`, and the workflow must not start from a
    push to a branch: start it from the approval tag or a dispatch.
 
